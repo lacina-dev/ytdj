@@ -1,6 +1,6 @@
 """Player interface.
 
-The agent logic (ytmusicapi + Claude + radio pools) is independent of this
+The agent logic (ytmusicapi + Codex + radio pools) is independent of this
 layer — swapping mpv for pear-desktop / YTMDesktop means writing a different
 `Player` implementation, nothing more.
 """

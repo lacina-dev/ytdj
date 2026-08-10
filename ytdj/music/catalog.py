@@ -1,8 +1,8 @@
-"""Vrstva nad ytmusicapi.
+"""Layer on top of ytmusicapi.
 
-Zásada: ven z tohohle modulu jde vždy kompaktní `Track`, nikdy syrový dict
-z ytmusicapi — ten nese thumbnaily a feedbackTokeny, tj. stovky zbytečných
-tokenů na každý výsledek.
+Rule: what leaves this module is always a compact `Track`, never a raw dict
+from ytmusicapi — that one carries thumbnails and feedbackTokens, i.e.
+hundreds of useless tokens per result.
 """
 
 from __future__ import annotations
@@ -23,19 +23,19 @@ class Track:
     title: str
     artist: str
     album: str | None = None
-    duration: int | None = None  # sekundy
+    duration: int | None = None  # seconds
 
     def compact(self) -> dict:
-        """Co uvidí LLM — bez None polí."""
+        """What the LLM will see — without None fields."""
         return {k: v for k, v in asdict(self).items() if v is not None}
 
     def label(self) -> str:
         return f"{self.artist} — {self.title}" if self.artist else self.title
 
 
-# ytmusicapi občas nacpe do `artists` i počet přehrání ("3,4 tis. přehrání"),
-# počet lajků ("Líbí se 2,7 tis. lidem") nebo rok. Bez tohohle filtru se to
-# táhne až do promptu a do historie.
+# ytmusicapi sometimes stuffs `artists` with the play count ("3,4 tis.
+# přehrání"), the like count ("Líbí se 2,7 tis. lidem") or the year. Without
+# this filter it drags all the way into the prompt and the history.
 _NOT_AN_ARTIST = re.compile(
     r"(přehrání|zhlédnutí|views|plays|streams|likes?|lidem)\s*$"
     r"|^líbí\s+se\b"
@@ -90,8 +90,9 @@ def to_track(item: dict) -> Track | None:
 
 
 class Catalog:
-    """YTMusic obalený do asyncio — YTMusic je synchronní `requests` klient,
-    takže každé volání jde do vlákna, ať neblokuje smyčku (a s ní přehrávání).
+    """YTMusic wrapped in asyncio — YTMusic is a synchronous `requests`
+    client, so every call goes to a thread to avoid blocking the loop (and
+    with it, playback).
     """
 
     def __init__(self, cfg: Config) -> None:
@@ -104,36 +105,36 @@ class Catalog:
         return await asyncio.to_thread(fn, *args, **kwargs)
 
     async def search(self, query: str, limit: int = 8) -> list[Track]:
-        # POZOR: ytmusicapi bere `limit` jako spodní mez, ne horní — YTM
-        # stránkuje po 20. Vždy ořezat na naší straně.
+        # CAUTION: ytmusicapi treats `limit` as a lower bound, not an upper
+        # one — YTM paginates by 20. Always trim on our side.
         raw = await self._call(self.yt.search, query, filter="songs", limit=limit)
         tracks = [t for t in (to_track(i) for i in raw) if t]
         return tracks[:limit]
 
     async def radio(self, video_id: str, limit: int = 50) -> list[Track]:
-        """Rádio ze seed skladby. Vrací pokaždé jiné složení — to je záměr."""
+        """Radio from a seed track. Returns a different mix every time — by design."""
         res = await self._call(
             self.yt.get_watch_playlist, videoId=video_id, radio=True, limit=limit
         )
         return [t for t in (to_track(i) for i in res.get("tracks", [])) if t]
 
     async def mood_categories(self) -> dict[str, list[dict]]:
-        """params se v čase mění — nikdy je nehardcodovat, tahat za běhu."""
+        """params change over time — never hardcode them, fetch at runtime."""
         return await self._call(self.yt.get_mood_categories)
 
     async def mood_playlists(self, params: str) -> list[dict]:
         return await self._call(self.yt.get_mood_playlists, params)
 
     async def playlist_tracks(self, playlist_id: str, limit: int = 50) -> list[Track]:
-        # shuffle=True padá na RDCLAK5 playlistech — ytmusicapi ho posílá jen
-        # pro PL/OLA prefixy. Bez shuffle to projde vždy.
+        # shuffle=True crashes on RDCLAK5 playlists — ytmusicapi only sends it
+        # for PL/OLA prefixes. Without shuffle it always goes through.
         res = await self._call(
             self.yt.get_watch_playlist, playlistId=playlist_id, limit=limit
         )
         return [t for t in (to_track(i) for i in res.get("tracks", [])) if t]
 
     async def rate(self, video_id: str, rating: str) -> None:
-        """LIKE | DISLIKE | INDIFFERENT — jen s přihlášením."""
+        """LIKE | DISLIKE | INDIFFERENT — only when logged in."""
         if not self.authenticated:
             raise RuntimeError("hodnocení vyžaduje přihlášení (ytmusicapi browser)")
         await self._call(self.yt.rate_song, video_id, rating)

@@ -1,8 +1,8 @@
-"""Terminálový REPL.
+"""Terminal REPL.
 
-Deterministické povely ("další", "pauza", "hlasitěji") se chytají regexem a
-jdou rovnou na přehrávač. Utrácet sedm centů a čtyři vteřiny za "next" by
-bylo absurdní — na model jde jen to, co regex nechytí.
+Deterministic commands ("další", "pauza", "hlasitěji") are caught by regex
+and go straight to the player. Spending seven cents and four seconds on
+"next" would be absurd — only what the regex does not catch goes to the model.
 """
 
 from __future__ import annotations
@@ -62,13 +62,13 @@ class Repl:
 
     def set_status(self, text: str) -> None:
         self.status_line = text
-        # překreslení spodní lišty bez rušení rozepsaného řádku
+        # redraw the bottom toolbar without disturbing a half-typed line
         app = self.session.app
         if app.is_running:
             app.invalidate()
 
     async def _local(self, text: str) -> str | None:
-        """Vrátí odpověď, pokud povel obsloužíme lokálně; jinak None."""
+        """Return a reply if the command is handled locally; None otherwise."""
         if QUIT.match(text):
             self.running = False
             return "Čau."
@@ -128,7 +128,7 @@ class Repl:
                         reply = await self.on_prompt(text)
                 except asyncio.CancelledError:
                     raise
-                except Exception as exc:  # REPL nesmí spadnout kvůli jednomu povelu
+                except Exception as exc:  # the REPL must not die over one command
                     reply = f"chyba: {exc}"
 
                 if reply:

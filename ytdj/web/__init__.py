@@ -1,4 +1,4 @@
-"""Webové ovládání ytdj (localhost)."""
+"""Web control interface for ytdj (localhost)."""
 
 from .server import WebServer
 

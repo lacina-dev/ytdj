@@ -1,8 +1,8 @@
-"""Rozhraní přehrávače.
+"""Player interface.
 
-Agentní logika (ytmusicapi + Claude + rádio pooly) je na téhle vrstvě
-nezávislá — vyměnit mpv za pear-desktop / YTMDesktop znamená napsat jinou
-implementaci `Player`, nic víc.
+The agent logic (ytmusicapi + Claude + radio pools) is independent of this
+layer — swapping mpv for pear-desktop / YTMDesktop means writing a different
+`Player` implementation, nothing more.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ class PlayerStatus:
     playing: bool
     paused: bool
     current: Track | None
-    position: float  # sekundy
+    position: float  # seconds
     duration: float
     queue: list[Track]
     volume: int
@@ -66,4 +66,4 @@ class Player(ABC):
     @property
     @abstractmethod
     def queue_depth(self) -> int:
-        """Kolik skladeb čeká za tou právě hrající."""
+        """How many tracks are waiting behind the one currently playing."""

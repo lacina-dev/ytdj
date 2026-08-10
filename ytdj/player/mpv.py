@@ -1,11 +1,12 @@
-"""mpv jako přehrávač, řízený přes JSON IPC na unix socketu.
+"""mpv as the player, controlled via JSON IPC on a unix socket.
 
-Stream URL řeší mpv sám přes ytdl_hook -> yt-dlp. Tři věci, bez kterých to
-nepůjde a v dokumentaci se o nich mlčí:
-  * `secretstorage` musí být v prostředí yt-dlp, jinak nerozšifruje Chrome cookies
-  * `--js-runtimes` + `--remote-components=ejs:github`, jinak selže řešení
-    signatur a Premium formáty (774/141) se vůbec nenabídnou
-  * node musí být v PATH podprocesu mpv (viz Config.child_env)
+mpv resolves the stream URL itself via ytdl_hook -> yt-dlp. Three things
+without which this won't work — and the documentation is silent about them:
+  * `secretstorage` must be in yt-dlp's environment, otherwise it can't
+    decrypt Chrome cookies
+  * `--js-runtimes` + `--remote-components=ejs:github`, otherwise signature
+    resolution fails and Premium formats (774/141) are never offered at all
+  * node must be on the PATH of the mpv subprocess (see Config.child_env)
 """
 
 from __future__ import annotations
@@ -37,17 +38,18 @@ class MpvPlayer(Player):
         self._handlers: list[EventHandler] = []
         self._reader_task: asyncio.Task | None = None
         self._dispatch_task: asyncio.Task | None = None
-        # (kind, playlist_entry_id, detail) — skladba se dohledává až
-        # v dispatch smyčce, protože v okamžiku události ještě nemusí být
-        # zapsané mapování z odpovědi na loadfile
+        # (kind, playlist_entry_id, detail) — the track is looked up only in
+        # the dispatch loop, because at the moment of the event the mapping
+        # from the loadfile response may not have been recorded yet
         self._events: asyncio.Queue[tuple[str, int, str]] = asyncio.Queue()
 
-        # mpv playlist <-> naše Tracky, klíčem je videoId
+        # mpv playlist <-> our Tracks, keyed by videoId
         self._tracks: dict[str, Track] = {}
-        self._order: list[str] = []  # pořadí, jak jsme enqueovali
-        # playlist_entry_id (od mpv) -> videoId. Díky tomuhle se u událostí
-        # nemusíme mpv na nic doptávat — a nemůže tak vzniknout deadlock,
-        # kdy handler čeká na odpověď, kterou má přečíst tatáž smyčka.
+        self._order: list[str] = []  # order in which we enqueued
+        # playlist_entry_id (from mpv) -> videoId. Thanks to this we never
+        # have to query mpv for anything while handling events — so no
+        # deadlock can arise where a handler waits for a reply that the very
+        # same loop is supposed to read.
         self._entries: dict[int, str] = {}
         self._current_id: str | None = None
         self._pos = 0
@@ -55,7 +57,7 @@ class MpvPlayer(Player):
         self._paused = False
         self._volume = 100
 
-    # ---------- životní cyklus ----------
+    # ---------- lifecycle ----------
 
     def _args(self) -> list[str]:
         args = [
@@ -67,7 +69,7 @@ class MpvPlayer(Player):
             f"--input-ipc-server={MPV_SOCKET}",
             f"--ytdl-format={self.cfg.ytdl_format}",
             f"--script-opts=ytdl_hook-ytdl_path={self.cfg.yt_dlp_path}",
-            "--prefetch-playlist=yes",  # předřeší URL další skladby -> žádná mezera
+            "--prefetch-playlist=yes",  # pre-resolves the next track's URL -> no gap
             "--gapless-audio=weak",
             "--cache=yes",
             "--keep-open=no",
@@ -79,7 +81,7 @@ class MpvPlayer(Player):
             raw.append(f"js-runtimes={self.cfg.js_runtimes}")
         if self.cfg.remote_components:
             raw.append(f"remote-components={self.cfg.remote_components}")
-        # každá volba zvlášť přes -append, ať se nemusí escapovat čárky
+        # each option separately via -append, so commas need no escaping
         args += [f"--ytdl-raw-options-append={opt}" for opt in raw]
         args += list(self.cfg.mpv_extra_args)
         return args
@@ -96,7 +98,7 @@ class MpvPlayer(Player):
             stderr=asyncio.subprocess.DEVNULL,
         )
 
-        for _ in range(100):  # ~5 s na vytvoření socketu
+        for _ in range(100):  # ~5 s for the socket to appear
             if MPV_SOCKET.exists():
                 try:
                     self.reader, self.writer = await asyncio.open_unix_connection(
@@ -188,9 +190,9 @@ class MpvPlayer(Player):
                 self._handle_event(msg)
 
     def _handle_event(self, msg: dict) -> None:
-        """Zpracování události. Nesmí volat IPC ani nic awaitovat — běží
-        uvnitř čtecí smyčky, takže by čekalo na odpověď, kterou by musela
-        přečíst ta samá smyčka."""
+        """Event processing. Must not call IPC or await anything — it runs
+        inside the read loop, so it would be waiting for a reply that the
+        very same loop would have to read."""
         event = msg.get("event")
 
         if event == "property-change":
@@ -211,8 +213,8 @@ class MpvPlayer(Player):
 
         if event == "end-file":
             reason = msg.get("reason", "")
-            # reason rozlišuje dohráno vs. přeskočeno — to je náš implicitní
-            # signál, jestli se skladba trefila
+            # reason distinguishes played-to-end vs. skipped — that is our
+            # implicit signal of whether the track was a good pick
             kind = {
                 "eof": "finished",
                 "stop": "skipped",
@@ -227,8 +229,8 @@ class MpvPlayer(Player):
             self._events.put_nowait(("idle", -1, ""))
 
     async def _dispatch_loop(self) -> None:
-        """Handlery běží mimo čtecí smyčku (takže smí volat IPC), ale v pořadí,
-        v jakém události přišly."""
+        """Handlers run outside the read loop (so they may call IPC), but in
+        the order the events arrived."""
         while True:
             kind, entry_id, detail = await self._events.get()
 
@@ -236,7 +238,7 @@ class MpvPlayer(Player):
             if kind != "idle":
                 vid = self._entries.get(entry_id)
                 if vid is None and kind == "start":
-                    # mapování ještě nedorazilo — zeptáme se mpv přímo
+                    # the mapping has not arrived yet — ask mpv directly
                     vid = await self._current_video_id()
                     if vid:
                         self._entries[entry_id] = vid
@@ -262,15 +264,15 @@ class MpvPlayer(Player):
     def on_event(self, handler: EventHandler) -> None:
         self._handlers.append(handler)
 
-    # ---------- ovládání ----------
+    # ---------- controls ----------
 
     async def enqueue(self, tracks: list[Track]) -> int:
         added = 0
         for track in tracks:
             self._tracks[track.id] = track
             self._order.append(track.id)
-            # odpověď nese playlist_entry_id — jediný spolehlivý způsob, jak
-            # pak u událostí poznat, o kterou skladbu jde
+            # the response carries playlist_entry_id — the only reliable way
+            # to later tell which track an event refers to
             res = await self._command(
                 "loadfile", WATCH_URL.format(track.id), "append-play"
             )
@@ -286,7 +288,7 @@ class MpvPlayer(Player):
         return added
 
     async def clear_queue(self) -> None:
-        await self._command("playlist-clear")  # smaže vše kromě právě hrající
+        await self._command("playlist-clear")  # removes all but the playing track
         self._order = [self._current_id] if self._current_id else []
         self._count = await self._get("playlist-count", 0) or 0
 

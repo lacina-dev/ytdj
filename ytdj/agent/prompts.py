@@ -1,8 +1,11 @@
-"""Instrukce pro Codex a vykreslení stavu přehrávače.
+"""Instructions for Codex and rendering of the player state.
 
-Codex nedostává žádné nástroje — vrací strukturované rozhodnutí a vyhledání
-i přehrávání si obstará aplikace sama (důvod je v codex.py). Role tedy musí
-popsat kontrakt, ne postup s nástroji.
+Codex gets no tools — it returns a structured decision, and the app handles
+search and playback itself (the reason is in codex.py). The role therefore
+has to describe the contract, not a tool workflow.
+
+The prompt itself is deliberately in Czech: the DJ persona talks to the user
+in Czech, so do not translate the ROLE text or the state labels below.
 """
 
 from __future__ import annotations
@@ -62,10 +65,11 @@ def render_state(
     history: list[str],
     taste: str,
 ) -> str:
-    """Stav přehrávače, který se přibalí ke každému požadavku.
+    """Player state attached to every request.
 
-    Session se sice resumuje, ale stav se posílá znovu vždy — je levnější než
-    spoléhat na to, že si model pamatuje, co mezitím dohrálo.
+    The session is resumed, but the state is still sent every time — that is
+    cheaper than relying on the model to remember what finished playing in
+    the meantime.
     """
     lines = ["Aktuální stav přehrávače:", ""]
     lines.append(f"Hraje: {now_playing or '(nic)'}")

@@ -22,6 +22,8 @@ Winding it down into a gentle mix of acoustic ballads and dreamy atmosphere.
 > The DJ persona currently replies in Czech (see
 > [Limitations](#limitations)); the examples above are translated.
 
+![ytdj web UI — now playing, queue, mood and seed pools](docs/screenshot.png)
+
 ## Features
 
 - **Natural-language DJ** — "something upbeat", "calmer, I'm going to sleep",
@@ -122,12 +124,16 @@ handled **without the model**, instantly:
 
 | command | effect |
 |---|---|
-| `next` / `n` | skip |
-| `pause` / `resume` | pause / resume |
+| `next` / `skip` / `n` | skip |
+| `pause` / `p` | pause |
+| `resume` / `play` | resume |
 | `stop` | stop and clear the queue |
-| `louder` / `quieter` / `volume 70` | volume |
-| `?` | now playing / status |
-| `quit` | exit |
+| `+` / `-` / `volume 70` | volume up / down / set |
+| `status` / `?` | now playing |
+| `help` / `h` | command list |
+| `quit` / `exit` | exit |
+
+Czech variants (`další`, `pauza`, `hlasitěji`, …) work too — see `ui/repl.py`.
 
 Everything else is a full Codex request (16–21 s).
 

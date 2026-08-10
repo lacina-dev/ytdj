@@ -1,4 +1,4 @@
-"""Konfigurace a cesty (XDG). Tajemství se nikdy nedostanou do repa."""
+"""Configuration and paths (XDG). Secrets never make it into the repo."""
 
 from __future__ import annotations
 
@@ -21,27 +21,27 @@ TASTE_FILE = DATA_DIR / "taste.md"
 MPV_SOCKET = RUNTIME_DIR / "mpv.sock"
 
 DEFAULTS: dict = {
-    # "" = nechat výchozí model Codexu; jinak např. "gpt-5.4-mini"
+    # "" = keep Codex's default model; otherwise e.g. "gpt-5.4-mini"
     "codex_model": "",
-    # webové ovládání; 0 = vybrat volný port
+    # web control; 0 = pick a free port
     "web_enabled": True,
     "web_host": "127.0.0.1",
     "web_port": 8765,
     "language": "cs",
     "location": "CZ",
-    # fronta
-    "queue_target": 5,  # kolik skladeb držet napřed
-    "queue_low": 3,  # pod tímhle doplnit
-    "pool_low": 10,  # pod tímhle dotáhnout rádio
-    "radio_limit": 50,  # kolik tracků chtít z jednoho seedu
-    # filtry
+    # queue
+    "queue_target": 5,  # how many tracks to keep queued ahead
+    "queue_low": 3,  # refill below this
+    "pool_low": 10,  # fetch more radio below this
+    "radio_limit": 50,  # how many tracks to request from one seed
+    # filters
     "min_duration": 60,
     "max_duration": 600,
-    "repeat_days": 30,  # nehrát to samé N dní
-    "artist_window": 10,  # max 2 tracky od interpreta na N skladeb
+    "repeat_days": 30,  # don't replay the same thing for N days
+    "artist_window": 10,  # max 2 tracks per artist within N songs
     # yt-dlp / mpv
     "ytdl_format": "774/141/251/140/bestaudio",
-    "cookies_browser": "",  # "" = autodetekce, "none" = bez cookies
+    "cookies_browser": "",  # "" = autodetect, "none" = no cookies
     "js_runtimes": "node",
     "remote_components": "ejs:github",
     "mpv_extra_args": [],
@@ -49,9 +49,9 @@ DEFAULTS: dict = {
 
 
 def _detect_node_bin() -> str | None:
-    """mpv spouští yt-dlp jako podproces — node musí být v PATH."""
+    """mpv runs yt-dlp as a subprocess — node has to be on PATH."""
     if shutil.which("node"):
-        return None  # už tam je
+        return None  # already there
     nvm = Path.home() / ".nvm/versions/node"
     if nvm.is_dir():
         versions = sorted(nvm.iterdir(), reverse=True)
@@ -62,7 +62,7 @@ def _detect_node_bin() -> str | None:
 
 
 def _chrome_profiles_with_youtube_login() -> list[str]:
-    """Vrátí Chrome profily, které mají v cookies přihlášení k YouTube."""
+    """Returns Chrome profiles whose cookies contain a YouTube login."""
     base = Path.home() / ".config/google-chrome"
     if not base.is_dir():
         return []
@@ -83,17 +83,18 @@ def _chrome_profiles_with_youtube_login() -> list[str]:
             continue
         if auth_names & {r[0] for r in rows}:
             found.append(db.parent.name)
-    # Default jako první, pak Profile N vzestupně
+    # Default first, then Profile N in ascending order
     found.sort(key=lambda p: (p != "Default", p))
     return found
 
 
 def detect_cookies_browser() -> str:
-    """Autodetekce specifikace pro yt-dlp --cookies-from-browser.
+    """Autodetects the spec for yt-dlp --cookies-from-browser.
 
-    Vrací např. 'chrome:Profile 2', nebo '' když nic přihlášeného není.
-    Preferuje profil s Premium — to ale poznáme až za běhu, takže bereme
-    poslední přihlášený profil (Premium účet bývá ten přidaný později).
+    Returns e.g. 'chrome:Profile 2', or '' when no profile is logged in.
+    Prefers the profile with Premium — but we only find that out at runtime,
+    so we take the last logged-in profile (the Premium account tends to be
+    the one added later).
     """
     profiles = _chrome_profiles_with_youtube_login()
     if profiles:
@@ -150,7 +151,7 @@ class Config:
         RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
 
     def child_env(self) -> dict[str, str]:
-        """Prostředí pro mpv — doplní node do PATH, pokud chybí."""
+        """Environment for mpv — adds node to PATH if it is missing."""
         env = dict(os.environ)
         if self.node_bin:
             env["PATH"] = f"{self.node_bin}:{env.get('PATH', '')}"
@@ -158,10 +159,10 @@ class Config:
 
 
 def load_secrets() -> None:
-    """Načte ~/.config/ytdj/env do os.environ (formát KEY=value).
+    """Loads ~/.config/ytdj/env into os.environ (KEY=value format).
 
-    Pro Codex to není potřeba — přihlášení si drží sám v ~/.codex/auth.json.
-    Soubor zůstává jako místo pro případné budoucí proměnné.
+    Codex doesn't need this — it keeps its own login in ~/.codex/auth.json.
+    The file remains as a place for possible future variables.
     """
     if not ENV_FILE.exists():
         return
@@ -173,15 +174,16 @@ def load_secrets() -> None:
         os.environ.setdefault(key.strip(), value.strip().strip("'\""))
 
 
-# Klíče, které existovaly, dokud mozek běžel přes Anthropic API.
+# Keys that existed while the brain ran through the Anthropic API.
 _OBSOLETE_KEYS = ("model", "effort")
 
 
 def write_default_config() -> Path:
-    """Vytvoří config.toml s aktuálně detekovanými hodnotami, pokud chybí.
+    """Creates config.toml with currently detected values if it is missing.
 
-    Když v něm najde klíče z dřívější verze, odloží ho stranou a napíše nový —
-    jinak by uživatel koukal na nastavení, které už nic neovlivňuje.
+    If it finds keys from an earlier version in it, it sets the file aside and
+    writes a new one — otherwise the user would be looking at settings that no
+    longer affect anything.
     """
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     if CONFIG_FILE.exists():

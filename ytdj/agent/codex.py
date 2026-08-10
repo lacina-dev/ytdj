@@ -1,19 +1,20 @@
-"""DJ poháněný Codexem přes předplatné (ne přes API klíč).
+"""DJ powered by Codex via a subscription (not via an API key).
 
-ChatGPT/Codex předplatné se nedá volat jako běžné API — auth jsou OAuth tokeny
-v ~/.codex/auth.json, takže jedinou cestou je CLI a jeho neinteraktivní režim
-`codex exec`.
+A ChatGPT/Codex subscription cannot be called like a regular API — auth is
+OAuth tokens in ~/.codex/auth.json, so the only way in is the CLI and its
+non-interactive mode `codex exec`.
 
-Nástroje mu NEDÁVÁME. Původní pokus vystavit je jako MCP server na localhostu
-sice fungoval, ale v headless režimu Codex každé volání nástroje zruší
-("user cancelled MCP tool call") a jediné, co tu bránu otevře, je
-`--dangerously-bypass-approvals-and-sandbox` — což zároveň sundá sandbox kolem
-shellu. Vzhledem k tomu, že se Codexovi do kontextu vracejí názvy skladeb
-z YouTube (tedy cizí vstup), vyměnit sandbox za pohodlí nedává smysl.
+We do NOT give it tools. The original attempt to expose them as an MCP server
+on localhost did work, but in headless mode Codex cancels every tool call
+("user cancelled MCP tool call") and the only thing that opens that gate is
+`--dangerously-bypass-approvals-and-sandbox` — which also removes the sandbox
+around the shell. Given that YouTube track titles (i.e. third-party input)
+flow back into Codex's context, trading the sandbox for convenience makes no
+sense.
 
-Místo toho z něj přes `--output-schema` dostaneme strukturované JSON rozhodnutí
-— které skladby použít jako seedy — a vyhledání i rádio si obstaráme sami.
-Vedlejší efekt: jeden průchod místo sedmi, tedy výrazně rychleji.
+Instead we get a structured JSON decision out of it via `--output-schema`
+— which tracks to use as seeds — and do the search and radio ourselves.
+Side effect: one pass instead of seven, so it is significantly faster.
 """
 
 from __future__ import annotations
@@ -34,8 +35,8 @@ from .prompts import ROLE, render_state
 
 log = logging.getLogger(__name__)
 
-# Schéma odpovědi. Strukturované výstupy vyžadují, aby byly všechny
-# vlastnosti v `required` — nepoužité se posílají prázdné.
+# Response schema. Structured outputs require every property to be listed
+# in `required` — unused ones are sent empty.
 DECISION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -104,18 +105,19 @@ class CodexDJ:
         self.thread_id: str | None = None
         self.codex = shutil.which("codex") or str(Path.home() / ".local/bin/codex")
 
-        # Codex je primárně kódovací agent. Pustit ho v adresáři projektu by
-        # znamenalo, že se začne hrabat ve zdrojácích; dostane prázdný adresář.
-        # Musí být STÁLÝ: Codex si ke každému pracovnímu adresáři zapíše
-        # `[projects."..."] trust_level` do ~/.codex/config.toml, takže nový
-        # dočasný adresář na každý běh by uživateli config donekonečna nafukoval.
+        # Codex is primarily a coding agent. Running it in the project
+        # directory would mean it starts digging through the sources; it gets
+        # an empty directory instead. It must be PERSISTENT: Codex writes a
+        # `[projects."..."] trust_level` entry to ~/.codex/config.toml for
+        # every working directory, so a fresh temp directory on each run would
+        # bloat the user's config indefinitely.
         self._dir = DATA_DIR / "codex-workdir"
         self._dir.mkdir(parents=True, exist_ok=True)
         self._schema = self._dir / "schema.json"
         self._schema.write_text(json.dumps(DECISION_SCHEMA))
         self._out = self._dir / "decision.json"
 
-    # ---- volání Codexu ----
+    # ---- calling Codex ----
 
     async def _build_prompt(self, user_input: str) -> str:
         st = await self.player.status()
@@ -134,13 +136,14 @@ class CodexDJ:
     def _args(self, resume: bool) -> list[str]:
         args = [self.codex, "exec"]
         if resume and self.thread_id:
-            # `resume` nebere -C ani -s; obojí si dědí z původní session,
-            # takže je nutné je vynechat, ne jen ignorovat návratový kód
+            # `resume` accepts neither -C nor -s; both are inherited from the
+            # original session, so they must be omitted, not just have their
+            # exit code ignored
             args += ["resume", self.thread_id]
         else:
             args += [
                 "-C", str(self._dir),
-                "-s", "read-only",  # sandbox zůstává; Codex nic spouštět nepotřebuje
+                "-s", "read-only",  # the sandbox stays; Codex has nothing to run
             ]
         args += [
             "--json",
@@ -186,7 +189,7 @@ class CodexDJ:
                 raise CodexUnavailable(f"Codex není přihlášen: {err[:200]}")
             raise RuntimeError(err[:300] or f"codex skončil s kódem {proc.returncode}")
 
-        # -o je spolehlivější než poslední zpráva ze streamu
+        # -o is more reliable than the last message from the stream
         if self._out.exists():
             raw = self._out.read_text() or raw
         if not raw.strip():
@@ -202,10 +205,10 @@ class CodexDJ:
             reply=data.get("reply", ""),
         )
 
-    # ---- provedení rozhodnutí ----
+    # ---- executing the decision ----
 
     async def _resolve_seeds(self, seeds: list[dict]) -> list[Track]:
-        """Codex jmenuje skladby, videoId si dohledáme sami."""
+        """Codex names the tracks; we look up the videoId ourselves."""
         out: list[Track] = []
         for seed in seeds[:5]:
             artist = (seed.get("artist") or "").strip()
@@ -238,8 +241,9 @@ class CodexDJ:
             fresh = await self.pools.next_tracks(self.cfg.queue_target)
             await self.player.enqueue(fresh)
             await self.player.toggle_pause(False)
-            # clear_queue nechává právě hrající skladbu doznít. Když ale uživatel
-            # mění náladu, chce slyšet jinou hudbu hned, ne až za tři minuty.
+            # clear_queue lets the currently playing track finish. But when the
+            # user changes the mood, they want to hear different music right
+            # away, not in three minutes.
             if was_playing:
                 await self.player.skip()
         elif d.action == "skip":
@@ -256,7 +260,7 @@ class CodexDJ:
 
         return d.reply or "Hotovo."
 
-    # ---- veřejné API ----
+    # ---- public API ----
 
     async def turn(self, user_input: str) -> str:
         prompt = await self._build_prompt(user_input)
@@ -271,7 +275,7 @@ class CodexDJ:
             except Exception as exc:
                 log.warning("codex exec selhal (resume=%s): %s", resume, exc)
                 if resume:
-                    self.thread_id = None  # session se ztratila, zkus nanovo
+                    self.thread_id = None  # session was lost, retry from scratch
                     continue
                 return f"(Codex selhal: {exc}) — hudba hraje dál"
             log.info("rozhodnutí: %s, seedů=%d", decision.action, len(decision.seeds))

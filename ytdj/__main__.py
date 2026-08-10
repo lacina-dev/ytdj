@@ -1,10 +1,10 @@
-"""Vstupní bod: poskládá komponenty a rozjede tři úlohy v jedné smyčce.
+"""Entry point: wires the components together and runs three tasks in one loop.
 
-  repl    čte povely od uživatele
-  filler  hlídá hloubku fronty a dolévá z poolů
-  mpv     posílá události (start / dohráno / přeskočeno)
+  repl    reads commands from the user
+  filler  watches queue depth and tops it up from the pools
+  mpv     sends events (start / finished / skipped)
 
-Jedna asyncio smyčka, žádné zámky, žádné předávání mezi vlákny.
+One asyncio loop, no locks, no cross-thread handoffs.
 """
 
 from __future__ import annotations
@@ -51,19 +51,20 @@ class App:
         self.player = MpvPlayer(cfg)
         self.pools = RadioPools(self.catalog, self.store, cfg)
         self.dj = CodexDJ(cfg, self.catalog, self.pools, self.player, self.store)
-        # REPL se staví až v run(); prompt_toolkit si při konstrukci sáhne na
-        # stdin, což bez terminálu (režim --web-only) vypíše zbytečné varování
+        # The REPL is built only in run(); prompt_toolkit touches stdin during
+        # construction, which prints a pointless warning when there is no
+        # terminal (--web-only mode)
         self.repl: Repl | None = None
         self.web = WebServer(self, cfg.web_host, cfg.web_port) if cfg.web_enabled else None
         self._reseeding = False
         self._last_reseed = 0.0
         self._skips_at_last_check = 0
-        # Jediný zámek pro všechny tahy Codexu — REPL, web i automatické
-        # přeseedování. Dva souběžné tahy by si navzájem přepsaly pooly.
+        # A single lock for all Codex turns — REPL, web, and automatic
+        # reseeding. Two concurrent turns would overwrite each other's pools.
         self._codex_lock = asyncio.Lock()
 
     def _set_status(self, text: str) -> None:
-        """Spodní lišta REPL — v režimu jen s webem žádná není."""
+        """Bottom REPL status bar — there is none in web-only mode."""
         if self.repl:
             self.repl.set_status(text)
 
@@ -72,11 +73,11 @@ class App:
         return self._codex_lock.locked()
 
     async def ask(self, text: str) -> str:
-        """Jediný vstup k Codexu. Používá ho REPL i web."""
+        """The single entry point to Codex. Used by both the REPL and the web."""
         async with self._codex_lock:
             return await self.dj.turn(text)
 
-    # ---- události přehrávače ----
+    # ---- player events ----
 
     async def _on_event(self, ev: PlayerEvent) -> None:
         if ev.kind == "start" and ev.track:
@@ -94,12 +95,12 @@ class App:
             self.store.record_outcome(ev.track.id, "skipped")
 
         elif ev.kind == "error" and ev.track:
-            # nedostupné (věkově omezené, regionálně blokované, jen pro Premium)
+            # unavailable (age-restricted, region-blocked, Premium-only)
             self.store.record_outcome(ev.track.id, "error")
             self.store.blacklist(ev.track.id, "nepřehratelné")
             log.info("přeskakuji nepřehratelné: %s", ev.track.label())
 
-    # ---- plnič fronty ----
+    # ---- queue filler ----
 
     async def _filler(self) -> None:
         while True:
@@ -118,7 +119,7 @@ class App:
                 if tracks:
                     await self.player.enqueue(tracks)
                 elif self.pools.pools:
-                    # pooly došly a rádio už nic nového nedává
+                    # the pools ran dry and the radio yields nothing new anymore
                     await self._reseed(
                         "Pooly se vyčerpaly. Zůstaň u stejné nálady, ale postav "
                         "ji na jiných interpretech než dosud."
@@ -129,7 +130,7 @@ class App:
                 log.exception("plnič fronty selhal, pokračuji")
 
     async def _check_skip_burst(self) -> None:
-        """Tři skipy za deset minut znamenají, že se nálada netrefila."""
+        """Three skips within ten minutes mean the mood missed the mark."""
         skips = self.store.skip_burst(minutes=10)
         if skips < 3 or skips == self._skips_at_last_check:
             return
@@ -147,9 +148,9 @@ class App:
         )
 
     async def _reseed(self, instruction: str) -> None:
-        """Vyžádaný zásah modelu bez toho, aby o něj uživatel žádal.
+        """A model intervention triggered without the user asking for it.
 
-        Drží se odstup, ať se z toho nestane smyčka, která pálí tokeny.
+        Keeps its distance so this doesn't turn into a loop that burns tokens.
         """
         now = asyncio.get_running_loop().time()
         if self._reseeding or self.codex_busy or now - self._last_reseed < 120:
@@ -168,8 +169,9 @@ class App:
     # ---- LLM ----
 
     async def _on_prompt(self, text: str) -> str:
-        # Codex startuje vlastní session, takže tah trvá jednotky až desítky
-        # sekund. Přehrávání to nebrzdí — běží ve stejné smyčce, ale nezávisle.
+        # Codex spins up its own session, so a turn takes seconds to tens of
+        # seconds. Playback isn't held up — it runs in the same loop, but
+        # independently.
         self._set_status("⏳ ptám se Codexu…")
         if self.codex_busy:
             return "Codex právě pracuje (asi z webu) — zkus to za chvíli."
@@ -181,7 +183,7 @@ class App:
                 f"▶ {st.current.label()}" if st.current else "nic nehraje"
             )
 
-    # ---- běh ----
+    # ---- run ----
 
     async def run(self, repl: bool = True) -> None:
         self.player.on_event(self._on_event)
@@ -210,7 +212,7 @@ class App:
                 await self.repl.run()
             elif self.web:
                 print("Běžím jen s webem. Ukončit: Ctrl+C\n")
-                await asyncio.Event().wait()  # dokud nepřijde signál
+                await asyncio.Event().wait()  # until a signal arrives
             else:
                 print("Bez REPL i bez webu není co obsluhovat — končím.")
         except asyncio.CancelledError:
@@ -218,7 +220,8 @@ class App:
         finally:
             filler.cancel()
             await asyncio.gather(filler, return_exceptions=True)
-            # web musí dolů dřív než store — SSE by jinak sáhlo na zavřenou SQLite
+            # the web must go down before the store — SSE would otherwise touch
+            # a closed SQLite
             if self.web:
                 await self.web.stop()
             await self.player.stop()

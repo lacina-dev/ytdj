@@ -1,12 +1,12 @@
-"""Lokální webové rozhraní nad běžící instancí ytdj.
+"""Local web interface on top of a running ytdj instance.
 
-Běží ve stejné asyncio smyčce jako přehrávač — uvicorn se pouští jako úloha,
-ne přes `uvicorn.run()`. Nic tady nesmí smyčku blokovat: všechno, co sahá na
-mpv nebo na Codex, se awaituje, a dotaz na Codex (desítky sekund) drží jen
-vlastní příznak `busy`, ne zámek nad celým serverem.
+Runs in the same asyncio loop as the player — uvicorn is started as a task,
+not via `uvicorn.run()`. Nothing here may block the loop: everything that
+touches mpv or Codex is awaited, and a Codex query (tens of seconds) holds
+only its own `busy` flag, not a lock over the whole server.
 
-Poslouchá výhradně na 127.0.0.1 a nemá autentizaci — je to ovládání vlastního
-přehrávače, ne veřejná služba.
+Listens exclusively on 127.0.0.1 and has no authentication — it controls
+your own player, it is not a public service.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ import uvicorn
 
 from .. import config as cfgmod
 
-if TYPE_CHECKING:  # kruhový import — App si taháme jen pro typy
+if TYPE_CHECKING:  # circular import — we pull in App for typing only
     from ..__main__ import App
 
 log = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ log = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
 INDEX_FILE = STATIC_DIR / "index.html"
 
-# jak často se přepočítává stav pro SSE a jak dlouho smí být ticho
+# how often the state is recomputed for SSE and how long silence may last
 TICK = 1.0
 KEEPALIVE = 15.0
 
@@ -59,10 +59,11 @@ zobrazit. Samotné API na <code>/api/…</code> ale funguje.</p>
 
 
 # --------------------------------------------------------------------------
-# popis nastavení pro webové rozhraní
+# settings description for the web interface
 # --------------------------------------------------------------------------
 
-# Klíče, které se projeví až po restartu (mpv i ytmusicapi se staví při startu).
+# Keys that take effect only after a restart (both mpv and ytmusicapi are
+# constructed at startup).
 RESTART_KEYS = frozenset(
     {
         "language",
@@ -75,7 +76,7 @@ RESTART_KEYS = frozenset(
     }
 )
 
-# Klíče, které umíme přepnout za běhu — nastaví se rovnou i na app.cfg.
+# Keys we can switch at runtime — they are also set directly on app.cfg.
 LIVE_KEYS = (
     "codex_model",
     "queue_target",
@@ -98,7 +99,7 @@ CODEX_MODELS = [
     "gpt-5.6-terra",
 ]
 
-# key -> (label, nápověda, rozsah pro čísla)
+# key -> (label, help text, range for numbers)
 FIELD_META: dict[str, tuple[str, str, tuple[int, int] | None]] = {
     "codex_model": (
         "Model Codexu",
@@ -184,11 +185,11 @@ FIELD_META: dict[str, tuple[str, str, tuple[int, int] | None]] = {
 
 
 def _cookie_choices(current: str) -> list[str]:
-    """Volby pro cookies_browser — prázdno, none a nalezené Chrome profily."""
+    """Choices for cookies_browser — empty, none and detected Chrome profiles."""
     choices = ["", "none"]
     try:
         profiles = cfgmod._chrome_profiles_with_youtube_login()
-    except Exception:  # detekce sahá na SQLite v profilu, nesmí shodit request
+    except Exception:  # detection touches SQLite in the profile, must not kill the request
         log.debug("detekce Chrome profilů selhala", exc_info=True)
         profiles = []
     choices += [f"chrome:{p}" for p in profiles]
@@ -209,7 +210,7 @@ def _field_type(key: str) -> str:
 
 
 # --------------------------------------------------------------------------
-# zápis do config.toml se zachováním komentářů
+# writing config.toml while preserving comments
 # --------------------------------------------------------------------------
 
 
@@ -225,7 +226,7 @@ def _toml_scalar(value: Any) -> str:
 
 
 def _key_of(line: str) -> str | None:
-    """Vrátí klíč, pokud řádek je přiřazení na nejvyšší úrovni."""
+    """Returns the key if the line is a top-level assignment."""
     stripped = line.lstrip()
     if not stripped or stripped.startswith("#") or stripped.startswith("["):
         return None
@@ -237,7 +238,7 @@ def _key_of(line: str) -> str | None:
 
 
 def _open_brackets(text: str) -> int:
-    """Kolik hranatých závorek zůstalo neuzavřených (řetězce se ignorují)."""
+    """How many square brackets remain unclosed (strings are ignored)."""
     depth = 0
     in_str: str | None = None
     escaped = False
@@ -262,10 +263,10 @@ def _open_brackets(text: str) -> int:
 
 
 def rewrite_config_text(text: str, changes: dict[str, Any]) -> str:
-    """Přepíše jen řádky dotčených klíčů; komentáře a pořadí zůstanou.
+    """Rewrites only the lines of affected keys; comments and order stay.
 
-    Nové klíče se přidají na konec kořenové části (tedy před první `[tabulku]`,
-    aby nespadly dovnitř cizí sekce).
+    New keys are appended at the end of the root section (i.e. before the
+    first `[table]`, so they don't fall inside someone else's section).
     """
     lines = text.splitlines()
     out: list[str] = []
@@ -278,7 +279,7 @@ def rewrite_config_text(text: str, changes: dict[str, Any]) -> str:
             first_table = len(out)
         key = _key_of(line) if first_table < 0 else None
         if key in pending:
-            # víceřádkové pole spolknout celé, ať po přepsání nezůstane ocas
+            # swallow a multi-line array whole so no tail is left after rewriting
             chunk = line
             while _open_brackets(chunk) > 0 and i + 1 < len(lines):
                 i += 1
@@ -300,11 +301,11 @@ def rewrite_config_text(text: str, changes: dict[str, Any]) -> str:
 
 
 class BadValue(ValueError):
-    """Neplatná hodnota v POST /api/config — vrací se jako 400."""
+    """Invalid value in POST /api/config — returned as a 400."""
 
 
 def coerce_value(key: str, raw: Any) -> Any:
-    """Ověří a převede jednu hodnotu podle typu v DEFAULTS."""
+    """Validates and converts one value according to its type in DEFAULTS."""
     if key not in cfgmod.DEFAULTS:
         raise BadValue(f"Neznámý klíč nastavení: {key}")
     default = cfgmod.DEFAULTS[key]
@@ -369,7 +370,7 @@ def _json_error(message: str, status: int) -> JSONResponse:
 
 
 def _safe(handler: Callable) -> Callable:
-    """Pád jednoho requestu nesmí položit server ani smyčku."""
+    """A single request crashing must not take down the server or the loop."""
 
     async def wrapper(request: Request) -> Response:
         try:
@@ -385,14 +386,14 @@ def _safe(handler: Callable) -> Callable:
 
 
 class WebServer:
-    """Webové ovládání nad instancí `ytdj.__main__.App`."""
+    """Web control interface on top of a `ytdj.__main__.App` instance."""
 
     def __init__(self, app: "App", host: str = "127.0.0.1", port: int = 8765) -> None:
         self.app = app
         self.host = host
         self.port = port
 
-        # true po dobu tahu Codexu — /api/status i SSE to hlásí dál
+        # true for the duration of a Codex turn — /api/status and SSE pass it on
         self.busy = False
 
         self._server: uvicorn.Server | None = None
@@ -401,7 +402,7 @@ class WebServer:
         self._closing = asyncio.Event()
         self._starlette = self._build()
 
-    # ---- routy ----
+    # ---- routes ----
 
     def _build(self) -> Starlette:
         routes = [
@@ -417,7 +418,7 @@ class WebServer:
                 StaticFiles(directory=str(STATIC_DIR), check_dir=False),
                 name="static",
             ),
-            # frontend si může sáhnout i na /app.js — bereme to ze stejné složky
+            # the frontend may also reach for /app.js — we serve it from the same folder
             Route("/{path:path}", _safe(self._static_fallback), methods=["GET"]),
         ]
         return Starlette(routes=routes)
@@ -438,13 +439,14 @@ class WebServer:
             return _json_error("Nenalezeno.", 404)
         return FileResponse(target)
 
-    # ---- stav ----
+    # ---- state ----
 
     async def _snapshot(self) -> dict:
-        """Kompletní stav pro /api/status i pro SSE.
+        """Complete state for both /api/status and SSE.
 
-        Nesmí vyhodit výjimku kvůli tomu, že mpv zrovna neodpovídá — raději
-        vrátí prázdný stav, aby se frontend neodpojoval.
+        Must not raise an exception just because mpv happens to be
+        unresponsive — it rather returns an empty state so the frontend
+        doesn't disconnect.
         """
         current = None
         queue: list[dict] = []
@@ -524,7 +526,7 @@ class WebServer:
                         last_sent = now
                         yield ": ping\n\n"
 
-                    # probudí se dřív, když se server vypíná
+                    # wakes up earlier when the server is shutting down
                     with contextlib.suppress(asyncio.TimeoutError):
                         await asyncio.wait_for(self._closing.wait(), timeout=TICK)
             except asyncio.CancelledError:
@@ -542,7 +544,7 @@ class WebServer:
             },
         )
 
-    # ---- povely ----
+    # ---- commands ----
 
     async def _body(self, request: Request) -> dict:
         raw = await request.body()
@@ -566,10 +568,11 @@ class WebServer:
         if not text:
             return _json_error("Chybí text požadavku.", 400)
 
-        # Serializace bez zámku: mezi testem a nastavením není žádný await,
-        # takže v jedné smyčce se dva tahy nikdy nepotkají.
-        # `app.ask()` navíc sdílí zámek s REPL a s automatickým přeseedováním,
-        # aby si dva souběžné tahy nepřepsaly pooly.
+        # Lock-free serialization: there is no await between the test and the
+        # assignment, so two turns can never meet within a single loop.
+        # On top of that, `app.ask()` shares a lock with the REPL and with
+        # automatic reseeding, so two concurrent turns can't overwrite each
+        # other's pools.
         if self.busy or getattr(self.app, "codex_busy", False):
             return _json_error("Codex právě pracuje", 409)
         self.busy = True
@@ -617,7 +620,7 @@ class WebServer:
 
         return JSONResponse({"ok": True})
 
-    # ---- nastavení ----
+    # ---- settings ----
 
     async def _config_get(self, request: Request) -> Response:
         cfg = self.app.cfg
@@ -627,7 +630,7 @@ class WebServer:
         for key in cfgmod.DEFAULTS:
             value = getattr(cfg, key, cfgmod.DEFAULTS[key])
             if isinstance(value, list):
-                # do formuláře jde jeden řádek argumentů, ne pole
+                # the form gets a single line of arguments, not an array
                 value = shlex.join(str(v) for v in value)
             values[key] = value
 
@@ -678,21 +681,21 @@ class WebServer:
 
         return JSONResponse({"ok": True, "restart_required": restart})
 
-    # ---- životní cyklus ----
+    # ---- lifecycle ----
 
     @property
     def url(self) -> str:
         return f"http://{self.host}:{self.port}"
 
     async def start(self) -> None:
-        """Nastartuje uvicorn jako úlohu a vrátí se, až port poslouchá."""
+        """Starts uvicorn as a task and returns once the port is listening."""
         if self._task is not None:
             return
         self._closing.clear()
 
-        # Socket si otevřeme sami: chyba při bindu (obsazený port) tak přijde
-        # jako obyčejná OSError sem, a ne jako SystemExit uvnitř úlohy, kde by
-        # shodila celou smyčku i s přehrávačem.
+        # We open the socket ourselves: a bind error (port already in use)
+        # then arrives here as a plain OSError, not as a SystemExit inside the
+        # task, where it would take down the whole loop, player included.
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
@@ -701,7 +704,7 @@ class WebServer:
             sock.close()
             raise
         sock.set_inheritable(True)
-        self.port = sock.getsockname()[1]  # kvůli portu 0 (test / náhodný port)
+        self.port = sock.getsockname()[1]  # because of port 0 (test / random port)
         self._sock = sock
 
         config = uvicorn.Config(
@@ -714,7 +717,7 @@ class WebServer:
             timeout_graceful_shutdown=3,
         )
         server = uvicorn.Server(config)
-        # bez tohohle si uvicorn zabere SIGINT a Ctrl+C by nešlo do REPLu
+        # without this, uvicorn grabs SIGINT and Ctrl+C wouldn't reach the REPL
         server.capture_signals = contextlib.nullcontext  # type: ignore[assignment]
         self._server = server
 
@@ -723,7 +726,7 @@ class WebServer:
         deadline = asyncio.get_running_loop().time() + 10
         while not server.started:
             if self._task.done():
-                self._task.result()  # propustí původní chybu
+                self._task.result()  # lets the original error through
                 raise RuntimeError("webový server se nespustil")
             if asyncio.get_running_loop().time() > deadline:
                 raise RuntimeError("webový server nenaběhl do 10 s")
@@ -732,7 +735,7 @@ class WebServer:
         log.info("webové rozhraní běží na %s", self.url)
 
     async def stop(self) -> None:
-        self._closing.set()  # SSE smyčky se ukončí samy
+        self._closing.set()  # SSE loops terminate on their own
         server, task = self._server, self._task
         self._server = self._task = None
 
@@ -757,11 +760,11 @@ class WebServer:
 
 
 def _write_config(changes: dict[str, Any]) -> None:
-    """Přepíše config.toml. Běží ve vlákně — sahá na disk."""
+    """Rewrites config.toml. Runs in a thread — touches the disk."""
     path = cfgmod.CONFIG_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
     text = path.read_text() if path.exists() else "# ytdj — konfigurace\n"
     new_text = rewrite_config_text(text, changes)
     tmp = path.with_suffix(".toml.tmp")
     tmp.write_text(new_text)
-    tmp.replace(path)  # atomicky, ať výpadek uprostřed zápisu config nezničí
+    tmp.replace(path)  # atomic, so a crash mid-write can't destroy the config

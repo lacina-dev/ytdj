@@ -50,7 +50,7 @@
 
   * { box-sizing: border-box; }
 
-  /* atribut hidden musí platit i na <svg> — v Chrome ho UA styl sám neskryje */
+  /* the hidden attribute must also apply to <svg> — Chrome's UA style doesn't hide it by itself */
   [hidden] { display: none !important; }
 
   html, body { height: 100%; }
@@ -87,7 +87,7 @@
     padding: 22px 20px 64px;
   }
 
-  /* ---------- hlavička ---------- */
+  /* ---------- header ---------- */
 
   header.top {
     display: flex;
@@ -147,7 +147,7 @@
   .icon-btn:hover { background: var(--surface-2); color: var(--text); }
   .icon-btn svg { width: 19px; height: 19px; }
 
-  /* ---------- rozvržení ---------- */
+  /* ---------- layout ---------- */
 
   .cols {
     display: grid;
@@ -161,7 +161,7 @@
 
   .stack { display: flex; flex-direction: column; gap: 30px; min-width: 0; }
 
-  /* ---------- co hraje ---------- */
+  /* ---------- now playing ---------- */
 
   .now { min-width: 0; }
 
@@ -215,7 +215,7 @@
   }
   .idle .track-title { color: var(--text-dim); font-weight: 500; }
 
-  /* ---------- pozice ---------- */
+  /* ---------- position ---------- */
 
   .progress { margin-top: 22px; }
   .track-bar {
@@ -242,7 +242,7 @@
     letter-spacing: .02em;
   }
 
-  /* ---------- ovládání ---------- */
+  /* ---------- controls ---------- */
 
   .controls {
     display: flex;
@@ -326,7 +326,7 @@
   input[type=range]:hover::-webkit-slider-thumb { background: var(--accent); }
   input[type=range]:hover::-moz-range-thumb { background: var(--accent); }
 
-  /* ---------- zadání pro DJe ---------- */
+  /* ---------- prompt for the DJ ---------- */
 
   .composer {
     border: 1px solid var(--line);
@@ -413,7 +413,7 @@
     color: var(--text-faint);
   }
 
-  /* ---------- kontext: nálada + seedy ---------- */
+  /* ---------- context: mood + seeds ---------- */
 
   .context { display: flex; flex-direction: column; gap: 12px; }
   .mood {
@@ -446,7 +446,7 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* ---------- panely (fronta, historie) ---------- */
+  /* ---------- panels (queue, history) ---------- */
 
   section.panel { min-width: 0; }
 
@@ -540,7 +540,7 @@
   .banner.show { display: flex; }
   .banner svg { width: 17px; height: 17px; flex: none; color: var(--err); }
 
-  /* ---------- nastavení ---------- */
+  /* ---------- settings ---------- */
 
   .backdrop {
     position: fixed;
@@ -691,7 +691,7 @@
 
   <div class="cols">
 
-    <!-- ======== levý sloupec ======== -->
+    <!-- ======== left column ======== -->
     <div class="stack">
 
       <section class="now idle" id="now" aria-label="Právě hraje">
@@ -758,7 +758,7 @@
 
     </div>
 
-    <!-- ======== pravý sloupec ======== -->
+    <!-- ======== right column ======== -->
     <div class="stack">
 
       <section class="panel" aria-label="Fronta">
@@ -803,7 +803,7 @@
   "use strict";
 
   /* ------------------------------------------------------------------ */
-  /* pomocné                                                             */
+  /* helpers                                                             */
   /* ------------------------------------------------------------------ */
 
   var $ = function (sel) { return document.querySelector(sel); };
@@ -828,8 +828,8 @@
     return (window.performance && performance.now) ? performance.now() : Date.now();
   }
 
-  // Pozor: `hidden` je vlastnost HTMLElement — na <svg> se přiřazením nic nestane.
-  // Přes atribut to funguje na obojím.
+  // Beware: `hidden` is an HTMLElement property — assigning it on <svg> does
+  // nothing. Going through the attribute works on both.
   function setHidden(node, on) {
     if (on) node.setAttribute("hidden", "");
     else node.removeAttribute("hidden");
@@ -842,7 +842,7 @@
       body: JSON.stringify(body)
     });
     var data = null;
-    try { data = await res.json(); } catch (e) { /* prázdná/nevalidní odpověď */ }
+    try { data = await res.json(); } catch (e) { /* empty/invalid response */ }
     if (!res.ok) {
       var msg = (data && (data.error || data.detail || data.message)) || ("HTTP " + res.status);
       var err = new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
@@ -853,23 +853,23 @@
   }
 
   /* ------------------------------------------------------------------ */
-  /* stav klienta                                                        */
+  /* client state                                                        */
   /* ------------------------------------------------------------------ */
 
   var S = {
     status: null,
     trackId: undefined,
-    posBase: 0,          // pozice v sekundách k okamžiku posBaseAt
+    posBase: 0,          // position in seconds as of the posBaseAt instant
     posBaseAt: nowMs(),
     duration: 0,
-    running: false,      // hraje a není pauza -> pozice běží
-    sending: false,      // čekáme na /api/prompt z tohoto prohlížeče
+    running: false,      // playing and not paused -> position is advancing
+    sending: false,      // waiting for /api/prompt from this browser
     sendStartedAt: 0,
     volDragging: false,
-    volHoldUntil: 0,     // po odeslání hlasitosti chvíli nepřepisovat posuvník
+    volHoldUntil: 0,     // after sending the volume, don't overwrite the slider for a while
     lastUpdate: 0,
     connected: false,
-    sig: {}              // podpisy, ať se seznamy nepřekreslují zbytečně
+    sig: {}              // signatures, so the lists don't re-render needlessly
   };
 
   var el = {
@@ -895,7 +895,7 @@
   };
 
   /* ------------------------------------------------------------------ */
-  /* spojení: SSE, při potížích návrat k dotazování                      */
+  /* connection: SSE, falling back to polling on trouble                 */
   /* ------------------------------------------------------------------ */
 
   var es = null, pollTimer = null, sseRetryTimer = null, sseFails = 0, polling = false;
@@ -942,8 +942,8 @@
     es.onerror = function () {
       sseFails++;
       setConnected(false);
-      // EventSource se zkouší připojit sám; po několika marných pokusech
-      // přejdeme na dotazování a SSE zkusíme znovu až za chvíli.
+      // EventSource retries the connection by itself; after a few futile
+      // attempts we switch to polling and retry SSE only after a while.
       if (sseFails >= 3) {
         closeSSE();
         startPolling();
@@ -982,7 +982,7 @@
     }
   }
 
-  // hlídač: když ~6 s nepřišel žádný stav, je něco špatně
+  // watchdog: if no state arrived for ~6 s, something is wrong
   setInterval(function () {
     if (S.lastUpdate && nowMs() - S.lastUpdate > 6000) {
       setConnected(false);
@@ -996,7 +996,7 @@
   });
 
   /* ------------------------------------------------------------------ */
-  /* vykreslení stavu                                                    */
+  /* rendering the state                                                 */
   /* ------------------------------------------------------------------ */
 
   function predictPos() {
@@ -1025,15 +1025,15 @@
       S.trackId = id;
       setBase(serverPos);
     } else {
-      // plynulé dorovnání: velký rozdíl skokem, malý jemným posunem,
-      // ať čas mezi aktualizacemi neposkakuje sem a tam
+      // smooth catch-up: a big difference with a jump, a small one with a
+      // gentle nudge, so the time doesn't hop back and forth between updates
       var predicted = predictPos();
       var diff = serverPos - predicted;
       if (Math.abs(diff) > 1.5) setBase(serverPos);
       else setBase(Math.max(predicted - 0.15, predicted + diff * 0.25));
     }
 
-    // --- co hraje ---
+    // --- now playing ---
     if (cur) {
       el.now.classList.remove("idle");
       el.title.textContent = cur.title || "Neznámá skladba";
@@ -1055,7 +1055,7 @@
     setHidden(el.progress, !(cur && dur > 0));
     el.total.textContent = dur > 0 ? fmtTime(dur) : "–:––";
 
-    // --- ovládání ---
+    // --- controls ---
     var showPause = S.running;
     setHidden(el.icoPlay, showPause);
     setHidden(el.icoPause, !showPause);
@@ -1064,7 +1064,7 @@
     el.btnNext.disabled = !cur && !(s.queue && s.queue.length);
     el.btnStop.disabled = !playing && !cur;
 
-    // --- hlasitost ---
+    // --- volume ---
     if (!S.volDragging && nowMs() > S.volHoldUntil && s.volume != null) {
       var v = Math.max(0, Math.min(100, Math.round(Number(s.volume))));
       if (!isNaN(v)) {
@@ -1073,13 +1073,13 @@
       }
     }
 
-    // --- zaneprázdněný DJ ---
+    // --- busy DJ ---
     setBusy(!!s.busy || S.sending);
 
-    // --- nálada a seedy ---
+    // --- mood and seeds ---
     renderContext(s);
 
-    // --- fronta a historie ---
+    // --- queue and history ---
     renderQueue(s.queue || []);
     renderHistory(s.history || []);
   }
@@ -1106,7 +1106,7 @@
   }
 
   // "A — B (49), C — D (12)" -> [{label:"A — B", count:"49"}, …]
-  // Dělí se až za závorkou s počtem, aby čárka ve jméně ("Earth, Wind & Fire") nevadila.
+  // Splits only after the parenthesized count, so a comma in a name ("Earth, Wind & Fire") doesn't matter.
   function parsePools(str) {
     if (!str) return [];
     var raw = str.split(/\)\s*,\s+/);
@@ -1151,7 +1151,7 @@
     if (sig === S.sig.history) return;
     S.sig.history = sig;
 
-    var items = h.slice(0, 12); // server posílá nejnovější první
+    var items = h.slice(0, 12); // the server sends newest first
     setHidden(el.historyEmpty, items.length > 0);
 
     el.history.innerHTML = items.map(function (t) {
@@ -1167,7 +1167,7 @@
     }).join("");
   }
 
-  /* plynulý ukazatel pozice — mezi aktualizacemi si dopočítáváme lokálně */
+  /* smooth position indicator — between updates we extrapolate locally */
   function tick() {
     var p = predictPos();
     var pct = S.duration > 0 ? Math.max(0, Math.min(100, (p / S.duration) * 100)) : 0;
@@ -1179,7 +1179,7 @@
   requestAnimationFrame(tick);
 
   /* ------------------------------------------------------------------ */
-  /* ovládání                                                            */
+  /* controls                                                            */
   /* ------------------------------------------------------------------ */
 
   async function control(action, value) {
@@ -1194,7 +1194,7 @@
 
   el.btnPlay.addEventListener("click", function () {
     var running = S.running;
-    // optimisticky přepnout ikonu, ať tlačítko reaguje hned
+    // optimistically flip the icon so the button responds immediately
     setBase(predictPos());
     S.running = !running;
     setHidden(el.icoPlay, S.running);
@@ -1205,7 +1205,7 @@
   el.btnNext.addEventListener("click", function () { control("next", null); });
   el.btnStop.addEventListener("click", function () { control("stop", null); });
 
-  // hlasitost: při tažení jen popisek, POST až při puštění
+  // volume: while dragging only the label updates, POST only on release
   el.vol.addEventListener("input", function () {
     S.volDragging = true;
     el.volOut.textContent = el.vol.value;
@@ -1221,7 +1221,7 @@
   el.vol.addEventListener("touchend", commitVolume);
   el.vol.addEventListener("blur", commitVolume);
 
-  // klávesové zkratky mimo textová pole
+  // keyboard shortcuts outside text fields
   document.addEventListener("keydown", function (ev) {
     if (ev.key === "Escape" && el.settings.classList.contains("show")) { closeSettings(); return; }
     var t = ev.target;
@@ -1234,14 +1234,14 @@
   });
 
   /* ------------------------------------------------------------------ */
-  /* zadání pro DJe                                                      */
+  /* prompt for the DJ                                                   */
   /* ------------------------------------------------------------------ */
 
   var busyTimer = null;
 
   function setBusy(busy) {
     el.composer.classList.toggle("busy", busy);
-    el.prompt.disabled = S.sending;   // cizí požadavek pole neblokuje, jen odeslání
+    el.prompt.disabled = S.sending;   // someone else's request doesn't block the field, only sending
     el.btnSend.disabled = busy || !el.prompt.value.trim();
     if (busy && !busyTimer) {
       busyTimer = setInterval(updateBusyText, 500);
@@ -1324,7 +1324,7 @@
   el.btnSend.addEventListener("click", send);
 
   /* ------------------------------------------------------------------ */
-  /* nastavení                                                           */
+  /* settings                                                            */
   /* ------------------------------------------------------------------ */
 
   var cfg = { values: {}, fields: [] };
@@ -1407,7 +1407,7 @@
 
     el.settingsBody.innerHTML = html;
 
-    // popisek u přepínačů ať odpovídá stavu
+    // keep the toggle label matching the state
     Array.prototype.forEach.call(el.settingsBody.querySelectorAll(".check input"), function (cb) {
       cb.addEventListener("change", function () {
         var span = cb.parentNode.querySelector("span");

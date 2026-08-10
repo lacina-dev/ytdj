@@ -1,0 +1,69 @@
+"""Rozhraní přehrávače.
+
+Agentní logika (ytmusicapi + Claude + rádio pooly) je na téhle vrstvě
+nezávislá — vyměnit mpv za pear-desktop / YTMDesktop znamená napsat jinou
+implementaci `Player`, nic víc.
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Awaitable, Callable
+
+from ..music.catalog import Track
+
+
+@dataclass(slots=True)
+class PlayerStatus:
+    playing: bool
+    paused: bool
+    current: Track | None
+    position: float  # sekundy
+    duration: float
+    queue: list[Track]
+    volume: int
+
+
+@dataclass(slots=True)
+class PlayerEvent:
+    kind: str  # "start" | "finished" | "skipped" | "error" | "idle"
+    track: Track | None = None
+    detail: str = ""
+
+
+EventHandler = Callable[[PlayerEvent], Awaitable[None]]
+
+
+class Player(ABC):
+    @abstractmethod
+    async def start(self) -> None: ...
+
+    @abstractmethod
+    async def stop(self) -> None: ...
+
+    @abstractmethod
+    async def enqueue(self, tracks: list[Track]) -> int: ...
+
+    @abstractmethod
+    async def clear_queue(self) -> None: ...
+
+    @abstractmethod
+    async def skip(self) -> None: ...
+
+    @abstractmethod
+    async def toggle_pause(self, paused: bool | None = None) -> None: ...
+
+    @abstractmethod
+    async def set_volume(self, volume: int) -> None: ...
+
+    @abstractmethod
+    async def status(self) -> PlayerStatus: ...
+
+    @abstractmethod
+    def on_event(self, handler: EventHandler) -> None: ...
+
+    @property
+    @abstractmethod
+    def queue_depth(self) -> int:
+        """Kolik skladeb čeká za tou právě hrající."""

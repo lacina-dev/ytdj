@@ -1,0 +1,39 @@
+[project]
+name = "ytdj"
+version = "0.1.0"
+description = "AI DJ for YouTube Music — an LLM picks seed tracks, YouTube radios fill the queue, mpv plays"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Robert Lacina" }]
+requires-python = ">=3.12"
+keywords = ["youtube-music", "mpv", "yt-dlp", "llm", "dj", "music-player", "codex"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Sound/Audio :: Players",
+]
+dependencies = [
+    "ytmusicapi>=1.12.1",
+    "prompt_toolkit>=3.0",
+    "starlette>=0.37",       # localhost web remote
+    "uvicorn>=0.30",
+]
+# The brain runs through the `codex` CLI on a ChatGPT subscription — no API
+# key, and therefore no SDK, is used.
+
+[project.urls]
+Homepage = "https://github.com/lacina-dev/ytdj"
+Issues = "https://github.com/lacina-dev/ytdj/issues"
+
+[project.scripts]
+ytdj = "ytdj.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ytdj"]

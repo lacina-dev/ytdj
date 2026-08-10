@@ -174,7 +174,7 @@ def load_secrets() -> None:
         os.environ.setdefault(key.strip(), value.strip().strip("'\""))
 
 
-# Keys that existed while the brain ran through the Anthropic API.
+# Keys from an earlier version that called an LLM API directly.
 _OBSOLETE_KEYS = ("model", "effort")
 
 

@@ -269,7 +269,15 @@ of the same state, not a separate service.
 - Smooth position indicator (interpolated locally, no per-second jumps)
 - Live updates over SSE (`/api/events`) with automatic fallback to polling
 - Settings form is generated from the config schema; options that need a
-  restart (formats, cookies, language) are marked
+  restart (formats, cookies, language, the web bind itself) are marked
+- The settings drawer opens with what the app is actually attached to: the
+  Google account behind the cookies, which profile they come from, whether the
+  catalog is anonymous, whether the PO token provider is up — and what the
+  brain is (`codex CLI`, model, subscription). The now-playing line carries the
+  real bitrate, so `opus 251 kb/s (Premium)` is visible at a glance
+- **Restart** button, for the settings that only take effect at startup. It
+  ends the process and lets systemd start it again, so it only appears when
+  running as a service (detected via `INVOCATION_ID`); ~5 s of silence
 - Responsive — usable from a phone if you set `web_host = "0.0.0.0"`
 
 Disable with `web_enabled = false` in `config.toml`.
@@ -283,6 +291,8 @@ The API, if you want to script it:
 | `POST /api/prompt` | `{"text":"..."}` → `{"reply":"..."}`; 409 while Codex is busy |
 | `POST /api/control` | `{"action":"play\|pause\|next\|stop\|volume","value":int}` |
 | `GET/POST /api/config` | read and write `config.toml` |
+| `GET /api/about` | what it's connected to and what the brain is |
+| `POST /api/restart` | ends the process so systemd restarts it; 409 outside systemd |
 
 > **No authentication** — that's why it binds to `127.0.0.1`. Before exposing
 > it to your network, understand that anyone on it can then change the

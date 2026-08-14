@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import shlex
 import socket
 import time
@@ -116,6 +117,22 @@ FIELD_META: dict[str, tuple[str, str, tuple[int, int] | None]] = {
         "Model Codexu",
         "Prázdné = nechat výchozí model Codexu; mini varianty odpovídají rychleji.",
         None,
+    ),
+    "web_enabled": (
+        "Webové ovládání",
+        "Vypnutím zmizí i tahle stránka — pak zbude jen terminál.",
+        None,
+    ),
+    "web_host": (
+        "Adresa webu",
+        "127.0.0.1 = jen z tohohle stroje. 0.0.0.0 zpřístupní ovládání celé síti, "
+        "a to bez jakéhokoli hesla.",
+        None,
+    ),
+    "web_port": (
+        "Port webu",
+        "0 = vybrat volný port při startu.",
+        (0, 65535),
     ),
     "language": (
         "Jazyk katalogu",
@@ -372,6 +389,8 @@ class WebServer:
             Route("/api/control", _safe(self._control), methods=["POST"]),
             Route("/api/config", _safe(self._config_get), methods=["GET"]),
             Route("/api/config", _safe(self._config_post), methods=["POST"]),
+            Route("/api/about", _safe(self._about), methods=["GET"]),
+            Route("/api/restart", _safe(self._restart), methods=["POST"]),
             Mount(
                 "/static",
                 StaticFiles(directory=str(STATIC_DIR), check_dir=False),
@@ -580,6 +599,54 @@ class WebServer:
             log.exception("povel %r selhal", action)
             return _json_error(f"Povel se nepodařilo provést: {exc}", 500)
 
+        return JSONResponse({"ok": True})
+
+    # ---- co je pod kapotou ----
+
+    async def _about(self, request: Request) -> Response:
+        cfg = self.app.cfg
+
+        account = ""
+        if cfg.cookies_browser.startswith("chrome:"):
+            account = await asyncio.to_thread(
+                cfgmod.chrome_profile_account, cfg.cookies_browser.split(":", 1)[1]
+            )
+        if cfg.cookies_file:
+            account = "ze souboru s cookies"
+
+        try:
+            quality = (await self.app.player.status()).quality
+        except Exception:
+            quality = ""
+
+        return JSONResponse(
+            {
+                "youtube": {
+                    "cookies": cfg.cookie_source(),
+                    "account": account,
+                    # ytmusicapi je druhé, nezávislé přihlášení: katalog a rádia
+                    "library": "přihlášen" if self.app.catalog.authenticated else "anonymně",
+                    "client": cfg.player_client or "výběr yt-dlp",
+                    "pot": await _pot_status(),
+                    "quality": quality,
+                },
+                "backend": {
+                    "engine": "codex CLI",
+                    "model": cfg.codex_model or "výchozí",
+                    "auth": "předplatné (bez API klíče)",
+                },
+                # restart obstará systemd; bez něj bychom se jen ukončili
+                "restartable": bool(os.environ.get("INVOCATION_ID")),
+            }
+        )
+
+    async def _restart(self, request: Request) -> Response:
+        if not os.environ.get("INVOCATION_ID"):
+            return _json_error(
+                "Restart funguje jen pod systemd — spusť to jako službu ytdj.", 409
+            )
+        log.info("restart na vyžádání z webu")
+        self.app.restart_requested.set()
         return JSONResponse({"ok": True})
 
     # ---- settings ----

@@ -589,6 +589,35 @@
     -webkit-overflow-scrolling: touch;
   }
 
+  /* na co je to připojené a čím to myslí — nad samotným nastavením */
+  .about {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface);
+    font-size: .82rem;
+  }
+  .about h3 {
+    margin: 0 0 8px;
+    font-size: .72rem;
+    font-weight: 600;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+  .about h3 + .row { margin-top: 0; }
+  .about .grp + h3 { margin-top: 14px; }
+  .about .row {
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 2px 0;
+  }
+  .about .k { color: var(--text-dim); flex: none; }
+  .about .v { text-align: right; word-break: break-word; }
+  .about .v.good { color: var(--ok); }
+  .about .v.bad { color: var(--warn); }
+
   .field { margin-bottom: 20px; }
   .field > label.top {
     display: flex;
@@ -788,12 +817,14 @@
       </svg>
     </button>
   </div>
+  <div class="about" id="about"></div>
   <div class="body" id="settingsBody">
     <p class="empty">Načítám…</p>
   </div>
   <div class="foot">
     <button class="btn primary" id="btnSave">Uložit</button>
     <button class="btn" id="btnReload">Načíst znovu</button>
+    <button class="btn" id="btnRestart" title="Ukončí aplikaci; službu nastartuje systemd znovu">Restartovat</button>
     <p class="msg" id="settingsMsg"></p>
   </div>
 </aside>
@@ -890,7 +921,8 @@
     history: $("#history"), historyEmpty: $("#historyEmpty"),
     settings: $("#settings"), backdrop: $("#backdrop"),
     settingsBody: $("#settingsBody"), settingsMsg: $("#settingsMsg"),
-    btnSave: $("#btnSave"), btnReload: $("#btnReload"),
+    about: $("#about"),
+    btnSave: $("#btnSave"), btnReload: $("#btnReload"), btnRestart: $("#btnRestart"),
     openSettings: $("#openSettings"), closeSettings: $("#closeSettings")
   };
 
@@ -1041,7 +1073,9 @@
       el.artist.textContent = cur.artist || "";
       setHidden(el.album, !cur.album);
       el.album.textContent = cur.album || "";
-      el.nowLabel.textContent = paused ? "pozastaveno" : (playing ? "hraje" : "připraveno");
+      var state = paused ? "pozastaveno" : (playing ? "hraje" : "připraveno");
+      // kvalita se změří až z pár vteřin proudu, do té doby tam nic není
+      el.nowLabel.textContent = s.quality ? state + " · " + s.quality : state;
       el.bars.classList.toggle("still", !S.running);
     } else {
       el.now.classList.add("idle");
@@ -1346,14 +1380,73 @@
   el.closeSettings.addEventListener("click", closeSettings);
   el.backdrop.addEventListener("click", closeSettings);
   el.btnReload.addEventListener("click", loadConfig);
+  el.btnRestart.addEventListener("click", restartApp);
 
   function setMsg(text, kind) {
     el.settingsMsg.textContent = text || "";
     el.settingsMsg.className = "msg" + (kind ? " " + kind : "");
   }
 
+  /* ---- na co je to připojené a čím to myslí ---- */
+
+  function aboutRow(key, value, tone) {
+    return '<div class="row"><span class="k">' + esc(key) + '</span>' +
+           '<span class="v' + (tone ? " " + tone : "") + '">' + esc(value) + "</span></div>";
+  }
+
+  async function loadAbout() {
+    try {
+      var res = await fetch("/api/about", { cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      var d = await res.json();
+      var yt = d.youtube || {}, be = d.backend || {};
+
+      var html = "<h3>YouTube</h3><div class=grp>";
+      if (yt.account) html += aboutRow("účet", yt.account);
+      html += aboutRow("cookies", yt.cookies || "—");
+      html += aboutRow("katalog", yt.library || "—");
+      html += aboutRow("klient", yt.client || "—");
+      html += aboutRow("PO token", yt.pot === "běží" ? "provider běží" : "provider neběží",
+                       yt.pot === "běží" ? "good" : "bad");
+      if (yt.quality) {
+        html += aboutRow("teď hraje", yt.quality,
+                         yt.quality.indexOf("Premium") >= 0 ? "good" : null);
+      }
+      html += "</div><h3>Mozek</h3><div class=grp>";
+      html += aboutRow("backend", be.engine || "—");
+      html += aboutRow("model", be.model || "—");
+      html += aboutRow("přihlášení", be.auth || "—");
+      html += "</div>";
+
+      el.about.innerHTML = html;
+      el.btnRestart.hidden = !d.restartable;
+    } catch (e) {
+      el.about.innerHTML = '<p class="help">Informace o připojení se nepodařilo načíst.</p>';
+      el.btnRestart.hidden = true;
+    }
+  }
+
+  async function restartApp() {
+    if (!confirm("Restartovat ytdj? Přehrávání se na pár vteřin přeruší.")) return;
+    setMsg("Restartuji…");
+    try {
+      var res = await fetch("/api/restart", { method: "POST" });
+      if (!res.ok) {
+        var err = await res.json().catch(function () { return {}; });
+        setMsg(err.error || ("Restart selhal (HTTP " + res.status + ")"), "err");
+        return;
+      }
+    } catch (e) {
+      /* spojení spadne tím, jak se aplikace ukončuje — to je v pořádku */
+    }
+    setMsg("Restartuji, za chvíli se to vrátí…", "ok");
+    // systemd startuje po pěti vteřinách; zkoušet dřív nemá cenu
+    setTimeout(function () { location.reload(); }, 9000);
+  }
+
   async function loadConfig() {
     setMsg("");
+    loadAbout();
     el.settingsBody.innerHTML = '<p class="empty">Načítám…</p>';
     try {
       var res = await fetch("/api/config", { cache: "no-store" });

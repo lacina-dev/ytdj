@@ -106,6 +106,27 @@ def _chrome_profiles_with_youtube_login() -> list[str]:
     return found
 
 
+def chrome_profile_account(profile: str) -> str:
+    """Účet Google přihlášený v daném profilu Chrome.
+
+    Na otázku "na co jsem to vlastně připojený" je odpověď účet, ne jméno
+    profilu — "Profile 2" nikomu nic neřekne.
+    """
+    prefs = Path.home() / ".config/google-chrome" / profile / "Preferences"
+    if not prefs.is_file():
+        return ""
+    try:
+        import json
+
+        data = json.loads(prefs.read_text())
+    except (OSError, ValueError):
+        return ""
+    for account in data.get("account_info") or []:
+        if email := account.get("email"):
+            return str(email)
+    return ""
+
+
 def detect_cookies_browser() -> str:
     """Autodetects the spec for yt-dlp --cookies-from-browser.
 

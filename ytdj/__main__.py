@@ -18,7 +18,8 @@ import sys
 from contextlib import suppress
 
 from .agent import CodexDJ
-from .config import Config, load_secrets, write_default_config
+from .config import Config, load_secrets, write_default_config, write_env_template
+from .diagnose import check_audio
 from .music import Catalog, RadioPools
 from .player import MpvPlayer
 from .player.base import PlayerEvent
@@ -297,11 +298,18 @@ async def _amain() -> int:
         format="%(levelname)s %(name)s: %(message)s",
     )
     write_default_config()
+    write_env_template()
     load_secrets()
     cfg = Config.load()
     cfg.ensure_dirs()
+    if fix := cfg.fix_cookie_profile():
+        print(f"POZOR: {fix}")
     if no_web:
         cfg.web_enabled = False
+
+    if "--check-audio" in argv:
+        print(await check_audio(cfg))
+        return 0
 
     if problems := preflight(cfg):
         print("Než to půjde spustit:\n")

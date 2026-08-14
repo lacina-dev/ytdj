@@ -176,6 +176,18 @@ FIELD_META: dict[str, tuple[str, str, tuple[int, int] | None]] = {
         "Profil, ze kterého yt-dlp bere přihlášení; bez cookies hraje jen 128 kb/s.",
         None,
     ),
+    "cookies_file": (
+        "Cookies ze souboru",
+        "Cesta k vyexportovanému cookies.txt; má přednost před prohlížečem a "
+        "jako jediné funguje bez přihlášené plochy.",
+        None,
+    ),
+    "player_client": (
+        "Klient yt-dlp",
+        "Prázdné = výběr nechat na yt-dlp (anonymní klienti, bez Premium). "
+        "Klient s přihlášením, např. web_music, potřebuje PO token.",
+        None,
+    ),
     "js_runtimes": (
         "JS runtime pro yt-dlp",
         "Bez funkčního runtime (node) neprojde řešení signatur a Premium formáty zmizí.",
@@ -393,6 +405,7 @@ class WebServer:
         playing = paused = False
         position = duration = 0.0
         volume = 100
+        quality = ""
         try:
             st = await self.app.player.status()
             playing = bool(st.playing)
@@ -402,6 +415,7 @@ class WebServer:
             duration = float(st.duration or 0.0)
             queue = [_track_dict(t) for t in st.queue]
             volume = int(st.volume)
+            quality = st.quality
         except Exception:
             log.debug("stav přehrávače se nepodařilo přečíst", exc_info=True)
 
@@ -433,6 +447,7 @@ class WebServer:
             "queue": queue,
             "pools": pools,
             "volume": volume,
+            "quality": quality,
             "mood": mood,
             "busy": self.busy,
             "history": history,

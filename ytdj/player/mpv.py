@@ -293,6 +293,7 @@ class MpvPlayer(Player):
                         self._entries[entry_id] = vid
                 if kind == "start":
                     self._current_id = vid
+                    self._measure_quality()
                 elif vid is None:
                     vid = self._current_id
                 track = self._tracks.get(vid or "")
@@ -303,6 +304,32 @@ class MpvPlayer(Player):
                     await handler(ev)
                 except Exception:
                     log.exception("handler události selhal")
+
+    def _measure_quality(self) -> None:
+        """Zjistí, co reálně hraje.
+
+        Jestli prošel Premium formát, se nedá poznat z nastavení — yt-dlp
+        nabídne, co dostane, a mpv vezme nejlepší z toho. Bez tohohle je pád
+        na 128 kb/s němý.
+        """
+        self._quality = ""
+        if self._quality_task and not self._quality_task.done():
+            self._quality_task.cancel()
+        self._quality_task = asyncio.create_task(self._read_quality())
+
+    async def _read_quality(self) -> None:
+        # mpv hlásí klouzavý průměr, ne jmenovitou hodnotu formátu: po třech
+        # vteřinách ukazuje 60 kb/s i u proudu, který má 250. Ustálí se kolem
+        # desáté vteřiny — dřív se měřit nevyplatí.
+        await asyncio.sleep(QUALITY_DELAY)
+        codec = await self._get("audio-codec-name")
+        bitrate = await self._get("audio-bitrate")
+        if not bitrate:
+            return
+        kbps = int(bitrate) // 1000
+        premium = " (Premium)" if kbps >= PREMIUM_KBPS else ""
+        self._quality = f"{codec or 'audio'} {kbps} kb/s{premium}"
+        log.info("kvalita: %s", self._quality)
 
     async def _current_video_id(self) -> str | None:
         path = await self._get("path")
@@ -412,6 +439,7 @@ class MpvPlayer(Player):
             duration=float(await self._get("duration", 0) or 0),
             queue=upcoming,
             volume=self._volume,
+            quality=self._quality,
         )
 
     @property

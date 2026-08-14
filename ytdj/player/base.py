@@ -23,6 +23,9 @@ class PlayerStatus:
     duration: float
     queue: list[Track]
     volume: int
+    # Co doopravdy teče z reproduktoru, např. "opus 251 kb/s". Prázdné, dokud
+    # se skladba nerozjede — bitrate se pozná až z pár vteřin proudu.
+    quality: str = ""
 
 
 @dataclass(slots=True)

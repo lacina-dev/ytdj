@@ -363,6 +363,35 @@ class MpvPlayer(Player):
                 self._count = count
         return added
 
+    async def enqueue_next(self, tracks: list[Track]) -> int:
+        """Zařadí hned za právě hrající skladbu.
+
+        mpv 0.37 ještě nezná `loadfile ... insert-next`, takže se přidá na
+        konec a přesune. Přesouvá se odzadu dopředu, kde `playlist-move src dst`
+        položku uloží přesně na dst — a protože zbytek bloku leží až za src,
+        jeho indexy se tím neposunou.
+        """
+        added = await self.enqueue(tracks)
+        if not added:
+            return 0
+
+        count = await self._get("playlist-count", self._count) or 0
+        pos = await self._get("playlist-pos", self._pos) or 0
+        self._count = count
+        self._pos = pos
+        start = count - added
+        for i in range(added):
+            src, dst = start + i, pos + 1 + i
+            if src != dst:
+                await self._command("playlist-move", src, dst, wait=False)
+
+        # stejná úprava v našem pořadí, ať status() ukazuje reálnou frontu
+        block = self._order[-added:]
+        del self._order[-added:]
+        at = min(pos + 1, len(self._order))
+        self._order[at:at] = block
+        return added
+
     async def clear_queue(self) -> None:
         await self._command("playlist-clear")  # removes all but the playing track
         self._order = [self._current_id] if self._current_id else []

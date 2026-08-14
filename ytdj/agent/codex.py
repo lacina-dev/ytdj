@@ -44,6 +44,7 @@ DECISION_SCHEMA = {
             "type": "string",
             "enum": [
                 "start_radio",
+                "play_next",
                 "skip",
                 "stop",
                 "pause",
@@ -64,12 +65,36 @@ DECISION_SCHEMA = {
                 "additionalProperties": False,
             },
         },
+        # Tracks the listener named out loud. Unlike seeds they get played,
+        # and the "don't repeat for N days" rule does not apply to them.
+        "requested": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "artist": {"type": "string"},
+                    # prázdné = "cokoli od tohohle interpreta"; lepší než
+                    # vymyšlený název, který trefí cizí kapelu
+                    "title": {"type": "string"},
+                },
+                "required": ["artist", "title"],
+                "additionalProperties": False,
+            },
+        },
         "mood": {"type": "string"},
         "volume": {"type": "integer"},
         "remember": {"type": "string"},
         "reply": {"type": "string"},
     },
-    "required": ["action", "seeds", "mood", "volume", "remember", "reply"],
+    "required": [
+        "action",
+        "seeds",
+        "requested",
+        "mood",
+        "volume",
+        "remember",
+        "reply",
+    ],
     "additionalProperties": False,
 }
 
@@ -82,6 +107,7 @@ class CodexUnavailable(RuntimeError):
 class Decision:
     action: str = "nothing"
     seeds: list[dict] = field(default_factory=list)
+    requested: list[dict] = field(default_factory=list)
     mood: str = ""
     volume: int = 0
     remember: str = ""
@@ -130,6 +156,7 @@ class CodexDJ:
                 for p in self.store.recent_history(25)
             ],
             taste=self.store.taste(),
+            requested=[r.label() for r in self.store.top_requested(10)],
         )
         return f"{ROLE}\n\n{state}\n\nUživatel říká: {user_input}"
 
@@ -199,6 +226,7 @@ class CodexDJ:
         return Decision(
             action=data.get("action", "nothing"),
             seeds=data.get("seeds") or [],
+            requested=data.get("requested") or [],
             mood=data.get("mood", ""),
             volume=int(data.get("volume") or 0),
             remember=data.get("remember", ""),
@@ -207,7 +235,7 @@ class CodexDJ:
 
     # ---- executing the decision ----
 
-    async def _resolve_seeds(self, seeds: list[dict]) -> list[Track]:
+    async def _resolve_tracks(self, seeds: list[dict]) -> list[Track]:
         """Codex names the tracks; we look up the videoId ourselves."""
         out: list[Track] = []
         for seed in seeds[:5]:
@@ -217,27 +245,49 @@ class CodexDJ:
             if not query:
                 continue
             try:
-                hits = await self.catalog.search(query, limit=1)
+                hit = await self.catalog.search_song(artist, title)
             except Exception as exc:
                 log.warning("hledání seedu %r selhalo: %s", query, exc)
                 continue
-            if hits:
-                out.append(hits[0])
+            if hit:
+                out.append(hit)
             else:
                 log.info("seed %r se nenašel, přeskakuji", query)
         return out
+
+    async def _requested_tracks(self, d: Decision) -> list[Track]:
+        """Co si posluchač vyžádal jménem — dohledat a zapsat do evidence.
+
+        Zapisuje se i to, co se pak nezahraje: chtěl to slyšet tak jako tak a
+        z těch počtů se staví, co si lidi žádají nejčastěji.
+        """
+        tracks = await self._resolve_tracks(d.requested)
+        for t in tracks:
+            self.store.record_request(t.id, t.title, t.artist)
+            # ať to pooly nenabídnou znovu za dvě skladby
+            self.pools.session_seen.add(t.id)
+        self.pools.remember_tracks(tracks)
+        return tracks
 
     async def _apply(self, d: Decision) -> str:
         if d.remember.strip():
             self.store.remember(d.remember)
 
         if d.action == "start_radio":
-            seeds = await self._resolve_seeds(d.seeds)
+            seeds = await self._resolve_tracks(d.seeds)
             if not seeds:
                 return "Ani jednu z navržených skladeb se nepodařilo najít."
+            requested = await self._requested_tracks(d)
             was_playing = (await self.player.status()).current is not None
-            await self.pools.set_seeds(seeds, mood=d.mood)
+            # Když si posluchač řekl o konkrétního interpreta, smí rádio sáhnout
+            # i po delších kusech — u některých interpretů nic kratšího není.
+            await self.pools.set_seeds(
+                seeds, mood=d.mood, allow_long=bool(d.requested)
+            )
             await self.player.clear_queue()
+            # vyžádané jdou první a bez ohledu na to, kdy hrály naposledy —
+            # do next_tracks, kde by je smetl filtr opakování, se vůbec nedostanou
+            await self.player.enqueue(requested)
             fresh = await self.pools.next_tracks(self.cfg.queue_target)
             await self.player.enqueue(fresh)
             await self.player.toggle_pause(False)
@@ -246,6 +296,12 @@ class CodexDJ:
             # away, not in three minutes.
             if was_playing:
                 await self.player.skip()
+        elif d.action == "play_next":
+            requested = await self._requested_tracks(d)
+            if not requested:
+                return "Nenašel jsem, o co jsi si řekl."
+            await self.player.enqueue_next(requested)
+            await self.player.toggle_pause(False)
         elif d.action == "skip":
             await self.player.skip()
         elif d.action == "stop":

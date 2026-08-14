@@ -6,4 +6,6 @@ __pycache__/
 browser.json
 oauth.json
 .env
+env
+cookies.txt
 state.db

@@ -117,6 +117,56 @@ ytdj --web-only   web UI only (for running in the background)
 ytdj --no-web     terminal only
 ```
 
+## Running as a service (headless jukebox)
+
+```bash
+./packaging/install-service.sh
+```
+
+Installs a **systemd user service** that runs `--web-only`, and switches
+lingering on for your account so the service comes up at boot — no login
+needed. That is the point: a box in the corner that plays, controlled from a
+phone over the web UI.
+
+Two units are installed: `ytdj` itself and `ytdj-pot`, the PO token provider
+that Premium formats depend on (see [Premium audio quality](#premium-audio-quality)).
+
+```bash
+systemctl --user status ytdj      # state
+journalctl --user -u ytdj -f      # log
+systemctl --user restart ytdj     # after changing settings marked "restart"
+systemctl --user disable --now ytdj
+```
+
+A user service, not a system one, because everything it needs lives in the home
+directory: the config, the Codex login, and the audio session. It restarts on
+its own — including when mpv dies, which the app notices and ends over, since a
+web UI that controls nothing is worse than a restart.
+
+Two things behave differently without a logged-in desktop:
+
+- **Cookies.** Chrome's cookie jar is encrypted with a key from the keyring,
+  and the keyring is unlocked by logging in. Without it yt-dlp silently drops
+  to 128 kb/s. Export the cookies once on a machine where you *are* logged in,
+  and point `cookies_file` at the result:
+
+  ```bash
+  yt-dlp --cookies-from-browser chrome --cookies ~/.config/ytdj/cookies.txt \
+         --skip-download https://music.youtube.com/
+  ```
+
+  `cookies_file` takes precedence over `cookies_browser`. The app warns at
+  startup when it is about to run into this.
+
+- **Audio.** mpv plays through the PipeWire of the same user manager. It is
+  socket-activated, so it starts without a session — but the account has to be
+  lingering (the installer arranges that) and no other user may be holding the
+  device.
+
+To control it from a phone, set `web_host = "0.0.0.0"`. Read the security note
+under [Web UI & API](#web-ui--api) first: there is no authentication, so anyone
+on that network can play music, change settings, and spend your subscription.
+
 ## Usage
 
 Anything you type goes to the DJ — except deterministic commands, which are
@@ -277,6 +327,10 @@ ytdj/
   web/
     server.py  starlette + uvicorn, REST + SSE, config writes
     static/index.html  the whole frontend in one file, no build step
+packaging/
+  ytdj.service        systemd user unit (@INSTALL_DIR@ filled in on install)
+  ytdj-pot.service    PO token provider, without which Premium stays out of reach
+  install-service.sh  installs both units, switches on lingering, starts them
 ```
 
 The terminal and the web UI share one lock for Codex calls (`App.ask`), so

@@ -1,0 +1,21 @@
+[Unit]
+Description=bgutil PO token provider pro ytdj (Premium formáty yt-dlp)
+Documentation=https://github.com/Brainicism/bgutil-ytdlp-pot-provider
+# Bez tokenu YouTube nepustí formáty ke klientům, které nesou přihlášení —
+# a bez přihlášení není Premium. Server drží session a tokeny cachuje, takže
+# se u každé skladby nespouští node znovu.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=@PROVIDER@/server
+ExecStart=@NODE@ @PROVIDER@/server/build/main.js
+# Poslouchá jen na localhostu; plugin yt-dlp se tam hlásí ve výchozím stavu sám.
+Environment=PORT=4416
+Environment=TOKEN_TTL=6
+Restart=always
+RestartSec=15
+SyslogIdentifier=ytdj-pot
+
+[Install]
+WantedBy=default.target

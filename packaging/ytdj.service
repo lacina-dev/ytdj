@@ -1,0 +1,31 @@
+[Unit]
+Description=ytdj — AI DJ pro YouTube Music (jen web, bez terminálu)
+Documentation=https://github.com/lacina-dev/ytdj
+# Zvuk jede pod stejným uživatelským manažerem; bez něj nemá mpv kam hrát.
+Wants=pipewire.service wireplumber.service
+After=pipewire.service wireplumber.service
+# Žádný limit na počet startů: na stroji, kam se nikdo nehlásí, je pořád lepší
+# zkoušet to dál než po pár pádech zůstat natrvalo mrtvý. Pokusy jsou levné a
+# důvod je vidět v journalu.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=@INSTALL_DIR@
+ExecStart=@INSTALL_DIR@/run.sh --web-only
+# codex a yt-dlp bývají v ~/.local/bin, který uživatelský manažer nemusí mít
+# v PATH (na rozdíl od přihlášeného shellu).
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=YTDJ_LOG=info
+Restart=always
+# Krátce, protože přes tohle jde i restart z webového rozhraní — čekat na něj
+# čtvrt minuty by bylo znát.
+RestartSec=5
+# SIGTERM dostane jen hlavní proces; mpv si aplikace ukončí sama, aby stihla
+# zavřít databázi. Co po timeoutu zbyde ve skupině, dorazí SIGKILL.
+KillMode=mixed
+TimeoutStopSec=15
+SyslogIdentifier=ytdj
+
+[Install]
+WantedBy=default.target

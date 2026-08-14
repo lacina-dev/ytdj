@@ -13,7 +13,9 @@ import asyncio
 import logging
 import os
 import shutil
+import signal
 import sys
+from contextlib import suppress
 
 from .agent import CodexDJ
 from .config import Config, load_secrets, write_default_config
@@ -43,6 +45,25 @@ def preflight(cfg: Config) -> list[str]:
     return problems
 
 
+def cookie_warning(cfg: Config) -> str | None:
+    """Cookies z prohlížeče bez přihlášené plochy nefungují.
+
+    Chrome má jar šifrovaný klíčem z klíčenky, a ta se odemyká až přihlášením.
+    Jako služba na headless stroji tak yt-dlp cookies tiše zahodí a hraje
+    128 kb/s — což se pozná až podle bitrate. Proto to řekneme rovnou.
+    """
+    if cfg.cookies_file or not cfg.cookies_browser or cfg.cookies_browser == "none":
+        return None
+    runtime = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    if os.path.exists(os.path.join(runtime, "keyring", "control")):
+        return None
+    return (
+        "cookies z prohlížeče se nepodaří rozšifrovat — v téhle session neběží "
+        "klíčenka.\n       Vyexportuj je do souboru a nastav cookies_file "
+        "(viz README), jinak hraje 128 kb/s."
+    )
+
+
 class App:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
@@ -62,6 +83,10 @@ class App:
         # A single lock for all Codex turns — REPL, web, and automatic
         # reseeding. Two concurrent turns would overwrite each other's pools.
         self._codex_lock = asyncio.Lock()
+        # Restart z webu: ukončíme se, systemd nás nastartuje znovu. Je to
+        # jediná cesta, jak z běžícího procesu načíst nastavení, která platí
+        # až od startu (formáty, cookies, jazyk).
+        self.restart_requested = asyncio.Event()
 
     def _set_status(self, text: str) -> None:
         """Bottom REPL status bar — there is none in web-only mode."""
@@ -185,7 +210,7 @@ class App:
 
     # ---- run ----
 
-    async def run(self, repl: bool = True) -> None:
+    async def run(self, repl: bool = True) -> int:
         self.player.on_event(self._on_event)
         await self.player.start()
 
@@ -197,14 +222,16 @@ class App:
                 self.web = None
 
         auth = "přihlášen" if self.catalog.authenticated else "anonymně"
-        cookies = self.cfg.cookies_browser or "bez cookies"
         model = self.cfg.codex_model or "výchozí"
         print(
-            f"ytdj — ytmusicapi {auth}, yt-dlp cookies: {cookies}\n"
+            f"ytdj — ytmusicapi {auth}, yt-dlp cookies: {self.cfg.cookie_source()}\n"
             f"       mozek: codex ({model}), předplatné"
         )
         print(f"       web:  {self.web.url}\n" if self.web else "       web:  vypnutý\n")
+        if warning := cookie_warning(self.cfg):
+            print(f"POZOR: {warning}\n")
 
+        rc = 0
         filler = asyncio.create_task(self._filler())
         try:
             if repl:
@@ -212,9 +239,26 @@ class App:
                 await self.repl.run()
             elif self.web:
                 print("Běžím jen s webem. Ukončit: Ctrl+C\n")
-                await asyncio.Event().wait()  # until a signal arrives
+                # Konec přijde buď smrtí mpv, nebo restartem z webu; signál
+                # dorazí jako zrušení úlohy.
+                waits = [
+                    asyncio.create_task(self.player.died.wait()),
+                    asyncio.create_task(self.restart_requested.wait()),
+                ]
+                try:
+                    await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    for task in waits:
+                        task.cancel()
+                if self.restart_requested.is_set():
+                    print("Restart na vyžádání z webu.")
+                    self.player.expect_exit()
+                else:
+                    print("mpv skončil — ukončuji, ať se to nastartuje načisto.")
+                rc = 1
             else:
                 print("Bez REPL i bez webu není co obsluhovat — končím.")
+                rc = 1
         except asyncio.CancelledError:
             pass
         finally:
@@ -226,15 +270,17 @@ class App:
                 await self.web.stop()
             await self.player.stop()
             self.store.close()
+        return rc
 
 
 USAGE = """\
 ytdj — AI DJ pro YouTube Music
 
-  ytdj              terminál + web
-  ytdj --web-only   jen web (bez terminálového REPL, pro běh na pozadí)
-  ytdj --no-web     jen terminál
-  ytdj --help       tahle nápověda
+  ytdj                terminál + web
+  ytdj --web-only     jen web (bez terminálového REPL, pro běh na pozadí)
+  ytdj --no-web       jen terminál
+  ytdj --check-audio  co se nabízí za kvalitu a co jí případně chybí
+  ytdj --help         tahle nápověda
 """
 
 
@@ -264,8 +310,19 @@ async def _amain() -> int:
         return 1
 
     app = App(cfg)
-    await app.run(repl=not web_only)
-    return 0
+    task = asyncio.create_task(app.run(repl=not web_only))
+    # systemd stops a service with SIGTERM; without this the default handler
+    # would kill us mid-flight and leave mpv and the SQLite behind unclosed.
+    def terminate() -> None:
+        app.player.expect_exit()
+        task.cancel()
+
+    with suppress(NotImplementedError):
+        asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, terminate)
+    try:
+        return await task
+    except asyncio.CancelledError:
+        return 0
 
 
 def main() -> None:

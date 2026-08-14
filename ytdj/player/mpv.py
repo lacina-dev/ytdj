@@ -46,6 +46,12 @@ class MpvPlayer(Player):
         self.reader: asyncio.StreamReader | None = None
         self.writer: asyncio.StreamWriter | None = None
 
+        # Set when mpv goes away on its own. Nobody can be served after that —
+        # under systemd it is better to end the process and let it be started
+        # again than to keep a web UI that controls nothing.
+        self.died = asyncio.Event()
+        self._stopping = False
+
         self._req_id = 0
         self._pending: dict[int, asyncio.Future] = {}
         self._handlers: list[EventHandler] = []
@@ -146,7 +152,18 @@ class MpvPlayer(Player):
         for i, prop in enumerate(("playlist-pos", "playlist-count", "pause", "volume"), 1):
             await self._send({"command": ["observe_property", i, prop]}, wait=False)
 
+    def expect_exit(self) -> None:
+        """Od téhle chvíle je odchod mpv náš záměr, ne porucha.
+
+        Volá se při signálu k ukončení: systemd posílá SIGTERM celé skupině,
+        takže mpv může zmizet dřív, než se dostaneme ke stop() — a bez tohohle
+        by se to do logu zapsalo jako chyba.
+        """
+        self._stopping = True
+
     async def stop(self) -> None:
+        self._stopping = True
+        self._flush_volume()
         for task in (self._reader_task, self._dispatch_task):
             if task:
                 task.cancel()
@@ -202,7 +219,10 @@ class MpvPlayer(Player):
         assert self.reader
         while True:
             raw = await self.reader.readline()
-            if not raw:
+            if not raw:  # socket EOF — mpv is gone
+                if not self._stopping:
+                    log.error("mpv skončil (kód %s)", self.proc.returncode if self.proc else "?")
+                    self.died.set()
                 break
             try:
                 msg = json.loads(raw)

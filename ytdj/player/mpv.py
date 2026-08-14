@@ -17,13 +17,26 @@ import logging
 import os
 from contextlib import suppress
 
-from ..config import MPV_SOCKET, Config
+from ..config import MPV_SOCKET, Config, save_values
 from ..music.catalog import Track
 from .base import EventHandler, Player, PlayerEvent, PlayerStatus
 
 log = logging.getLogger(__name__)
 
 WATCH_URL = "https://music.youtube.com/watch?v={}"
+
+# mpv nad 130 stejně nepustí a ručně zapsaná hodnota v configu by ho jinak
+# odmítla nastartovat
+VOLUME_MAX = 130
+SAVE_DELAY = 2.0  # sekund klidu, než se hlasitost zapíše do configu
+QUALITY_DELAY = 12.0  # než se klouzavý průměr bitrate ustálí
+# 774 má jmenovitě 251 kb/s, 141 pak 258; běžné formáty končí na 130. Práh
+# uprostřed rozliší Premium i při rozkolísaném průměru.
+PREMIUM_KBPS = 180
+
+
+def _clamp_volume(volume: int) -> int:
+    return max(0, min(VOLUME_MAX, int(volume)))
 
 
 class MpvPlayer(Player):
@@ -55,7 +68,13 @@ class MpvPlayer(Player):
         self._pos = 0
         self._count = 0
         self._paused = False
-        self._volume = 100
+        self._volume = _clamp_volume(cfg.volume)
+        # Zápis hlasitosti do configu se odkládá: tažení slideru i držené "+"
+        # v REPL by jinak přepisovaly soubor několikrát za vteřinu.
+        self._volume_save: asyncio.Task | None = None
+        self._volume_pending: int | None = None
+        self._quality = ""
+        self._quality_task: asyncio.Task | None = None
 
     # ---------- lifecycle ----------
 
@@ -73,14 +92,24 @@ class MpvPlayer(Player):
             "--gapless-audio=weak",
             "--cache=yes",
             "--keep-open=no",
+            # Nastavuje se rovnou na příkazové řádce, ne až přes IPC — jinak by
+            # první skladba po startu stihla zaznít v původní hlasitosti.
+            f"--volume={self._volume}",
         ]
         raw = []
-        if self.cfg.cookies_browser and self.cfg.cookies_browser != "none":
+        # An exported jar wins: it is the only source that survives without a
+        # desktop session, because nothing has to be decrypted with a key from
+        # the keyring.
+        if self.cfg.cookies_file:
+            raw.append(f"cookies={self.cfg.cookies_file}")
+        elif self.cfg.cookies_browser and self.cfg.cookies_browser != "none":
             raw.append(f"cookies-from-browser={self.cfg.cookies_browser}")
         if self.cfg.js_runtimes:
             raw.append(f"js-runtimes={self.cfg.js_runtimes}")
         if self.cfg.remote_components:
             raw.append(f"remote-components={self.cfg.remote_components}")
+        if extractor_args := self.cfg.extractor_args():
+            raw.append(f"extractor-args={extractor_args}")
         # each option separately via -append, so commas need no escaping
         args += [f"--ytdl-raw-options-append={opt}" for opt in raw]
         args += list(self.cfg.mpv_extra_args)
@@ -301,9 +330,46 @@ class MpvPlayer(Player):
         self._paused = target
 
     async def set_volume(self, volume: int) -> None:
-        volume = max(0, min(130, volume))
+        volume = _clamp_volume(volume)
         await self._command("set_property", "volume", volume, wait=False)
         self._volume = volume
+        self._remember_volume(volume)
+
+    # ---------- zapamatování hlasitosti ----------
+
+    def _remember_volume(self, volume: int) -> None:
+        """Přežije restart — jinak se jukebox vrátí na plný kotel.
+
+        Jediné hrdlo, kterým jde hlasitost od REPL i od webu, takže stačí
+        zapisovat tady.
+        """
+        self.cfg.volume = volume
+        if volume == self._volume_pending:
+            return
+        self._volume_pending = volume
+        if self._volume_save and not self._volume_save.done():
+            self._volume_save.cancel()
+        self._volume_save = asyncio.create_task(self._save_volume_later(volume))
+
+    async def _save_volume_later(self, volume: int) -> None:
+        await asyncio.sleep(SAVE_DELAY)  # zrušení během čekání = nic se nezapíše
+        try:
+            await asyncio.to_thread(save_values, {"volume": volume})
+            self._volume_pending = None
+        except OSError:
+            log.warning("hlasitost se nepodařilo uložit do configu", exc_info=True)
+
+    def _flush_volume(self) -> None:
+        """Doufat, že se odložený zápis stihne, při ukončování nejde."""
+        if self._volume_save and not self._volume_save.done():
+            self._volume_save.cancel()
+        if self._volume_pending is None:
+            return
+        try:
+            save_values({"volume": self._volume_pending})
+        except OSError:
+            log.warning("hlasitost se nepodařilo uložit do configu", exc_info=True)
+        self._volume_pending = None
 
     async def status(self) -> PlayerStatus:
         pos = await self._get("playlist-pos", self._pos) or 0

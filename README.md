@@ -226,38 +226,83 @@ The API, if you want to script it:
 | `web_enabled` / `web_host` / `web_port` | `true` / `127.0.0.1` / `8765` | web remote |
 | `language` / `location` | `cs` / `CZ` | YouTube Music catalog language and region |
 | `cookies_browser` | auto-detected | browser profile for yt-dlp cookies, e.g. `"chrome:Profile 2"`; `"none"` = no cookies |
+| `cookies_file` | `""` | exported `cookies.txt`; wins over `cookies_browser` and is the only source that works without a desktop session |
+| `player_client` | `""` | yt-dlp client; empty lets yt-dlp choose (anonymous clients, no Premium). A client that carries the login, e.g. `web_music`, needs a PO token |
 | `ytdl_format` | `774/141/251/140/bestaudio` | audio format preference (Premium first) |
+| `volume` | `100` | last volume set; mpv starts at it. Written by the player, not editable in the settings form — use the slider or `volume 70` |
 | `queue_target` / `queue_low` | `5` / `3` | how far ahead the queue is kept filled |
 | `radio_limit` | `50` | tracks fetched per seed radio |
 | `repeat_days` | `30` | don't repeat a track for N days |
 | `min_duration` / `max_duration` | `60` / `600` | track length filter (seconds) |
+| `max_duration_request` | `5400` | ceiling when a specific artist was asked for and short tracks are scarce — long sets get in rather than being dropped |
 | `artist_window` | `10` | max 2 tracks per artist within N tracks |
 
 ## Premium audio quality
 
-Playback goes through yt-dlp with browser cookies. Three things without which
-Premium formats (774 Opus 256k / 141 AAC 256k) are never even offered — and
-which the docs are silent about:
+Premium formats (774 Opus 256k / 141 AAC 256k) need **four** things at once.
+Miss any one and YouTube quietly serves 130k instead — nothing errors out,
+the music just sounds worse:
 
-- `secretstorage` must be importable in yt-dlp's environment, or it can't
-  decrypt Chrome cookies
-- `--js-runtimes=node` and `--remote-components=ejs:github`, or signature
-  resolution fails (silent degradation to 128k)
-- `node` must be in the `PATH` of mpv's subprocess (the config finds it in
-  nvm too)
+1. **An account with Premium**, in cookies yt-dlp can read.
+2. **A PO token.** This is the one that trips everyone up. Every yt-dlp client
+   that carries cookies (`web`, `web_music`, `tv`, …) has its formats rejected
+   without a GVS PO token, and the clients that work without one (`android_vr`)
+   refuse to send cookies at all. No token means no authenticated client means
+   no Premium, whatever else you configure.
+3. `--js-runtimes=node` and `--remote-components=ejs:github`, or signature
+   resolution fails.
+4. `node` on the `PATH` of mpv's subprocess (the config finds it in nvm too),
+   and `secretstorage` importable in yt-dlp's environment for Chrome cookies.
 
-Verify Premium works — you'll recognize it during playback by a ~256–290k
-bitrate:
+### The PO token
+
+Tokens are minted by [bgutil-ytdlp-pot-provider][bg]; there is no way to derive
+one from config alone. Install the plugin into yt-dlp's environment and build
+the provider:
 
 ```bash
-yt-dlp --js-runtimes node --remote-components ejs:github \
-  --cookies-from-browser "chrome:Profile 2" \
-  -F "https://music.youtube.com/watch?v=dQw4w9WgXcQ" | grep 'audio only'
+uv tool install yt-dlp --with secretstorage --with bgutil-ytdlp-pot-provider --force
+git clone --depth 1 --branch 1.3.1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider ~/bgutil-ytdlp-pot-provider
+cd ~/bgutil-ytdlp-pot-provider/server && npm install && npx tsc
 ```
 
-Multiple Chrome profiles may be logged in while only one has Premium — set
-the right one in `config.toml`. Without cookies it still plays, at 128k opus:
-`cookies_browser = "none"`.
+`packaging/install-service.sh` then picks it up and runs it as
+`ytdj-pot.service`, which mints and caches tokens on demand. It also patches
+the built server to listen on `127.0.0.1` — upstream binds to every interface,
+and on a jukebox that would let anyone on the network mint tokens against your
+account. Re-run the installer after updating the provider; the patch applies to
+the built file.
+
+Without the service you can paste a token manually into
+`~/.config/ytdj/env` as `YTDJ_PO_TOKEN=web_music.gvs+…`. That file is created
+with mode 0600 and is deliberately **not** `config.toml`: the web UI reads and
+writes the config and has no authentication, so credentials do not belong there.
+
+[bg]: https://github.com/Brainicism/bgutil-ytdlp-pot-provider
+
+### When it doesn't work
+
+```bash
+ytdj --check-audio
+```
+
+Runs yt-dlp with exactly the arguments mpv gets and says what came back — how
+many cookies were read, which formats are on offer, and if Premium is missing,
+which of the reasons above applies. During playback the real bitrate travels in
+the status (`quality`, e.g. `opus 251 kb/s (Premium)`) and goes to the log, so
+a drop to 130k is visible instead of silent.
+
+Two traps worth knowing:
+
+- **The wrong Chrome profile.** Several profiles may be logged in while only
+  one has Premium. A profile that has been signed out keeps its entry in
+  `config.toml` and yt-dlp just reports "Extracted 0 cookies" — the app now
+  detects this at startup and switches to a profile that does have a login.
+- **Chrome hasn't flushed.** Cookies live in memory for a while before being
+  written to the profile's SQLite, so a freshly signed-in profile can read as
+  empty. Give it a few minutes.
+
+Without cookies it still plays, at 128k opus: `cookies_browser = "none"`.
 
 **Risk:** yt-dlp with cookies is the only place where your account is
 exposed. Documented enforcement by YouTube consists of IP blocks and cookie

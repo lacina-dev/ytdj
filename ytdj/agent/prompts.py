@@ -20,6 +20,7 @@ Odpověz jedním JSON objektem podle schématu.
 
 Pole `action`:
   start_radio  spustit nové rádio ze seedů (nejčastější případ)
+  play_next    zařadit vyžádanou skladbu hned za tu hrající, náladu nechat být
   skip         přeskočit právě hrající skladbu
   pause        pozastavit
   resume       pokračovat
@@ -28,8 +29,9 @@ Pole `action`:
   nothing      nedělat nic s přehráváním (jen odpovědět, případně `remember`)
 
 Když má být `action` = start_radio, vyplň `seeds` — 3 až 5 KONKRÉTNÍCH skladeb
-(interpret + název). Aplikace je sama najde v katalogu a z každé vytvoří
-rádio; ty jen říkáš, na čem to postavit.
+(interpret + název; u neznámého interpreta stačí jméno a název nechat prázdný).
+Aplikace je sama najde v katalogu a z každé vytvoří rádio; ty jen říkáš, na
+čem to postavit.
 
 Volba seedů rozhoduje o všem, co bude následovat, tak ji ber vážně:
 
@@ -43,6 +45,28 @@ Volba seedů rozhoduje o všem, co bude následovat, tak ji ber vážně:
   ale doplň ji dalšími seedy, ať se to nezasekne u jednoho jména.
 - Piš názvy tak, jak se skutečně jmenují, ať se dají najít. Žádné popisy
   typu "něco svižného od Chinaski".
+- Když interpreta neznáš, NEVYMÝŠLEJ si název skladby. Vyplň `artist` a
+  `title` nech prázdné — aplikace si jeho skladby najde sama. Vymyšlený název
+  je totiž to nejhorší, co můžeš udělat: v katalogu se najde stejně pojmenovaná
+  skladba od úplně cizí kapely a pustí se ta. Platí to i pro `requested`.
+
+Pole `requested` je to, co si posluchač vyžádal JMÉNEM — konkrétní skladby,
+které chce slyšet. Patří tam jen to, co si opravdu řekl; ne tvoje vlastní
+návrhy, ty patří do `seeds`. Chová se to jinak než seedy ve dvou věcech:
+skutečně se to zahraje a neplatí na to pravidlo "co hrálo v posledních
+týdnech, se neopakuje". Když si o něco řekne, dostane to — i kdyby to hrálo
+včera. Přesně tohle dělá DJ: sám se opakování vyhýbá, ale přání plní.
+
+  "pusť Wonderwall"            → play_next, requested = [Oasis — Wonderwall]
+  "dej něco od Chinaski"       → play_next, requested = jedna jejich skladba
+  "chci něco jako Nirvana"     → start_radio, requested prázdné (to je nálada)
+  "zahraj Wonderwall a jeď v tom dál"
+                               → start_radio + requested = [Oasis — Wonderwall]
+
+Když je zadání obecné ("zahraj", "něco pusť", "nuda"), koukni do seznamu
+nejčastěji vyžádaných níž — to je nejtvrdší informace o tom, co tady lidi
+opravdu chtějí slyšet. Postav na tom část seedů; nepřepisuj tím ale výslovné
+přání, když nějaké přijde.
 
 Pole `mood` je krátký popis nálady, kterou sleduješ (pár slov, česky).
 
@@ -64,6 +88,7 @@ def render_state(
     pools: str,
     history: list[str],
     taste: str,
+    requested: list[str] | None = None,
 ) -> str:
     """Player state attached to every request.
 
@@ -85,6 +110,11 @@ def render_state(
         lines.append("")
         lines.append("Poslední přehrané (a jak dopadly):")
         lines += [f"  {h}" for h in history[:25]]
+
+    if requested:
+        lines.append("")
+        lines.append("Nejčastěji vyžádané (kolikrát si o to kdo řekl):")
+        lines += [f"  {r}" for r in requested]
 
     if taste:
         lines.append("")

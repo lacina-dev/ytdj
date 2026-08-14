@@ -60,6 +60,20 @@ after an hour it would exhaust its mental playlist. Instead:
 If Codex fails or is slow, **the music keeps playing** — the queue filler
 draws from already-fetched pools and never waits for the model.
 
+### Requests beat the no-repeat rule
+
+Radio tracks don't repeat for `repeat_days` (30 by default). **What you ask
+for by name is exempt.** A DJ avoids repeating himself, but plays what he is
+asked for — so a track you name goes in even if it played yesterday, and it
+goes in right behind the current one rather than at the end of the queue.
+
+The model marks such tracks in a separate `requested` field, apart from the
+seeds it picked itself. Those get played and are counted; seeds only shape the
+radio. The counts add up in the `requests` table, and the most-asked-for
+tracks travel with every request to the model — so a bare "play something"
+leans on what people around here actually keep asking for, rather than on the
+model's mood of the moment.
+
 ```
 request ──▶ codex exec ──JSON──▶ app: search ──▶ pools (per seed, ~50 tracks)
                                                      │ round-robin
@@ -186,6 +200,64 @@ handled **without the model**, instantly:
 Czech variants (`další`, `pauza`, `hlasitěji`, …) work too — see `ui/repl.py`.
 
 Everything else is a full Codex request (16–21 s).
+
+### YouTube links
+
+Paste a link and it is handled directly — no model, no waiting. There is
+nothing to interpret about a link, and Codex would spend twenty seconds
+arriving at the same answer:
+
+| link | what happens |
+|---|---|
+| `watch?v=…`, `youtu.be/…`, `/shorts/…` | queued right after the current track, counted as a request |
+| `playlist?list=…` | plays the playlist, and seeds the radio from it so it continues afterwards |
+| `/channel/UC…`, `/@handle` | builds a radio from that artist's top tracks |
+
+A YouTube channel and a YouTube Music artist are not the same thing — many
+artists have no music profile on their channel id. When the id leads nowhere,
+the artist is looked up by the channel's name instead.
+
+### Finding the right track
+
+Asking for a title by name used to take the first search hit, which is how you
+end up with a cover version or a live bootleg. Candidates are now scored on
+artist and title separately, with the artist weighted higher — the wrong artist
+is a worse mistake than a different take of the same song. Diacritics don't
+matter (`Deda Mladek` finds `Děda Mládek`), and neither does spacing, so
+`TribalNeed` and `Tribal Need` are the same name. If the text search comes up
+empty, the artist's profile is opened and their tracks are searched directly.
+
+A wrong artist is a hard veto, not a low score: a candidate whose artist
+doesn't match is dropped even if the title matches perfectly. Ask for
+`TribalNeed — Tribal Need` and you must not get `Ballistic Noise — Tribal
+Need`, which is a different band that happens to have a song by that name.
+When nothing by the named artist can be found, nothing is returned — silence
+beats the wrong band.
+
+**Artists who aren't in the catalog at all.** Live looping, DJ sets, the
+smaller scene — plenty of acts exist on YouTube only as a channel with videos,
+with no YouTube Music artist entity. Searching songs for them returns other
+people's tracks that share a word in the title. So when the artist filter finds
+nothing, videos are searched and those whose *channel* matches the name are
+used; they play like anything else. The model is told to leave `title` empty
+for artists it doesn't know rather than invent one, because an invented title
+is exactly what lands on the wrong band.
+
+### Long tracks, but only when they're the point
+
+Hour-long sets are exactly what some artists publish, and dropping them on
+`max_duration` (600 s) means not playing what was asked for. So the ceiling
+depends on where the seeds came from:
+
+- **A mood** ("something upbeat") keeps `max_duration`. A 70-minute set in the
+  middle of a mixed set would just block the queue.
+- **A named artist** — asked for by name, or via a channel or playlist link —
+  may go up to `max_duration_request` (5400 s, i.e. 1.5 h).
+
+Short tracks always win: the relaxed ceiling only applies to fill what's left
+after the normal ones run out. Tracks that were too long are set aside during
+the pass rather than discarded, so the second pass doesn't need another fetch.
+When it engages, the log says which track and how long (`beru delší kus`).
 
 ## Web UI & API
 
@@ -358,7 +430,8 @@ Faster and lighter on limits: `codex_model = "gpt-5.4-mini"` in the config.
 ```
 ytdj/
   config.py    XDG paths, browser & node auto-detection, config migration
-  state.py     SQLite: history, ratings, blacklist, long-term taste
+  diagnose.py  --check-audio: what quality is on offer and what's missing
+  state.py     SQLite: history, ratings, requests, blacklist, long-term taste
   music/
     catalog.py ytmusicapi → compact Track (thumbnails and feedback tokens stripped)
     radio.py   seed pools, round-robin, filters (repeats, length, artist cap)

@@ -49,6 +49,13 @@ class Player(ABC):
     async def enqueue(self, tracks: list[Track]) -> int: ...
 
     @abstractmethod
+    async def enqueue_next(self, tracks: list[Track]) -> int:
+        """Queue right behind the current track, not at the end.
+
+        What someone asked for shouldn't have to wait out the whole queue.
+        """
+
+    @abstractmethod
     async def clear_queue(self) -> None: ...
 
     @abstractmethod

@@ -21,6 +21,7 @@ from .agent import CodexDJ
 from .config import Config, load_secrets, write_default_config, write_env_template
 from .diagnose import check_audio
 from .music import Catalog, RadioPools
+from .music.catalog import RE_URL
 from .player import MpvPlayer
 from .player.base import PlayerEvent
 from .state import Store
@@ -100,8 +101,58 @@ class App:
 
     async def ask(self, text: str) -> str:
         """The single entry point to Codex. Used by both the REPL and the web."""
+        if reply := await self._try_link(text):
+            return reply
         async with self._codex_lock:
             return await self.dj.turn(text)
+
+    async def _try_link(self, text: str) -> str | None:
+        """Odkaz na YouTube obslouží rovnou, bez modelu.
+
+        Je to jednoznačné zadání — u odkazu není co domýšlet, a Codex by na
+        něm strávil dvacet vteřin, aby došel ke stejnému závěru. Vrací None,
+        když v textu odkaz není nebo se ho nepodařilo rozluštit; pak to jde
+        obvyklou cestou.
+        """
+        match = RE_URL.search(text)
+        if not match:
+            return None
+        try:
+            target = await self.catalog.resolve_link(match.group(0))
+        except Exception:
+            log.exception("odkaz se nepodařilo zpracovat")
+            return None
+        if not target:
+            return "Tenhle odkaz jsem nerozluštil — zkus název skladby nebo interpreta."
+
+        if target.kind == "track":
+            track = target.tracks[0]
+            self.store.record_request(track.id, track.title, track.artist)
+            self.pools.remember_tracks(target.tracks)
+            self.pools.session_seen.add(track.id)
+            await self.player.enqueue_next(target.tracks)
+            await self.player.toggle_pause(False)
+            return f"Zařazuju {track.label()}."
+
+        # playlist i kanál: postavit z toho rádio, ať to po dohrání pokračuje
+        seeds = target.tracks[:4]
+        # odkaz je jednoznačné přání, takže i delší kusy, když kratší nejsou
+        await self.pools.set_seeds(seeds, mood=target.label, allow_long=True)
+        was_playing = (await self.player.status()).current is not None
+        await self.player.clear_queue()
+        if target.kind == "playlist":
+            # u playlistu chce uživatel slyšet ten playlist, ne jen jeho náladu
+            from_list = target.tracks[: self.cfg.queue_target]
+            self.pools.remember_tracks(from_list)
+            self.pools.session_seen.update(t.id for t in from_list)
+            await self.player.enqueue(from_list)
+        else:
+            await self.player.enqueue(await self.pools.next_tracks(self.cfg.queue_target))
+        await self.player.toggle_pause(False)
+        if was_playing:
+            await self.player.skip()
+        what = "playlist" if target.kind == "playlist" else target.label
+        return f"Jedu podle odkazu — {what}."
 
     # ---- player events ----
 
@@ -144,6 +195,11 @@ class App:
                 tracks = await self.pools.next_tracks(need)
                 if tracks:
                     await self.player.enqueue(tracks)
+                elif not self.pools.pools:
+                    # Žádné pooly: došlo na vyžádanou skladbu bez rádia
+                    # (odkaz, play_next). Až dohraje, bylo by ticho — tak z ní
+                    # rádio postavíme. Bez modelu, hned.
+                    await self._seed_from_current()
                 elif self.pools.pools:
                     # the pools ran dry and the radio yields nothing new anymore
                     await self._reseed(
@@ -154,6 +210,18 @@ class App:
                 raise
             except Exception:
                 log.exception("plnič fronty selhal, pokračuji")
+
+    async def _seed_from_current(self) -> None:
+        """Rozjede rádio z toho, co zrovna hraje."""
+        st = await self.player.status()
+        if not st.current:
+            return
+        log.info("bez poolů — stavím rádio z %s", st.current.label())
+        # Sem se dojde jen po vyžádané skladbě nebo odkazu, takže je to pořád
+        # ten interpret, o kterého si posluchač řekl.
+        await self.pools.set_seeds(
+            [st.current], mood=st.current.artist or "", allow_long=True
+        )
 
     async def _check_skip_burst(self) -> None:
         """Three skips within ten minutes mean the mood missed the mark."""

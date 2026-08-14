@@ -39,6 +39,8 @@ class RadioPools:
         self._rr = 0  # round-robin pointer
         self.session_seen: set[str] = set()
         self.mood: str = ""
+        # Vyžádaný interpret smí i dlouhé kusy — viz set_seeds().
+        self.allow_long = False
         # registry of everything we have seen in this session — the LLM works
         # only with videoIds, here we translate them back to Tracks
         self.known: dict[str, Track] = {}
@@ -52,11 +54,19 @@ class RadioPools:
 
     # ---- filling ----
 
-    async def set_seeds(self, seeds: list[Track], mood: str = "") -> dict:
-        """Replaces the pools with new seeds and pulls in radios for them."""
+    async def set_seeds(
+        self, seeds: list[Track], mood: str = "", allow_long: bool = False
+    ) -> dict:
+        """Replaces the pools with new seeds and pulls in radios for them.
+
+        `allow_long` se zapíná, když si posluchač vyžádal konkrétního
+        interpreta: u něj je hodinový set to, co chtěl slyšet, kdežto v obecné
+        náladě by stejně dlouhá stopa frontu jen zablokovala.
+        """
         self.pools = []
         self._rr = 0
         self.mood = mood
+        self.allow_long = allow_long
         summary = []
         self.remember_tracks(seeds)
         for seed in seeds:
@@ -89,6 +99,9 @@ class RadioPools:
         blocked = self.store.blacklisted()
         recent = self.store.recently_played(self.cfg.repeat_days)
         artist_counts: dict[str, int] = {}
+        # Dlouhé kusy se nezahazují, jen odloží: když se fronta z krátkých
+        # nenaplní, sáhne se po nich (u vyžádaného interpreta).
+        long_ones: list[Track] = []
 
         attempts = 0
         max_attempts = count * 40
@@ -106,6 +119,10 @@ class RadioPools:
 
             track = pool.tracks.popleft()
             if not self._acceptable(track, out, blocked, recent, artist_counts):
+                if self.allow_long and self._acceptable(
+                    track, out, blocked, recent, artist_counts, self._long_limit()
+                ):
+                    long_ones.append(track)
                 continue
 
             self.session_seen.add(track.id)
@@ -115,7 +132,25 @@ class RadioPools:
             if len(pool) < self.cfg.pool_low:
                 await self._refill(pool)
 
+        for track in long_ones:
+            if len(out) >= count:
+                break
+            if not self._acceptable(
+                track, out, blocked, recent, artist_counts, self._long_limit()
+            ):
+                continue
+            log.info(
+                "beru delší kus (%s s): %s", track.duration, track.label()
+            )
+            self.session_seen.add(track.id)
+            artist_counts[track.artist] = artist_counts.get(track.artist, 0) + 1
+            out.append(track)
+
         return out
+
+    def _long_limit(self) -> int:
+        """Strop pro vyžádaného interpreta — nikdy pod tím obvyklým."""
+        return max(self.cfg.max_duration, self.cfg.max_duration_request)
 
     def _acceptable(
         self,
@@ -124,6 +159,7 @@ class RadioPools:
         blocked: set[str],
         recent: set[str],
         artist_counts: dict[str, int],
+        max_duration: int | None = None,
     ) -> bool:
         if track.id in self.session_seen or track.id in blocked:
             return False
@@ -132,7 +168,8 @@ class RadioPools:
         if any(t.id == track.id for t in pending):
             return False
         if track.duration is not None:
-            if not (self.cfg.min_duration <= track.duration <= self.cfg.max_duration):
+            ceiling = max_duration or self.cfg.max_duration
+            if not (self.cfg.min_duration <= track.duration <= ceiling):
                 return False
         # at most 2 tracks by the same artist per refill
         if artist_counts.get(track.artist, 0) >= 2:

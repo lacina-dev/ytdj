@@ -95,6 +95,7 @@ LIVE_KEYS = (
     "radio_limit",
     "min_duration",
     "max_duration",
+    "max_duration_request",
     "repeat_days",
     "artist_window",
 )
@@ -155,6 +156,12 @@ FIELD_META: dict[str, tuple[str, str, tuple[int, int] | None]] = {
         "Maximální délka skladby (s)",
         "Delší skladby se přeskočí — typicky hodinové mixy a livesety.",
         (10, 7200),
+    ),
+    "max_duration_request": (
+        "Maximální délka u vyžádaného interpreta (s)",
+        "Když si řekneš o konkrétního interpreta a kratších skladeb od něj "
+        "není dost, sáhne se i po delších — až do téhle hranice.",
+        (10, 21600),
     ),
     "repeat_days": (
         "Neopakovat N dní",

@@ -128,7 +128,7 @@ handled **without the model**, instantly:
 | `pause` / `p` | pause |
 | `resume` / `play` | resume |
 | `stop` | stop and clear the queue |
-| `+` / `-` / `volume 70` | volume up / down / set |
+| `+` / `-` / `volume 70` | volume up / down / set (remembered across restarts) |
 | `status` / `?` | now playing |
 | `help` / `h` | command list |
 | `quit` / `exit` | exit |

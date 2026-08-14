@@ -66,15 +66,25 @@ zobrazit. Samotné API na <code>/api/…</code> ale funguje.</p>
 # constructed at startup).
 RESTART_KEYS = frozenset(
     {
+        # web se zvedá jednou při startu, takže adresa ani port za běhu nejdou
+        "web_enabled",
+        "web_host",
+        "web_port",
         "language",
         "location",
         "ytdl_format",
         "cookies_browser",
+        "cookies_file",
+        "player_client",
         "js_runtimes",
         "remote_components",
         "mpv_extra_args",
     }
 )
+
+# Keys the settings form doesn't show. Volume has its own slider next to the
+# controls; a second field for it would be a second source of truth.
+HIDDEN_KEYS = frozenset({"volume"})
 
 # Keys we can switch at runtime — they are also set directly on app.cfg.
 LIVE_KEYS = (
@@ -209,95 +219,21 @@ def _field_type(key: str) -> str:
     return "str"
 
 
-# --------------------------------------------------------------------------
-# writing config.toml while preserving comments
-# --------------------------------------------------------------------------
+POT_PING = ("127.0.0.1", 4416)  # výchozí adresa bgutil provideru
 
 
-def _toml_scalar(value: Any) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int):
-        return str(value)
-    if isinstance(value, (list, tuple)):
-        return "[" + ", ".join(_toml_scalar(str(v)) for v in value) + "]"
-    text = str(value).replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{text}"'
-
-
-def _key_of(line: str) -> str | None:
-    """Returns the key if the line is a top-level assignment."""
-    stripped = line.lstrip()
-    if not stripped or stripped.startswith("#") or stripped.startswith("["):
-        return None
-    key, sep, _ = stripped.partition("=")
-    key = key.strip()
-    if not sep or not key.replace("_", "").isalnum():
-        return None
-    return key
-
-
-def _open_brackets(text: str) -> int:
-    """How many square brackets remain unclosed (strings are ignored)."""
-    depth = 0
-    in_str: str | None = None
-    escaped = False
-    for ch in text:
-        if in_str:
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == in_str:
-                in_str = None
-            continue
-        if ch in "\"'":
-            in_str = ch
-        elif ch == "#":
-            break
-        elif ch == "[":
-            depth += 1
-        elif ch == "]":
-            depth -= 1
-    return depth
-
-
-def rewrite_config_text(text: str, changes: dict[str, Any]) -> str:
-    """Rewrites only the lines of affected keys; comments and order stay.
-
-    New keys are appended at the end of the root section (i.e. before the
-    first `[table]`, so they don't fall inside someone else's section).
-    """
-    lines = text.splitlines()
-    out: list[str] = []
-    pending = dict(changes)
-    first_table = -1
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        if line.lstrip().startswith("[") and first_table < 0:
-            first_table = len(out)
-        key = _key_of(line) if first_table < 0 else None
-        if key in pending:
-            # swallow a multi-line array whole so no tail is left after rewriting
-            chunk = line
-            while _open_brackets(chunk) > 0 and i + 1 < len(lines):
-                i += 1
-                chunk += "\n" + lines[i]
-            out.append(f"{key} = {_toml_scalar(pending.pop(key))}")
-            i += 1
-            continue
-        out.append(line)
-        i += 1
-
-    if pending:
-        block = [f"{k} = {_toml_scalar(v)}" for k, v in pending.items()]
-        at = first_table if first_table >= 0 else len(out)
-        if at > 0 and out[at - 1].strip():
-            block.insert(0, "")
-        out[at:at] = block
-
-    return "\n".join(out).rstrip("\n") + "\n"
+async def _pot_status() -> str:
+    """Běží razítko PO tokenů? Bez něj nejsou Premium formáty."""
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(*POT_PING), timeout=1.0
+        )
+    except (OSError, asyncio.TimeoutError):
+        return "neběží"
+    writer.close()
+    with contextlib.suppress(Exception):
+        await writer.wait_closed()
+    return "běží"
 
 
 class BadValue(ValueError):
@@ -308,6 +244,10 @@ def coerce_value(key: str, raw: Any) -> Any:
     """Validates and converts one value according to its type in DEFAULTS."""
     if key not in cfgmod.DEFAULTS:
         raise BadValue(f"Neznámý klíč nastavení: {key}")
+    if key in HIDDEN_KEYS:
+        # Zapisuje ho přehrávač, když se hlasitost změní. Kdyby šla i tudy,
+        # přepsala by se hodnota, kterou zrovna drží mpv.
+        raise BadValue(f"{key} se nastavuje přehrávačem (POST /api/control)")
     default = cfgmod.DEFAULTS[key]
     label = FIELD_META.get(key, (key,))[0]
 
@@ -628,6 +568,8 @@ class WebServer:
         fields: list[dict] = []
 
         for key in cfgmod.DEFAULTS:
+            if key in HIDDEN_KEYS:
+                continue
             value = getattr(cfg, key, cfgmod.DEFAULTS[key])
             if isinstance(value, list):
                 # the form gets a single line of arguments, not an array
@@ -667,7 +609,7 @@ class WebServer:
             return _json_error(str(exc), 400)
 
         try:
-            await asyncio.to_thread(_write_config, changes)
+            await asyncio.to_thread(cfgmod.save_values, changes)
         except OSError as exc:
             log.exception("zápis konfigurace selhal")
             return _json_error(f"Nepodařilo se zapsat konfiguraci: {exc}", 500)
@@ -759,12 +701,3 @@ class WebServer:
             self._sock = None
 
 
-def _write_config(changes: dict[str, Any]) -> None:
-    """Rewrites config.toml. Runs in a thread — touches the disk."""
-    path = cfgmod.CONFIG_FILE
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = path.read_text() if path.exists() else "# ytdj — konfigurace\n"
-    new_text = rewrite_config_text(text, changes)
-    tmp = path.with_suffix(".toml.tmp")
-    tmp.write_text(new_text)
-    tmp.replace(path)  # atomic, so a crash mid-write can't destroy the config

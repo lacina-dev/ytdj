@@ -19,7 +19,7 @@ from contextlib import suppress
 
 from .agent import CodexDJ
 from .config import Config, load_secrets, write_default_config, write_env_template
-from .diagnose import check_audio
+from .diagnose import check_audio, yt_dlp_warning
 from .music import Catalog, RadioPools
 from .music.catalog import RE_URL
 from .player import MpvPlayer
@@ -299,13 +299,27 @@ class App:
         print(f"       web:  {self.web.url}\n" if self.web else "       web:  vypnutý\n")
         if warning := cookie_warning(self.cfg):
             print(f"POZOR: {warning}\n")
+        if warning := await yt_dlp_warning(self.cfg):
+            print(f"POZOR: {warning}\n")
 
         rc = 0
         filler = asyncio.create_task(self._filler())
         try:
             if repl:
                 self.repl = Repl(self.player, self._on_prompt)
-                await self.repl.run()
+                # Restart z webu musí umět ukončit i REPL, jinak by tlačítko
+                # fungovalo jen v režimu --web-only.
+                repl_task = asyncio.create_task(self.repl.run())
+                restart_task = asyncio.create_task(self.restart_requested.wait())
+                await asyncio.wait(
+                    {repl_task, restart_task}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if self.restart_requested.is_set():
+                    print("Restart na vyžádání z webu.")
+                    self.player.expect_exit()
+                repl_task.cancel()
+                restart_task.cancel()
+                await asyncio.gather(repl_task, restart_task, return_exceptions=True)
             elif self.web:
                 print("Běžím jen s webem. Ukončit: Ctrl+C\n")
                 # Konec přijde buď smrtí mpv, nebo restartem z webu; signál
@@ -396,9 +410,15 @@ async def _amain() -> int:
     with suppress(NotImplementedError):
         asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, terminate)
     try:
-        return await task
+        rc = await task
     except asyncio.CancelledError:
         return 0
+    if app.restart_requested.is_set() and not os.environ.get("INVOCATION_ID"):
+        # Pod systemd stačí skončit a o nové spuštění se postará on. Bez něj
+        # (běh z terminálu) se proces vymění sám: úklid už proběhl v App.run,
+        # takže execv jen nahradí obraz procesu čerstvým startem.
+        os.execv(sys.executable, [sys.executable, "-u", "-m", "ytdj", *argv])
+    return rc
 
 
 def main() -> None:

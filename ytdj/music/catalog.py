@@ -158,14 +158,43 @@ class Catalog:
         self.yt = YTMusic(auth, language=cfg.language, location=cfg.location)
         self.authenticated = auth is not None
         self._cfg = cfg
+        self._auth = auth
+        # Náhradní anglický klient — viz _search. Vzniká až při prvním použití.
+        self._english: YTMusic | None = None
 
     async def _call(self, fn, *args, **kwargs) -> Any:
         return await asyncio.to_thread(fn, *args, **kwargs)
 
+    async def _search(self, query: str, **kwargs: Any) -> list[dict]:
+        """yt.search s pojistkou proti vadné lokalizaci.
+
+        ytmusicapi s některými jazyky katalogu vrátí prázdný seznam úplně na
+        všechno — parsování lokalizované odpovědi tiše selže (pozorováno
+        s "cs" na ytmusicapi 1.12). Prázdný výsledek se proto jednou přezkouší
+        anglicky: když anglicky výsledky jsou, je vadný jazyk, ne dotaz, a
+        katalog se přepne na angličtinu natrvalo. Bez téhle pojistky DJ na
+        každé zadání odpoví "nic jsem nenašel" a nikdy nezačne hrát.
+        """
+        raw = await self._call(self.yt.search, query, **kwargs)
+        if raw or self.yt is self._english or self._cfg.language.startswith("en"):
+            return raw
+        if self._english is None:
+            self._english = YTMusic(
+                self._auth, language="en", location=self._cfg.location
+            )
+        raw = await self._call(self._english.search, query, **kwargs)
+        if raw:
+            log.warning(
+                "hledání s language=%r vrací prázdno, přepínám katalog na 'en'",
+                self._cfg.language,
+            )
+            self.yt = self._english
+        return raw
+
     async def search(self, query: str, limit: int = 8) -> list[Track]:
         # CAUTION: ytmusicapi treats `limit` as a lower bound, not an upper
         # one — YTM paginates by 20. Always trim on our side.
-        raw = await self._call(self.yt.search, query, filter="songs", limit=limit)
+        raw = await self._search(query, filter="songs", limit=limit)
         tracks = [t for t in (to_track(i) for i in raw) if t]
         return tracks[:limit]
 
@@ -177,7 +206,7 @@ class Catalog:
         stejně dobře jako cokoli jiného.
         """
         try:
-            raw = await self._call(self.yt.search, query, filter="videos", limit=limit)
+            raw = await self._search(query, filter="videos", limit=limit)
         except Exception as exc:
             log.warning("hledání videí %r selhalo: %s", query, exc)
             return []
@@ -264,7 +293,7 @@ class Catalog:
     async def find_artist(self, name: str) -> Artist | None:
         """Interpret podle jména — pro zadání typu "zahraj Kabát"."""
         try:
-            hits = await self._call(self.yt.search, name, filter="artists", limit=5)
+            hits = await self._search(name, filter="artists", limit=5)
         except Exception as exc:
             log.warning("hledání interpreta %r selhalo: %s", name, exc)
             return None

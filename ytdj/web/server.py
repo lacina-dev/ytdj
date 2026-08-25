@@ -15,7 +15,6 @@ import asyncio
 import contextlib
 import json
 import logging
-import os
 import shlex
 import socket
 import time
@@ -635,16 +634,13 @@ class WebServer:
                     "model": cfg.codex_model or "výchozí",
                     "auth": "předplatné (bez API klíče)",
                 },
-                # restart obstará systemd; bez něj bychom se jen ukončili
-                "restartable": bool(os.environ.get("INVOCATION_ID")),
+                # pod systemd nás znovu spustí on; bez něj se proces po
+                # čistém úklidu vymění sám přes execv (viz __main__)
+                "restartable": True,
             }
         )
 
     async def _restart(self, request: Request) -> Response:
-        if not os.environ.get("INVOCATION_ID"):
-            return _json_error(
-                "Restart funguje jen pod systemd — spusť to jako službu ytdj.", 409
-            )
         log.info("restart na vyžádání z webu")
         self.app.restart_requested.set()
         return JSONResponse({"ok": True})

@@ -73,6 +73,7 @@ class MpvPlayer(Player):
         self._current_id: str | None = None
         self._pos = 0
         self._count = 0
+        self._time_pos = 0.0  # průběžná pozice — pro detekci useknuté skladby
         self._paused = False
         self._volume = _clamp_volume(cfg.volume)
         # Zápis hlasitosti do configu se odkládá: tažení slideru i držené "+"
@@ -98,6 +99,11 @@ class MpvPlayer(Player):
             "--gapless-audio=weak",
             "--cache=yes",
             "--keep-open=no",
+            # Když YouTube uprostřed skladby zavře spojení (rotace CDN, síť),
+            # ffmpeg to bez tohohle vezme jako konec souboru — mpv ohlásí eof
+            # a skočí na další skladbu v půlce té současné. S reconnectem se
+            # stream chytí tam, kde vypadl.
+            "--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_delay_max=10",
             # Nastavuje se rovnou na příkazové řádce, ne až přes IPC — jinak by
             # první skladba po startu stihla zaznít v původní hlasitosti.
             f"--volume={self._volume}",
@@ -149,7 +155,9 @@ class MpvPlayer(Player):
         self._reader_task = asyncio.create_task(self._read_loop())
         self._dispatch_task = asyncio.create_task(self._dispatch_loop())
 
-        for i, prop in enumerate(("playlist-pos", "playlist-count", "pause", "volume"), 1):
+        for i, prop in enumerate(
+            ("playlist-pos", "playlist-count", "pause", "volume", "time-pos"), 1
+        ):
             await self._send({"command": ["observe_property", i, prop]}, wait=False)
 
     def expect_exit(self) -> None:
@@ -254,6 +262,8 @@ class MpvPlayer(Player):
                 self._paused = data
             elif name == "volume" and isinstance(data, (int, float)):
                 self._volume = int(data)
+            elif name == "time-pos" and isinstance(data, (int, float)):
+                self._time_pos = float(data)
             return
 
         if event == "start-file":
@@ -271,11 +281,34 @@ class MpvPlayer(Player):
                 "error": "error",
                 "redirect": "skipped",
             }.get(reason, "skipped")
+            self._note_premature_end(kind, msg.get("playlist_entry_id", -1))
+            self._time_pos = 0.0
             self._events.put_nowait((kind, msg.get("playlist_entry_id", -1), reason))
             return
 
         if event == "idle":
             self._events.put_nowait(("idle", -1, ""))
+
+    def _note_premature_end(self, kind: str, entry_id: int) -> None:
+        """Skladba, která 'dohrála' dávno před koncem, je useknutý stream.
+
+        Když spojení umře i přes reconnect, ffmpeg ohlásí konec souboru a mpv
+        čistý eof — od uživatelského dohrání se to nijak neliší. Aspoň se to
+        nahlas zapíše do logu, ať se dá 'občas se to usekne' dohledat: která
+        skladba, v kolikáté vteřině z kolika.
+        """
+        if kind != "finished":
+            return
+        vid = self._entries.get(entry_id) or self._current_id
+        track = self._tracks.get(vid or "")
+        played = self._time_pos
+        if not track or not track.duration or not played:
+            return
+        if played + 15 < track.duration * 0.9:
+            log.warning(
+                "skladba %s skončila předčasně (%d s z %d) — nejspíš výpadek streamu",
+                track.label(), int(played), track.duration,
+            )
 
     async def _dispatch_loop(self) -> None:
         """Handlers run outside the read loop (so they may call IPC), but in

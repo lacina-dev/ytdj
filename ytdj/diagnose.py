@@ -20,6 +20,50 @@ _FORMAT_ROW = re.compile(r"^(\d+)\s+(\w+)\s+audio only.*?(\d+)k\s", re.M)
 _COOKIE_COUNT = re.compile(r"Extracted (\d+) cookies", re.I)
 
 
+async def _run_yt_dlp(cfg: Config, *args: str, timeout: int = 30) -> tuple[int | None, str]:
+    """Spustí yt-dlp a vrátí (návratový kód, celý výstup); (None, "") když nejde spustit."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            cfg.yt_dlp_path, *args,
+            env=cfg.child_env(),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        raw, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except (OSError, asyncio.TimeoutError):
+        return None, ""
+    return proc.returncode, raw.decode(errors="replace")
+
+
+async def yt_dlp_warning(cfg: Config) -> str | None:
+    """Moc starý yt-dlp = žádné formáty, a žádná srozumitelná chyba.
+
+    Distribuční balíky (apt) bývají o rok pozadu a neznají --js-runtimes;
+    mpv pak nemá co přehrát a jediná stopa je prázdný seznam formátů. Testuje
+    se to naostro: pustí se přesně ty přepínače, které yt-dlp dostane od mpv
+    — verze proti datu by zastarala s první změnou v yt-dlp. Sonda končí na
+    --help, ne --version: to totiž yt-dlp vyřizuje přednostně a neznámé
+    přepínače vedle něj bez řečí spolkne.
+    """
+    args = []
+    if cfg.js_runtimes:
+        args += ["--js-runtimes", cfg.js_runtimes]
+    if cfg.remote_components:
+        args += ["--remote-components", cfg.remote_components]
+    rc, out = await _run_yt_dlp(cfg, *args, "--help")
+    if rc == 0:
+        return None
+    if rc is None:
+        return f"yt-dlp ({cfg.yt_dlp_path}) se nepodařilo spustit"
+    if "no such option" in out:
+        return (
+            f"yt-dlp v {cfg.yt_dlp_path} nezná dnešní přepínače — je moc starý\n"
+            "       (typicky balík z apt) a nepřehraje vůbec nic. Aktuální verzi dá:\n"
+            "       uv tool install yt-dlp --with secretstorage --force"
+        )
+    return None  # jiná chyba — ukáže se i s kontextem ve výpisu formátů
+
+
 def yt_dlp_args(cfg: Config) -> list[str]:
     """Totéž, co dostane yt-dlp přes ytdl-raw-options z mpv."""
     args = [cfg.yt_dlp_path]
@@ -48,7 +92,9 @@ async def check_audio(cfg: Config, url: str = TEST_TRACK) -> str:
     raw, _ = await proc.communicate()
     out = raw.decode(errors="replace")
 
-    lines = [f"zdroj cookies:  {cfg.cookie_source()}"]
+    _, version = await _run_yt_dlp(cfg, "--version")
+    lines = [f"yt-dlp:         {version.strip() or '?'} ({cfg.yt_dlp_path})"]
+    lines.append(f"zdroj cookies:  {cfg.cookie_source()}")
     if m := _COOKIE_COUNT.search(out):
         count = int(m.group(1))
         lines.append(f"načtené cookies: {count}")
@@ -61,6 +107,8 @@ async def check_audio(cfg: Config, url: str = TEST_TRACK) -> str:
     if not formats:
         lines.append("\nyt-dlp nenabídl žádný zvukový formát:")
         lines += [f"  {l}" for l in out.splitlines() if "ERROR" in l][:3]
+        if warning := await yt_dlp_warning(cfg):
+            lines.append(f"POZOR: {warning}")
         return "\n".join(lines)
 
     best = max(int(b) for _, _, b in formats)

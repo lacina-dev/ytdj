@@ -106,11 +106,18 @@ seven, so it's **faster** (16–21 s per request instead of ~30 s).
 - Linux (uses mpv over a unix socket; tested on Ubuntu 24.04)
 - Python 3.12+
 - [mpv](https://mpv.io/) and ffmpeg
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp)
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — a **current release**. Distro
+  packages (apt) tend to be a year behind and lack `--js-runtimes`, with which
+  nothing plays at all — the failure mode is an empty format list, no error.
+  The app and `--check-audio` detect this and say so; install via `uv` as
+  below, not via apt.
 - Node.js in `PATH` (yt-dlp needs a JS runtime to resolve YouTube signatures;
   an nvm-installed node is detected automatically)
 - [Codex CLI](https://github.com/openai/codex) installed and logged in
-  (`codex login`) with a ChatGPT subscription
+  (`codex login`) with a ChatGPT subscription — and reasonably current: a
+  `codex_model` newer than the CLI is rejected by the server (*"requires a
+  newer version of Codex"*). The DJ reports that instead of hanging;
+  `npm install -g @openai/codex@latest` fixes it.
 
 ## Installation
 
@@ -275,9 +282,9 @@ of the same state, not a separate service.
   catalog is anonymous, whether the PO token provider is up — and what the
   brain is (`codex CLI`, model, subscription). The now-playing line carries the
   real bitrate, so `opus 251 kb/s (Premium)` is visible at a glance
-- **Restart** button, for the settings that only take effect at startup. It
-  ends the process and lets systemd start it again, so it only appears when
-  running as a service (detected via `INVOCATION_ID`); ~5 s of silence
+- **Restart** button, for the settings that only take effect at startup.
+  Under systemd it ends the process and lets systemd start it again; run
+  from a terminal, the process re-execs itself instead. ~5 s of silence
 - Responsive — usable from a phone if you set `web_host = "0.0.0.0"`
 
 Disable with `web_enabled = false` in `config.toml`.
@@ -306,7 +313,7 @@ The API, if you want to script it:
 |---|---|---|
 | `codex_model` | `""` | `""` = Codex CLI default; e.g. `"gpt-5.4-mini"` is faster and cheaper on limits |
 | `web_enabled` / `web_host` / `web_port` | `true` / `127.0.0.1` / `8765` | web remote |
-| `language` / `location` | `cs` / `CZ` | YouTube Music catalog language and region |
+| `language` / `location` | `cs` / `CZ` | YouTube Music catalog language and region; when search returns nothing in that language (a ytmusicapi parsing quirk, seen with `cs`), the app retries in English and switches over for the session |
 | `cookies_browser` | auto-detected | browser profile for yt-dlp cookies, e.g. `"chrome:Profile 2"`; `"none"` = no cookies |
 | `cookies_file` | `""` | exported `cookies.txt`; wins over `cookies_browser` and is the only source that works without a desktop session |
 | `player_client` | `""` | yt-dlp client; empty lets yt-dlp choose (anonymous clients, no Premium). A client that carries the login, e.g. `web_music`, needs a PO token |
@@ -475,6 +482,19 @@ Hard-won details that are easy to re-discover the painful way:
 
 - `limit` in ytmusicapi is a **lower** bound, not an upper one — YTM paginates
   by 20; we trim on our side.
+- ytmusicapi with some catalog languages returns an empty search result for
+  **every** query (observed with `language="cs"` on 1.12.2) — the localized
+  response parses to nothing, silently. The catalog retries an empty result
+  in English and permanently switches when English does return hits.
+- `codex exec --json` can exit with **code 0 even when the turn failed** —
+  the failure lives only in the `error` / `turn.failed` events, and the
+  message inside is JSON wrapped in JSON. 4xx errors (e.g. a model the
+  installed CLI is too old for) are retried by Codex over and over; the app
+  kills the process on the first one and shows the message instead.
+- An outdated yt-dlp (any without `--js-runtimes`) produces an **empty format
+  list**, not an error — through mpv it looks like every track is silently
+  unplayable. Hence the startup check that runs yt-dlp with the exact flags
+  mpv will pass it.
 - ytmusicapi stuffs play counts ("3.4M plays") into the `artists` field — we
   filter them out, or they leak all the way into the prompt.
 - `get_watch_playlist(radio=True)` returns a different mix every time. There

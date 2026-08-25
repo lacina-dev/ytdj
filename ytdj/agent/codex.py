@@ -22,7 +22,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import shutil
+import signal
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -34,6 +37,12 @@ from ..state import Store
 from .prompts import ROLE, render_state
 
 log = logging.getLogger(__name__)
+
+# Jeden tah trvá běžně do půl minuty. Bez stropu by vadná konfigurace
+# (typicky model, na který je nainstalovaný Codex moc starý) držela zámek
+# Codexu donekonečna a DJ by přestal reagovat úplně — hudba sice hraje dál,
+# ale každý další dotaz dostane jen "Codex právě pracuje".
+TURN_TIMEOUT = 240  # s
 
 # Response schema. Structured outputs require every property to be listed
 # in `required` — unused ones are sent empty.
@@ -101,6 +110,46 @@ DECISION_SCHEMA = {
 
 class CodexUnavailable(RuntimeError):
     pass
+
+
+def _stream_error(ev: dict) -> tuple[str, bool]:
+    """(lidská zpráva, je definitivní?) z eventu `error` / `turn.failed`.
+
+    Zpráva chodí jako JSON zabalený do JSONu — vybalit. Definitivní jsou
+    chyby 4xx (kromě 429): server je vrací pořád stejně, takže čekat na
+    interní retry Codexu znamená jen držet frontu o minuty déle.
+    """
+    payload = ev.get("message") or (ev.get("error") or {}).get("message")
+    text = str(payload or "").strip()
+    fatal = False
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        status = data.get("status")
+        fatal = isinstance(status, int) and 400 <= status < 500 and status != 429
+        inner = data.get("error")
+        if isinstance(inner, dict) and inner.get("message"):
+            text = str(inner["message"])
+        elif data.get("message"):
+            text = str(data["message"])
+    if "newer version of codex" in text.lower():
+        text += " → npm install -g @openai/codex@latest"
+    return text, fatal
+
+
+def _kill_tree(proc: asyncio.subprocess.Process) -> None:
+    """Zabije codex i s potomky.
+
+    `codex` je node wrapper, který spouští vlastní binárku jako potomka se
+    zděděnými rourami. proc.kill() by zabil jen wrapper: binárka žije dál,
+    roury se nezavřou a proc.wait() by nikdy neskončil. Proto celá procesní
+    skupina — proces se spouští se start_new_session=True, takže je jeho pgid
+    naše, a nikoho cizího tím netrefíme.
+    """
+    with suppress(ProcessLookupError):
+        os.killpg(proc.pid, signal.SIGKILL)
 
 
 @dataclass
@@ -190,37 +239,37 @@ class CodexDJ:
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,  # vlastní pgid kvůli _kill_tree
         )
 
-        raw = ""
-        assert proc.stdout
-        while True:
-            line = await proc.stdout.readline()
-            if not line:
-                break
-            try:
-                ev = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if ev.get("type") == "thread.started":
-                self.thread_id = ev.get("thread_id") or self.thread_id
-            elif ev.get("type") == "item.completed":
-                item = ev.get("item") or {}
-                if item.get("type") == "agent_message":
-                    raw = item.get("text") or raw
+        # Po _kill_tree se na proc.wait() nesmí čekat: waiter se po SIGKILL
+        # umí neprobudit (pozorováno na 3.12), i když returncode dorazí.
+        try:
+            async with asyncio.timeout(TURN_TIMEOUT):
+                raw, error, fatal = await self._read_events(proc)
+                if not fatal:
+                    await proc.wait()
+        except TimeoutError:
+            _kill_tree(proc)
+            raise RuntimeError(f"Codex neodpověděl do {TURN_TIMEOUT} s, ukončen")
 
-        await proc.wait()
+        if fatal:
+            raise RuntimeError(error)
         if proc.returncode != 0:
-            err = (await proc.stderr.read()).decode(errors="replace").strip()
-            if "login" in err.lower() or "unauthor" in err.lower():
-                raise CodexUnavailable(f"Codex není přihlášen: {err[:200]}")
-            raise RuntimeError(err[:300] or f"codex skončil s kódem {proc.returncode}")
+            stderr = (await proc.stderr.read()).decode(errors="replace").strip()
+            if "login" in stderr.lower() or "unauthor" in stderr.lower():
+                raise CodexUnavailable(f"Codex není přihlášen: {stderr[:200]}")
+            raise RuntimeError(
+                error or stderr[:300] or f"codex skončil s kódem {proc.returncode}"
+            )
 
         # -o is more reliable than the last message from the stream
         if self._out.exists():
             raw = self._out.read_text() or raw
         if not raw.strip():
-            raise RuntimeError("Codex nevrátil žádné rozhodnutí")
+            # Na turn.failed umí codex skončit s kódem 0 — o chybě se ví
+            # jen z eventů, návratový kód nestačí.
+            raise RuntimeError(error or "Codex nevrátil žádné rozhodnutí")
 
         data = json.loads(raw)
         return Decision(
@@ -232,6 +281,38 @@ class CodexDJ:
             remember=data.get("remember", ""),
             reply=data.get("reply", ""),
         )
+
+    async def _read_events(
+        self, proc: asyncio.subprocess.Process
+    ) -> tuple[str, str, bool]:
+        """Čte JSONL stream Codexu; vrací (zpráva agenta, chyba, zabito).
+
+        Na definitivní chybu (4xx) se proces rovnou zabije: Codex by ji sám
+        zkoušel znovu a znovu se stejným výsledkem.
+        """
+        raw = ""
+        error = ""
+        assert proc.stdout
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                return raw, error, False
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            kind = ev.get("type")
+            if kind == "thread.started":
+                self.thread_id = ev.get("thread_id") or self.thread_id
+            elif kind == "item.completed":
+                item = ev.get("item") or {}
+                if item.get("type") == "agent_message":
+                    raw = item.get("text") or raw
+            elif kind in ("error", "turn.failed"):
+                error, fatal = _stream_error(ev)
+                if fatal:
+                    _kill_tree(proc)
+                    return raw, error, True
 
     # ---- executing the decision ----
 

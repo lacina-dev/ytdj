@@ -36,6 +36,7 @@ from ..music.radio import RadioPools
 from ..player.base import Player, queue_transaction
 from ..state import Store
 from .. import telemetry
+from .appserver import AppServer, app_server_enabled, default_binary
 from .fastpath import FastResult, enforce_requested, find_artists, find_song
 from .intent import Intent, ListenerIntent, Pair, build_intent, track_avoided
 from .prompts import ROLE, render_state
@@ -232,6 +233,8 @@ class CodexDJ:
         self.store = store
         self.thread_id: str | None = None
         self.codex = shutil.which("codex") or str(Path.home() / ".local/bin/codex")
+        # [app-server] trvale běžící Codex (viz appserver.py); None = jen exec
+        self.app: AppServer | None = None
 
         # Codex is primarily a coding agent. Running it in the project
         # directory would mean it starts digging through the sources; it gets
@@ -771,6 +774,47 @@ class CodexDJ:
         log.info("rychlá cesta (skladba): %s → %s", text, t.label())
         return Plan(intent=intent, requested=[t], seeds=[t])
 
+    # [app-server]
+    async def _via_app_server(self, prompt: str, auto: bool) -> dict | None:
+        """Tah přes trvale běžící Codex; None = selhalo, ať to vezme `codex exec`."""
+        if not app_server_enabled():
+            return None
+        if self.app is None:
+            binary = default_binary()
+            if binary is None:
+                return None
+            self.app = AppServer(
+                binary, str(self._dir), model=self.cfg.codex_model,
+                max_turns_per_thread=self.MAX_RESUMED_TURNS,
+            )
+        t0 = time.monotonic()
+        try:
+            res = await self.app.turn(prompt, DECISION_SCHEMA, timeout=TURN_TIMEOUT)
+            data = parse_output(res.text)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("app-server selhal (%s) — beru codex exec", exc)
+            telemetry.event(
+                "dj.turn", how="app_server", auto=auto, ok=False,
+                error=f"{type(exc).__name__}: {exc}"[:300],
+                stderr=" | ".join(self.app.stderr_tail[-3:])[:300] or None,
+                took_ms=int((time.monotonic() - t0) * 1000),
+            )
+            await self.app.close()  # příště načisto
+            return None
+        telemetry.event(
+            "dj.turn", how="app_server", auto=auto, ok=True, new_thread=res.new_thread,
+            startup_ms=res.startup_ms, model_ms=res.model_ms,
+            took_ms=int((time.monotonic() - t0) * 1000),
+        )
+        return data
+
+    async def close(self) -> None:
+        """Ukončí trvale běžící Codex (při vypínání ytdj)."""
+        if self.app is not None:
+            await self.app.close()
+
     async def interpret(self, user_input: str, auto: bool = False) -> Intent:
         """Zeptá se modelu a vyloží odpověď. Nic nepřehrává.
 
@@ -778,14 +822,18 @@ class CodexDJ:
         """
         prompt = await self._build_prompt(user_input)
         last_exc: Exception | None = None
+        # [app-server] trvale běžící Codex; při jakékoli chybě `codex exec` jako dřív
+        data = await self._via_app_server(prompt, auto)
         for resume in (True, False):
+            if data is not None:
+                break
             if resume and not self.thread_id:
                 continue
             if resume and getattr(self, "_thread_turns", 0) >= self.MAX_RESUMED_TURNS:
                 self.thread_id = None  # [latency] session znovu, viz MAX_RESUMED_TURNS
                 continue
             try:
-                with telemetry.timer("dj.turn", resume=resume, auto=auto) as ev:
+                with telemetry.timer("dj.turn", how="exec", resume=resume, auto=auto) as ev:
                     data = await self._run(self._args(resume), prompt)
                     ev["ok"] = True
                 self._thread_turns = getattr(self, "_thread_turns", 0) + 1 if resume else 1
@@ -794,9 +842,11 @@ class CodexDJ:
             except Exception as exc:
                 log.warning("codex exec selhal (resume=%s): %s", resume, exc)
                 last_exc = exc
+                data = None
                 if resume:
                     self.thread_id = None  # session was lost, retry from scratch
                 continue
+        if data is not None:
             telemetry.event(
                 "dj.decision",
                 action=data.get("action"),

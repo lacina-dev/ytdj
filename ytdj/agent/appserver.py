@@ -1,0 +1,319 @@
+"""Trvale běžící Codex (`codex app-server`, JSON-RPC po stdio) místo `codex exec`.
+
+Proč: `codex exec` na Pi 3 platí při každém tahu start CLI (node obal + binárka,
+2–10 s), načtení session a po odpovědi ještě úklid. Změřeno na Pi 25. 9.
+(stejný skutečný prompt, gpt-5.6-luna):
+
+  codex exec           request → odpověď  20–25 s (model sám 8–12 s)
+  app-server, 1. tah   8.6 s   (start procesu 0.4–2.1 s jen jednou)
+  app-server, 2. tah   5.3 s
+
+Paměť: nativní binárka bez node obalu má v klidu ~165 MB RSS, při tahu ~180 MB
+(Pi má ~450 MB volných). Proto se proces spouští až při prvním přání a po
+IDLE_TTL bez tahu se ukončí — v kanceláři chodí přání v dávkách.
+
+Codex dál nedostává žádné nástroje: sandbox read-only, schvalování `never`
+a každý požadavek serveru (schválení příkazu, souboru…) se odmítne.
+Když cokoli v protokolu selže, volající přejde na `codex exec` jako dřív.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import glob
+import json
+import logging
+import os
+import shutil
+import signal
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+log = logging.getLogger(__name__)
+
+IDLE_TTL = 600.0  # s bez tahu → proces končí (uvolní ~165 MB)
+START_TIMEOUT = 30.0  # s na initialize + thread/start (Pi pod zátěží)
+
+
+class AppServerError(RuntimeError):
+    pass
+
+
+def native_codex(wrapper: str | None) -> str | None:
+    """Nativní binárka Codexu vedle npm obalu (`codex` je node skript).
+
+    Obal na Pi 3 stojí ~2 s a ~50 MB navíc; binárka umí totéž. None, když
+    ji nenajdeme (jiná instalace) — pak se použije obal.
+    """
+    if not wrapper:
+        return None
+    try:
+        js = Path(wrapper).resolve()  # …/@openai/codex/bin/codex.js
+    except OSError:
+        return None
+    root = js.parent.parent
+    hits = sorted(glob.glob(str(root / "node_modules/@openai/codex-*/vendor/*/bin/codex")))
+    return hits[0] if hits else None
+
+
+@dataclass
+class TurnResult:
+    text: str
+    startup_ms: int  # 0 = proces už běžel
+    model_ms: int  # turn/start → turn/completed
+    new_thread: bool
+
+
+class AppServer:
+    """Jeden dlouho běžící `codex app-server` a jedno vlákno v něm.
+
+    Není vláknově bezpečné — volající (CodexDJ pod zámkem Codexu) posílá
+    tahy po jednom.
+    """
+
+    def __init__(
+        self,
+        binary: str,
+        cwd: str,
+        model: str = "",
+        max_turns_per_thread: int = 3,
+        idle_ttl: float = IDLE_TTL,
+        extra_args: list[str] | None = None,
+    ) -> None:
+        self.binary = binary
+        self.cwd = cwd
+        self.model = model
+        self.max_turns = max_turns_per_thread
+        self.idle_ttl = idle_ttl
+        self.extra_args = extra_args or []
+        self.proc: asyncio.subprocess.Process | None = None
+        self._reader: asyncio.Task | None = None
+        self._idle: asyncio.Task | None = None
+        self._next_id = 0
+        self._pending: dict[int, asyncio.Future] = {}
+        self._events: asyncio.Queue = asyncio.Queue()
+        self.thread_id: str | None = None
+        self.thread_turns = 0
+        self.stderr_tail: list[str] = []
+
+    # ---- proces ----
+
+    @property
+    def alive(self) -> bool:
+        return self.proc is not None and self.proc.returncode is None
+
+    async def _start(self) -> None:
+        self.proc = await asyncio.create_subprocess_exec(
+            self.binary, "app-server", *self.extra_args,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,  # vlastní pgid → close() zabije i potomky
+            limit=16 * 1024 * 1024,  # řádky JSON-RPC bývají dlouhé
+        )
+        self._pending.clear()
+        self._events = asyncio.Queue()
+        self.thread_id = None
+        self.thread_turns = 0
+        self._reader = asyncio.create_task(self._read_loop(self.proc))
+        asyncio.create_task(self._read_stderr(self.proc))
+        await self._request("initialize", {
+            "clientInfo": {"name": "ytdj", "title": "ytdj DJ", "version": "1"},
+        })
+        await self._notify("initialized")
+
+    async def close(self) -> None:
+        proc, self.proc = self.proc, None
+        self.thread_id = None
+        if self._idle and self._idle is not asyncio.current_task():
+            self._idle.cancel()
+        if proc is not None and proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(proc.pid, signal.SIGKILL)  # SIGTERM nechá binárku viset
+            with contextlib.suppress(Exception):
+                async with asyncio.timeout(5):
+                    await proc.wait()
+        if self._reader:
+            self._reader.cancel()
+        for fut in self._pending.values():
+            if not fut.done():
+                fut.set_exception(AppServerError("app-server skončil"))
+        self._pending.clear()
+
+    def _touch(self) -> None:
+        """Odloží ukončení pro nečinnost."""
+        if self._idle:
+            self._idle.cancel()
+        if self.idle_ttl > 0:
+            self._idle = asyncio.create_task(self._idle_close())
+
+    async def _idle_close(self) -> None:
+        await asyncio.sleep(self.idle_ttl)
+        log.info("app-server %d s bez tahu — ukončuji (uvolní paměť)", int(self.idle_ttl))
+        await self.close()
+
+    # ---- JSON-RPC ----
+
+    async def _send(self, obj: dict) -> None:
+        if not self.alive or self.proc.stdin is None:
+            raise AppServerError("app-server neběží")
+        self.proc.stdin.write((json.dumps(obj) + "\n").encode())
+        await self.proc.stdin.drain()
+
+    async def _notify(self, method: str, params: dict | None = None) -> None:
+        msg: dict[str, Any] = {"method": method}
+        if params is not None:
+            msg["params"] = params
+        await self._send(msg)
+
+    async def _request(self, method: str, params: dict, timeout: float = START_TIMEOUT) -> Any:
+        self._next_id += 1
+        rid = self._next_id
+        fut = asyncio.get_running_loop().create_future()
+        self._pending[rid] = fut
+        await self._send({"id": rid, "method": method, "params": params})
+        try:
+            async with asyncio.timeout(timeout):
+                return await fut
+        finally:
+            self._pending.pop(rid, None)
+
+    async def _read_loop(self, proc: asyncio.subprocess.Process) -> None:
+        assert proc.stdout
+        try:
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    continue
+                if "id" in msg and "method" in msg:
+                    await self._refuse(msg)  # požadavek serveru na nás
+                elif "id" in msg:
+                    fut = self._pending.get(msg["id"])
+                    if fut and not fut.done():
+                        if "error" in msg:
+                            err = msg["error"] or {}
+                            fut.set_exception(AppServerError(str(err.get("message") or err)))
+                        else:
+                            fut.set_result(msg.get("result"))
+                elif "method" in msg:
+                    self._events.put_nowait(msg)
+        finally:
+            self._events.put_nowait({"method": "_closed"})
+            for fut in self._pending.values():
+                if not fut.done():
+                    fut.set_exception(AppServerError("app-server skončil"))
+
+    async def _read_stderr(self, proc: asyncio.subprocess.Process) -> None:
+        assert proc.stderr
+        while line := await proc.stderr.readline():
+            self.stderr_tail = (self.stderr_tail + [line.decode(errors="replace").rstrip()])[-20:]
+
+    async def _refuse(self, msg: dict) -> None:
+        """Schválení příkazů, souborů, vstupu… — DJ nic z toho nedovoluje."""
+        log.warning("app-server chce %s — odmítám", msg.get("method"))
+        with contextlib.suppress(Exception):
+            await self._send({
+                "id": msg["id"],
+                "error": {"code": -32601, "message": "ytdj: nástroje nejsou povolené"},
+            })
+
+    # ---- tah ----
+
+    async def turn(self, prompt: str, schema: dict, timeout: float) -> TurnResult:
+        """Jeden tah; vrací text poslední zprávy agenta (JSON podle `schema`)."""
+        t0 = time.monotonic()
+        startup_ms = 0
+        if not self.alive:
+            await self._start()
+            startup_ms = int((time.monotonic() - t0) * 1000)
+        self._touch()
+        new_thread = False
+        if self.thread_id is None or self.thread_turns >= self.max_turns:
+            # nové vlákno: kontext nenarůstá (stav jde celý v každém zadání)
+            params: dict[str, Any] = {
+                "cwd": self.cwd,
+                "sandbox": "read-only",
+                "approvalPolicy": "never",
+                "ephemeral": True,  # nepsat session na SD kartu
+            }
+            if self.model:
+                params["model"] = self.model
+            res = await self._request("thread/start", params)
+            self.thread_id = ((res or {}).get("thread") or {}).get("id")
+            if not self.thread_id:
+                raise AppServerError(f"thread/start bez id: {str(res)[:200]}")
+            self.thread_turns = 0
+            new_thread = True
+            startup_ms = int((time.monotonic() - t0) * 1000)
+
+        # zbytky z minulého tahu (pozdní notifikace) zahodit
+        while not self._events.empty():
+            self._events.get_nowait()
+        t_turn = time.monotonic()
+        res = await self._request("turn/start", {
+            "threadId": self.thread_id,
+            "input": [{"type": "text", "text": prompt}],
+            "outputSchema": schema,
+        })
+        turn_id = ((res or {}).get("turn") or {}).get("id")
+        text = ""
+        try:
+            async with asyncio.timeout(timeout):
+                while True:
+                    msg = await self._events.get()
+                    method = msg.get("method")
+                    params = msg.get("params") or {}
+                    if method == "_closed":
+                        raise AppServerError("app-server skončil uprostřed tahu")
+                    if params.get("threadId") not in (None, self.thread_id):
+                        continue
+                    if method == "item/completed":
+                        item = params.get("item") or {}
+                        if item.get("type") == "agentMessage":
+                            text = item.get("text") or text
+                    elif method == "error" and not params.get("willRetry"):
+                        err = params.get("error") or {}
+                        raise AppServerError(str(err.get("message") or err)[:300])
+                    elif method == "turn/completed":
+                        turn = params.get("turn") or {}
+                        if turn_id and turn.get("id") not in (None, turn_id):
+                            continue
+                        if turn.get("status") not in (None, "completed"):
+                            err = (turn.get("error") or {}).get("message") or turn.get("status")
+                            raise AppServerError(f"tah skončil: {err}")
+                        break
+        except asyncio.CancelledError:
+            # přednost dostal posluchač — tah zastavit, proces nechat žít
+            with contextlib.suppress(Exception):
+                await self._send({
+                    "id": 10**9, "method": "turn/interrupt",
+                    "params": {"threadId": self.thread_id, "turnId": turn_id},
+                })
+            raise
+        self.thread_turns += 1
+        self._touch()
+        if not text.strip():
+            raise AppServerError("tah bez odpovědi")
+        return TurnResult(
+            text=text,
+            startup_ms=startup_ms,
+            model_ms=int((time.monotonic() - t_turn) * 1000),
+            new_thread=new_thread,
+        )
+
+
+def app_server_enabled() -> bool:
+    """YTDJ_CODEX_APP_SERVER=0 vypne (návrat k `codex exec` u každého tahu)."""
+    return os.environ.get("YTDJ_CODEX_APP_SERVER", "1").strip() not in ("0", "false", "no", "")
+
+
+def default_binary() -> str | None:
+    wrapper = shutil.which("codex") or str(Path.home() / ".local/bin/codex")
+    return native_codex(wrapper) or (wrapper if os.path.exists(wrapper) else None)

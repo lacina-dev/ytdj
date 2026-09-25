@@ -467,6 +467,7 @@ class App:
             # a closed SQLite
             if self.web:
                 await self.web.stop()
+            await self.dj.close()  # [app-server] trvale běžící Codex
             await self.player.stop()
             self.store.close()
         return rc

@@ -15,15 +15,18 @@ import asyncio
 import json
 import logging
 import os
+import sys
 from contextlib import suppress
 
 from ..config import MPV_SOCKET, Config, save_values
+from . import ytdl_cache
 from ..music.catalog import Track
 from .base import EventHandler, Player, PlayerEvent, PlayerStatus
 
 log = logging.getLogger(__name__)
 
 WATCH_URL = "https://music.youtube.com/watch?v={}"
+PREFETCH_AHEAD = 2  # kolik skladeb z fronty mít vyřešených dopředu
 
 # mpv nad 130 stejně nepustí a ručně zapsaná hodnota v configu by ho jinak
 # odmítla nastartovat
@@ -75,6 +78,8 @@ class MpvPlayer(Player):
         self._count = 0
         self._time_pos = 0.0  # průběžná pozice — pro detekci useknuté skladby
         self._replacing = False  # další konec skladby způsobila aplikace, ne posluchač
+        self._prefetch_task: asyncio.Task | None = None
+        self._prefetch_wake = asyncio.Event()
         self._paused = False
         self._volume = _clamp_volume(cfg.volume)
         # Zápis hlasitosti do configu se odkládá: tažení slideru i držené "+"
@@ -95,7 +100,7 @@ class MpvPlayer(Player):
             "--vid=no",
             f"--input-ipc-server={MPV_SOCKET}",
             f"--ytdl-format={self.cfg.ytdl_format}",
-            f"--script-opts=ytdl_hook-ytdl_path={self.cfg.yt_dlp_path}",
+            f"--script-opts=ytdl_hook-ytdl_path={self._ytdl_shim()}",
             "--prefetch-playlist=yes",  # pre-resolves the next track's URL -> no gap
             "--gapless-audio=weak",
             "--cache=yes",
@@ -133,9 +138,12 @@ class MpvPlayer(Player):
             os.unlink(MPV_SOCKET)
         MPV_SOCKET.parent.mkdir(parents=True, exist_ok=True)
 
+        env = self.cfg.child_env()
+        env[ytdl_cache.ENV_REAL] = self.cfg.yt_dlp_path
+        env[ytdl_cache.ENV_DIR] = str(ytdl_cache.cache_dir())
         self.proc = await asyncio.create_subprocess_exec(
             *self._args(),
-            env=self.cfg.child_env(),
+            env=env,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -332,6 +340,7 @@ class MpvPlayer(Player):
                 if kind == "start":
                     self._current_id = vid
                     self._measure_quality()
+                    self._schedule_prefetch()
                 elif vid is None:
                     vid = self._current_id
                 track = self._tracks.get(vid or "")
@@ -382,6 +391,7 @@ class MpvPlayer(Player):
 
     async def enqueue(self, tracks: list[Track]) -> int:
         added = 0
+        self._schedule_prefetch()
         for track in tracks:
             self._tracks[track.id] = track
             self._order.append(track.id)
@@ -449,6 +459,65 @@ class MpvPlayer(Player):
         await self._command("set_property", "volume", volume, wait=False)
         self._volume = volume
         self._remember_volume(volume)
+
+    # ---------- streamy dopředu ----------
+
+    def _ytdl_shim(self) -> str:
+        """Spustitelný soubor, který mpv volá místo yt-dlp (viz ytdl_cache)."""
+        shim = ytdl_cache.cache_dir() / "yt-dlp-cached"
+        body = f'#!/bin/sh\nexec "{sys.executable}" "{ytdl_cache.__file__}" "$@"\n'
+        try:
+            shim.parent.mkdir(parents=True, exist_ok=True)
+            if not shim.exists() or shim.read_text() != body:
+                shim.write_text(body)
+                shim.chmod(0o755)
+        except OSError:
+            log.warning("shim pro předem vyřešené streamy nejde vytvořit", exc_info=True)
+            return self.cfg.yt_dlp_path
+        return str(shim)
+
+    def _schedule_prefetch(self) -> None:
+        """Probudí (nebo spustí) úlohu, která drží další skladby vyřešené."""
+        self._prefetch_wake.set()
+        if self._prefetch_task is None or self._prefetch_task.done():
+            self._prefetch_task = asyncio.create_task(self._prefetch_loop())
+
+    async def _prefetch_loop(self) -> None:
+        done: dict[str, float] = {}
+        while True:
+            await self._prefetch_wake.wait()
+            self._prefetch_wake.clear()
+            await asyncio.sleep(1.0)  # fronta se mění po dávkách — počkat, až se usadí
+            pos = self._pos
+            ahead = [
+                vid for vid in self._order[pos + 1 : pos + 1 + PREFETCH_AHEAD]
+                if vid and vid != self._current_id
+            ]
+            if not ahead:
+                continue
+            if not await asyncio.to_thread(ytdl_cache.has_template):
+                # mpv ještě nikdy nevolal yt-dlp, takže nevíme s čím; první
+                # skladba to za chvíli zjistí
+                await asyncio.sleep(5.0)
+                self._prefetch_wake.set()
+                continue
+            now = asyncio.get_running_loop().time()
+            for vid in ahead:
+                if now - done.get(vid, -1e9) < ytdl_cache.MAX_AGE / 2:
+                    continue
+                t0 = asyncio.get_running_loop().time()
+                ok = await asyncio.to_thread(
+                    ytdl_cache.prefetch, vid, WATCH_URL.format(vid), self.cfg.yt_dlp_path
+                )
+                took = asyncio.get_running_loop().time() - t0
+                if ok:
+                    done[vid] = asyncio.get_running_loop().time()
+                    track = self._tracks.get(vid)
+                    log.info("připraveno dopředu (%.0f s): %s", took, track.label() if track else vid)
+                else:
+                    log.debug("dopředu se nepodařilo: %s", vid)
+                if self._prefetch_wake.is_set():
+                    break  # fronta se mezitím změnila — přepočítat
 
     # ---------- zapamatování hlasitosti ----------
 

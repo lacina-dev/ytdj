@@ -294,6 +294,19 @@ class SongParse:
     """Kandidáti (interpret, název) jak je posluchač napsal, v pořadí zkoušení."""
 
     pairs: list[tuple[str, str]]
+    # "jen od X", "originál od X", "od X, ne jinou verzi" — jiná verze nepřipadá v úvahu
+    insist: bool = False
+
+
+# Posluchač trvá na interpretovi. Bez toho platí: nemá-li ji jmenovaný, ale
+# skladba zjevně existuje od někoho jiného, nejspíš si spletl interpreta —
+# hraje se ta, s poctivou poznámkou.
+_INSIST = re.compile(
+    r"(?:,\s*)?\b(?:ne\s+jinou\s+verzi|žádnou\s+jinou|zadnou\s+jinou|ne\s+cover\w*|"
+    r"not\s+a\s+cover|originál\w*|original\w*|jen(?:om)?(?=\s+od\b)|"
+    r"pouze(?=\s+od\b)|only(?=\s+by\b))\b[,\s]*",
+    re.I,
+)
 
 
 def _strip_lead(words: list[str]) -> list[str]:
@@ -322,6 +335,8 @@ def parse_song(text: str) -> SongParse | None:
     if _SINGLE.search(raw) or _LIKE.search(raw) or _EXCEPT.search(raw):
         return None
     pairs: list[tuple[str, str]] = []
+    insist = bool(_INSIST.search(text))
+    text = re.sub(r"\s+", " ", _INSIST.sub(" ", text)).strip(" ,")
     dash = _DASH_SPLIT.split(text.strip(), maxsplit=1)
     if len(dash) == 2:
         left = _strip_lead(dash[0].split())
@@ -334,11 +349,11 @@ def parse_song(text: str) -> SongParse | None:
         idx = [i for i, w in enumerate(words) if norm(w) == "od"]
         if len(idx) == 1:
             title = _strip_lead(words[: idx[0]])
-            artist = [w for w in words[idx[0] + 1:] if norm(w) not in _FILLER]
+            artist = [w.strip(",") for w in words[idx[0] + 1:] if norm(w) not in _FILLER]
             if title and artist and _is_title(title) and len(artist) <= MAX_NAME_TOKENS:
                 if not any(_NOT_NAME.match(norm(w)) for w in artist):
                     pairs.append((" ".join(artist), " ".join(title)))
-    return SongParse(pairs) if pairs else None
+    return SongParse(pairs, insist) if pairs else None
 
 
 def _clean_words(text: str) -> list[str]:
@@ -376,9 +391,10 @@ class SongResult:
     title: str = ""
     reason: str = ""
     lookups: int = 0
+    note: str = ""  # "Od Olympicu ji nemám — hraju verzi …"
 
 
-SONG_BUDGET = 3.5  # s — déle to nesmí zdržet cestu k modelu (zásah na laptopu 0.4–2 s)
+SONG_BUDGET = 7.0  # s — na Pi trvá jeden dotaz ~1.5–2 s (dj.fast_path 23:46: 2 dotazy za 3.5 s)
 
 
 async def find_song(catalog, text: str, budget: float = SONG_BUDGET) -> SongResult:
@@ -399,40 +415,140 @@ async def find_song(catalog, text: str, budget: float = SONG_BUDGET) -> SongResu
         return res
 
 
-async def _find_song(catalog, parsed: SongParse, res: SongResult) -> SongResult:
-    async def attempt(a_q: str, t_q: str, artist: str, title: str) -> bool:
-        res.lookups += 1
-        hit = await catalog.search_song(a_q, t_q)
-        # katalog umí vrátit "aspoň něco od něj" — bere se jen přesná shoda
-        if hit is not None and song_matches(hit, artist, title):
-            res.track, res.artist, res.title, res.reason = hit, a_q, title, ""
-            return True
-        return False
+async def _search_verified(catalog, artist: str, title: str, queries) -> Any:
+    """Všechny dotazy (interpret, název) naráz; první ověřený v pořadí dotazů.
 
+    Na Pi je dotaz do katalogu ~1.5–2 s, takže tvary jména ("Olympicu",
+    "Olympic") a názvu se nezkoušejí po sobě, ale současně. `strict=True`:
+    bez náhrad "aspoň něco od něj" a bez dalších kol v katalogu.
+    """
+    async def one(a_q: str, t_q: str):
+        try:
+            return await catalog.search_song(a_q, t_q, strict=True)
+        except TypeError:  # katalog bez `strict` (starší / atrapa)
+            return await catalog.search_song(a_q, t_q)
+        except Exception:
+            return None
+
+    hits = await asyncio.gather(*(one(a, t) for a, t in queries), return_exceptions=True)
+    for hit in hits:
+        if isinstance(hit, BaseException):
+            continue
+        if hit is not None and song_matches(hit, artist, title):
+            return hit
+    return None
+
+
+def _queries(artist: str, title: str) -> list[tuple[str, str]]:
+    a_var = variants(_clean_words(artist))
+    t_var = variants(_clean_words(title))
+    out = [(artist, title)]
+    for a in [artist] + a_var[1:3]:
+        for t in [title] + t_var[1:2]:
+            if (a, t) not in out:
+                out.append((a, t))
+    return out[:6]
+
+
+def title_strong(asked: str, catalog_title: str) -> bool:
+    """Název sedí celý (s českými koncovkami), ne jen z části."""
+    from ..music.match import split_title
+
+    base = split_title(catalog_title)[0] or catalog_title
+    return name_matches(_clean_words(asked), base)
+
+
+async def other_version(catalog, title: str) -> Any:
+    """Nejznámější nahrávka toho názvu od kohokoli — jen při silné shodě názvu."""
+    async def one(t_q: str):
+        try:
+            return await catalog.search_song("", t_q, strict=True)
+        except TypeError:
+            return await catalog.search_song("", t_q)
+        except Exception:
+            return None
+
+    queries = variants(_clean_words(title))[:2]
+    queries[0] = title
+    for hit in await asyncio.gather(*(one(q) for q in queries), return_exceptions=True):
+        if hit is not None and not isinstance(hit, BaseException) and title_strong(title, hit.title):
+            return hit
+    return None
+
+
+async def _via_profile(catalog, artist: str, title: str, res: SongResult) -> Any:
+    a_tok = _clean_words(artist)
+
+    async def find(q: str):
+        try:
+            return await catalog.find_artist(q)
+        except Exception:
+            return None
+
+    found = await asyncio.gather(*(find(q) for q in variants(a_tok)[:3]))
+    res.lookups += len(found)
+    names: list[str] = []
+    for f in found:
+        if f and not isinstance(f, BaseException) and f.name not in names \
+                and _artist_ok(a_tok, f.name):
+            names.append(f.name)
+    if not names:
+        return None
+    more = [(n, t) for n in names for t in [title] + variants(_clean_words(title))[1:2]]
+    res.lookups += len(more)
+    return await _search_verified(catalog, artist, title, more)
+
+
+def other_version_note(named: str, track: Any) -> str:
+    return f"Od {named} ji nemám — hraju verzi {track.artist}."
+
+
+async def _scan(catalog, artist: str, title: str) -> Any:
+    """Obyčejné hledání "interpret název" a první výsledek, který projde.
+
+    Hledání skladby s interpretem vetuje "Nohavici" vůči "Jaromir Nohavica";
+    seznam výsledků ho ale obsahuje a naše kontrola (příjmení + celý název)
+    ho pozná. Jeden dotaz.
+    """
+    search = getattr(catalog, "search", None)
+    if search is None:
+        return None
+    try:
+        hits = await search(f"{artist} {title}", limit=10)
+    except Exception:
+        return None
+    return next((h for h in hits if song_matches(h, artist, title)), None)
+
+
+async def _find_song(catalog, parsed: SongParse, res: SongResult) -> SongResult:
     try:
         for artist, title in parsed.pairs:
-            a_var, t_var = variants(_clean_words(artist)), variants(_clean_words(title))
-            # 1) rovnou hledání skladby: jak to napsal, pak odhad 1. pádu
-            #    ("Jasnou zprávu od Olympicu" → "olympic" / "jasna zprava")
-            if await attempt(artist, title, artist, title):
+            queries = _queries(artist, title)
+            res.lookups += len(queries)
+            hit, scanned = await asyncio.gather(
+                _search_verified(catalog, artist, title, queries),
+                _scan(catalog, artist, title),
+            )
+            res.lookups += 1
+            hit = hit or scanned
+            if hit is None:
+                # Přes profil: katalog dá 1. pád a celé jméno ("Nohavici" →
+                # Jaromír Nohavica); hledání skladeb samo příjmení neveme.
+                hit = await _via_profile(catalog, artist, title, res)
+            if hit is not None:
+                res.track, res.artist, res.title, res.reason = hit, artist, title, ""
                 return res
-            if len(a_var) > 1 or len(t_var) > 1:
-                a1 = a_var[1] if len(a_var) > 1 else artist
-                t1 = t_var[1] if len(t_var) > 1 else title
-                if await attempt(a1, t1, artist, title):
-                    return res
-            # 2) přes profil interpreta (1. pád od katalogu), víc kandidátů
-            tried: set[str] = set()
-            for q in a_var[:3]:
-                res.lookups += 1
-                found = await catalog.find_artist(q)
-                if not found or found.name in tried or not _artist_ok(_clean_words(artist), found.name):
-                    continue
-                tried.add(found.name)
-                for t_q in t_var[:2]:
-                    if await attempt(found.name, t_q, artist, title):
-                        return res
             res.reason = f"no_strict_match:{artist} — {title}"
+        # Jmenovaný interpret ji nemá. Když posluchač netrval na něm a skladba
+        # zjevně existuje od někoho jiného, nejspíš si spletl interpreta.
+        if len(parsed.pairs) == 1 and not parsed.insist:
+            artist, title = parsed.pairs[0]
+            res.lookups += 2
+            other = await other_version(catalog, title)
+            if other is not None:
+                res.track, res.artist, res.title, res.reason = other, artist, title, ""
+                res.note = other_version_note(artist, other)
+                return res
     except Exception as exc:  # katalog umí selhat na čemkoli
         res.track = None
         res.reason = f"error:{type(exc).__name__}"
@@ -481,3 +597,80 @@ def verify_requested(pairs: list[tuple[str, str]], tracks: list[Any]) -> tuple[l
         else:
             ok.append(t)
     return ok, wrong
+
+
+def named_artists(text: str) -> list[str]:
+    """Interpret, kterého posluchač v zadání výslovně jmenoval ("… od Olympicu").
+
+    Jen jednoznačná forma "<název> od <interpret>"; u "A - B" není jisté, co je
+    co, a vrací se prázdno (pak rozhoduje shoda názvu jako dřív).
+    """
+    parsed = parse_song(text)
+    if not parsed or len(parsed.pairs) != 1:
+        return []
+    return [parsed.pairs[0][0]]
+
+
+def credited_to(track, artist: str) -> bool:
+    return any(
+        _artist_ok(_clean_words(artist), c)
+        for c in re.split(r"\s*(?:,|&| feat\.? | ft\.? | x )\s*", track.artist) + [track.artist]
+        if c
+    )
+
+
+async def enforce_requested(
+    catalog, text: str, pairs: list[tuple[str, str]], tracks: list[Any]
+) -> tuple[list[Any], list[str], list[str]]:
+    """Vyžádané skladby: (co hrát, co nesedí, poctivé poznámky k odpovědi).
+
+    Název musí sedět vždy. Když posluchač jmenoval interpreta ("… od
+    Olympicu"):
+      - má ji ten interpret → hraje jeho verze (i když model vybral jinou),
+      - nemá, ale název zjevně existuje od jiného → hraje ta, s poznámkou
+        "Od Olympicu ji nemám — hraju verzi …" (nejspíš si spletl interpreta),
+      - trval na něm ("jen od", "originál od", "ne jinou verzi") nebo se
+        název shoduje jen zčásti → nenašel jsem.
+    23:46 na Pi: model vybral nahrávku Vágnera, Hložka a Kotvalda a odpověď
+    o tom mlčela.
+    """
+    ok, wrong = verify_requested(pairs, tracks)
+    notes: list[str] = []
+    parsed = parse_song(text)
+    if not parsed or len(parsed.pairs) != 1:
+        return ok, wrong, notes
+    who, asked_title = parsed.pairs[0]
+    from ..music.match import split_title
+
+    good: list[Any] = []
+    candidates = ok or [None]  # nic nesedí → zkusit přání doslova
+    for t in candidates:
+        if t is not None and credited_to(t, who):
+            good.append(t)
+            continue
+        title = asked_title
+        if t is not None:
+            title = next((ti for _a, ti in pairs if ti and title_close(ti, t.title)), t.title)
+            title = split_title(title)[0] or title
+        own, scanned = await asyncio.gather(
+            _search_verified(catalog, who, title, _queries(who, title)),
+            _scan(catalog, who, title),
+        )
+        own = own or scanned
+        if own is None:
+            own = await _via_profile(catalog, who, title, SongResult())
+        if own is not None:
+            good.append(own)
+            continue
+        if parsed.insist:
+            wrong.append(f"„{title}“ od {who}")
+            continue
+        other = t if t is not None and title_strong(title, t.title) else None
+        if other is None:
+            other = await other_version(catalog, title)
+        if other is not None:
+            good.append(other)
+            notes.append(other_version_note(who, other))
+        else:
+            wrong.append(f"„{title}“ od {who}")
+    return good, wrong, notes

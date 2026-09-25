@@ -289,7 +289,6 @@ class Songs(unittest.TestCase):
     def test_traps(self):
         cases = [
             "pusť Olympic od Kabátu",               # a title that is an artist's name
-            "pusť Wonderwall od Kabátu",            # right title, wrong artist
             "pusť Holky z naší školky od Olympicu",  # catalog answers with another song
             "pusť Kabát - Olympic",
         ]
@@ -297,6 +296,68 @@ class Songs(unittest.TestCase):
             res = self.song(text)
             self.assertIsNone(res.track, text)
             self.assertTrue(res.reason.startswith("no_strict_match"), (text, res.reason))
+
+    def _vagner_only(self):
+        # Pi 23:46: the catalog's only "Holky z naší školky" is by Vágner & co.
+        cat = FuzzyCatalog()
+        vagner = T("hv", "Karel Vágner, Stanislav Hložek, Petr Kotvald", "Holky z naší školky")
+
+        async def search_song(artist, title, strict=False):
+            return vagner
+
+        cat.search_song = search_song
+        return cat
+
+    def test_named_artist_lacks_it_other_version_with_note(self):
+        res = self.song("pusť Holky z naší školky od Olympicu", self._vagner_only())
+        self.assertEqual(res.track.id, "hv")
+        self.assertEqual(
+            res.note,
+            "Od Olympicu ji nemám — hraju verzi Karel Vágner, Stanislav Hložek, Petr Kotvald.",
+        )
+
+    def test_insisting_on_the_artist_means_not_found(self):
+        for text in ("pusť Holky z naší školky jen od Olympicu",
+                     "pusť Holky z naší školky od Olympicu, ne jinou verzi",
+                     "pusť originál Holky z naší školky od Olympicu"):
+            res = self.song(text, self._vagner_only())
+            self.assertIsNone(res.track, text)
+
+    def test_right_title_wrong_artist_plays_real_one_with_note(self):
+        res = self.song("pusť Wonderwall od Kabátu")
+        self.assertEqual(res.track.id, "ww")
+        self.assertEqual(res.note, "Od Kabátu ji nemám — hraju verzi Oasis.")
+
+    def test_surname_prefers_named_artist_over_other_version(self):
+        # real catalog: strict song search vetoes "Nohavici" vs "Jaromir Nohavica"
+        # and the most popular "Kometa" is by JONY — the named one must win
+        cat = FuzzyCatalog()
+        jony = T("jo", "JONY", "Kometa")
+        jarek = T("km", "Jaromir Nohavica", "Kometa")
+
+        async def search_song(artist, title, strict=False):
+            return None if artist else jony
+
+        async def search(query, limit=8):
+            return [jony, jarek]
+
+        cat.search_song, cat.search = search_song, search
+        res = self.song("pusť Kometu od Nohavici", cat)
+        self.assertEqual((res.track.id, res.note), ("km", ""))
+
+    def test_weak_title_match_is_not_another_version(self):
+        async def search_song(artist, title, strict=False):
+            return T("x", "Someone", "Holky z naší školky a jiné písně (live)")
+
+        cat = FuzzyCatalog()
+        cat.search_song = search_song
+        res = self.song("pusť Holky od Olympicu", cat)
+        self.assertIsNone(res.track)
+
+    def test_lookups_run_in_parallel(self):
+        # Pi: ~1.5–2 s per catalog call; the declined forms must not add up
+        res = self.song("pusť Jasnou zprávu od Olympicu", FuzzyCatalog(delay=1.0), budget=2.5)
+        self.assertEqual((res.track and res.track.id, res.reason), ("jz", ""))
 
     def test_time_budget(self):
         t0 = time.monotonic()
@@ -336,6 +397,12 @@ class FastTurn(unittest.TestCase):
 
 
 class FastSong(unittest.TestCase):
+    def test_other_version_reply_is_honest(self):
+        dj, player = make(current=T("c", "Someone"))
+        reply = run(dj.fast_turn("pusť Wonderwall od Kabátu"))
+        self.assertEqual(reply, "Od Kabátu ji nemám — hraju verzi Oasis. Pak podobné.")
+        self.assertEqual(player.current.id, "ww")
+
     def test_plays_song_now_then_similar(self):
         dj, player = make(current=T("c", "Someone"))
         reply = run(dj.fast_turn("pusť Jasnou zprávu od Olympicu"))

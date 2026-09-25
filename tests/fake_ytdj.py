@@ -76,6 +76,7 @@ class FakeYtdj:
         self.requests: list[dict] = []
         self.playing_req: dict | None = None  # the wish whose track plays now
         self.actions: list[dict] = []  # POST /api/requests/<id>
+        self.build = "fake-1"  # the page reloads itself when this changes
 
     def _position(self) -> float:
         if self.paused:
@@ -135,6 +136,7 @@ class FakeYtdj:
                 self._advance()  # first: the requests' states follow the track change
             busy = self.busy or self.starting or any(r["state"] == "thinking" for r in self.requests)
             base = {"requests": self._requests(), "starting": self.starting,
+                    "build": self.build, "version": self.build,
                     "people": sorted({r["who"] for r in self.requests if r["who"] != "displej"})}
             if self.idle:
                 return {
@@ -280,11 +282,10 @@ class FakeYtdj:
             elif action == "next":
                 self._next()
             elif action == "stop":
-                self.idle = True
-                for r in self.requests:
-                    if r["state"] in ACTIVE:
-                        r["state"], r["done_at"] = "removed", time.time()
-                self.playing_req = None
+                # like the real server: only a pause, nobody's wishes are removed
+                if not self.paused:
+                    self.pos, self.pos_at = self._position(), time.monotonic()
+                    self.paused = True
             elif action == "volume":
                 if isinstance(value, bool) or not isinstance(value, (int, float)):
                     return 400, {"error": "Hlasitost musí být číslo 0–130."}
@@ -434,7 +435,7 @@ def make_server(port: int = 0, fake: FakeYtdj | None = None, sse: bool = True) -
                 self._json(*fake.prompt(data))
             elif self.path == "/fake/state":
                 with fake.lock:
-                    for key in ("idle", "busy", "paused", "prompt_delay", "prompt_status", "sse", "dj_text", "mood"):
+                    for key in ("idle", "busy", "paused", "prompt_delay", "prompt_status", "sse", "dj_text", "mood", "build"):
                         if key in data:
                             setattr(fake, key, data[key])
                 self._json(200, {"ok": True})

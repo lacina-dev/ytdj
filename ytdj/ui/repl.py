@@ -35,7 +35,7 @@ Povely bez modelu (okamžité, zdarma):
   další / next / n      přeskočit
   pauza                 pozastavit
   pokračuj              pokračovat
-  stop                  zastavit a vyprázdnit frontu
+  stop                  pozastavit (přání ve frontě zůstávají)
   hlasitěji / tišeji    hlasitost o 10
   hlasitost 70          nastavit hlasitost
   co hraje / ?          stav
@@ -84,9 +84,9 @@ class Repl:
             await self.player.toggle_pause(False)
             return "▶"
         if STOP.match(text):
-            await self.player.clear_queue()
+            # jako na webu: jen pauza — přání lidí ve frontě zůstávají
             await self.player.toggle_pause(True)
-            return "⏹ fronta vyprázdněna"
+            return "⏸ pozastaveno (fronta a přání zůstávají)"
         if LOUDER.match(text):
             st = await self.player.status()
             await self.player.set_volume(st.volume + 10)

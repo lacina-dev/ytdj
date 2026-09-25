@@ -465,7 +465,12 @@ class WishQueue:
             w = next((x for x in self.wishes if x.current == vid), None)
         if w is not None:
             return {"kind": "wish", "who": w.who, "text": w.text[:200], "id": w.id}
-        return dict(self.bg_reason)
+        out = {k: v for k, v in self.bg_reason.items() if k != "id"}
+        # "nálada z přání X" jen dokud to přání trvá; pak je to prostě výběr DJe
+        src = self.by_id(self.bg_reason.get("id", ""))
+        if src is None or not src.active:
+            out["who"] = ""
+        return out
 
     def queue_tag(self, vid: str) -> dict | None:
         wid = self.owner.get(vid)
@@ -792,8 +797,9 @@ class WishQueue:
             await p.toggle_pause(False)
             return "Hraju dál."
         if action == "stop":
-            await self.stop_all()
-            return "Zastaveno, fronta je prázdná."
+            # V kanceláři "stop" nikomu nemaže přání — jen pauza.
+            await p.toggle_pause(True)
+            return "Pozastaveno — fronta i přání zůstávají."
         st = await p.status()
         if action == "louder":
             value = st.volume + 10
@@ -804,11 +810,9 @@ class WishQueue:
         return f"Hlasitost {value}."
 
     async def stop_all(self) -> None:
-        """Stop pro všechny: přání zrušit, frontu vyprázdnit, pauza."""
-        await self.cancel_all()
-        getattr(self.dj, "pending", {}).clear()
-        async with queue_transaction(self.player):
-            await self.player.clear_queue()
+        """Stop z webu / API: jen pauza. Cizí přání se nikdy nemažou (25. 9.
+        stará stránka v cache poslala "stop" a smazala přání tří lidí);
+        vlastní přání si každý odebere křížkem (token)."""
         await self.player.toggle_pause(True)
 
     async def _link_plan(self, w: Wish):
@@ -892,11 +896,11 @@ class WishQueue:
             # jinak by jedna písnička přebila náladu, kterou si řekl někdo jiný
             others = any(x.key != w.key and x.active for x in self.wishes)
             if seeds and not others:
-                await self._set_background(seeds=seeds, mood=intent.mood, who=w.who,
+                await self._set_background(seeds=seeds, mood=intent.mood, who=w.who, wid=w.id,
                                            allow_long=True)
         elif intent.kind == "mood":
             w.summary = f"nálada: {intent.mood}" if intent.mood else "nálada"
-            await self._set_background(seeds=plan.seeds, mood=intent.mood, who=w.who,
+            await self._set_background(seeds=plan.seeds, mood=intent.mood, who=w.who, wid=w.id,
                                        replace=False)
             # blok nálady patří autorovi — ať ji uslyší, i když čekají jiní
             w.tracks = await dj.next_tracks(BLOCK)
@@ -985,7 +989,8 @@ class WishQueue:
     async def _set_background(self, seeds: list[Track] | None = None, mood: str = "",
                               who: str = "", allow_long: bool = False, kind: str = "radio",
                               artist: str = "", artist_tracks: list[Track] | None = None,
-                              artists: list[str] | None = None, replace: bool = True) -> None:
+                              artists: list[str] | None = None, replace: bool = True,
+                              wid: str = "") -> None:
         if artist_tracks:
             await self.pools.set_artist(artist, artist_tracks, mood=mood or artist)
             focus = list(artists or [artist])
@@ -996,7 +1001,7 @@ class WishQueue:
             focus = []
         with contextlib.suppress(AttributeError):
             self.dj._focus_artists = focus
-        self.bg_reason = {"kind": kind, "who": who, "text": mood or artist}
+        self.bg_reason = {"kind": kind, "who": who, "text": mood or artist, "id": wid}
         telemetry.event("request.background", reason=kind, who=who or None,
                         mood=telemetry.clip(mood or artist, 120),
                         artist=artist or None, requests=len(self.active()))
@@ -1196,7 +1201,7 @@ class WishQueue:
             self.pools.session_seen.update(t.id for t in w.tracks)
             telemetry.event("request.handover", id=w.id, who=w.who, source=w.source, artist=w.artist,
                             kept=len(w.tracks), background=len(every) - len(w.tracks))
-            await self._set_background(artist=w.artist, mood=w.artist, who=w.who,
+            await self._set_background(artist=w.artist, mood=w.artist, who=w.who, wid=w.id,
                                        artist_tracks=every, artists=w.artists)
 
     # ---- události přehrávače ----

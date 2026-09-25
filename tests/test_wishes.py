@@ -781,16 +781,74 @@ class WebApi(unittest.TestCase):
 
         run(go())
 
-    def test_stop_cancels_everybodys_wishes(self):
+    def test_stop_never_removes_anybodys_wishes(self):
+        """25. 9.: stará stránka v cache poslala "stop" a smazala přání tří lidí."""
         async def go():
             async with Rig() as rig:
                 await rig.background()
                 srv = web.WebServer(WebApp(rig))
                 b = body(await srv._prompt(req({"text": "Holky z naší školky", "who": "Jana"})))
                 await rig.until(lambda: rig.wq.by_id(b["id"]).state in ("queued", "playing"))
-                await srv._control(req({"action": "stop"}))
-                self.assertEqual(rig.wq.by_id(b["id"]).state, "removed")
-                self.assertEqual(rig.upcoming(), [])
+                before = rig.upcoming()
+                resp = await srv._control(req({"action": "stop"}))
+                self.assertEqual(resp.status_code, 200)
+                self.assertIn(rig.wq.by_id(b["id"]).state, ("queued", "playing"))
+                self.assertEqual(rig.upcoming(), before)
+                self.assertTrue(rig.player._paused)
+                # ani povel napsaný DJovi
+                reply = body(await srv._prompt(req({"text": "stop", "who": "Petr"})))["reply"]
+                self.assertIn("zůstávají", reply)
+                self.assertIn(rig.wq.by_id(b["id"]).state, ("queued", "playing"))
+
+        run(go())
+
+    def test_stale_page_start_prompt_is_an_idle_start(self):
+        """▶ staré stránky poslalo rozjezd jako přání — teď je to rozjezd DJe."""
+        async def go():
+            async with Rig() as rig:
+                srv = web.WebServer(WebApp(rig))
+                resp = await srv._prompt(req({"text": web.LEGACY_START_PROMPT, "source": "web"}))
+                self.assertEqual(resp.status_code, 200)
+                await rig.until(lambda: rig.fake.current_vid() is not None)
+                self.assertEqual(rig.wq.wishes, [])  # žádné přání "hosta"
+                self.assertTrue(rig.asked[-1][1])  # automatický tah
+                st = body(await srv._status(req(method="GET")))
+                self.assertEqual(st["current"]["reason"]["who"], "")
+
+        run(go())
+
+    def test_status_carries_build_and_index_is_not_cached(self):
+        async def go():
+            async with Rig() as rig:
+                srv = web.WebServer(WebApp(rig))
+                st = body(await srv._status(req(method="GET")))
+                self.assertEqual(st["build"], web.build_ids()["ui"])
+                self.assertTrue(st["version"])
+                resp = await srv._index(req(method="GET"))
+                self.assertEqual(resp.headers["cache-control"], "no-cache")
+                self.assertEqual(resp.headers["x-ytdj-build"], st["build"])
+
+        run(go())
+        html = (Path(__file__).resolve().parents[1] / "ytdj/web/static/index.html").read_text()
+        self.assertIn("location.reload()", html)  # stará stránka se sama obnoví
+        self.assertNotIn('id="btnStop"', html)  # ■ pro všechny už na webu není
+
+    def test_background_after_a_mood_wish_is_the_djs(self):
+        async def go():
+            async with Rig() as rig:
+                await rig.background()
+                k = rig.wq.submit("něco klidnějšího", "Karel")
+                await rig.until(lambda: k.state in ("queued", "playing"))
+                self.assertEqual(rig.wq.reason_for("not-a-wish")["who"], "Karel")
+                for _ in range(10):  # blok nálady dohraje
+                    if not k.active:
+                        break
+                    rig.fake.finish_current()
+                    await rig.settle(0.15)
+                self.assertFalse(k.active)
+                reason = rig.wq.reason_for(rig.fake.current_vid())
+                self.assertEqual((reason["kind"], reason["who"]), ("radio", ""))
+                self.assertEqual(reason["text"], "klidný pop")
 
         run(go())
 

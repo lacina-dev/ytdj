@@ -52,6 +52,10 @@ CATALOG = {
     "Wonderwall": [T(f"w{i}", "Wonderwall") for i in range(3)],
     "Pelíšky": [T("p0", "Pelíšky")],
     "Kabaret Kalich": [T("kk", "Kabaret Kalich")],
+    "Znouzectnost": [T(f"zn{i}", "Znouzectnost") for i in range(5)],
+    "Wanastowi Vjecy": [T(f"wv{i}", "Wanastowi Vjecy") for i in range(5)],
+    # a different band one letter away — "pusť Olympic" must never land here
+    "Olympica": [T("oa0", "Olympica")],
 }
 SONGS = {
     "wonderwall": [T("oa", "Oasis", "Wonderwall"), T("w0", "Wonderwall", "Witchcraft")],
@@ -165,6 +169,44 @@ class Pure(unittest.TestCase):
         for text in ("pusť Metallicu", "pusť Radiohead", "hraj davida Stypku",
                      "dej tam Kryštof", "pusť The Beatles"):
             self.assertIsNotNone(parse(text), text)
+
+
+class SpacedAndMisspelled(unittest.TestCase):
+    """Pi 23:02: "Hraj z nouze cnost" meant the band Znouzectnost."""
+
+    def test_name_matches_fuzzy(self):
+        self.assertTrue(name_matches(["znouzecnost"], "Znouzectnost"))
+        self.assertTrue(name_matches(["z", "nouze", "cnost"], "Znouzectnost"))
+        self.assertTrue(name_matches(["tata", "boys"], "Tata Bojs"))
+        self.assertTrue(name_matches(["wanastowi", "vjeci"], "Wanastowi Vjecy"))
+        # but not a different band that differs where Czech declines
+        self.assertFalse(name_matches(["olympic"], "Olympica"))
+        self.assertFalse(name_matches(["kabaret"], "Kabát"))
+        self.assertFalse(name_matches(["nouze", "cnost"], "Znouzectnost"))  # 2 edits, 12 chars
+
+    def test_found_in_catalog(self):
+        cases = [
+            ("Hraj z nouze cnost", ["Znouzectnost"]),
+            ("hraj znouzecnost", ["Znouzectnost"]),
+            ("pusť tata boys", ["Tata Bojs"]),
+            ("pusť mnaga a zdorp", ["Mňága a Žďorp"]),
+            ("pusť wanastowi vjeci", ["Wanastowi Vjecy"]),
+        ]
+        for text, want in cases:
+            res = run(find_artists(FuzzyCatalog(), text))
+            self.assertEqual((res.artists, res.reason), (want, ""), text)
+
+    def test_one_letter_neighbour_is_not_accepted(self):
+        cat = FuzzyCatalog()
+        cat_find = cat.find_artist
+
+        async def only_olympica(name):
+            await cat_find(name)
+            return Artist("Olympica", "UColympica")
+
+        cat.find_artist = only_olympica
+        res = run(find_artists(cat, "pusť Olympic"))
+        self.assertEqual(res.artists, [])
 
 
 class WithCatalog(unittest.TestCase):

@@ -106,6 +106,7 @@ class PanelApp:
         self._loading = False  # running, but the stream hasn't started yet
         self._said_offline = False
         self.link_since = time.monotonic()  # od kdy platí online/offline (pro panel.link)
+        self.server_version = ""  # otisk kódu ytdj ze stavu (panel.server_build)
         self.reconnects = 0
         self.offline_reason = ""
         self.pos_base = 0.0
@@ -336,6 +337,14 @@ class PanelApp:
             self._said_offline = False
         self.online = self.ever_online = True
         self.state = state
+        version = state.get("version")
+        if isinstance(version, str) and version and version != self.server_version:
+            if self.server_version:
+                # ytdj byl nasazen znovu — ať je v logu vidět, s čím panel mluví
+                log.info("ytdj má novou verzi: %s → %s", self.server_version, version)
+            emit("panel.server_build", version=version, previous=self.server_version or None,
+                 ui=state.get("build"))
+            self.server_version = version
         if self.wish.on_state(state) and self._overlay() is None:
             # the DJ decided about a wish from this panel: show it, like the web does
             self.wish.show_answer(time.monotonic())

@@ -422,6 +422,15 @@ class PanelEventsTest(unittest.TestCase):
         # paints are aggregated, never one line per frame
         self.assertLess(len(render), 5)
 
+    def test_new_server_version_is_logged(self):
+        first = self.log.wait("panel.server_build", version="fake-1")
+        self.assertTrue(first)
+        with self.fake.lock:
+            self.fake.build = "fake-2"  # ytdj nasazen znovu
+        again = self.log.wait("panel.server_build", version="fake-2")
+        self.assertTrue(again)
+        self.assertEqual(again[0]["previous"], "fake-1")
+
     def test_link_transitions(self):
         self._stop_server()
         off = self.log.wait("panel.link", timeout=10, state="offline")

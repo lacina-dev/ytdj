@@ -63,6 +63,8 @@ def declined(word: str, token: str) -> bool:
     if len(word) < 3:
         return False
     stem = word[:-1] if word[-1] in "aeiouy" else word
+    if token == stem:
+        return False  # "Olympic" není "Olympica" — koncovou samohlásku čeština nezahodí
     return token.startswith(stem) and token[len(stem):] in _ENDINGS
 
 
@@ -78,11 +80,37 @@ def name_matches(tokens: list[str], artist_name: str) -> bool:
     toks = [t for t in tokens if t != "the"]
     if not words or not toks:
         return False
-    if "".join(toks) == "".join(words):
+    joined_t, joined_w = "".join(toks), "".join(words)
+    if joined_t == joined_w:
         return True  # "tribalneed" / "Tribal Need", "acdc" / "AC/DC"
-    if len(toks) == len(words):
-        return all(declined(w, t) for w, t in zip(words, toks))
+    if len(toks) == len(words) and all(declined(w, t) for w, t in zip(words, toks)):
+        return True
+    # Rozdělené nebo s překlepem: "z nouze cnost" = Znouzectnost, "tata boys" =
+    # Tata Bojs. Jen u dlouhých jmen a o jedno písmeno (u velmi dlouhých dvě) —
+    # krátká jména by se tak pletla navzájem.
+    # Začátek i konec musí sedět: "Olympic" není "Olympica" (jiná kapela,
+    # liší se jen koncem — tam, kde čeština skloňuje).
+    if (
+        len(joined_w) >= 8 and joined_t[:2] == joined_w[:2]
+        and joined_t[-1] == joined_w[-1]
+    ):
+        return _within(joined_t, joined_w, 1 if len(joined_w) < 13 else 2)
     return False
+
+
+def _within(a: str, b: str, limit: int) -> bool:
+    """Levenshteinova vzdálenost a↔b je nejvýš `limit`."""
+    if abs(len(a) - len(b)) > limit:
+        return False
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        if min(cur) > limit:
+            return False
+        prev = cur
+    return prev[-1] <= limit
 
 
 _UNDECLINE = [("ovou", "ova"), ("ou", "a"), ("ii", "ie"), ("u", "a"), ("u", ""),
@@ -114,6 +142,9 @@ def variants(tokens: list[str]) -> list[str]:
         )
         if q not in out:
             out.append(q)
+    if len(tokens) > 1 and "".join(tokens) not in out:
+        # "z nouze cnost" → "znouzecnost"; s předložkou hned jako druhý dotaz
+        out.insert(1 if len(tokens[0]) == 1 else len(out), "".join(tokens))
     return out
 
 
@@ -123,6 +154,9 @@ class Parsed:
 
     whole: list[str]
     groups: list[list[str]] = field(default_factory=list)
+    # jednopísmenná předložka těsně před jménem — může k němu patřit
+    # ("z nouze ctnost" = Znouzectnost)
+    lead: str = ""
 
 
 def parse(text: str) -> Parsed | None:
@@ -158,7 +192,11 @@ def parse(text: str) -> Parsed | None:
             cur.append(t)
     if cur:
         groups.append(cur)
-    return Parsed(whole=span, groups=groups if len(groups) > 1 else [])
+    lead = tokens[content[0] - 1] if content[0] > 0 else ""
+    return Parsed(
+        whole=span, groups=groups if len(groups) > 1 else [],
+        lead=lead if len(lead) == 1 and lead.isalpha() else "",
+    )
 
 
 # ---- s katalogem ----
@@ -232,10 +270,10 @@ async def find_artists(catalog, text: str) -> FastResult:
         return res
     # nejdřív celé jméno ("Mňága a Žďorp"), pak po jednotlivých jménech;
     # celek se spojkou jen jedním dotazem, ať "Kabát a Škwor" nestojí čtyři
-    options = [(parsed.whole, 4)] if not parsed.groups else [(parsed.whole, 1)]
+    options = [(parsed.whole, 2 if parsed.lead else 4)] if not parsed.groups else [(parsed.whole, 1)]
     for groups, tries in [([whole], n) for whole, n in options] + (
         [(parsed.groups, 4)] if parsed.groups else []
-    ):
+    ) + ([([[parsed.lead] + parsed.whole], 2)] if parsed.lead else []):
         # víc interpretů najednou, ne jeden po druhém
         found = await asyncio.gather(*(_one(catalog, g, res, tries) for g in groups))
         if all(found):
@@ -399,3 +437,47 @@ async def _find_song(catalog, parsed: SongParse, res: SongResult) -> SongResult:
         res.track = None
         res.reason = f"error:{type(exc).__name__}"
     return res
+
+
+# ---- ověření vyžádaných skladeb z modelu ----
+
+
+def title_close(asked: str, catalog_title: str) -> bool:
+    """Je skladba z katalogu ta, o kterou se žádalo? Volnější než song_matches.
+
+    Model píše názvy kanonicky, katalog přidává verze a předpony
+    ("Einaudi: Nuvole Bianche"). Stačí, když jedna strana celá leží v druhé
+    (s českými koncovkami). Co nesdílí ani slovo, je jiná skladba — 25. 9.
+    tak na "Kabát — Z nouze ctnost" přišla "Malá dáma" a odpověď lhala.
+    """
+    from ..music.match import split_title
+
+    a = _clean_words(asked)
+    base, _tags = split_title(catalog_title)
+    c = _clean_words(base) or _clean_words(catalog_title)
+    if not a:
+        return True  # "cokoli od něj"
+    if not c:
+        return False
+    if name_matches(a, " ".join(c)):
+        return True
+
+    def inside(small: list[str], big: list[str]) -> bool:
+        return all(any(t == w or declined(w, t) or declined(t, w) for w in big) for t in small)
+
+    return inside(a, c) or inside(c, a)
+
+
+def verify_requested(pairs: list[tuple[str, str]], tracks: list[Any]) -> tuple[list[Any], list[str]]:
+    """Rozdělí dohledané skladby na (ty pravé, popisy nesedících)."""
+    ok, wrong = [], []
+    for t in tracks:
+        match = next(
+            (p for p in pairs if not p[1] or title_close(p[1], t.title)), None
+        )
+        if match is None:
+            wanted = next((f"{a} — {ti}" for a, ti in pairs if a and _artist_ok(_clean_words(a), t.artist)), "")
+            wrong.append(f"„{wanted or t.label()}“ (katalog nabídl {t.label()})")
+        else:
+            ok.append(t)
+    return ok, wrong

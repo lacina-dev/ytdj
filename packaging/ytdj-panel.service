@@ -1,0 +1,28 @@
+[Unit]
+Description=ytdj — dotykový panel (3,5" SPI displej na Raspberry Pi)
+Documentation=https://github.com/lacina-dev/ytdj
+# Panel s ytdj mluví jen přes lokální HTTP API. Když ytdj neběží nebo se
+# restartuje, panel to ukáže a připojí se znovu sám — proto Wants, ne Requires:
+# pád ytdj nesmí panel shodit, jinak by z displeje zmizelo i to, že neběží.
+Wants=ytdj.service
+After=ytdj.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=@INSTALL_DIR@
+# Stejný venv jako ytdj (run.sh); na Pi je vytvořený se --system-site-packages,
+# takže Pillow a ovladače SPI/GPIO přijdou z aptu. Uživatel musí být ve
+# skupinách spi a gpio (výchozí uživatel Raspberry Pi OS v nich je).
+ExecStart=@INSTALL_DIR@/.venv/bin/python -u -m ytdj.panel --driver kedei
+Environment=YTDJ_LOG=info
+Restart=always
+RestartSec=3
+# Panel po SIGTERM ještě dopíše na displej, že je vypnutý — stačí chvilka.
+TimeoutStopSec=10
+SyslogIdentifier=ytdj-panel
+# mpv, yt-dlp a codex mají přednost; panel počká.
+Nice=5
+
+[Install]
+WantedBy=default.target

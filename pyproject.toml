@@ -24,6 +24,11 @@ dependencies = [
 # The brain runs through the `codex` CLI on a ChatGPT subscription — no API
 # key, and therefore no SDK, is used.
 
+[project.optional-dependencies]
+# touch panel (`python -m ytdj.panel`); on a Raspberry Pi python3-pil from apt
+# does the job through a --system-site-packages venv
+panel = ["pillow>=10"]
+
 [project.urls]
 Homepage = "https://github.com/lacina-dev/ytdj"
 Issues = "https://github.com/lacina-dev/ytdj/issues"

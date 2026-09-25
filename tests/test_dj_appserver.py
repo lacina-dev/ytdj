@@ -169,6 +169,24 @@ class Fake(unittest.TestCase):
         run(go())
         self.assertLess(_t.monotonic() - t0, 5)  # not the minute of retries
 
+    def test_invalidated_token_on_stderr_fails_fast(self):
+        """Codex says a dead login only on stderr and retries; don't burn the budget."""
+        os.environ["FAKE_MODE"] = "authdead"
+
+        async def go():
+            app = AppServer(str(FAKE), _TMP)
+            try:
+                with self.assertRaises(AppServerFatal) as cm:
+                    await app.turn("p", DECISION_SCHEMA, timeout=10)
+                self.assertEqual(cm.exception.reason, "login")
+            finally:
+                await app.close()
+
+        import time as _t
+        t0 = _t.monotonic()
+        run(go())
+        self.assertLess(_t.monotonic() - t0, 5)
+
     def test_rate_limit_with_retry_fails_fast(self):
         # a 429 marked willRetry used to keep the turn waiting up to 240 s
         os.environ["FAKE_MODE"] = "limit"

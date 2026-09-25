@@ -21,8 +21,27 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import tempfile  # noqa: E402
+
+from ytdj import telemetry  # noqa: E402
 from ytdj.music import catalog as catalog_mod  # noqa: E402
 from ytdj.music import match  # noqa: E402
+
+# Události z testů nesmí skončit v ~/.local/share/ytdj/events.jsonl.
+_EVENTS_DIR = tempfile.TemporaryDirectory()
+EVENTS = Path(_EVENTS_DIR.name) / "events.jsonl"
+telemetry._path = EVENTS
+
+
+def events(kind: str) -> list[dict]:
+    if not EVENTS.exists():
+        return []
+    rows = [json.loads(line) for line in EVENTS.read_text(encoding="utf-8").splitlines()]
+    return [r for r in rows if r["kind"] == kind]
+
+
+def clear_events() -> None:
+    EVENTS.unlink(missing_ok=True)
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "ytm"
 
@@ -483,6 +502,67 @@ class ArtistModeTest(unittest.TestCase):
         out = asyncio.run(self.pools.next_tracks(5))
         # zpátky u rádia a u stropu dvou skladeb na interpreta
         self.assertLessEqual(sum(t.artist == "Someone Else" for t in out), 2)
+
+
+class TelemetryTest(unittest.TestCase):
+    """Co jde do events.jsonl — jedna událost na operaci, ne na kandidáta."""
+
+    def setUp(self):
+        clear_events()
+
+    def test_search_records_choice_source_and_runner_up(self):
+        resolve("prince_kiss")
+        (ev,) = events("catalog.search")
+        self.assertEqual((ev["artist"], ev["title"]), ("Prince", "Kiss"))
+        self.assertEqual(ev["video_id"], "rH9CZuuKpSg")
+        self.assertEqual(ev["chosen"], "Prince & The Revolution — Kiss")
+        self.assertEqual(ev["source"], "songs")
+        self.assertEqual(ev["lang"], "en")
+        self.assertGreater(ev["score"], ev["runner_up"]["score"])
+        self.assertEqual(ev["steps"], [{"source": "songs", "query": "Prince Kiss", "n": 20}])
+        self.assertIsInstance(ev["took_ms"], int)
+        self.assertEqual(events("catalog.match_fail"), [])
+
+    def test_fallback_records_match_fail_with_reason(self):
+        resolve("tata_bojs_e_mail")
+        (fail,) = events("catalog.match_fail")
+        self.assertEqual((fail["artist"], fail["title"]), ("Tata Bojs", "E-mail"))
+        self.assertTrue(fail["rejected"])
+        self.assertTrue(all(r["why"].startswith("title") for r in fail["rejected"]))
+        (ev,) = events("catalog.search")
+        self.assertEqual(ev["source"], "artist_top_fallback")
+        self.assertEqual([s["source"] for s in ev["steps"]], ["songs", "profile", "videos"])
+        self.assertEqual(len(events("catalog.artist_tracks")), 1)
+
+    def test_artist_tracks_event(self):
+        artist_tracks("artist_midi_lidi")
+        (ev,) = events("catalog.artist_tracks")
+        self.assertEqual(ev["artist"], "Midi Lidi")
+        self.assertEqual(ev["source"], "profile")
+        self.assertEqual(ev["n"], 50)
+        self.assertEqual(ev["first"], "Láska není švédský stůl")
+        self.assertIn("took_ms", ev)
+
+    def test_radio_events(self):
+        mode = ArtistModeTest()
+        mode.setUp()
+        asyncio.run(mode.pools.set_artist("Midi Lidi", mode.tracks))
+        asyncio.run(mode.pools.next_tracks(5))
+        (am,) = events("radio.artist_mode")
+        self.assertEqual((am["artist"], am["n"]), ("Midi Lidi", 12))
+        (pool,) = events("radio.pool")
+        self.assertEqual((pool["wanted"], pool["got"], pool["artist_mode"]), (5, 5, "Midi Lidi"))
+
+        clear_events()
+        asyncio.run(mode.pools.set_seeds([mode.tracks[0]], mood="cokoli"))
+        (fetch,) = events("radio.fetch")
+        self.assertEqual((fetch["seed"], fetch["n"]), (mode.tracks[0].id, 20))
+        (seeds,) = events("radio.seeds")
+        self.assertEqual(seeds["pool_sizes"], [20])
+        asyncio.run(mode.pools.next_tracks(5))
+        (pool,) = events("radio.pool")
+        # rádio vrací 20 skladeb jednoho interpreta — strop dvou je vidět
+        self.assertGreater(pool["rejected"].get("artist_cap", 0), 0)
 
 
 if __name__ == "__main__":

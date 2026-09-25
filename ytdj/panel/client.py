@@ -66,7 +66,7 @@ class Api:
         conn = self.connection(timeout)
         try:
             data = json.dumps(body).encode() if body is not None else None
-            headers = {"Content-Type": "application/json"} if data else {}
+            headers = {"User-Agent": "ytdj-panel", **({"Content-Type": "application/json"} if data else {})}
             conn.request(method, self.prefix + path, body=data, headers=headers)
             resp = conn.getresponse()
             raw = resp.read()
@@ -162,7 +162,8 @@ class StatusFeed(threading.Thread):
             conn.request(
                 "GET",
                 self.api.prefix + "/api/events",
-                headers={"Accept": "text/event-stream", "Cache-Control": "no-cache"},
+                headers={"Accept": "text/event-stream", "Cache-Control": "no-cache",
+                         "User-Agent": "ytdj-panel"},
             )
             resp = conn.getresponse()
             ctype = resp.getheader("Content-Type", "")

@@ -520,7 +520,7 @@ ends with `session.end`, so a start without an end means a crash or a kill.
 | Area | Kinds |
 |---|---|
 | tracks | `track.request` (why: `skip` / `eof` / `replace` / `enqueue` / `error`, and whether the next track was already resolved), `track.start` (source `prefetched` / `on_demand`, `wait_ms` from the request to sound, `load_ms`, `buffer_ms`), `track.stall`, `track.end` (reason, `played_s`, stalls, premature cut), `track.quality`, `track.mismatch` |
-| resolver | `resolver.resolve` (`took_ms`, urgent or ahead), `resolver.get` (cache hit, how long mpv waited), `resolver.ahead`, `resolver.ready`, `resolver.exit`, `resolver.fallback` (fell back to slow standalone yt-dlp), `prefetch.ahead` |
+| resolver | `resolver.resolve` (`took_ms`, why: urgent / first / ahead), `resolver.get` (cache hit, how long mpv waited; `how: cancelled` when the listener skipped past a track that was still loading), `resolver.cancel`, `resolver.ahead` (window of the next 6 tracks in mpv's playlist order; `hold` while Codex thinks), `resolver.ready`, `resolver.exit`, `resolver.fallback` (fell back to slow standalone yt-dlp), `prefetch.ahead` |
 | system | `sys.sample` every 10 s (CPU, iowait, load, MemAvailable, swap and swap-in/out rates, temperature, CPU/RSS of ytdj/mpv/resolver, what is playing or resolving, whether Codex is thinking), `sys.throttle` (from `vcgencmd get_throttled`), `audio.xrun` (PipeWire xrun counters from a long-running `pw-top -b`, with context) |
 | web | `web.prompt` (text cut to 300 characters, reply, status, `took_ms`, client IP and a short user agent), `web.control`, `web.sse_open` / `web.sse_close`, `web.restart`, `web.config`, `web.error` |
 | player | `player.start`, `player.died` |

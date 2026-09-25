@@ -26,7 +26,7 @@ from .diagnose import check_audio, yt_dlp_warning
 from .music import Catalog, RadioPools
 from .music.catalog import RE_URL
 from .player import MpvPlayer
-from .player.base import PlayerEvent
+from .player.base import PlayerEvent, queue_transaction
 from .state import Store
 from .ui import Repl
 from .web import WebServer
@@ -147,6 +147,8 @@ class App:
             self.skips.turn(self._now(), by_user=True)
         async with self._codex_lock:
             try:
+                if not auto and (reply := await self.dj.fast_turn(text)):
+                    return reply
                 return await self.dj.turn(text, interrupt=interrupt, auto=auto)
             finally:
                 self.skips.turn(self._now(), by_user=not auto)
@@ -219,15 +221,16 @@ class App:
         # odkaz je jednoznačné přání, takže i delší kusy, když kratší nejsou
         await self.pools.set_seeds(seeds, mood=target.label, allow_long=True)
         was_playing = (await self.player.status()).current is not None
-        await self.player.clear_queue()
-        if target.kind == "playlist":
-            # u playlistu chce uživatel slyšet ten playlist, ne jen jeho náladu
-            from_list = target.tracks[: self.cfg.queue_target]
-            self.pools.remember_tracks(from_list)
-            self.pools.session_seen.update(t.id for t in from_list)
-            await self.player.enqueue(from_list)
-        else:
-            await self.player.enqueue(await self.pools.next_tracks(self.cfg.queue_target))
+        async with queue_transaction(self.player):  # plnič se nevmísí
+            await self.player.clear_queue()
+            if target.kind == "playlist":
+                # u playlistu chce uživatel slyšet ten playlist, ne jen jeho náladu
+                from_list = target.tracks[: self.cfg.queue_target]
+                self.pools.remember_tracks(from_list)
+                self.pools.session_seen.update(t.id for t in from_list)
+                await self.player.enqueue(from_list)
+            else:
+                await self.player.enqueue(await self.pools.next_tracks(self.cfg.queue_target))
         await self.player.toggle_pause(False)
         if was_playing:
             await self.player.skip(by_user=False)
@@ -274,17 +277,33 @@ class App:
                 await asyncio.sleep(1)
                 await self._check_skip_burst()
 
+                # Aspoň tolik, kolik přehrávač chystá dopředu (+1): jinak by
+                # klouzavé okno připravených skladeb bylo kratší, než je třeba
+                # na sérii rychlých "Další".
+                ahead = getattr(self.player, "prefetch_depth", 0) or 0
+                low = max(self.cfg.queue_low, ahead)
+                target = max(self.cfg.queue_target, ahead + 1 if ahead else 0)
                 depth = self.player.queue_depth
-                if depth >= self.cfg.queue_low:
+                if depth >= low:
                     continue
-                need = self.cfg.queue_target - depth
+                need = target - depth
                 if need <= 0:
                     continue
 
                 # v režimu interpreta od něj, jinak z poolů
+                gen = getattr(self.player, "generation", 0)
                 tracks = await self.dj.next_tracks(need)
                 if tracks:
-                    await self.player.enqueue(tracks)
+                    async with queue_transaction(self.player):
+                        # Mezitím tah DJe vyčistil frontu a naplnil ji podle
+                        # nového přání — tyhle skladby patří ke staré náladě
+                        # a přidat je by znamenalo vmísit je do nové fronty.
+                        if getattr(self.player, "generation", 0) != gen:
+                            self.pools.give_back(tracks)
+                            continue
+                        room = max(0, target - self.player.queue_depth)
+                        self.pools.give_back(tracks[room:])  # nevešly se
+                        await self.player.enqueue(tracks[:room])
                 elif not self.pools.pools:
                     # Žádné pooly: došlo na vyžádanou skladbu bez rádia
                     # (odkaz, play_next). Až dohraje, bylo by ticho — tak z ní

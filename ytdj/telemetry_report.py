@@ -153,7 +153,7 @@ def summarize(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
 
     resolve_took: dict[str, list] = defaultdict(list)
     resolve_err = 0
-    gets = hits = blocked = 0
+    gets = hits = blocked = get_cancelled = 0
     get_wait_miss: list = []
     fallbacks = 0
     restarts = 0
@@ -227,6 +227,8 @@ def summarize(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
             resolve_took[e.get("why") or "?"].append(e.get("took_ms"))
             if not e.get("ok", True):
                 resolve_err += 1
+        elif kind == "resolver.get" and e.get("how") == "cancelled":
+            get_cancelled += 1  # mpv skladbu opustilo při načítání (Další)
         elif kind == "resolver.get":
             gets += 1
             if e.get("hit"):
@@ -345,6 +347,7 @@ def summarize(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
             "resolve_errors": resolve_err,
             "gets": gets, "hits": hits,
             "hit_rate": round(hits / gets, 3) if gets else None,
+            "cancelled": get_cancelled,
             "miss_wait_ms": stats(get_wait_miss),
             "blocked_by_ahead": blocked,
             "fallbacks": fallbacks,
@@ -452,11 +455,13 @@ def render(s: dict[str, Any]) -> str:
     w("")
     w("Resolver (yt-dlp)")
     for why, st in r["resolve_ms"].items():
-        label = {"urgent": "na čekající mpv", "ahead": "dopředu"}.get(why, why)
+        label = {"urgent": "na čekající mpv", "ahead": "dopředu",
+                 "first": "přednostně (přepnutí)"}.get(why, why)
         w(f"  řešení {label}: {_fmt_ms(st)}")
     if r["gets"]:
         w(f"  dotazy mpv {r['gets']}×, z cache {r['hits']}× ({100 * (r['hit_rate'] or 0):.0f} %)"
-          + (f"; čekání při minutí: {_fmt_ms(r['miss_wait_ms'])}" if r["miss_wait_ms"] else ""))
+          + (f"; čekání při minutí: {_fmt_ms(r['miss_wait_ms'])}" if r["miss_wait_ms"] else "")
+          + (f"; zrušeno při Další {r['cancelled']}×" if r.get("cancelled") else ""))
     bits = []
     if r["blocked_by_ahead"]:
         bits.append(f"mpv čekalo na rozdělanou skladbu dopředu {r['blocked_by_ahead']}×")

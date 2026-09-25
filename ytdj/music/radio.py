@@ -50,6 +50,9 @@ class RadioPools:
         # běžná rádia ze seedů.
         self.artist: str = ""
         self._artist_all: list[Track] = []
+        # poslední zapsaný stav radio.pool — prázdné dávky se stejným stavem
+        # (plnič se ptá každou vteřinu) se do logu nepíšou znovu
+        self._last_pool_sig: tuple | None = None
 
     def remember_tracks(self, tracks: list[Track]) -> None:
         for t in tracks:
@@ -124,7 +127,8 @@ class RadioPools:
         )
         if not tracks:
             return {"artist": name, "pool_size": 0, "sample": []}
-        self.pools = [Pool(seed=tracks[0], tracks=deque(tracks), last_good=tracks[0].id)]
+        order = self._artist_rotation(tracks)
+        self.pools = [Pool(seed=tracks[0], tracks=deque(order), last_good=tracks[0].id)]
         self._rr = 0
         self.mood = mood or name
         self.allow_long = True
@@ -137,6 +141,26 @@ class RadioPools:
             "pool_size": len(tracks),
             "sample": [t.label() for t in tracks[:5]],
         }
+
+    def _artist_rotation(self, tracks: list[Track]) -> list[Track]:
+        """Pořadí pro režim interpreta: dosud nehrané (nejznámější první), pak
+        už hrané od nejdávněji hraného.
+
+        Každé "pusť Kabát" (i automatický tah po sérii přeskočení a restart
+        ytdj) dřív začínalo znovu od Malé dámy a Burlaků — na Pi 25. 9. zazněly
+        tytéž tři skladby třikrát během dvanácti. Takhle se pool protáčí přes
+        všechny skladby, než se nějaká zopakuje, i přes více tahů a restartů.
+        """
+        try:
+            history = self.store.recent_history(max(200, 4 * len(tracks)))
+        except Exception:  # starší / testovací Store bez historie
+            history = []
+        rank: dict[str, int] = {}  # 0 = hrála naposledy
+        for i, rec in enumerate(history):
+            rank.setdefault(rec.video_id, i)
+        fresh = [t for t in tracks if t.id not in rank]
+        played = sorted((t for t in tracks if t.id in rank), key=lambda t: -rank[t.id])
+        return fresh + played
 
     async def _fetch_radio(self, video_id: str) -> list[Track]:
         t0 = time.monotonic()
@@ -218,18 +242,22 @@ class RadioPools:
             out.append(track)
             long_used += 1
 
-        telemetry.event(
-            "radio.pool",
-            wanted=count,
-            got=len(out),
-            attempts=attempts,
-            rejected=rejected,
-            long_used=long_used,
-            pools=[len(p) for p in self.pools],
-            artist_mode=self.artist or None,
-            mood=self.mood,
-            took_ms=int((time.monotonic() - t0) * 1000),
-        )
+        pools = [len(p) for p in self.pools]
+        sig = (count, sorted(rejected.items()), pools, self.artist, self.mood)
+        if out or sig != self._last_pool_sig:
+            telemetry.event(
+                "radio.pool",
+                wanted=count,
+                got=len(out),
+                attempts=attempts,
+                rejected=rejected,
+                long_used=long_used,
+                pools=pools,
+                artist_mode=self.artist or None,
+                mood=self.mood,
+                took_ms=int((time.monotonic() - t0) * 1000),
+            )
+        self._last_pool_sig = None if out else sig
         return out
 
     def _long_limit(self) -> int:
@@ -295,7 +323,7 @@ class RadioPools:
         znovu jeho skladbami; když zazněly všechny, jede se od začátku."""
         skip = {t.id for t in pool.tracks} | self.store.blacklisted()
         fresh = [
-            t for t in self._artist_all
+            t for t in self._artist_rotation(self._artist_all)
             if t.id not in self.session_seen and t.id not in skip
         ]
         if not fresh and not pool.tracks:
@@ -303,10 +331,17 @@ class RadioPools:
             telemetry.event("radio.artist_mode", artist=self.artist, restart=True,
                             n=len(self._artist_all))
             self.session_seen -= {t.id for t in self._artist_all}
-            fresh = list(self._artist_all)
+            fresh = self._artist_rotation(self._artist_all)
         pool.tracks.extend(fresh)
 
     # ---- feedback ----
+
+    def give_back(self, tracks: list[Track]) -> None:
+        """Skladby vydané next_tracks, které se nakonec do fronty nedostaly
+        (plnič je zahodil, protože mezitím přišel nový tah) — nepočítat je
+        jako zahrané, ať o ně režim interpreta nepřijde."""
+        for t in tracks:
+            self.session_seen.discard(t.id)
 
     def mark_finished(self, video_id: str) -> None:
         """Track finished playing — a good signal, use it as the pool's next seed."""

@@ -213,7 +213,7 @@ class PlayerLifecycleTest(_LogCase):
         p._resolver = object()  # type: ignore[assignment]  # "běží"
         for i, vid in enumerate(("aaaaaaaaaaa", "bbbbbbbbbbb")):
             p._tracks[vid] = Track(vid, f"T{i}", f"A{i}", duration=200)
-            p._order.append(vid)
+            p._playlist.append((i + 1, vid))
             p._entries[i + 1] = vid
         return p
 

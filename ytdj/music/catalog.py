@@ -364,7 +364,9 @@ class Catalog:
         tracks = [t for t in (to_track(i) for i in songs) if t]
         return tracks[:limit]
 
-    async def artist_tracks(self, name: str, limit: int = 50) -> list[Track]:
+    async def artist_tracks(
+        self, name: str, limit: int = 50, browse_id: str | None = None
+    ) -> list[Track]:
         """Hodně skladeb jednoho interpreta — na "hraj Midi Lidi".
 
         Nejdřív hudební profil a jeho playlist "Songs" (u Midi Lidi 150
@@ -373,12 +375,14 @@ class Catalog:
         jednou, živáky a remixy na konci — viz match.artist_songs. Když
         profil není, jsou to videa z jeho kanálu (jako find_artist_tracks).
         Prázdný seznam znamená, že takového interpreta YouTube nezná.
+        `browse_id` = profil už je známý (rychlá cesta DJe) — ušetří hledání.
         """
         name = _clean(name)
         if not name:
             return []
         with telemetry.timer("catalog.artist_tracks", artist=name, limit=limit) as ev:
-            if artist := await self.find_artist(name):
+            artist = Artist(name, browse_id) if browse_id else await self.find_artist(name)
+            if artist:
                 ev.update(found=artist.name, browse_id=artist.browse_id)
                 items = await self._artist_song_items(artist.browse_id, limit)
                 cands = match.artist_songs(items, artist.browse_id, artist.name, limit)

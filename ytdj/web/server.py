@@ -49,6 +49,11 @@ INDEX_FILE = STATIC_DIR / "index.html"
 # how often the state is recomputed for SSE and how long silence may last
 TICK = 1.0
 KEEPALIVE = 15.0
+# A keepalive the page can see: an SSE comment (": ping") never reaches
+# JavaScript, so a paused player looked like a dead connection to the web UI.
+# The panel's reader ignores it (the data isn't a JSON object).
+PING = "event: ping\ndata: 1\n\n"
+SOURCES = frozenset({"web", "panel", "repl"})  # who sent a wish (POST /api/prompt "source")
 
 NO_INDEX_HTML = """<!doctype html><meta charset="utf-8">
 <title>ytdj</title>
@@ -351,7 +356,8 @@ def short_ua(ua: str) -> str:
     low = ua.lower()
     if not ua:
         return "?"
-    for key, name in (("curl/", "curl"), ("python", "python"), ("wget", "wget")):
+    for key, name in (("ytdj-panel", "panel"), ("curl/", "curl"), ("python", "python"),
+                      ("wget", "wget")):
         if key in low:
             return name
     browser = "jiný"
@@ -410,6 +416,19 @@ class WebServer:
         # true for the duration of a Codex turn — /api/status and SSE pass it on
         self.busy = False
         self._sse_clients = 0
+        # what the DJ is working on and how the last wish went — every client
+        # sees it, not only the one that asked (status "dj")
+        self._dj_text = ""
+        self._dj_source = ""
+        self._dj_last: dict | None = None
+
+        # One snapshot per tick for all SSE clients: each client used to ask
+        # mpv (5 IPC calls) and SQLite on its own, every second.
+        self._payload: str | None = None
+        self._seq = 0
+        self._changed: asyncio.Condition | None = None
+        self._poke: asyncio.Event | None = None
+        self._bcast: asyncio.Task | None = None
 
         self._server: uvicorn.Server | None = None
         self._task: asyncio.Task | None = None
@@ -518,44 +537,89 @@ class WebServer:
             "mood": mood,
             "busy": self.busy,
             "history": history,
+            "dj": {
+                "busy": self.busy,
+                "text": self._dj_text if self.busy else "",
+                "source": self._dj_source if self.busy else "",
+                "last": self._dj_last,
+            },
         }
 
     async def _status(self, request: Request) -> Response:
         return JSONResponse(await self._snapshot())
 
+    # ---- one snapshot for everybody ----
+
+    def poke(self, later: float | None = None) -> None:
+        """Something changed (a command, a wish): push the state now, not at the next tick."""
+        if self._poke is None:
+            return
+        if later:
+            asyncio.get_running_loop().call_later(later, self._poke.set)
+        else:
+            self._poke.set()
+
+    def _ensure_broadcast(self) -> None:
+        if self._changed is None:
+            self._changed = asyncio.Condition()
+            self._poke = asyncio.Event()
+        if self._bcast is None or self._bcast.done():
+            self._bcast = asyncio.create_task(self._broadcast(), name="ytdj-web-sse")
+
+    async def _broadcast(self) -> None:
+        """Recomputes the state once per tick while anybody listens; wakes the streams on a change."""
+        assert self._changed is not None and self._poke is not None
+        try:
+            while self._sse_clients > 0 and not self._closing.is_set():
+                self._poke.clear()
+                try:
+                    payload = json.dumps(await self._snapshot(), ensure_ascii=False)
+                except Exception:
+                    log.exception("snímek stavu pro SSE selhal")
+                    payload = None
+                if payload is not None and payload != self._payload:
+                    self._payload = payload
+                    self._seq += 1
+                    async with self._changed:
+                        self._changed.notify_all()
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(self._poke.wait(), timeout=TICK)
+        finally:
+            # nobody listens (or shutting down): the next listener starts
+            # from a fresh snapshot, not from one that may be minutes old
+            self._payload = None
+
     async def _events(self, request: Request) -> Response:
         who = _client(request)
 
         async def stream():
-            last_payload: str | None = None
-            last_sent = 0.0
-            t_open = time.monotonic()
+            seen = 0
+            last_sent = time.monotonic()
+            t_open = last_sent
             self._sse_clients += 1
             telemetry.event("web.sse_open", clients=self._sse_clients, **who)
             try:
+                self._ensure_broadcast()
+                changed = self._changed
+                assert changed is not None
                 while not self._closing.is_set():
                     if await request.is_disconnected():
                         break
-                    try:
-                        payload = json.dumps(
-                            await self._snapshot(), ensure_ascii=False
-                        )
-                    except Exception:
-                        log.exception("snímek stavu pro SSE selhal")
-                        payload = last_payload or "{}"
-
+                    # the broadcaster may have just wound down as we joined
+                    self._ensure_broadcast()
                     now = time.monotonic()
-                    if payload != last_payload:
-                        last_payload = payload
+                    if self._seq != seen and self._payload is not None:
+                        seen = self._seq
                         last_sent = now
-                        yield f"data: {payload}\n\n"
+                        yield f"data: {self._payload}\n\n"
                     elif now - last_sent >= KEEPALIVE:
                         last_sent = now
-                        yield ": ping\n\n"
-
-                    # wakes up earlier when the server is shutting down
-                    with contextlib.suppress(asyncio.TimeoutError):
-                        await asyncio.wait_for(self._closing.wait(), timeout=TICK)
+                        yield PING
+                    if self._seq == seen or self._payload is None:
+                        wait = max(0.05, min(TICK * 2, KEEPALIVE - (time.monotonic() - last_sent)))
+                        async with changed:
+                            with contextlib.suppress(asyncio.TimeoutError):
+                                await asyncio.wait_for(changed.wait(), timeout=wait)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -609,6 +673,9 @@ class WebServer:
         # toho, jestli DJ vyhověl.
         rec["text"] = telemetry.clip(text, 300)
         rec["len"] = len(text)
+        source = data.get("source")
+        source = source if isinstance(source, str) and source in SOURCES else "web"
+        rec["source"] = source
         if not text:
             rec["error"] = "prázdný text"
             return _json_error("Chybí text požadavku.", 400)
@@ -628,6 +695,9 @@ class WebServer:
         if auto:
             rec["preempted_auto"] = True
         self.busy = True
+        self._dj_text, self._dj_source = telemetry.clip(text, 200), source
+        self.poke()  # everybody's "DJ přemýšlí" lights up now, not in a second
+        last: dict[str, Any] = {"text": self._dj_text, "source": source, "ok": False, "reply": ""}
         try:
             ask = getattr(self.app, "ask", None)
             reply = await (ask(text) if ask else self.app.dj.turn(text))
@@ -635,8 +705,14 @@ class WebServer:
             log.exception("tah Codexu selhal")
             rec["error"] = telemetry.clip(f"{type(exc).__name__}: {exc}", 300)
             return _json_error(f"Codex selhal: {exc}", 500)
+        else:
+            last.update(ok=True, reply=telemetry.clip(reply or "", 400))
         finally:
             self.busy = False
+            last["at"] = time.time()
+            self._dj_last = last
+            self.poke()
+            self.poke(later=0.4)  # the new track is usually loaded by then
         rec["reply"] = telemetry.clip(reply or "", 300)
         return JSONResponse({"reply": reply or ""})
 
@@ -686,6 +762,9 @@ class WebServer:
             rec["error"] = telemetry.clip(f"{type(exc).__name__}: {exc}", 300)
             return _json_error(f"Povel se nepodařilo provést: {exc}", 500)
 
+        # the other screens (panel, phones) see it now; mpv settles a moment later
+        self.poke()
+        self.poke(later=0.3)
         return JSONResponse({"ok": True})
 
     # ---- co je pod kapotou ----
@@ -858,6 +937,8 @@ class WebServer:
 
     async def stop(self) -> None:
         self._closing.set()  # SSE loops terminate on their own
+        if self._poke is not None:
+            self._poke.set()
         server, task = self._server, self._task
         self._server = self._task = None
 

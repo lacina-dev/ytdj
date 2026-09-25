@@ -87,7 +87,11 @@ STRINGS = {
 
 # ---- layout (boxes are left, top, right, bottom — right/bottom exclusive) ----
 
-STATUS = (0, 0, W, 32)
+NET_W = 58
+STATUS = (0, 0, W - NET_W, 32)
+NET_BTN = (W - NET_W, 0, W, 32)  # the network button's drawing, in the status strip
+# …and its touch target: taller than the strip it sits in, nothing else is there
+NET_TARGET = (W - NET_W - 6, 0, W, 44)
 TRACK = (0, 34, W, 126)
 ELAPSED = (6, 128, 82, 160)
 BAR = (82, 128, 398, 160)
@@ -110,6 +114,7 @@ TARGETS: dict[str, Box] = {
     "vol_down": VOL_DOWN,
     "vol": VOL,
     "vol_up": VOL_UP,
+    "net": NET_TARGET,
 }
 
 
@@ -144,6 +149,7 @@ class View:
     pressed: str | None = None
     can_next: bool = False
     closed: bool = False
+    net: tuple = ("?",)  # ("wifi", signal) | ("eth",) | ("off",) | ("?",) — the network button
 
 
 # ---- helpers ----
@@ -276,6 +282,26 @@ def icon_plus(d: ImageDraw.ImageDraw, cx: float, cy: float, s: float, fill) -> N
     d.rectangle((cx - 2, cy - s / 2, cx + 2, cy + s / 2), fill=fill)
 
 
+def icon_wifi(d: ImageDraw.ImageDraw, cx: float, cy: float, s: float, lit: int, on, off) -> None:
+    """A Wi-Fi fan with `lit` of its 4 levels (dot + 3 arcs) coloured `on`; cy is the dot."""
+    r = s * 0.13
+    d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=on if lit >= 1 else off)
+    for i in range(1, 4):
+        rr = s * (0.12 + 0.3 * i)
+        d.arc((cx - rr, cy - rr, cx + rr, cy + rr), 225, 315, fill=on if lit > i else off, width=max(2, round(s * 0.13)))
+
+
+def icon_eth(d: ImageDraw.ImageDraw, cx: float, cy: float, s: float, fill) -> None:
+    """An RJ45 socket seen from the front."""
+    w, h = s * 0.9, s * 0.7
+    x0, y0 = cx - w / 2, cy - h / 2
+    d.rectangle((x0, y0, x0 + w, y0 + h), outline=fill, width=2)
+    d.rectangle((cx - w * 0.2, y0 + h - 1, cx + w * 0.2, y0 + h + s * 0.15), fill=fill)
+    for i in range(4):
+        x = x0 + w * (0.2 + i * 0.2)
+        d.line((x, y0 + 3, x, y0 + h * 0.45), fill=fill, width=2)
+
+
 # ---- renderer ----
 
 
@@ -291,6 +317,7 @@ class Renderer:
         # name, box, signature, draw
         self._regions: list[tuple[str, Box, Callable[[View], tuple], Draw]] = [
             ("status", STATUS, self._sig_status, self._draw_status),
+            ("net", NET_BTN, lambda v: (v.net, v.pressed == "net", v.closed), self._draw_net),
             ("track", TRACK, self._sig_track, self._draw_track),
             ("elapsed", ELAPSED, lambda v: (self._has_time(v), v.elapsed), self._draw_elapsed),
             ("bar", BAR, self._sig_bar, self._draw_bar),
@@ -373,6 +400,25 @@ class Renderer:
                 d.text((x, cy), " · ", font=f, fill=FAINT, anchor="lm")
                 x += f.getlength(" · ")
                 d.text((x, cy), ellipsize(v.mood, f, room), font=f, fill=DIM, anchor="lm")
+
+    def _draw_net(self, d: ImageDraw.ImageDraw, size: tuple[int, int], v: View) -> None:
+        w, h = size
+        d.line((0, h - 1, w, h - 1), fill=LINE)
+        if v.closed:
+            return
+        pressed = v.pressed == "net"
+        d.rounded_rectangle((4, 3, w - 8, h - 6), radius=8, fill=SURFACE_HI if pressed else SURFACE)
+        cx, cy = (w - 4) / 2, (h - 3) / 2
+        kind = v.net[0] if v.net else "?"
+        on = ACCENT_TEXT if pressed else TEXT
+        if kind == "wifi":
+            sig = v.net[1] if len(v.net) > 1 else -1
+            lit = 4 if sig < 0 else 1 + min(3, max(0, sig) // 25)
+            icon_wifi(d, cx, cy + 7, 17, lit, on, FAINT)
+        elif kind == "eth":
+            icon_eth(d, cx, cy - 1, 20, on)
+        else:
+            icon_wifi(d, cx, cy + 7, 17, 0, on, FAINT if kind == "?" else ERR)
 
     # ---- title + artist ----
 

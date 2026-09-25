@@ -226,6 +226,24 @@ a button press just its label. Presses show up immediately (optimistically)
 and are reconciled with what the server reports; volume drags are throttled
 to ~4 requests a second plus the final value.
 
+### Network screen
+
+The icon at the right end of the status strip (Wi-Fi bars, a network socket
+when only the cable is up, red when the Pi is on no network) opens a network
+screen — also while ytdj itself is down. It shows the hostname, Ethernet
+and Wi-Fi (SSID, signal, IPv4), and how to reach the web UI: `http://<ip>:<port>`
+for every connected interface, `http://<hostname>.local:<port>` when avahi
+runs, and a QR code of the first address (Wi-Fi first — that's what a phone
+is on). **Wi-Fi sítě** lists the networks in range; tapping one asks for the
+password on an on-screen keyboard (open networks connect straight away) and
+connects through NetworkManager (`nmcli dev wifi connect … ifname wlan0`).
+A failed attempt removes the profile it created, the password is never
+logged, and it is forgotten once used or when the screen closes. All
+`nmcli` calls run off the main thread, so the speaker's volume wheel and the
+player state keep working meanwhile; after three minutes without a touch the
+panel goes back to the player. The QR encoder is built in (`ytdj/panel/qr.py`),
+no extra package needed.
+
 ## Usage
 
 Anything you type goes to the DJ — except deterministic commands, which are

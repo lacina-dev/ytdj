@@ -36,6 +36,21 @@ else
     echo "         Návod: README, sekce Premium audio quality."
 fi
 
+# Dotykový panel — jen tam, kde má smysl: Pillow ve venvu (extra `panel`,
+# na Pi python3-pil z aptu přes --system-site-packages) a SPI sběrnice.
+# Na notebooku bez displeje by se služba jen donekonečna restartovala.
+panel=no
+if [ -e /dev/spidev0.0 ] && "$repo/.venv/bin/python" -c "import PIL" 2>/dev/null; then
+    sed "s|@INSTALL_DIR@|$repo|g" "$repo/packaging/ytdj-panel.service" > "$unit_dir/ytdj-panel.service"
+    echo "unit:    $unit_dir/ytdj-panel.service"
+    panel=yes
+elif [ -f "$unit_dir/ytdj-panel.service" ]; then
+    # dřív nainstalovaný panel, který teď nemá na čem běžet, nenecháme cyklit
+    systemctl --user disable --now ytdj-panel.service 2>/dev/null || true
+    rm -f "$unit_dir/ytdj-panel.service"
+    echo "pozn.:   panel odinstalován (chybí /dev/spidev0.0 nebo Pillow)."
+fi
+
 if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || echo no)" != "yes" ]; then
     echo "zapínám linger (spuštění bez přihlášení) — vyžádá si heslo:"
     sudo loginctl enable-linger "$USER"
@@ -44,8 +59,10 @@ fi
 systemctl --user daemon-reload
 [ -f "$unit_dir/ytdj-pot.service" ] && systemctl --user enable --now ytdj-pot.service
 systemctl --user enable --now ytdj.service
+[ "$panel" = yes ] && systemctl --user enable --now ytdj-panel.service
 echo
 systemctl --user --no-pager --lines=0 status ytdj.service || true
 echo
 echo "log:     journalctl --user -u ytdj -f"
+[ "$panel" = yes ] && echo "panel:   journalctl --user -u ytdj-panel -f"
 echo "web:     http://127.0.0.1:8765"

@@ -188,6 +188,34 @@ To control it from a phone, set `web_host = "0.0.0.0"`. Read the security note
 under [Web UI & API](#web-ui--api) first: there is no authentication, so anyone
 on that network can play music, change settings, and spend your subscription.
 
+## Touch panel
+
+A small screen next to the speaker that shows what's playing and does the
+basics — play/pause, next, volume — without reaching for a phone. Built for a
+Raspberry Pi 3 B with a 3.5" 480×320 resistive SPI touchscreen (KeDei v6.2),
+but the hardware sits behind a two-method seam (`ytdj/panel/hw.py`), so
+another panel is one driver away.
+
+```bash
+pip install -e '.[panel]'                 # Pillow; on a Pi, python3-pil from apt
+python -m ytdj.panel --driver kedei       # on the Pi (--rotate 180 if upside down)
+python -m ytdj.panel --driver sim         # anywhere: frames go to /tmp/ytdj-panel.png,
+                                          # taps come from stdin as "x y"
+```
+
+It's a separate process that talks to ytdj over the same local API as the web
+UI (SSE, falling back to polling), so either side can restart without taking
+the other down; while ytdj is away the panel says so and keeps reconnecting.
+`install-service.sh` sets it up as a third unit, `ytdj-panel`, when it finds
+`/dev/spidev0.0` and Pillow.
+
+An SPI panel is slow — a full frame takes a good part of a second — so the
+panel keeps its own copy of the screen and pushes only the pixels that changed:
+the clock ticking over is one digit, the progress bar a one-pixel column,
+a button press just its label. Presses show up immediately (optimistically)
+and are reconciled with what the server reports; volume drags are throttled
+to ~4 requests a second plus the final value.
+
 ## Usage
 
 Anything you type goes to the DJ — except deterministic commands, which are
@@ -462,10 +490,17 @@ ytdj/
   web/
     server.py  starlette + uvicorn, REST + SSE, config writes
     static/index.html  the whole frontend in one file, no build step
+  panel/
+    hw.py      Screen/Touch seam for a concrete display driver
+    ui.py      480×320 layout, retained frame, dirty-rectangle rendering
+    app.py     event loop: server state + touches → optimistic view → glass
+    client.py  SSE/polling feed and /api/control sender (stdlib HTTP)
+    sim.py     PNG screen + stdin touch, for development without the hardware
 packaging/
   ytdj.service        systemd user unit (@INSTALL_DIR@ filled in on install)
   ytdj-pot.service    PO token provider, without which Premium stays out of reach
-  install-service.sh  installs both units, switches on lingering, starts them
+  ytdj-panel.service  touch panel on the Pi's SPI display (optional)
+  install-service.sh  installs the units, switches on lingering, starts them
 ```
 
 The terminal and the web UI share one lock for Codex calls (`App.ask`), so

@@ -1,0 +1,194 @@
+"""Panel tests: layout helpers, and the whole thing against a fake ytdj.
+
+    python -m unittest tests.test_panel -v
+"""
+
+from __future__ import annotations
+
+import io
+import sys
+import tempfile
+import threading
+import time
+import unittest
+from dataclasses import replace
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from fake_ytdj import make_server  # noqa: E402
+
+from ytdj.panel.app import PanelApp  # noqa: E402
+from ytdj.panel.sim import SimScreen, SimTouch  # noqa: E402
+from ytdj.panel.ui import (  # noqa: E402
+    NEXT,
+    PLAY,
+    VOL,
+    VOL_UP,
+    Fonts,
+    Renderer,
+    View,
+    ellipsize,
+    merge_boxes,
+    volume_at,
+    wrap,
+)
+
+
+def center(box):
+    return (box[0] + box[2]) // 2, (box[1] + box[3]) // 2
+
+
+def wait_for(pred, timeout=8.0, step=0.05):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if pred():
+            return True
+        time.sleep(step)
+    return False
+
+
+class TextTest(unittest.TestCase):
+    def setUp(self):
+        self.font = Fonts().title
+
+    def test_ellipsize_czech(self):
+        text = "Příliš žluťoučký kůň úpěl ďábelské ódy"
+        out = ellipsize(text, self.font, 200)
+        self.assertTrue(out.endswith("…"))
+        self.assertLessEqual(self.font.getlength(out), 200)
+        self.assertEqual(ellipsize("Kůň", self.font, 200), "Kůň")
+
+    def test_wrap_two_lines(self):
+        text = "Příliš žluťoučký kůň úpěl ďábelské ódy — živě ze Šťastného Žďáru"
+        lines = wrap(text, self.font, 450, 2)
+        self.assertEqual(len(lines), 2)
+        for line in lines:
+            self.assertLessEqual(self.font.getlength(line), 450)
+        self.assertTrue(lines[1].endswith("…"))
+
+    def test_wrap_one_giant_word(self):
+        lines = wrap("A" * 200, self.font, 300, 2)
+        self.assertEqual(len(lines), 2)
+        for line in lines:
+            self.assertLessEqual(self.font.getlength(line), 300)
+
+
+class RenderTest(unittest.TestCase):
+    def test_merge(self):
+        self.assertEqual(merge_boxes([(0, 0, 10, 10), (5, 5, 20, 20)]), [(0, 0, 20, 20)])
+        far = [(0, 0, 10, 10), (400, 300, 410, 310)]
+        self.assertEqual(sorted(merge_boxes(far)), far)
+
+    def test_tick_is_tiny(self):
+        v = View(online=True, connecting=False, has_track=True, title="X", artist="Y",
+                 running=True, elapsed=60, duration=240, volume=50, can_next=True)
+        r = Renderer()
+        self.assertEqual(r.render(v, full=True), [(0, 0, 480, 320)])
+        self.assertEqual(r.render(v), [])  # nothing changed, nothing to push
+        boxes = r.render(replace(v, elapsed=61))
+        px = sum((b[2] - b[0]) * (b[3] - b[1]) for b in boxes)
+        self.assertTrue(boxes)
+        self.assertLess(px, 2500)
+
+    def test_volume_mapping(self):
+        x0 = VOL[0] + 90
+        self.assertEqual(volume_at(0, 100), 0)
+        self.assertEqual(volume_at(479, 100), 100)
+        self.assertLess(volume_at(x0, 100), volume_at(x0 + 100, 100))
+
+
+class EndToEndTest(unittest.TestCase):
+    def setUp(self):
+        self.server, self.fake = make_server(0)
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.screen = SimScreen(Path(self.tmp.name) / "panel.png")
+        self.touch = SimTouch(io.StringIO(""))
+        self.app = PanelApp(self.screen, self.touch, f"http://127.0.0.1:{self.port}")
+        self.thread = threading.Thread(target=self.app.run, daemon=True)
+        self.thread.start()
+        self.assertTrue(wait_for(lambda: self.app.online), "panel se nepřipojil")
+
+    def tearDown(self):
+        self.app.shutdown()
+        self.thread.join(3)
+        self._stop_server()
+        self.tmp.cleanup()
+
+    def _stop_server(self):
+        if self.server is not None:
+            self.server.closing = True
+            self.server.shutdown()
+            self.server.server_close()
+            self.server = None
+
+    def test_play_pause(self):
+        self.touch.tap(*center(PLAY))
+        self.assertTrue(wait_for(lambda: self.fake.paused))
+        self.assertTrue(wait_for(lambda: not self.app._view().running))
+        time.sleep(0.4)  # a second tap sooner than that counts as contact bounce
+        self.touch.tap(*center(PLAY))
+        self.assertTrue(wait_for(lambda: not self.fake.paused))
+
+    def test_tap_off_button_does_nothing(self):
+        x, y = center(PLAY)
+        self.touch.feed("down", x, y)
+        time.sleep(0.05)
+        self.touch.feed("move", x, y + 200)  # slid away, then lifted
+        time.sleep(0.05)
+        self.touch.feed("up", x, y + 200)
+        time.sleep(0.5)
+        self.assertEqual(self.fake.controls, [])
+
+    def test_next(self):
+        before = self.fake.index
+        self.touch.tap(*center(NEXT))
+        self.assertTrue(wait_for(lambda: self.fake.index != before))
+
+    def test_volume_step_and_drag(self):
+        self.touch.tap(*center(VOL_UP))  # 65 → 70
+        self.assertTrue(wait_for(lambda: self.fake.volume == 70))
+        y = center(VOL)[1]
+        self.touch.drag(VOL[0] + 90, y, VOL[2] - 30, y, steps=30, dt=0.02)
+        final = volume_at(VOL[2] - 30, 100)
+        self.assertTrue(wait_for(lambda: self.fake.volume == final))
+        sent = [c for c in self.fake.controls if c[0] == "volume"]
+        # 0.6 s of dragging at most ~4/s, plus the first and the final value
+        self.assertLessEqual(len(sent), 6)
+        self.assertTrue(wait_for(lambda: self.app.hold_volume is None, timeout=6))
+        self.assertEqual(self.app._view().volume, final)
+
+    def test_offline_and_back(self):
+        self._stop_server()
+        self.assertTrue(wait_for(lambda: not self.app.online, timeout=10))
+        self.assertFalse(self.app._view().online)
+        self.server, self.fake = make_server(self.port)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.assertTrue(wait_for(lambda: self.app.online, timeout=10))
+
+
+class PollingFallbackTest(unittest.TestCase):
+    def test_without_sse(self):
+        server, fake = make_server(0, sse=False)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        touch = SimTouch(io.StringIO(""))
+        with tempfile.TemporaryDirectory() as tmp:
+            app = PanelApp(SimScreen(Path(tmp) / "p.png"), touch, f"http://127.0.0.1:{server.server_address[1]}")
+            t = threading.Thread(target=app.run, daemon=True)
+            t.start()
+            try:
+                self.assertTrue(wait_for(lambda: app.online))
+                touch.tap(*center(PLAY))
+                self.assertTrue(wait_for(lambda: fake.paused))
+            finally:
+                app.shutdown()
+                t.join(3)
+                server.shutdown()
+                server.server_close()
+
+
+if __name__ == "__main__":
+    unittest.main()

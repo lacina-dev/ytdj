@@ -23,6 +23,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import shutil
 import signal
 import time
@@ -38,10 +39,28 @@ from ..state import Store
 from .. import telemetry
 from .appserver import (
     AppServer,
-    AppServerAuthError,
+    AppServerFatal,
     app_server_enabled,
     default_binary,
     feature_args,
+)
+from .offline import (
+    CALMER,
+    CZECH,
+    ERROR,
+    LIMIT,
+    LIVELIER,
+    LOCAL_REPLY,
+    LOGIN,
+    MOOD_WORDS,
+    MORE,
+    OTHER,
+    SURPRISE,
+    Breaker,
+    CodexOffline,
+    classify,
+    local_mood,
+    looks_czech,
 )
 from .fastpath import FastResult, enforce_requested, find_artists, find_song
 from .intent import Intent, ListenerIntent, Pair, build_intent, track_avoided
@@ -54,6 +73,10 @@ log = logging.getLogger(__name__)
 # Codexu donekonečna a DJ by přestal reagovat úplně — hudba sice hraje dál,
 # ale každý další dotaz dostane jen "Codex právě pracuje".
 TURN_TIMEOUT = 240  # s
+# Rozpočet celého tahu (app-server i případný exec) — pak jistič a DJ bez
+# modelu. Posluchač nemá čekat minuty: 429 s opakováním držel tah až 240 s.
+LISTENER_BUDGET = 25.0  # s
+AUTO_BUDGET = 90.0  # s — přeseedování, o které nikdo nežádal, smí déle
 
 # Response schema. Structured outputs require every property to be listed
 # in `required` — unused ones are sent empty.
@@ -241,6 +264,9 @@ class CodexDJ:
         self.codex = shutil.which("codex") or str(Path.home() / ".local/bin/codex")
         # [app-server] trvale běžící Codex (viz appserver.py); None = jen exec
         self.app: AppServer | None = None
+        self._binary: str | None = None  # dohledá se jednou, mimo smyčku
+        # jistič: když mozek nejede, nezkoušet ho u každého přání (offline.py)
+        self.breaker = Breaker()
 
         # Codex is primarily a coding agent. Running it in the project
         # directory would mean it starts digging through the sources; it gets
@@ -471,6 +497,10 @@ class CodexDJ:
             return plan
 
         plan.requested, missing = await self._resolve_pairs(intent.tracks)
+        if intent.seed_tracks and not intent.tracks:
+            # DJ bez modelu už semínka má (historie, nálady YTM) — nehledat znovu
+            plan.seeds = list(intent.seed_tracks)
+            return plan
         # [truthful] katalog umí vrátit "aspoň něco od něj" — to není vyžádaná skladba
         # [truthful] a když posluchač jmenoval interpreta ("… od Olympicu"), tak od něj
         plan.requested, wrong, other = await enforce_requested(
@@ -783,49 +813,64 @@ class CodexDJ:
         return Plan(intent=intent, requested=[t], seeds=[t])
 
     # [app-server]
-    def _app(self) -> AppServer | None:
+    async def _app(self) -> AppServer | None:
         if not app_server_enabled():
             return None
         if self.app is None:
-            binary = default_binary()
-            if binary is None:
+            if self._binary is None:
+                # glob po SD kartě trval na Pi 3.9 s a zasekl smyčku (26. 9. 00:35:50)
+                self._binary = await asyncio.to_thread(default_binary) or ""
+            if not self._binary:
                 return None
             self.app = AppServer(
-                binary, str(self._dir), model=self.cfg.codex_model,
+                self._binary, str(self._dir), model=self.cfg.codex_model,
                 max_turns_per_thread=self.MAX_RESUMED_TURNS,
             )
         return self.app
 
     def prewarm(self) -> None:
         """Nastartuje Codex na pozadí, souběžně s rychlou cestou přání."""
-        if app := self._app():
-            app.prewarm()
+        if not app_server_enabled() or not self.breaker.allow():
+            return  # vypnuto, nebo mozek nejede — nezkoušet při každém přání
+
+        async def go() -> None:
+            if app := await self._app():
+                app.prewarm()
+
+        asyncio.create_task(go())
 
     async def _via_app_server(self, prompt: str, auto: bool) -> dict | None:
-        """Tah přes trvale běžící Codex; None = selhalo, ať to vezme `codex exec`."""
-        if self._app() is None:
+        """Tah přes trvale běžící Codex; None = selhalo, ať to vezme `codex exec`.
+
+        Přihlášení / limit (AppServerFatal) se nepřevádí na exec — dopadl by
+        stejně, jen by čekal. Vyhodí se dál a otevře jistič.
+        """
+        app = await self._app()
+        if app is None:
             return None
         t0 = time.monotonic()
         try:
-            res = await self.app.turn(prompt, DECISION_SCHEMA, timeout=TURN_TIMEOUT)
+            res = await app.turn(prompt, DECISION_SCHEMA, timeout=TURN_TIMEOUT)
             data = parse_output(res.text)
-        except asyncio.CancelledError:
-            raise
-        except AppServerAuthError as exc:
-            # exec by čekal minutu na stejnou chybu — rovnou to říct
+        except (asyncio.CancelledError, TimeoutError):
+            raise  # rozpočet tahu (interpret) nebo přednost posluchače
+        except AppServerFatal as exc:
             telemetry.event("dj.turn", how="app_server", auto=auto, ok=False,
-                            error=f"auth: {exc}"[:300],
+                            error=f"{exc.reason}: {exc}"[:300],
                             took_ms=int((time.monotonic() - t0) * 1000))
-            raise CodexUnavailable(f"Codex není přihlášen: {exc}"[:300]) from exc
+            if exc.reason == LOGIN:
+                # po novém přihlášení musí proces načíst nový auth.json
+                await app.close()
+            raise
         except Exception as exc:
             log.warning("app-server selhal (%s) — beru codex exec", exc)
             telemetry.event(
                 "dj.turn", how="app_server", auto=auto, ok=False,
                 error=f"{type(exc).__name__}: {exc}"[:300],
-                stderr=" | ".join(self.app.stderr_tail[-3:])[:300] or None,
+                stderr=" | ".join(app.stderr_tail[-3:])[:300] or None,
                 took_ms=int((time.monotonic() - t0) * 1000),
             )
-            await self.app.close()  # příště načisto
+            await app.close()  # příště načisto
             return None
         telemetry.event(
             "dj.turn", how="app_server", auto=auto, ok=True, new_thread=res.new_thread,
@@ -839,18 +884,39 @@ class CodexDJ:
         if self.app is not None:
             await self.app.close()
 
-    async def interpret(self, user_input: str, auto: bool = False) -> Intent:
-        """Zeptá se modelu a vyloží odpověď. Nic nepřehrává.
+    def status(self) -> dict:
+        """Stav DJ pro web / panel / frontu přání (malé stabilní API).
 
-        Vyhazuje CodexUnavailable / RuntimeError, když model neodpoví.
+        {"brain": Breaker.status() — {"online", "reason", "since", "retry_at",
+                   "retry_in_s", "message"},
+         "model": str, "how": "app_server"|"exec",
+         "artist_mode": str}
+        `brain.online == False` → neukazovat "předplatné"; `brain.message` je
+        vlídná česká zpráva pro posluchače.
         """
-        prompt = await self._build_prompt(user_input)
-        last_exc: Exception | None = None
+        return {
+            "brain": self.breaker.status(),
+            "model": self.cfg.codex_model or "výchozí",
+            "how": "app_server" if app_server_enabled() else "exec",
+            "artist_mode": self.focus,
+        }
+
+    @property
+    def offline(self) -> bool:
+        """True = mozek teď nejede (jistič otevřený)."""
+        return self.breaker.offline
+
+    async def _model_decision(self, prompt: str, auto: bool) -> dict:
+        """Rozhodnutí modelu: app-server, při jeho chybě `codex exec`.
+
+        Vyhazuje výjimku, kterou `interpret` roztřídí do jističe.
+        """
         # [app-server] trvale běžící Codex; při jakékoli chybě `codex exec` jako dřív
         data = await self._via_app_server(prompt, auto)
+        if data is not None:
+            return data
+        last_exc: Exception | None = None
         for resume in (True, False):
-            if data is not None:
-                break
             if resume and not self.thread_id:
                 continue
             if resume and getattr(self, "_thread_turns", 0) >= self.MAX_RESUMED_TURNS:
@@ -861,47 +927,193 @@ class CodexDJ:
                     data = await self._run(self._args(resume), prompt)
                     ev["ok"] = True
                 self._thread_turns = getattr(self, "_thread_turns", 0) + 1 if resume else 1
+                return data
             except CodexUnavailable:
                 raise
             except Exception as exc:
                 log.warning("codex exec selhal (resume=%s): %s", resume, exc)
+                if classify(exc) in (LOGIN, LIMIT):
+                    raise  # čerstvá session by dopadla stejně
                 last_exc = exc
-                data = None
                 if resume:
                     self.thread_id = None  # session was lost, retry from scratch
-                continue
-        if data is not None:
-            telemetry.event(
-                "dj.decision",
-                action=data.get("action"),
-                seeds=_labels(data.get("seeds")),
-                requested=_labels(data.get("requested")),
-                focus_artists=data.get("focus_artists") or None,
-                avoid=_labels(data.get("avoid")),
-                after_current=bool(data.get("after_current")),
-                mood=str(data.get("mood") or "")[:120],
-                remember=str(data.get("remember") or "")[:200] or None,
-            )
-            intent = build_intent(user_input, data, auto=auto)
-            if intent.note:
-                log.info("oprava rozhodnutí: %s", intent.note)
-            log.info(
-                "přání (%s): %s | interpreti=%s | skladby=%s | bez=%s | %s",
-                "auto" if auto else "posluchač", intent.kind, intent.artists or "-",
-                intent.tracks or "-", intent.exclude or "-", intent.mood,
-            )
-            telemetry.event(
-                "dj.intent", intent_kind=intent.kind, auto=auto,
-                artists=intent.artists or None,
-                tracks=[f"{a} — {t}" for a, t in intent.tracks] or None,
-                seeds=[f"{a} — {t}" for a, t in intent.seeds] or None,
-                exclude=[f"{a} — {t}" for a, t in intent.exclude] or None,
-                play_next=intent.play_next, more_like_current=intent.more_like_current,
-                control=intent.control or None, mood=intent.mood[:120],
-                repaired=intent.note or None,
-            )
-            return intent
         raise RuntimeError(str(last_exc) if last_exc else "Codex neodpověděl")
+
+    async def interpret(self, user_input: str, auto: bool = False) -> Intent:
+        """Zeptá se modelu a vyloží odpověď. Nic nepřehrává.
+
+        Když mozek nejede (jistič) nebo selže: jednoduchá přání vyřídí DJ sám
+        (`offline.local_mood`), jinak vyhodí `CodexOffline` — `str()` je vlídná
+        česká zpráva pro posluchače, `.reason` druh výpadku.
+        Posluchačův tah má rozpočet LISTENER_BUDGET, automatický AUTO_BUDGET.
+        """
+        if not self.breaker.allow():
+            return await self._offline_intent(user_input, auto, None)
+        prompt = await self._build_prompt(user_input)
+        budget = AUTO_BUDGET if auto else LISTENER_BUDGET
+        t0 = time.monotonic()
+        try:
+            async with asyncio.timeout(budget):
+                data = await self._model_decision(prompt, auto)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if isinstance(exc, TimeoutError):
+                exc = TimeoutError(f"Codex neodpověděl do {budget} s")
+            opened = self.breaker.failure(exc)
+            telemetry.event(
+                "dj.offline", opened=opened, reason=self.breaker.reason,
+                error=f"{type(exc).__name__}: {exc}"[:300], auto=auto,
+                retry_in_s=self.breaker.status()["retry_in_s"],
+                took_ms=int((time.monotonic() - t0) * 1000),
+            )
+            log.warning("mozek DJ nejede (%s): %s", self.breaker.reason or "jednorázově", exc)
+            return await self._offline_intent(user_input, auto, exc)
+        if self.breaker.offline:
+            log.info("mozek DJ zase jede")
+            telemetry.event("dj.offline", opened=None, reason=None, recovered=True)
+        self.breaker.success()
+        return self._decision_intent(user_input, data, auto)
+
+    def _decision_intent(self, user_input: str, data: dict, auto: bool) -> Intent:
+        telemetry.event(
+            "dj.decision",
+            action=data.get("action"),
+            seeds=_labels(data.get("seeds")),
+            requested=_labels(data.get("requested")),
+            focus_artists=data.get("focus_artists") or None,
+            avoid=_labels(data.get("avoid")),
+            after_current=bool(data.get("after_current")),
+            mood=str(data.get("mood") or "")[:120],
+            remember=str(data.get("remember") or "")[:200] or None,
+        )
+        intent = build_intent(user_input, data, auto=auto)
+        if intent.note:
+            log.info("oprava rozhodnutí: %s", intent.note)
+        log.info(
+            "přání (%s): %s | interpreti=%s | skladby=%s | bez=%s | %s",
+            "auto" if auto else "posluchač", intent.kind, intent.artists or "-",
+            intent.tracks or "-", intent.exclude or "-", intent.mood,
+        )
+        telemetry.event(
+            "dj.intent", intent_kind=intent.kind, auto=auto,
+            artists=intent.artists or None,
+            tracks=[f"{a} — {t}" for a, t in intent.tracks] or None,
+            seeds=[f"{a} — {t}" for a, t in intent.seeds] or None,
+            exclude=[f"{a} — {t}" for a, t in intent.exclude] or None,
+            play_next=intent.play_next, more_like_current=intent.more_like_current,
+            control=intent.control or None, mood=intent.mood[:120],
+            repaired=intent.note or None,
+        )
+        return intent
+
+    # ---- bez modelu ----
+
+    async def _offline_intent(self, text: str, auto: bool, exc: Exception | None) -> Intent:
+        """Přání bez modelu, nebo CodexOffline s vlídnou zprávou."""
+        key = OTHER if auto else local_mood(text)
+        reason = self.breaker.reason or classify(exc) or ERROR
+        if key:
+            intent = await self.local_intent(key, text, auto=auto)
+            if intent is not None:
+                telemetry.event("dj.local", key=key, auto=auto, reason=reason,
+                                seeds=[f"{a} — {t}" for a, t in intent.seeds][:5])
+                return intent
+        raise CodexOffline(reason) from exc
+
+    async def local_intent(self, key: str, text: str = "", auto: bool = False) -> Intent | None:
+        """Čip bez modelu (offline.CALMER / LIVELIER / CZECH / MORE / OTHER / SURPRISE).
+
+        Semínka z toho, co hrálo a o co si lidi řekli, u klidnější/živější
+        z nálad YouTube Music. None = nemám z čeho.
+        """
+        seeds = await self._local_seeds(key)
+        if not seeds:
+            return None
+        return Intent(
+            kind="mood", text=text,
+            seeds=[(t.artist, t.title) for t in seeds[:5]],
+            seed_tracks=seeds[:5],
+            mood=LOCAL_REPLY[key].lower(),
+            reply=f"{LOCAL_REPLY[key]} — zatím bez mozku DJ, podle toho, co tu hraje.",
+            auto=auto, note="offline",
+        )
+
+    async def _local_seeds(self, key: str) -> list[Track]:
+        st = await self.player.status()
+        current = st.current
+        history = [
+            Track(id=p.video_id, title=p.title or "", artist=p.artist or "")
+            for p in self.store.recent_history(200) if p.video_id
+        ]
+        finished = [
+            Track(id=p.video_id, title=p.title or "", artist=p.artist or "")
+            for p in self.store.recent_history(200) if p.outcome == "finished"
+        ]
+        requested = [
+            Track(id=r.video_id, title=r.title or "", artist=r.artist or "")
+            for r in self.store.top_requested(30)
+        ]
+        recent_artists = {t.artist for t in history[:15]}
+        if current:
+            recent_artists.add(current.artist)
+
+        def pick(pool: list[Track], n: int = 4) -> list[Track]:
+            seen: set[str] = set()
+            out = []
+            for t in pool:
+                if t.id in seen or not t.title:
+                    continue
+                seen.add(t.id)
+                out.append(t)
+            random.shuffle(out)
+            by_artist: dict[str, Track] = {}
+            for t in out:
+                by_artist.setdefault(t.artist, t)
+            return list(by_artist.values())[:n]
+
+        if key == MORE:
+            base = [current] if current else []
+            return base + pick([t for t in finished[:20] if not current or t.id != current.id], 3)
+        if key in (OTHER, SURPRISE):
+            pool = [t for t in requested + finished if t.artist not in recent_artists]
+            return pick(pool, 4)
+        if key == CZECH:
+            pool = [t for t in requested + finished + history if looks_czech(t.artist, t.title)]
+            seeds = pick(pool, 4)
+            if len(seeds) < 2:
+                try:
+                    seeds += await self.catalog.search("české hity", limit=8)
+                except Exception as exc:
+                    log.info("české hity nenalezeny: %s", exc)
+            return seeds[:5]
+        if key in (CALMER, LIVELIER):
+            seeds = await self._mood_playlist_seeds(key)
+            return seeds or pick(finished, 4)
+        return []
+
+    async def _mood_playlist_seeds(self, key: str) -> list[Track]:
+        """Pár skladeb z nálady YouTube Music ("Chill", "Energize"…)."""
+        words = MOOD_WORDS[key]
+        try:
+            cats = await self.catalog.mood_categories()
+            params = next(
+                (item.get("params") for group in (cats or {}).values() for item in group
+                 if any(w in (item.get("title") or "").lower() for w in words)),
+                None,
+            )
+            if not params:
+                return []
+            lists = await self.catalog.mood_playlists(params)
+            pid = next((p.get("playlistId") for p in lists or [] if p.get("playlistId")), None)
+            if not pid:
+                return []
+            tracks = await self.catalog.playlist_tracks(pid, limit=25)
+        except Exception as exc:
+            log.info("nálada YouTube Music nedostupná: %s", exc)
+            return []
+        random.shuffle(tracks)
+        return tracks[:4]
 
     async def turn(
         self, user_input: str, interrupt: bool = True, auto: bool = False
@@ -909,10 +1121,13 @@ class CodexDJ:
         """Jeden tah: vyložit → dohledat → zahrát. `auto` = zadání od aplikace."""
         try:
             intent = await self.interpret(user_input, auto=auto)
+        except CodexOffline as exc:
+            return str(exc)  # vlídně, bez syrové chyby
         except CodexUnavailable:
             raise
         except Exception as exc:
-            return f"(Codex selhal: {exc}) — hudba hraje dál"
+            log.warning("tah selhal: %s", exc)
+            return "Tohle se mi teď nepovedlo — hudba hraje dál, zkus to prosím za chvíli."
         plan = await self.resolve(intent)
         reply = await self.play(plan, interrupt)
         if not plan.failed:

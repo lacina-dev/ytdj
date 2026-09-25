@@ -26,6 +26,7 @@ from ytdj.agent.appserver import (  # noqa: E402
     AppServer,
     AppServerAuthError,
     AppServerError,
+    AppServerFatal,
     native_codex,
 )
 from ytdj.agent.codex import DECISION_SCHEMA  # noqa: E402
@@ -167,6 +168,24 @@ class Fake(unittest.TestCase):
         t0 = _t.monotonic()
         run(go())
         self.assertLess(_t.monotonic() - t0, 5)  # not the minute of retries
+
+    def test_rate_limit_with_retry_fails_fast(self):
+        # a 429 marked willRetry used to keep the turn waiting up to 240 s
+        os.environ["FAKE_MODE"] = "limit"
+
+        async def go():
+            app = AppServer(str(FAKE), _TMP)
+            try:
+                with self.assertRaises(AppServerFatal) as cm:
+                    await app.turn("p", DECISION_SCHEMA, timeout=10)
+            finally:
+                await app.close()
+            return cm.exception.reason
+
+        import time as _t
+        t0 = _t.monotonic()
+        self.assertEqual(run(go()), "limit")
+        self.assertLess(_t.monotonic() - t0, 5)
 
     def test_idle_process_is_closed(self):
         async def go():

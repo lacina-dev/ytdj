@@ -186,6 +186,10 @@ SYMBOLS = (
     ("1234567890", "@#$%&*-+()", ".,!?:;/"),
     ("1234567890", "_=[]{}<>\\|", "\"'~^`"),
 )
+# Czech letters with háčky and čárky — the wish keyboard's "áč" page. Names
+# and titles are what people type there ("Čechomor", "Žlutý pes"), so every
+# one of them is a single tap away.
+ACCENTS = ("ěščřžýáíéú", "ůóďťňäöü", ".,?!-'&")
 
 # connecting
 C_TITLE = (0, 0, W, 44)
@@ -197,11 +201,14 @@ BTN_L = (8, 258, 236, 314)
 BTN_R = (244, 258, 472, 314)
 
 
-def kb_keys(page: str, lang: str = "cs") -> list[tuple[str, Box]]:
-    """(key id, box) for one keyboard page: "abc", "123" or "#+=".
+def kb_keys(page: str, lang: str = "cs", accents: bool = False) -> list[tuple[str, Box]]:
+    """(key id, box) for one keyboard page: "abc", "123", "#+=" or "áč".
 
     Ids: "c:<char>" types the character, then "shift" (letters) or "sym"
     (the other symbol page), "bksp", "mode", "space", "cancel", "ok".
+    With `accents` (the wish keyboard) the bottom row also has "acc", which
+    flips between the letters and the Czech accented ones; space gets
+    narrower to make room.
     """
     def box(row: int, start: float, width: float) -> Box:
         y = KB_Y0 + row * KB_PITCH
@@ -212,6 +219,8 @@ def kb_keys(page: str, lang: str = "cs") -> list[tuple[str, Box]]:
 
     if page == "abc":
         r1, r2, r3 = LETTERS.get(lang, LETTERS["cs"])
+    elif page == "áč":
+        r1, r2, r3 = ACCENTS
     else:
         r1, r2, r3 = SYMBOLS[0 if page == "123" else 1]
     keys: list[tuple[str, Box]] = []
@@ -220,15 +229,20 @@ def kb_keys(page: str, lang: str = "cs") -> list[tuple[str, Box]]:
     off = (10 - len(r2)) / 2
     for i, ch in enumerate(r2):
         keys.append((f"c:{ch}", box(1, off + i, 1)))
-    keys.append(("shift" if page == "abc" else "sym", box(2, 0, 1.5)))
+    keys.append(("shift" if page in ("abc", "áč") else "sym", box(2, 0, 1.5)))
     w3 = 7 / len(r3)
     for i, ch in enumerate(r3):
         keys.append((f"c:{ch}", box(2, 1.5 + i * w3, w3)))
     keys.append(("bksp", box(2, 8.5, 1.5)))
     keys.append(("cancel", box(3, 0, 2)))
     keys.append(("mode", box(3, 2, 1.5)))
-    keys.append(("space", box(3, 3.5, 3.5)))
-    keys.append(("ok", box(3, 7, 3)))
+    if accents:
+        keys.append(("acc", box(3, 3.5, 1.5)))
+        keys.append(("space", box(3, 5, 2.2)))
+        keys.append(("ok", box(3, 7.2, 2.8)))
+    else:
+        keys.append(("space", box(3, 3.5, 3.5)))
+        keys.append(("ok", box(3, 7, 3)))
     return keys
 
 
@@ -365,23 +379,32 @@ def icon_cross(d: ImageDraw.ImageDraw, cx: float, cy: float, s: float, fill) -> 
 Region = tuple[str, Box, Callable[[NetView], tuple], Callable[[ImageDraw.ImageDraw, tuple[int, int], NetView], None], bool]
 
 
+FONT_ATTRS = ("f", "small", "label", "value", "url", "head", "ssid", "key", "key_small", "field", "big")
+
+
 class NetRenderer:
-    def __init__(self, lang: str = "cs") -> None:
+    def __init__(self, lang: str = "cs", share: "NetRenderer | None" = None) -> None:
         self.lang = lang if lang in STRINGS else "cs"
         self.s = STRINGS[self.lang]
         self.frame = Image.new("RGB", (W, H), BG)
-        f = Fonts()
-        self.f = f
-        self.small = f._load("DejaVuSans.ttf", 14)
-        self.label = f._load("DejaVuSans.ttf", 16)
-        self.value = f._load("DejaVuSans-Bold.ttf", 17)
-        self.url = f._load("DejaVuSans-Bold.ttf", 16)
-        self.head = f._load("DejaVuSans-Bold.ttf", 20)
-        self.ssid = f._load("DejaVuSans-Bold.ttf", 19)
-        self.key = f._load("DejaVuSans.ttf", 23)
-        self.key_small = f._load("DejaVuSans-Bold.ttf", 15)
-        self.field = f._load("DejaVuSansMono.ttf", 22)
-        self.big = f._load("DejaVuSans-Bold.ttf", 26)
+        self.ok_label = self.s["connect"]  # the keyboard's confirm key
+        if share is not None:
+            # another screen that draws with the same fonts: don't load them twice
+            for name in FONT_ATTRS:
+                setattr(self, name, getattr(share, name))
+        else:
+            f = Fonts()
+            self.f = f
+            self.small = f._load("DejaVuSans.ttf", 14)
+            self.label = f._load("DejaVuSans.ttf", 16)
+            self.value = f._load("DejaVuSans-Bold.ttf", 17)
+            self.url = f._load("DejaVuSans-Bold.ttf", 16)
+            self.head = f._load("DejaVuSans-Bold.ttf", 20)
+            self.ssid = f._load("DejaVuSans-Bold.ttf", 19)
+            self.key = f._load("DejaVuSans.ttf", 23)
+            self.key_small = f._load("DejaVuSans-Bold.ttf", 15)
+            self.field = f._load("DejaVuSansMono.ttf", 22)
+            self.big = f._load("DejaVuSans-Bold.ttf", 26)
         self._sigs: dict[str, tuple] = {}
         self._qr_cache: tuple[str, list[list[bool]] | None] = ("", None)
 
@@ -749,7 +772,7 @@ class NetRenderer:
 
     def _key_sig(self, kid: str) -> Callable[[NetView], tuple]:
         if kid.startswith("c:"):
-            return lambda v: (v.shift > 0 and v.kb_page == "abc", v.pressed == kid)
+            return lambda v: (v.shift > 0 and v.kb_page in ("abc", "áč"), v.pressed == kid)
         if kid == "shift":
             return lambda v: (v.shift, v.pressed == kid)
         if kid == "ok":
@@ -765,7 +788,7 @@ class NetRenderer:
                 on = v.can_connect
                 self._button(d, size, ACCENT if on else SURFACE, 10)
                 color = (PRESSED_ON_ACCENT if pressed else ON_ACCENT) if on else FAINT
-                d.text((cx, cy), self.s["connect"], font=self.f.button, fill=color, anchor="mm")
+                d.text((cx, cy), self.ok_label, font=self.f.button, fill=color, anchor="mm")
                 return
             special = not kid.startswith("c:") and kid != "space"
             fill = SURFACE_HI if pressed else (SURFACE if not special else (40, 42, 47))
@@ -775,7 +798,7 @@ class NetRenderer:
             color = ACCENT_TEXT if pressed else TEXT
             if kid.startswith("c:"):
                 ch = kid[2:]
-                if v.kb_page == "abc" and v.shift:
+                if v.kb_page in ("abc", "áč") and v.shift:
                     ch = ch.upper()
                 d.text((cx, cy + 1), ch, font=self.key, fill=color, anchor="mm")
             elif kid == "shift":
@@ -788,7 +811,11 @@ class NetRenderer:
             elif kid == "sym":
                 d.text((cx, cy), "#+=" if v.kb_page == "123" else "123", font=self.key_small, fill=color, anchor="mm")
             elif kid == "mode":
-                d.text((cx, cy), "123" if v.kb_page == "abc" else "abc", font=self.key_small, fill=color, anchor="mm")
+                d.text((cx, cy), "123" if v.kb_page in ("abc", "áč") else "abc", font=self.key_small, fill=color, anchor="mm")
+            elif kid == "acc":
+                on = v.kb_page == "áč"
+                d.text((cx, cy), "abc" if on else "áčř", font=self.key_small if on else self.value,
+                       fill=color, anchor="mm")
             elif kid == "space":
                 d.text((cx, cy), self.s["space"], font=self.label, fill=DIM if not pressed else color, anchor="mm")
             elif kid == "cancel":

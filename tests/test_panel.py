@@ -568,5 +568,162 @@ class TouchDriverStatsTest(unittest.TestCase):
         self.assertEqual(errs[1]["repeated"], 49)
 
 
+class WishTest(unittest.TestCase):
+    """The wish screen: quick picks, the Czech keyboard, the DJ's answer."""
+
+    def setUp(self):
+        from ytdj.panel.ui import WISH_TARGET
+
+        self.wish_btn = WISH_TARGET
+        self.server, self.fake = make_server(0)
+        self.fake.prompt_delay = 0.3
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.touch = SimTouch(io.StringIO(""))
+        self.app = PanelApp(SimScreen(Path(self.tmp.name) / "panel.png"), self.touch,
+                            f"http://127.0.0.1:{self.port}", net_backend=_NoNet())
+        self.thread = threading.Thread(target=self.app.run, daemon=True)
+        self.thread.start()
+        self.assertTrue(wait_for(lambda: self.app.online), "panel se nepřipojil")
+
+    def tearDown(self):
+        self.app.shutdown()
+        self.thread.join(3)
+        self.server.closing = True
+        self.server.shutdown()
+        self.server.server_close()
+        self.tmp.cleanup()
+
+    def _open(self):
+        self.touch.tap(*center(self.wish_btn))
+        self.assertTrue(wait_for(lambda: self.app.wish.page == "home"))
+        self.assertTrue(wait_for(lambda: self.app._shown_page == "wish:home"))
+
+    def _key(self, kid):
+        from ytdj.panel.netui import kb_keys
+
+        keys = dict(kb_keys(self.app.wish.kb_page, "cs", accents=True))
+        self.touch.tap(*center(keys[kid]), hold=0.06)
+        time.sleep(0.12)
+
+    def test_quick_pick_sends_and_answers(self):
+        from ytdj.panel.wishui import BTN_R, chip_box
+
+        self._open()
+        self.touch.tap(*center(chip_box(0)))
+        self.assertTrue(wait_for(lambda: self.fake.prompts))
+        self.assertEqual(self.fake.prompts[0], {"text": "víc takového", "source": "panel"})
+        self.assertTrue(wait_for(lambda: self.app.wish.phase == "ok"))
+        self.assertIn("víc takového", self.app.wish.reply)
+        self.assertTrue(wait_for(lambda: self.app._shown_page == "wish:sent"))
+        self.touch.tap(*center(BTN_R))  # Hotovo
+        self.assertTrue(wait_for(lambda: self.app._shown_page == "player"))
+
+    def test_czech_keyboard(self):
+        from ytdj.panel.wishui import FIELD_BTN
+
+        self._open()
+        self.touch.tap(*center(FIELD_BTN))
+        self.assertTrue(wait_for(lambda: self.app.wish.page == "keys"))
+        self._key("acc")
+        self.assertEqual(self.app.wish.kb_page, "áč")
+        self._key("c:č")
+        self.assertEqual(self.app.wish.kb_page, "abc")  # one accented letter, then back
+        for ch in "echomor":
+            self._key(f"c:{ch}")
+        self.assertEqual(self.app.wish.text, "čechomor")
+        self._key("ok")
+        self.assertTrue(wait_for(lambda: self.fake.prompts))
+        self.assertEqual(self.fake.prompts[0]["text"], "čechomor")
+        self.assertTrue(wait_for(lambda: self.app.wish.phase == "ok"))
+        self.assertEqual(self.app.wish.text, "")  # sent drafts are forgotten
+
+    def test_empty_wish_is_not_sent(self):
+        from ytdj.panel.wishui import FIELD_BTN
+
+        self._open()
+        self.touch.tap(*center(FIELD_BTN))
+        self.assertTrue(wait_for(lambda: self.app.wish.page == "keys"))
+        self._key("space")
+        self._key("ok")
+        self.assertTrue(self.app.wish.hint)
+        self.assertEqual(self.fake.prompts, [])
+
+    def test_busy_dj_waits_then_sends(self):
+        from ytdj.panel.wishui import chip_box
+
+        self.fake.busy = True  # somebody else's wish is being worked on
+        self._open()
+        self.touch.tap(*center(chip_box(2)))
+        self.assertTrue(wait_for(lambda: self.app.wish.phase == "wait"))
+        self.assertEqual(self.fake.prompts, [])
+        self.fake.busy = False
+        self.assertTrue(wait_for(lambda: self.app.wish.phase == "ok", timeout=10))
+        self.assertEqual(self.fake.prompts[0]["text"], "jen česky")
+
+    def test_answer_comes_back_after_leaving(self):
+        from ytdj.panel.netui import BTN_FULL
+        from ytdj.panel.wishui import chip_box
+
+        self.fake.prompt_delay = 1.5
+        self._open()
+        self.touch.tap(*center(chip_box(1)))
+        self.assertTrue(wait_for(lambda: self.app.wish.phase == "busy"))
+        self.touch.tap(*center(BTN_FULL))  # Zpět k přehrávání
+        self.assertTrue(wait_for(lambda: self.app._shown_page == "player"))
+        self.assertTrue(wait_for(lambda: self.app.wish.phase == "ok"))
+        self.assertTrue(wait_for(lambda: self.app._shown_page == "wish:sent"))
+
+    def test_failure_offers_retry(self):
+        from ytdj.panel.wishui import BTN_R, chip_box
+
+        self.fake.prompt_status = 500
+        self._open()
+        self.touch.tap(*center(chip_box(3)))
+        self.assertTrue(wait_for(lambda: self.app.wish.phase == "error"))
+        self.assertIn("chybu", self.app.wish.error)
+        self.fake.prompt_status = 200
+        self.touch.tap(*center(BTN_R))  # Zkusit znovu
+        self.assertTrue(wait_for(lambda: self.app.wish.phase == "ok"))
+        self.assertEqual([p["text"] for p in self.fake.prompts], ["něco klidnějšího"] * 2)
+
+
+class WishLayoutTest(unittest.TestCase):
+    def test_keyboard_keys_fit_and_do_not_overlap(self):
+        from ytdj.panel.netui import kb_keys
+        from ytdj.panel.ui import H, W
+
+        for page in ("abc", "áč", "123", "#+="):
+            keys = kb_keys(page, "cs", accents=True)
+            ids = [k for k, _ in keys]
+            self.assertIn("acc", ids)
+            for kid, (l, t, r, b) in keys:
+                self.assertTrue(0 <= l < r <= W and 0 <= t < b <= H, (page, kid))
+                self.assertGreaterEqual(r - l, 38, (page, kid))  # a fingertip on resistive glass
+            for i, (_, a) in enumerate(keys):
+                for _, c in keys[i + 1:]:
+                    self.assertFalse(a[0] < c[2] and c[0] < a[2] and a[1] < c[3] and c[1] < a[3])
+        # the network keyboard is unchanged
+        self.assertNotIn("acc", [k for k, _ in kb_keys("abc", "cs")])
+
+    def test_player_targets_do_not_overlap(self):
+        from ytdj.panel.ui import TARGETS
+
+        boxes = list(TARGETS.items())
+        for i, (n1, a) in enumerate(boxes):
+            for n2, c in boxes[i + 1:]:
+                self.assertFalse(a[0] < c[2] and c[0] < a[2] and a[1] < c[3] and c[1] < a[3], (n1, n2))
+
+    def test_idle_close(self):
+        from ytdj.panel.wishapp import IDLE_CLOSE, WishController
+
+        c = WishController(None, lambda m: None)
+        c.open(100.0)
+        self.assertFalse(c.timers(100.0 + IDLE_CLOSE - 1))
+        self.assertTrue(c.timers(100.0 + IDLE_CLOSE + 1))
+        self.assertIsNone(c.page)
+
+
 if __name__ == "__main__":
     unittest.main()

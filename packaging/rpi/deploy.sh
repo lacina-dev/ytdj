@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Deploy this checkout to the Raspberry Pi jukebox and refresh it. Re-runnable.
+#
+#   packaging/rpi/deploy.sh                 # rsync + venv refresh + restart ytdj
+#   PI=lacina@192.168.0.24 packaging/rpi/deploy.sh
+#   NO_RESTART=1 packaging/rpi/deploy.sh
+#
+# Runs on the laptop. One-time setup of the Pi (uv, yt-dlp, codex, bgutil,
+# cookies, services) is described in packaging/rpi/NOTES.md.
+set -euo pipefail
+
+PI="${PI:-lacina@10.42.0.149}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/lacina_deploy}"
+DEST="${DEST:-ytdj}"                     # relative to the Pi user's home
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ssh_cmd=(ssh -i "$SSH_KEY" -o ConnectTimeout=10)
+
+echo "==> rsync $repo -> $PI:~/$DEST"
+rsync -az --delete \
+    --exclude .venv --exclude .git --exclude __pycache__ --exclude .claude \
+    --exclude '*.pyc' --exclude .pytest_cache \
+    -e "${ssh_cmd[*]}" "$repo/" "$PI:$DEST/"
+
+echo "==> refresh venv + WirePlumber config on the Pi"
+"${ssh_cmd[@]}" "$PI" DEST="$DEST" NO_RESTART="${NO_RESTART:-}" bash -s <<'REMOTE'
+set -euo pipefail
+cd "$HOME/$DEST"
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+
+# --system-site-packages: the SPI panel uses apt's spidev / gpiod / PIL / numpy.
+if [ ! -x .venv/bin/python ]; then
+    python3 -m venv --system-site-packages .venv
+fi
+.venv/bin/pip install -q --disable-pip-version-check -e .
+
+# USB sound card > 3.5 mm jack > HDMI
+conf_dir="$HOME/.config/wireplumber/wireplumber.conf.d"
+mkdir -p "$conf_dir"
+if ! cmp -s packaging/rpi/51-ytdj-audio-priority.conf "$conf_dir/51-ytdj-audio-priority.conf"; then
+    install -m 644 packaging/rpi/51-ytdj-audio-priority.conf "$conf_dir/"
+    # a hand-pinned default sink would override the priorities
+    rm -f "$HOME/.local/state/wireplumber/default-nodes"
+    systemctl --user restart wireplumber.service || true
+    echo "wireplumber: priorities installed, restarted"
+fi
+
+if [ -z "${NO_RESTART:-}" ] && systemctl --user is-enabled -q ytdj.service 2>/dev/null; then
+    systemctl --user restart ytdj.service
+    sleep 3
+    systemctl --user --no-pager --lines=5 status ytdj.service || true
+fi
+REMOTE
+echo "==> done"

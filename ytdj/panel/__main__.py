@@ -45,6 +45,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--sim-out", default="/tmp/ytdj-panel.png", help="PNG for --driver sim")
     p.add_argument("--vol-max", type=int, default=100, help="volume ceiling for the panel (API allows up to 130)")
     p.add_argument("--lang", default="cs" if lang.startswith("cs") else "en", choices=("cs", "en"))
+    p.add_argument("--no-media-keys", action="store_true",
+                   help="ignore volume/play keys of USB speakers and keyboards (kedei only)")
     p.add_argument("-v", "--verbose", action="store_true", help="log timings of every redraw")
     args = p.parse_args(argv)
 
@@ -78,7 +80,8 @@ def main(argv: list[str] | None = None) -> int:
     if tuple(screen.size) != (480, 320):
         log.warning("displej hlásí %s, rozložení je pro 480×320 na šířku", screen.size)
 
-    app = PanelApp(screen, touch, args.url, lang=args.lang, vol_max=args.vol_max)
+    app = PanelApp(screen, touch, args.url, lang=args.lang, vol_max=args.vol_max,
+                   media_keys=args.driver == "kedei" and not args.no_media_keys)
     signal.signal(signal.SIGTERM, lambda *_: app.shutdown())
     signal.signal(signal.SIGINT, lambda *_: app.shutdown())
     log.info("panel běží (%s), ytdj na %s", args.driver, args.url)

@@ -25,6 +25,7 @@ from .ui import STRINGS, TARGETS, Renderer, View, volume_at
 log = logging.getLogger(__name__)
 
 VOL_STEP = 5
+KEY_VOL_STEP = 2  # na cvaknutí kolečka nebo stisk klávesy na repráku
 VOL_INTERVAL = 0.25  # at most ~4 volume requests per second while dragging
 HOLD = 4.0  # how long an optimistic state wins over a server that disagrees
 SKIP_HOLD = 6.0
@@ -49,9 +50,11 @@ class PanelApp:
         url: str,
         lang: str = "cs",
         vol_max: int = 100,
+        media_keys: bool = False,
     ) -> None:
         self.screen = screen
         self.touch = touch
+        self.media_keys = media_keys
         self.api = Api(url)
         self.vol_max = max(1, min(130, vol_max))
         self.s = STRINGS.get(lang, STRINGS["cs"])
@@ -121,6 +124,10 @@ class PanelApp:
         self.commander.start()
         if self.touch is not None:
             threading.Thread(target=self._touch_loop, name="panel-touch", daemon=True).start()
+        if self.media_keys:
+            from .keys import MediaKeys
+
+            MediaKeys(lambda action: self.events.put(("key", action)), self.stop).start()
         self._paint()
         while not self.stop.is_set():
             try:
@@ -191,6 +198,23 @@ class PanelApp:
                 self.hold_volume.until = min(self.hold_volume.until, time.monotonic() + HOLD)
         elif kind == "touch":
             self._touch(msg[1])
+        elif kind == "key":
+            # tlačítka na repráku jdou stejnou cestou jako tlačítka na displeji
+            log.info("klávesa: %s", msg[1])
+            if not self.online:
+                return
+            now = time.monotonic()
+            if msg[1] in ("vol_up", "vol_down"):
+                # Kolečko na repráku cvaká rychle (~15× za vteřinu) — po
+                # pětkách jako tlačítka na displeji by přeletělo celý rozsah
+                # jedním otočením.
+                cur = self._view().volume
+                step = KEY_VOL_STEP if msg[1] == "vol_up" else -KEY_VOL_STEP
+                new = max(0, min(self.vol_max, cur + step))
+                if new != cur:
+                    self._set_volume(new, now + HOLD)
+            else:
+                self._fire(msg[1], now)
 
     def _apply_state(self, state: dict, at: float) -> None:
         if not self.online:
@@ -366,6 +390,7 @@ class PanelApp:
                 return
             self.pressed, self.press_at, self.inside = name, now, True
             self.last_xy = (ev.x, ev.y)
+            log.info("dotyk: %s na %d,%d", name, ev.x, ev.y)
             if name == "vol":
                 self._drag_volume(ev.x)
         elif ev.kind == "move":
@@ -403,9 +428,11 @@ class PanelApp:
             # freeze (or restart) the clock where it is right now
             self._set_pos(self._position(now), now)
             self.hold_running = _Hold(want, now + HOLD)
+            log.info("povel: %s", "hrát" if want else "pauza")
             self.commander.send("play" if want else "pause")
         elif name == "next":
             self.hold_skip = _Hold(self.track_key, now + SKIP_HOLD)
+            log.info("povel: další")
             self.commander.send("next")
         elif name in ("vol_up", "vol_down"):
             cur = view.volume
@@ -442,6 +469,7 @@ class PanelApp:
         if value == self.vol_sent and self._server_volume() == value:
             return
         self.vol_sent = value
+        log.info("hlasitost → %d", value)
         self.commander.volume(value)
 
     def _server_volume(self) -> int | None:

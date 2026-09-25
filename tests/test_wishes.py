@@ -35,8 +35,8 @@ from ytdj.music.radio import RadioPools  # noqa: E402
 from ytdj.player.base import PlayerEvent  # noqa: E402
 from ytdj.player.mpv import MpvPlayer  # noqa: E402
 from ytdj.state import Store  # noqa: E402
-from ytdj.wishes import (BLOCK, SHARED_BLOCK, Turns, Wish, WishQueue, fair_order,  # noqa: F401
-                         should_resume)  # noqa: E402
+from ytdj.wishes import (BLOCK, SHARED_BLOCK, STATE_CS, Turns, Wish, WishQueue,  # noqa: F401
+                         fair_order, should_resume)  # noqa: E402
 
 
 def vid(name: str) -> str:
@@ -317,7 +317,9 @@ class Queue(unittest.TestCase):
                 a = wq.submit("pusť Kabát", "Petr")
                 b = wq.submit("Holky z naší školky", "Jana")
                 c = wq.submit("Dancing Queen", "Karel")
-                d = wq.submit("Jasná zpráva", "Jana")
+                # druhé přání téže osoby výslovně přidává (jinak by nahradilo první)
+                SCRIPT["a pak Jasná zpráva"] = SCRIPT["Jasná zpráva"]
+                d = wq.submit("a pak Jasná zpráva", "Jana")
                 await rig.until(lambda: all(w.state in ("queued", "playing") for w in (a, b, c, d)))
                 await rig.settle(0.2)
                 owners = rig.owners()
@@ -883,6 +885,93 @@ class WebApi(unittest.TestCase):
                 reason = rig.wq.reason_for(rig.fake.current_vid())
                 self.assertEqual((reason["kind"], reason["who"]), ("radio", ""))
                 self.assertEqual(reason["text"], "klidný pop")
+
+        run(go())
+
+
+class Supersede(unittest.TestCase):
+    """Nové přání téhož člověka nahradí jeho starší (Pi 26. 9.: "pusť Kometu"
+    čekalo za dvěma skladbami Kabátu, o který si řekl on sám)."""
+
+    def test_single_person_switching_plays_at_once(self):
+        async def go():
+            async with Rig() as rig:
+                await rig.background()
+                wq = rig.wq
+                a = wq.submit("pusť Kabát", "Petr")
+                await rig.until(lambda: a.state == "playing" and "kab" in rig.fake.current_vid())
+                s = wq.submit("Holky z naší školky", "petr")  # stejný člověk (velikost písmen)
+                await rig.until(lambda: s.state == "playing")
+                self.assertEqual(rig.fake.current_vid(), s.tracks[0].id)
+                self.assertEqual(a.state, "replaced")
+                self.assertIn("Hraje hned", s.reply)
+                self.assertFalse([v for v in rig.upcoming() if "kab" in v and wq.owner.get(v)])
+                m = wq.submit("něco klidnějšího", "Petr")
+                await rig.until(lambda: m.state == "playing")
+                self.assertIn(rig.fake.current_vid(), [t.id for t in m.tracks])
+                self.assertEqual(s.state, "replaced")
+                self.assertEqual(STATE_CS["replaced"], "nahrazeno")
+
+        run(go())
+
+    def test_with_others_waiting_the_own_block_is_replaced_in_place(self):
+        async def go():
+            async with Rig() as rig:
+                await rig.background()
+                wq = rig.wq
+                p = wq.submit("pusť Kabát", "Petr")
+                await rig.until(lambda: p.state == "playing")
+                j = wq.submit("Holky z naší školky", "Jana")
+                await rig.until(lambda: j.state == "queued")
+                cur = rig.fake.current_vid()
+                d = wq.submit("Dancing Queen", "Petr")
+                await rig.until(lambda: d.state in ("queued", "playing"))
+                await rig.settle(0.2)
+                self.assertEqual(p.state, "replaced")
+                self.assertEqual(rig.fake.current_vid(), cur)  # Jana čeká → nic se neutne
+                owners = rig.owners()
+                self.assertNotIn("kab", "".join(v for v, o in zip(rig.upcoming(), owners) if o == "Petr"))
+                # Petr zůstal na svém místě v kole: rozehrané kolo dohraje nové přání
+                self.assertEqual(owners[:2], ["Petr", "Jana"], owners)
+
+        run(go())
+
+    def test_first_track_is_prioritised_while_deciding(self):
+        """Resolver má na první skladbu přání čekat co nejmíň: během rozhodování
+        nic nového dopředu (wq.busy → hold) a první skladba přednostně."""
+        async def go():
+            async with Rig(codex_delay=0.3) as rig:
+                await rig.background()
+                asked: list[tuple[str, str]] = []
+
+                async def wait_ready(video_id: str, timeout: float) -> bool:
+                    asked.append((video_id, video_id in rig.fake.ids()))
+                    return True
+
+                rig.player.wait_ready = wait_ready  # type: ignore[method-assign]
+                w = rig.wq.submit("Holky z naší školky", "Jana")
+                await rig.until(lambda: w.state == "thinking")
+                self.assertTrue(rig.wq.busy)  # → busy_check drží resolver
+                await rig.until(lambda: w.state in ("queued", "playing"))
+                # ještě dřív, než je skladba v playlistu mpv
+                self.assertEqual(asked[0], (w.tracks[0].id, False))
+                self.assertFalse(rig.wq.busy)
+
+        run(go())
+
+    def test_additive_phrasing_queues_after(self):
+        async def go():
+            async with Rig() as rig:
+                await rig.background()
+                wq = rig.wq
+                SCRIPT["a pak Holky z naší školky"] = SCRIPT["Holky z naší školky"]
+                p = wq.submit("pusť Kabát", "Petr")
+                await rig.until(lambda: p.state == "playing")
+                h = wq.submit("a pak Holky z naší školky", "Petr")
+                await rig.until(lambda: h.state == "queued")
+                self.assertIn(p.state, ("queued", "playing"))
+                self.assertTrue(wishes.additive("přidej Olympic"))
+                self.assertFalse(wishes.additive("pusť Kometu a pak podobné"))
 
         run(go())
 

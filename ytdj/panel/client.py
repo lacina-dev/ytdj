@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 READ_TIMEOUT = 40.0
 CONNECT_TIMEOUT = 3.0
 CONTROL_TIMEOUT = 6.0
+PROMPT_TIMEOUT = 240.0  # tah Codexu na Pi trvá i přes minutu
 POLL_INTERVAL = 1.0
 # how long to stay on polling before trying the stream again
 POLL_SPELL = 60.0
@@ -83,6 +84,10 @@ class Api:
         if not isinstance(data, dict):
             raise ValueError("stav není JSON objekt")
         return data
+
+    def prompt(self, text: str) -> None:
+        """Požadavek na DJ — odpověď přijde až po tahu Codexu (desítky vteřin)."""
+        self._request("POST", "/api/prompt", {"text": text}, PROMPT_TIMEOUT)
 
     def control(self, action: str, value: int | None = None) -> None:
         body: dict[str, Any] = {"action": action}

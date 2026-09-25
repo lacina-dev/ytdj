@@ -26,6 +26,7 @@ log = logging.getLogger(__name__)
 
 VOL_STEP = 5
 KEY_VOL_STEP = 2  # na cvaknutí kolečka nebo stisk klávesy na repráku
+START_PROMPT = "Nic nehraje. Pusť hudbu a navaž na to, co jsem poslouchal naposledy."
 VOL_INTERVAL = 0.25  # at most ~4 volume requests per second while dragging
 HOLD = 4.0  # how long an optimistic state wins over a server that disagrees
 SKIP_HOLD = 6.0
@@ -87,6 +88,7 @@ class PanelApp:
         self.last_xy = (0, 0)
         self.inside = False
         self.last_fire: dict[str, float] = {}
+        self.prompting = False  # běží požadavek na DJ z tlačítka Hrát
         self.vol_sent_at = 0.0
         self.vol_sent: int | None = None
         self.vol_pending: int | None = None
@@ -185,6 +187,8 @@ class PanelApp:
             self.vol_pending = None
         elif kind == "result":
             _, action, value, error = msg
+            if action == "prompt":
+                self.prompting = False
             if error:
                 self.note = _Hold(self.s["failed"], time.monotonic() + NOTE_TIME)
                 if action in ("play", "pause"):
@@ -423,6 +427,9 @@ class PanelApp:
                 return
             self.last_fire[name] = now
         view = self._view()
+        if name == "play" and not (self.state or {}).get("current"):
+            self._start_dj()
+            return
         if name == "play":
             want = not view.running
             # freeze (or restart) the clock where it is right now
@@ -442,6 +449,28 @@ class PanelApp:
                 new = max(0, ((cur + VOL_STEP - 1) // VOL_STEP - 1) * VOL_STEP)
             if new != cur:
                 self._set_volume(new, now + HOLD)
+
+    def _start_dj(self) -> None:
+        """Nic nehraje (třeba po restartu) — "Hrát" požádá DJ, ať naváže.
+
+        Bez tohohle by šla hudba po startu Pi rozjet jen z webu, a ten je
+        schválně jen na localhostu.
+        """
+        if self.prompting or (self.state or {}).get("busy"):
+            return
+        self.prompting = True
+        log.info("povel: rozjet DJ")
+
+        def ask() -> None:
+            error = None
+            try:
+                self.api.prompt(START_PROMPT)
+            except Exception as exc:
+                error = str(exc) or type(exc).__name__
+                log.warning("rozjetí DJ selhalo: %s", error)
+            self.events.put(("result", "prompt", None, error))
+
+        threading.Thread(target=ask, name="panel-prompt", daemon=True).start()
 
     # ---- volume ----
 

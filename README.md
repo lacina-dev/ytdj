@@ -206,11 +206,21 @@ python -m ytdj.panel --driver sim         # anywhere: frames go to /tmp/ytdj-pan
 It's a separate process that talks to ytdj over the same local API as the web
 UI (SSE, falling back to polling), so either side can restart without taking
 the other down; while ytdj is away the panel says so and keeps reconnecting.
-`install-service.sh` sets it up as a third unit, `ytdj-panel`, when it finds
-`/dev/spidev0.0` and Pillow.
+`install-service.sh` sets it up as a third unit, `ytdj-panel`, when it runs
+on a Raspberry Pi with Pillow in the venv (`YTDJ_PANEL=0|1` overrides that).
 
-An SPI panel is slow — a full frame takes a good part of a second — so the
-panel keeps its own copy of the screen and pushes only the pixels that changed:
+The KeDei board is not ILI9486-compatible and has no driver for current
+kernels: it wants both chip selects toggled around every 3-byte word, which
+through spidev costs tens of microseconds a pixel. `ytdj/panel/kedei.c`
+drives SPI0 and GPIO registers directly instead (~1 µs a pixel, a full frame
+in 0.2 s) and reads the XPT2046 touch controller on the same bus. That needs
+root (`/dev/mem`) and the kernel's SPI driver off (`dtparam=spi=off`), so the
+panel is a **system** unit, sandboxed apart from `/dev/mem`, while ytdj stays
+a user unit. `python -m ytdj.panel.kedei --test` shows a test pattern and
+echoes touches; `--calibrate` writes `/etc/ytdj/panel-touch.json` (the default
+calibration matches the panel it was built on).
+
+Even so, the panel keeps its own copy of the screen and pushes only the pixels that changed:
 the clock ticking over is one digit, the progress bar a one-pixel column,
 a button press just its label. Presses show up immediately (optimistically)
 and are reconciled with what the server reports; volume drags are throttled

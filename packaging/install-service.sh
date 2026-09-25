@@ -36,19 +36,31 @@ else
     echo "         Návod: README, sekce Premium audio quality."
 fi
 
-# Dotykový panel — jen tam, kde má smysl: Pillow ve venvu (extra `panel`,
-# na Pi python3-pil z aptu přes --system-site-packages) a SPI sběrnice.
-# Na notebooku bez displeje by se služba jen donekonečna restartovala.
+# Dotykový panel (KeDei 3,5" na GPIO) — jen na Raspberry Pi s Pillow ve venvu
+# (extra `panel`, na Pi python3-pil z aptu přes --system-site-packages).
+# YTDJ_PANEL=0 ho vynechá, YTDJ_PANEL=1 vynutí. Na notebooku bez displeje
+# by se služba jen donekonečna restartovala.
 panel=no
-if [ -e /dev/spidev0.0 ] && "$repo/.venv/bin/python" -c "import PIL" 2>/dev/null; then
-    sed "s|@INSTALL_DIR@|$repo|g" "$repo/packaging/ytdj-panel.service" > "$unit_dir/ytdj-panel.service"
-    echo "unit:    $unit_dir/ytdj-panel.service"
-    panel=yes
-elif [ -f "$unit_dir/ytdj-panel.service" ]; then
-    # dřív nainstalovaný panel, který teď nemá na čem běžet, nenecháme cyklit
-    systemctl --user disable --now ytdj-panel.service 2>/dev/null || true
-    rm -f "$unit_dir/ytdj-panel.service"
-    echo "pozn.:   panel odinstalován (chybí /dev/spidev0.0 nebo Pillow)."
+model="$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || true)"
+case "${YTDJ_PANEL:-auto}" in
+    1) panel=yes ;;
+    auto) [[ "$model" == Raspberry\ Pi* ]] && "$repo/.venv/bin/python" -c "import PIL" 2>/dev/null && panel=yes ;;
+esac
+if [ "$panel" = yes ]; then
+    # Systémová služba: ovladač potřebuje /dev/mem, tedy roota.
+    sed -e "s|@INSTALL_DIR@|$repo|g" -e "s|@HOME@|$HOME|g" "$repo/packaging/ytdj-panel.service" |
+        sudo tee /etc/systemd/system/ytdj-panel.service > /dev/null
+    sudo mkdir -p /etc/ytdj
+    echo "unit:    /etc/systemd/system/ytdj-panel.service"
+    # Kernelový ovladač SPI0 by se s naším přímým přístupem k registrům
+    # přetahoval o piny — natrvalo ho vypneme (projeví se po restartu).
+    bootcfg=/boot/firmware/config.txt
+    [ -f "$bootcfg" ] || bootcfg=/boot/config.txt
+    if [ -f "$bootcfg" ] && ! grep -qx 'dtparam=spi=off' "$bootcfg"; then
+        sudo sed -i -e '/^dtparam=spi=on$/d' -e '/^dtoverlay=spi0-/d' "$bootcfg"
+        echo 'dtparam=spi=off' | sudo tee -a "$bootcfg" > /dev/null
+        echo "pozn.:   do $bootcfg přidáno dtparam=spi=off (platí po restartu)"
+    fi
 fi
 
 if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || echo no)" != "yes" ]; then
@@ -59,10 +71,14 @@ fi
 systemctl --user daemon-reload
 [ -f "$unit_dir/ytdj-pot.service" ] && systemctl --user enable --now ytdj-pot.service
 systemctl --user enable --now ytdj.service
-[ "$panel" = yes ] && systemctl --user enable --now ytdj-panel.service
+if [ "$panel" = yes ]; then
+    sudo systemctl daemon-reload
+    sudo systemctl enable ytdj-panel.service
+    sudo systemctl restart ytdj-panel.service
+fi
 echo
 systemctl --user --no-pager --lines=0 status ytdj.service || true
 echo
 echo "log:     journalctl --user -u ytdj -f"
-[ "$panel" = yes ] && echo "panel:   journalctl --user -u ytdj-panel -f"
+[ "$panel" = yes ] && echo "panel:   journalctl -u ytdj-panel -f"
 echo "web:     http://127.0.0.1:8765"

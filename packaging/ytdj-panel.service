@@ -1,28 +1,41 @@
 [Unit]
-Description=ytdj — dotykový panel (3,5" SPI displej na Raspberry Pi)
+Description=ytdj — dotykový panel (3,5" KeDei SPI displej na Raspberry Pi)
 Documentation=https://github.com/lacina-dev/ytdj
-# Panel s ytdj mluví jen přes lokální HTTP API. Když ytdj neběží nebo se
-# restartuje, panel to ukáže a připojí se znovu sám — proto Wants, ne Requires:
-# pád ytdj nesmí panel shodit, jinak by z displeje zmizelo i to, že neběží.
-Wants=ytdj.service
-After=ytdj.service
+# Systémová, ne uživatelská jako ytdj: ovladač KeDei sahá přímo na registry
+# SPI a GPIO přes /dev/mem, a to smí jen root. S ytdj mluví jen přes lokální
+# HTTP API; když ytdj neběží nebo se restartuje, panel to ukáže a připojí se
+# znovu sám — závislost na ytdj.service (běží pod uživatelem) tu proto není.
+After=network.target
 StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 WorkingDirectory=@INSTALL_DIR@
 # Stejný venv jako ytdj (run.sh); na Pi je vytvořený se --system-site-packages,
-# takže Pillow a ovladače SPI/GPIO přijdou z aptu. Uživatel musí být ve
-# skupinách spi a gpio (výchozí uživatel Raspberry Pi OS v nich je).
+# takže Pillow přijde z aptu.
 ExecStart=@INSTALL_DIR@/.venv/bin/python -u -m ytdj.panel --driver kedei
+# Konfigurace (adresa webu, jazyk) je ta uživatelova, ne rootova.
+Environment=XDG_CONFIG_HOME=@HOME@/.config
 Environment=YTDJ_LOG=info
+# Tady se při prvním startu zkompiluje knihovna ovladače.
+CacheDirectory=ytdj-panel
+Environment=YTDJ_PANEL_LIB_DIR=/var/cache/ytdj-panel
 Restart=always
 RestartSec=3
 # Panel po SIGTERM ještě dopíše na displej, že je vypnutý — stačí chvilka.
 TimeoutStopSec=10
 SyslogIdentifier=ytdj-panel
-# mpv, yt-dlp a codex mají přednost; panel počká.
-Nice=5
+
+# Root je nutný jen kvůli /dev/mem — zbytek systému držíme zavřený.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/etc/ytdj
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target

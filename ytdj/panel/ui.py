@@ -42,6 +42,7 @@ ERR = (217, 111, 111)
 STRINGS = {
     "cs": {
         "playing": "hraje",
+        "loading": "načítám…",
         "paused": "pozastaveno",
         "idle": "ticho",
         "offline": "odpojeno",
@@ -62,6 +63,7 @@ STRINGS = {
     },
     "en": {
         "playing": "playing",
+        "loading": "loading…",
         "paused": "paused",
         "idle": "idle",
         "offline": "offline",
@@ -129,6 +131,7 @@ class View:
     title: str = ""
     artist: str = ""
     running: bool = False  # playing and not paused
+    loading: bool = False  # running, but the stream hasn't started yet
     paused: bool = False
     skipping: bool = False  # Next pressed, new track not here yet
     elapsed: int = 0
@@ -324,7 +327,7 @@ class Renderer:
     # ---- status strip ----
 
     def _sig_status(self, v: View) -> tuple:
-        return (v.online, v.connecting, v.has_track, v.running, v.paused, v.mood, v.busy, v.note, v.closed)
+        return (v.online, v.connecting, v.has_track, v.running, v.loading, v.paused, v.mood, v.busy, v.note, v.closed)
 
     def _draw_status(self, d: ImageDraw.ImageDraw, size: tuple[int, int], v: View) -> None:
         w, h = size
@@ -354,6 +357,8 @@ class Renderer:
             dot, color = (FAINT if v.connecting else ERR), (DIM if v.connecting else ERR)
         elif not v.has_track:
             label, dot, color = self.s["idle"], FAINT, DIM
+        elif v.running and v.loading:
+            label, dot, color = self.s["loading"], FAINT, DIM
         elif v.running:
             label, dot, color = self.s["playing"], ACCENT, ACCENT_TEXT
         else:

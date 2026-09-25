@@ -894,6 +894,7 @@
     posBaseAt: nowMs(),
     duration: 0,
     running: false,      // playing and not paused -> position is advancing
+    loading: false,      // running, but the stream hasn't started yet
     sending: false,      // waiting for /api/prompt from this browser
     sendStartedAt: 0,
     volDragging: false,
@@ -1033,7 +1034,7 @@
 
   function predictPos() {
     var p = S.posBase;
-    if (S.running) p += (nowMs() - S.posBaseAt) / 1000;
+    if (S.running && !S.loading) p += (nowMs() - S.posBaseAt) / 1000;
     if (S.duration > 0) p = Math.min(p, S.duration);
     return Math.max(0, p);
   }
@@ -1052,8 +1053,11 @@
 
     S.duration = dur;
     S.running = playing && !paused;
+    // na řadě, ale proud ještě neteče — čas stojí, dokud se neozve zvuk
+    var wasLoading = S.loading;
+    S.loading = S.running && !!s.buffering;
 
-    if (id !== S.trackId) {
+    if (id !== S.trackId || S.loading || wasLoading) {
       S.trackId = id;
       setBase(serverPos);
     } else {
@@ -1073,10 +1077,10 @@
       el.artist.textContent = cur.artist || "";
       setHidden(el.album, !cur.album);
       el.album.textContent = cur.album || "";
-      var state = paused ? "pozastaveno" : (playing ? "hraje" : "připraveno");
+      var state = paused ? "pozastaveno" : (S.loading ? "načítám…" : (playing ? "hraje" : "připraveno"));
       // kvalita se změří až z pár vteřin proudu, do té doby tam nic není
       el.nowLabel.textContent = s.quality ? state + " · " + s.quality : state;
-      el.bars.classList.toggle("still", !S.running);
+      el.bars.classList.toggle("still", !S.running || S.loading);
     } else {
       el.now.classList.add("idle");
       el.title.textContent = "Ticho";

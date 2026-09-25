@@ -72,6 +72,7 @@ class PanelApp:
         self.ever_online = False
         self.track_key: Any = None
         self._running = False  # as the server last said
+        self._loading = False  # running, but the stream hasn't started yet
         self._said_offline = False
         self.pos_base = 0.0
         self.pos_at = 0.0
@@ -229,9 +230,12 @@ class PanelApp:
         key = (cur.get("id") or cur.get("title")) if isinstance(cur, dict) else None
         running = bool(state.get("playing")) and not bool(state.get("paused"))
         server_pos = _num(state.get("position"))
+        # Skladba je na řadě, ale proud ještě neteče — hodiny musí stát, jinak
+        # by běžely vteřiny, které z repráku nezazněly.
+        loading = running and bool(state.get("buffering"))
 
         predicted = self._position(at)
-        if key != self.track_key or not running:
+        if key != self.track_key or not running or loading or self._loading:
             self._set_pos(server_pos, at)
         else:
             # like the web UI: jump on a big difference, nudge on a small
@@ -242,6 +246,7 @@ class PanelApp:
             else:
                 self._set_pos(max(predicted - 0.15, predicted + diff * 0.25), at)
         self._running = running
+        self._loading = loading
         if key != self.track_key:
             self.track_key = key
             self.hold_skip = None
@@ -265,7 +270,7 @@ class PanelApp:
         return self.hold_running.value if self.hold_running else self._running
 
     def _position(self, now: float) -> float:
-        if self.state and self._is_running():
+        if self.state and self._is_running() and not self._loading:
             return self.pos_base + (now - self.pos_at)
         return self.pos_base
 
@@ -297,6 +302,7 @@ class PanelApp:
             title=str((cur or {}).get("title") or ""),
             artist=str((cur or {}).get("artist") or ""),
             running=running and cur is not None,
+            loading=self._loading and cur is not None,
             paused=bool(st.get("paused")),
             skipping=self.hold_skip is not None,
             elapsed=int(elapsed),

@@ -10,9 +10,11 @@ LLM is no longer involved.
 from __future__ import annotations
 
 import logging
+import time
 from collections import deque
 from dataclasses import dataclass, field
 
+from .. import telemetry
 from ..config import Config
 from ..state import Store
 from .catalog import Catalog, Track
@@ -88,6 +90,11 @@ class RadioPools:
                     "sample": [t.label() for t in tracks[:5]],
                 }
             )
+        telemetry.event(
+            "radio.seeds", mood=mood, allow_long=allow_long,
+            seeds=[p["seed"] for p in summary],
+            pool_sizes=[p["pool_size"] for p in summary],
+        )
         return {"mood": mood, "pools": summary}
 
     async def set_artist(
@@ -110,6 +117,11 @@ class RadioPools:
         """
         if tracks is None:
             tracks = await self.catalog.artist_tracks(name, limit=100)
+        telemetry.event(
+            "radio.artist_mode", artist=name, n=len(tracks),
+            first=tracks[0].label() if tracks else None,
+            kept_previous=not tracks,
+        )
         if not tracks:
             return {"artist": name, "pool_size": 0, "sample": []}
         self.pools = [Pool(seed=tracks[0], tracks=deque(tracks), last_good=tracks[0].id)]
@@ -127,11 +139,22 @@ class RadioPools:
         }
 
     async def _fetch_radio(self, video_id: str) -> list[Track]:
+        t0 = time.monotonic()
+        seed = self.known.get(video_id)
+        ev = {"seed": video_id, "label": seed.label() if seed else None}
         try:
-            return await self.catalog.radio(video_id, limit=self.cfg.radio_limit)
+            tracks = await self.catalog.radio(video_id, limit=self.cfg.radio_limit)
+            ev["n"] = len(tracks)
+            ev["new"] = sum(t.id not in self.session_seen for t in tracks)
+            return tracks
         except Exception as exc:  # radio can fail for some IDs
             log.warning("rádio pro %s selhalo: %s", video_id, exc)
+            ev["n"] = 0
+            ev["error"] = f"{type(exc).__name__}: {exc}"[:300]
             return []
+        finally:
+            ev["took_ms"] = int((time.monotonic() - t0) * 1000)
+            telemetry.event("radio.fetch", **ev)
 
     # ---- dispensing ----
 
@@ -146,6 +169,8 @@ class RadioPools:
         # nenaplní, sáhne se po nich (u vyžádaného interpreta).
         long_ones: list[Track] = []
 
+        rejected: dict[str, int] = {}
+        t0 = time.monotonic()
         attempts = 0
         max_attempts = count * 40
         while len(out) < count and self.pools and attempts < max_attempts:
@@ -161,7 +186,9 @@ class RadioPools:
                     continue
 
             track = pool.tracks.popleft()
-            if not self._acceptable(track, out, blocked, recent, artist_counts):
+            reason = self._reject_reason(track, out, blocked, recent, artist_counts)
+            if reason:
+                rejected[reason] = rejected.get(reason, 0) + 1
                 if self.allow_long and self._acceptable(
                     track, out, blocked, recent, artist_counts, self._long_limit()
                 ):
@@ -175,6 +202,7 @@ class RadioPools:
             if len(pool) < self.cfg.pool_low:
                 await self._refill(pool)
 
+        long_used = 0
         for track in long_ones:
             if len(out) >= count:
                 break
@@ -188,7 +216,20 @@ class RadioPools:
             self.session_seen.add(track.id)
             artist_counts[track.artist] = artist_counts.get(track.artist, 0) + 1
             out.append(track)
+            long_used += 1
 
+        telemetry.event(
+            "radio.pool",
+            wanted=count,
+            got=len(out),
+            attempts=attempts,
+            rejected=rejected,
+            long_used=long_used,
+            pools=[len(p) for p in self.pools],
+            artist_mode=self.artist or None,
+            mood=self.mood,
+            took_ms=int((time.monotonic() - t0) * 1000),
+        )
         return out
 
     def _long_limit(self) -> int:
@@ -204,21 +245,39 @@ class RadioPools:
         artist_counts: dict[str, int],
         max_duration: int | None = None,
     ) -> bool:
-        if track.id in self.session_seen or track.id in blocked:
-            return False
+        return self._reject_reason(
+            track, pending, blocked, recent, artist_counts, max_duration
+        ) is None
+
+    def _reject_reason(
+        self,
+        track: Track,
+        pending: list[Track],
+        blocked: set[str],
+        recent: set[str],
+        artist_counts: dict[str, int],
+        max_duration: int | None = None,
+    ) -> str | None:
+        """Proč skladba do fronty nejde (klíč do statistiky radio.pool), None = jde."""
+        if track.id in blocked:
+            return "blacklisted"
+        if track.id in self.session_seen:
+            return "session_seen"
         if track.id in recent:
-            return False
+            return "recent"
         if any(t.id == track.id for t in pending):
-            return False
+            return "duplicate"
         if track.duration is not None:
             ceiling = max_duration or self.cfg.max_duration
-            if not (self.cfg.min_duration <= track.duration <= ceiling):
-                return False
+            if track.duration < self.cfg.min_duration:
+                return "too_short"
+            if track.duration > ceiling:
+                return "too_long"
         # at most 2 tracks by the same artist per refill — kromě režimu
         # interpreta, kde je to celý smysl
         if not self.artist and artist_counts.get(track.artist, 0) >= 2:
-            return False
-        return True
+            return "artist_cap"
+        return None
 
     async def _refill(self, pool: Pool) -> None:
         """Reseeds from the last track not skipped — implicit feedback."""
@@ -241,6 +300,8 @@ class RadioPools:
         ]
         if not fresh and not pool.tracks:
             log.info("interpret %s dohrán, jedu jeho skladby znovu", self.artist)
+            telemetry.event("radio.artist_mode", artist=self.artist, restart=True,
+                            n=len(self._artist_all))
             self.session_seen -= {t.id for t in self._artist_all}
             fresh = list(self._artist_all)
         pool.tracks.extend(fresh)

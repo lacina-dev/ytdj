@@ -220,7 +220,7 @@ class Catalog:
         raw = await self._search(query, filter="songs", limit=20)
         songs = [c for c in (match.from_song(i, n) for n, i in enumerate(raw)) if c]
         steps.append({"source": "songs", "query": query, "n": len(songs)})
-        if best := self._pick(songs, artist, title, "skladby", ev):
+        if best := self._pick(songs, artist, title, "songs", ev):
             return best
 
         if not artist:
@@ -233,14 +233,14 @@ class Catalog:
         own = await self.artist_tracks(artist, limit=100)
         cands = [_candidate(t, n) for n, t in enumerate(own)]
         steps.append({"source": "profile", "n": len(cands)})
-        if best := self._pick(cands, artist, title, "profil", ev, artist_known=True):
+        if best := self._pick(cands, artist, title, "profile", ev, artist_known=True):
             return best
 
         # 3. Videa: spousta písniček existuje jen jako klip nahraný někým
         #    cizím ("Monkey Business - Piece Of My Life", 2,7 mil. zhlédnutí).
         videos = await self._videos(query)
         steps.append({"source": "videos", "query": query, "n": len(videos)})
-        if best := self._pick(videos, artist, title, "videa", ev):
+        if best := self._pick(videos, artist, title, "videos", ev):
             return best
 
         # 4. Skladbu neznáme, interpreta ano. Pro seed je to pořád dobrý
@@ -377,16 +377,22 @@ class Catalog:
         name = _clean(name)
         if not name:
             return []
-        if artist := await self.find_artist(name):
-            items = await self._artist_song_items(artist.browse_id, limit)
-            cands = match.artist_songs(items, artist.browse_id, artist.name, limit)
-            if cands:
-                log.info(
-                    "interpret %r → %s (%s): %d skladeb", name, artist.name,
-                    artist.browse_id, len(cands),
-                )
-                return [_track(c) for c in cands]
-        return await self._channel_tracks(name, limit)
+        with telemetry.timer("catalog.artist_tracks", artist=name, limit=limit) as ev:
+            if artist := await self.find_artist(name):
+                ev.update(found=artist.name, browse_id=artist.browse_id)
+                items = await self._artist_song_items(artist.browse_id, limit)
+                cands = match.artist_songs(items, artist.browse_id, artist.name, limit)
+                ev["raw"] = len(items)
+                if cands:
+                    log.info(
+                        "interpret %r → %s (%s): %d skladeb", name, artist.name,
+                        artist.browse_id, len(cands),
+                    )
+                    ev.update(source="profile", n=len(cands), first=cands[0].title)
+                    return [_track(c) for c in cands]
+            tracks = await self._channel_tracks(name, limit)
+            ev.update(source="channel_videos" if tracks else None, n=len(tracks))
+            return tracks
 
     async def _artist_song_items(self, browse_id: str, limit: int) -> list[dict]:
         """Syrové skladby z profilu: celý playlist "Songs", jinak těch pět."""

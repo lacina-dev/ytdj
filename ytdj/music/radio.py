@@ -44,6 +44,10 @@ class RadioPools:
         # registry of everything we have seen in this session — the LLM works
         # only with videoIds, here we translate them back to Tracks
         self.known: dict[str, Track] = {}
+        # Režim interpreta ("hraj Midi Lidi") — viz set_artist(). Prázdné =
+        # běžná rádia ze seedů.
+        self.artist: str = ""
+        self._artist_all: list[Track] = []
 
     def remember_tracks(self, tracks: list[Track]) -> None:
         for t in tracks:
@@ -67,6 +71,8 @@ class RadioPools:
         self._rr = 0
         self.mood = mood
         self.allow_long = allow_long
+        self.artist = ""
+        self._artist_all = []
         summary = []
         self.remember_tracks(seeds)
         for seed in seeds:
@@ -84,6 +90,42 @@ class RadioPools:
             )
         return {"mood": mood, "pools": summary}
 
+    async def set_artist(
+        self, name: str, tracks: list[Track] | None = None, mood: str = ""
+    ) -> dict:
+        """Režim interpreta: fronta hraje jen jeho, dokud nepřijde jiný pokyn.
+
+        "Já nechtěl písničku, já chci, aby to hrálo interpreta." Jeden seed a
+        rádio z něj do tří skladeb uteče k jiným kapelám; tady se místo rádia
+        hraje seznam skladeb toho interpreta (nejznámější první, každá
+        jednou, živáky a remixy až nakonec) a když dojde, jede se znovu od
+        začátku. Končí to až další set_seeds() nebo set_artist().
+
+        `tracks` jsou typicky `catalog.artist_tracks(name)`; None = dohledá
+        si je samo. Když interpreta nezná, stávající pooly nechá být a vrátí
+        pool_size 0 — volající pak může říct "nenašel jsem".
+        Filtr opakování (repeat_days) ani strop dvou skladeb na interpreta
+        tu neplatí: o tohle si posluchač řekl jménem. Délku hlídá
+        `max_duration_request` jako u vyžádaného interpreta.
+        """
+        if tracks is None:
+            tracks = await self.catalog.artist_tracks(name, limit=100)
+        if not tracks:
+            return {"artist": name, "pool_size": 0, "sample": []}
+        self.pools = [Pool(seed=tracks[0], tracks=deque(tracks), last_good=tracks[0].id)]
+        self._rr = 0
+        self.mood = mood or name
+        self.allow_long = True
+        self.artist = name
+        self._artist_all = list(tracks)
+        self.remember_tracks(tracks)
+        self.store.record_seed(tracks[0].id, self.mood)
+        return {
+            "artist": name,
+            "pool_size": len(tracks),
+            "sample": [t.label() for t in tracks[:5]],
+        }
+
     async def _fetch_radio(self, video_id: str) -> list[Track]:
         try:
             return await self.catalog.radio(video_id, limit=self.cfg.radio_limit)
@@ -97,7 +139,8 @@ class RadioPools:
         """Pulls `count` tracks, alternating between pools, with filters applied."""
         out: list[Track] = []
         blocked = self.store.blacklisted()
-        recent = self.store.recently_played(self.cfg.repeat_days)
+        # vyžádaný interpret má přednost před pravidlem neopakování
+        recent = set() if self.artist else self.store.recently_played(self.cfg.repeat_days)
         artist_counts: dict[str, int] = {}
         # Dlouhé kusy se nezahazují, jen odloží: když se fronta z krátkých
         # nenaplní, sáhne se po nich (u vyžádaného interpreta).
@@ -171,18 +214,36 @@ class RadioPools:
             ceiling = max_duration or self.cfg.max_duration
             if not (self.cfg.min_duration <= track.duration <= ceiling):
                 return False
-        # at most 2 tracks by the same artist per refill
-        if artist_counts.get(track.artist, 0) >= 2:
+        # at most 2 tracks by the same artist per refill — kromě režimu
+        # interpreta, kde je to celý smysl
+        if not self.artist and artist_counts.get(track.artist, 0) >= 2:
             return False
         return True
 
     async def _refill(self, pool: Pool) -> None:
         """Reseeds from the last track not skipped — implicit feedback."""
+        if self.artist:
+            self._refill_artist(pool)
+            return
         fresh = await self._fetch_radio(pool.last_good or pool.seed.id)
         self.remember_tracks(fresh)
         new = [t for t in fresh if t.id not in self.session_seen]
         pool.tracks.extend(new)
         log.debug("pool %s doplněn o %d", pool.seed.label(), len(new))
+
+    def _refill_artist(self, pool: Pool) -> None:
+        """Režim interpreta se nedoplňuje z rádia (to by uteklo jinam), ale
+        znovu jeho skladbami; když zazněly všechny, jede se od začátku."""
+        skip = {t.id for t in pool.tracks} | self.store.blacklisted()
+        fresh = [
+            t for t in self._artist_all
+            if t.id not in self.session_seen and t.id not in skip
+        ]
+        if not fresh and not pool.tracks:
+            log.info("interpret %s dohrán, jedu jeho skladby znovu", self.artist)
+            self.session_seen -= {t.id for t in self._artist_all}
+            fresh = list(self._artist_all)
+        pool.tracks.extend(fresh)
 
     # ---- feedback ----
 
@@ -193,9 +254,13 @@ class RadioPools:
             break
 
     def exhausted(self) -> bool:
+        if self.artist and self._artist_all:
+            return False  # dojde-li, jede se znovu — viz _refill_artist
         return not self.pools or all(len(p) == 0 for p in self.pools)
 
     def describe(self) -> str:
+        if self.artist and self.pools:
+            return f"interpret {self.artist} (v zásobě {len(self.pools[0])} skladeb)"
         if not self.pools:
             return "žádné aktivní seedy"
         return ", ".join(f"{p.seed.label()} ({len(p)})" for p in self.pools)

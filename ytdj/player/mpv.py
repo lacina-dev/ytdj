@@ -499,7 +499,10 @@ class MpvPlayer(Player):
                     upcoming.append(t)
 
         current = self._tracks.get(self._current_id) if self._current_id else None
+        # core-idle = mpv právě nic nepřehrává (pauza, nebo čeká na data)
+        idle = bool(await self._get("core-idle", False))
         return PlayerStatus(
+            buffering=idle and not self._paused and current is not None,
             playing=count > 0 and not self._paused,
             paused=self._paused,
             current=current,

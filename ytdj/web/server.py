@@ -427,7 +427,7 @@ class WebServer:
         """
         current = None
         queue: list[dict] = []
-        playing = paused = False
+        playing = paused = buffering = False
         position = duration = 0.0
         volume = 100
         quality = ""
@@ -435,6 +435,7 @@ class WebServer:
             st = await self.app.player.status()
             playing = bool(st.playing)
             paused = bool(st.paused)
+            buffering = bool(getattr(st, "buffering", False))
             current = _track_dict(st.current)
             position = float(st.position or 0.0)
             duration = float(st.duration or 0.0)
@@ -466,6 +467,7 @@ class WebServer:
         return {
             "playing": playing,
             "paused": paused,
+            "buffering": buffering,
             "current": current,
             "position": position,
             "duration": duration,

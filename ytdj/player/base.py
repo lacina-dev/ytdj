@@ -26,6 +26,9 @@ class PlayerStatus:
     # Co doopravdy teče z reproduktoru, např. "opus 251 kb/s". Prázdné, dokud
     # se skladba nerozjede — bitrate se pozná až z pár vteřin proudu.
     quality: str = ""
+    # Skladba je na řadě a nepozastavená, ale ještě nehraje — yt-dlp a síť
+    # teprve dodávají proud (na Pi 3 i několik vteřin). Čas mezitím stojí.
+    buffering: bool = False
 
 
 @dataclass(slots=True)

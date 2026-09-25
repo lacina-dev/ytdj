@@ -9,6 +9,10 @@ One-time setup as done on the jukebox Pi (user `lacina`). Afterwards
         pipewire-alsa wireplumber alsa-utils rtkit nodejs npm python3-venv python3-dev git curl \
         python3-spidev python3-libgpiod python3-pil python3-numpy fonts-dejavu-core libsecret-tools
 
+The touch panel's network screen uses `nmcli` (NetworkManager, part of the Raspberry Pi OS
+image) and, for the `<hostname>.local` address, `avahi-daemon` (also preinstalled). Its QR
+code is drawn by the panel itself — no `qrencode`/`python3-qrcode` needed.
+
 **Node from apt (20.19) is not enough.** Current yt-dlp reports `node-20.19.2 (unsupported)`
 and solves no JS challenges; the only result is a format list with storyboards. Node 24 LTS
 from nodejs.org goes to `/opt/node`, and symlinks in `/usr/local/bin` put it ahead of
@@ -64,3 +68,17 @@ dependencies on the Pi. `canvas` downloads a linux-arm64 prebuild there:
   (deploy.sh installs it). Priorities are USB 2000 > 3.5 mm jack 1000 > HDMI 50. Do not use
   `wpctl set-default`: a pinned default overrides the priorities.
 - Swap is already zram (`/dev/zram0`, about 900 MB) on this image.
+
+## Přihlášení (vlastní pro Pi, nezávislé na notebooku)
+
+Pi má vlastní přihlášení ke Codexu i k YouTube — nic nesdílí s notebookem,
+takže odhlášení nebo obnova tokenů tam Pi neodstřihne. Když něco vyprší,
+stačí z notebooku spustit jeden skript:
+
+| co nefunguje | příkaz (z kořene repa na notebooku) |
+|---|---|
+| DJ neodpovídá, log hlásí nepřihlášený Codex | `packaging/rpi/codex-login.sh` — Pi ukáže odkaz a kód, zadáš ho v prohlížeči (třeba na mobilu) |
+| hraje jen ~130 kb/s, `./run.sh --check-audio` nehlásí Premium | `packaging/rpi/youtube-login.sh` — otevře Chrome s čistým dočasným profilem, přihlásíš se, okno zavřeš (neodhlašovat!), cookies odejdou na Pi a profil se smaže |
+
+Oba skripty berou `PI=lacina@<adresa>` (výchozí 10.42.0.149, přes Wi-Fi
+192.168.0.24).

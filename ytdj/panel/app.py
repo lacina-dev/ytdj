@@ -20,6 +20,8 @@ from typing import Any
 
 from .client import Api, Commander, StatusFeed
 from .hw import Screen, Touch, TouchEvent
+from .netapp import NetController
+from .netui import NetRenderer, NetView
 from .ui import STRINGS, TARGETS, Renderer, View, volume_at
 
 log = logging.getLogger(__name__)
@@ -53,6 +55,7 @@ class PanelApp:
         lang: str = "cs",
         vol_max: int = 100,
         media_keys: bool = False,
+        net_backend=None,
     ) -> None:
         self.screen = screen
         self.touch = touch
@@ -66,6 +69,13 @@ class PanelApp:
         self.events: queue.Queue[tuple] = queue.Queue()
         self.feed = StatusFeed(self.api, self._on_state, self._on_offline, self.stop)
         self.commander = Commander(self.api, self._on_result, self.stop)
+        if net_backend is None:
+            from .net import NmcliBackend
+
+            net_backend = NmcliBackend()
+        # the network screens; web_port is what a phone on the LAN should open
+        self.net = NetController(net_backend, self.events.put, lang, self.api.port)
+        self.key_vol_at = -math.inf  # last volume change from the speaker's keys
 
         # server state
         self.state: dict | None = None
@@ -97,6 +107,7 @@ class PanelApp:
 
         self._need_full = True
         self._last_full = 0.0
+        self._shown_page = "player"  # which screen the glass shows
         self.frames = 0  # show() calls — for tests and stats
 
     # ---- threads → queue ----
@@ -120,7 +131,10 @@ class PanelApp:
                 self.stop.wait(1.0)
                 continue
             if ev is not None:
-                self.events.put(("touch", ev))
+                # stamped on arrival: if the main thread is busy pushing a full
+                # frame, a quick tap's down and up are handled back to back and
+                # would otherwise look like contact bounce
+                self.events.put(("touch", ev, time.monotonic()))
 
     # ---- main loop ----
 
@@ -142,6 +156,7 @@ class PanelApp:
                 log.exception("chyba v obsluze panelu")
                 self._need_full = True
                 self.renderer.invalidate()
+                self.net.renderer.invalidate()
                 self.stop.wait(1.0)
 
     def _step(self) -> None:
@@ -169,6 +184,11 @@ class PanelApp:
     def close_screen(self) -> None:
         """Last words on the glass, so a dead panel doesn't pose as a live one."""
         try:
+            if self._shown_page != "player":
+                # the glass shows a network page: the whole player has to come back
+                self.renderer.render(self._view(closed=True), full=True)
+                self.screen.show(self.renderer.frame, None)
+                return
             boxes = self.renderer.render(self._view(closed=True))
             for box in boxes:
                 self.screen.show(self.renderer.frame, box)
@@ -204,7 +224,13 @@ class PanelApp:
                 # let the server confirm; if it never does, fall back soon
                 self.hold_volume.until = min(self.hold_volume.until, time.monotonic() + HOLD)
         elif kind == "touch":
-            self._touch(msg[1])
+            at = msg[2] if len(msg) > 2 else time.monotonic()
+            if self.net.page:
+                self.net.touch(msg[1], at)
+            else:
+                self._touch(msg[1], at)
+        elif kind == "net":
+            self.net.handle(msg)
         elif kind == "key":
             # tlačítka na repráku jdou stejnou cestou jako tlačítka na displeji
             log.info("klávesa: %s", msg[1])
@@ -220,6 +246,7 @@ class PanelApp:
                 new = max(0, min(self.vol_max, cur + step))
                 if new != cur:
                     self._set_volume(new, now + HOLD)
+                self.key_vol_at = now
             else:
                 self._fire(msg[1], now)
 
@@ -314,35 +341,51 @@ class PanelApp:
             mood=str(st.get("mood") or "").strip(),
             busy=bool(st.get("busy")),
             note=self.note.value if self.note else "",
-            pressed=self.pressed if (self.inside and online) else None,
+            pressed=self.pressed if (self.inside and (online or self.pressed == "net")) else None,
             can_next=cur is not None or bool(queue_),
             closed=closed,
+            net=self.net.icon(),
         )
 
     def _paint(self) -> None:
-        view = self._view()
+        now = time.monotonic()
+        page = self.net.page or "player"
+        renderer: Renderer | NetRenderer
+        if page == "player":
+            view: View | NetView = self._view()
+            renderer, pressed = self.renderer, self.pressed
+        else:
+            note = ""
+            if now - self.key_vol_at < NOTE_TIME and self.online:
+                note = self.net.s["volume"].format(v=self._view().volume)
+            view = self.net.view(now, note)
+            renderer, pressed = self.net.renderer, self.net.pressed
+        if page != self._shown_page:
+            self._need_full = True  # another screen: one full frame
         t0 = time.perf_counter()
         # Občas celý snímek: kdyby se sklo rozešlo s tím, co si pamatujeme
         # (rušení na sběrnici, cokoli), srovná se to samo — a stojí to 0,2 s.
-        if not self.pressed and time.monotonic() - self._last_full >= FULL_REFRESH:
+        if not pressed and now - self._last_full >= FULL_REFRESH:
             self._need_full = True
         full = self._need_full
-        boxes = self.renderer.render(view, full=full)
+        boxes = renderer.render(view, full=full)
         t1 = time.perf_counter()
         if not boxes:
             return
         try:
             for box in boxes:
-                self.screen.show(self.renderer.frame, None if full else box)
+                self.screen.show(renderer.frame, None if full else box)
                 self.frames += 1
             if full:
                 self._last_full = time.monotonic()
             self._need_full = False
+            self._shown_page = page
         except Exception:
             # whatever made it to the glass is unknown now — start clean
             log.exception("zápis na displej selhal")
             self._need_full = True
             self.renderer.invalidate()
+            self.net.renderer.invalidate()
             self.stop.wait(1.0)
             return
         t2 = time.perf_counter()
@@ -357,7 +400,9 @@ class PanelApp:
 
     def _next_deadline(self) -> float:
         now = time.monotonic()
-        deadlines = [now + 60.0, self._last_full + FULL_REFRESH]
+        deadlines = [now + 60.0, self._last_full + FULL_REFRESH, self.net.deadline(now)]
+        if now - self.key_vol_at < NOTE_TIME:
+            deadlines.append(self.key_vol_at + NOTE_TIME)  # the volume toast on net pages
         for hold in (self.hold_running, self.hold_volume, self.hold_skip, self.note):
             if hold and hold.until != math.inf:
                 deadlines.append(hold.until)
@@ -377,6 +422,7 @@ class PanelApp:
                 setattr(self, name, None)
         if self.vol_pending is not None and now - self.vol_sent_at >= VOL_INTERVAL:
             self._send_volume(self.vol_pending)
+        self.net.timers(now)
 
     # ---- touch ----
 
@@ -392,15 +438,14 @@ class PanelApp:
         self.pressed = None
         self.inside = False
 
-    def _touch(self, ev: TouchEvent) -> None:
-        now = time.monotonic()
+    def _touch(self, ev: TouchEvent, now: float | None = None) -> None:
+        now = time.monotonic() if now is None else now
         if ev.kind == "down":
             if self.pressed:  # lost an "up" somewhere — start over
                 self._end_gesture()
-            if not self.online:
-                return
             name = self._hit(ev.x, ev.y, TOUCH_GRAB)
-            if name is None:
+            # the network button works with ytdj down too — that's when it's needed most
+            if name is None or (not self.online and name != "net"):
                 return
             if name == "vol" and ev.x < TARGETS["vol"][0] + 50:
                 # the number, not the bar: a touch there would mean "mute",
@@ -432,7 +477,10 @@ class PanelApp:
             inside = self._hit(x, y, TOUCH_SLOP) == name
             long_enough = now - self.press_at >= MIN_PRESS
             self.pressed, self.inside = None, False
-            if inside and long_enough and self.online:
+            if inside and long_enough and name == "net":
+                log.info("dotyk: síť")
+                self.net.open(now)
+            elif inside and long_enough and self.online:
                 self._fire(name, now)
 
     def _fire(self, name: str, now: float) -> None:

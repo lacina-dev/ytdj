@@ -212,29 +212,32 @@ static int xpt_read(uint8_t command) {
     return ((rx[1] << 8) | rx[2]) >> 3;
 }
 
+/*
+ * Na dotyk jen zpomalit hodiny. T_CS (GPIO8) se tu NESMÍ přepínat: LCD si
+ * slovo zapisuje na jeho sestupné hraně, takže každé zvednutí a shození navíc
+ * zapíše poslední slovo znovu a posune ukazatel v paměti displeje — při
+ * držení prstu se pak kus obrazu (třeba časová osa) nedokreslí. Převodník
+ * vybírat nemusíme: T_CS je mezi slovy LCD dole a před každým slovem se
+ * zvedne, čímž se převodník sám vrátí do výchozího stavu.
+ */
+static void bus_touch(void) {
+    spi[SPI_CLK] = touch_cdiv;
+    barrier();
+}
+
 int kd_pen_down(void) { return !(gpio[GPLEV0] & (1u << PIN_PENIRQ)); }
 
 /* Převodník do power-down s povoleným PENIRQ (PD1:0 = 00). Po zapnutí může
    být v jiném režimu a pak by se o dotyku nikdy nedozvěděl. */
 void kd_touch_arm(void) {
-    gpio[GPSET0] = 1u << PIN_TCS;
-    barrier();
-    spi[SPI_CLK] = touch_cdiv;
-    sleep_us(2);
-    gpio[GPCLR0] = 1u << PIN_TCS;
-    barrier();
+    bus_touch();
     xpt_read(0x80);
     bus_lcd();
 }
 
 /* Diagnostika: změří bez ohledu na PENIRQ. */
 void kd_touch_force(int *x, int *y, int *z1, int *z2) {
-    gpio[GPSET0] = 1u << PIN_TCS;
-    barrier();
-    spi[SPI_CLK] = touch_cdiv;
-    sleep_us(2);
-    gpio[GPCLR0] = 1u << PIN_TCS;
-    barrier();
+    bus_touch();
     *x = xpt_read(0xD0);
     *y = xpt_read(0x90);
     *z1 = xpt_read(0xB0);
@@ -254,14 +257,7 @@ static void sort_int(int *a, int n) {
  */
 int kd_touch(int *x, int *y, int *z) {
     if (!kd_pen_down()) return 0;
-    /* T_CS je v klidu dole — celý provoz LCD ho tedy „vybíral“. Krátkým
-       zvednutím vyresetujeme rozjetý stav převodníku. */
-    gpio[GPSET0] = 1u << PIN_TCS;
-    barrier();
-    spi[SPI_CLK] = touch_cdiv;
-    sleep_us(2);
-    gpio[GPCLR0] = 1u << PIN_TCS;
-    barrier();
+    bus_touch();
 
     enum { N = 7 };
     int xs[N], ys[N], z1 = 0, z2 = 0;

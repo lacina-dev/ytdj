@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS plays (
     artist   TEXT,
     ts       REAL NOT NULL,
     seed_id  TEXT,
-    outcome  TEXT NOT NULL DEFAULT 'started'   -- started|finished|skipped|error
+    outcome  TEXT NOT NULL DEFAULT 'started'   -- started|finished|skipped|replaced|error
 );
 CREATE INDEX IF NOT EXISTS plays_video_ts ON plays(video_id, ts);
 

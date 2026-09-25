@@ -19,6 +19,8 @@ import sys
 from contextlib import suppress
 
 from .agent import CodexDJ
+from . import telemetry
+from .agent.intent import SkipWatch, local_command
 from .config import Config, load_secrets, write_default_config, write_env_template
 from .diagnose import check_audio, yt_dlp_warning
 from .music import Catalog, RadioPools
@@ -84,8 +86,9 @@ class App:
         self.web = WebServer(self, cfg.web_host, cfg.web_port) if cfg.web_enabled else None
         self._reseeding = False
         self._reseed_task: asyncio.Task | None = None
-        self._last_reseed = 0.0
-        self._skips_at_last_check = 0
+        self._last_reseed = float("-inf")
+        # jen přeskočení od posledního tahu DJ, v paměti — viz SkipWatch
+        self.skips = SkipWatch()
         # A single lock for all Codex turns — REPL, web, and automatic
         # reseeding. Two concurrent turns would overwrite each other's pools.
         self._codex_lock = asyncio.Lock()
@@ -103,23 +106,84 @@ class App:
     def codex_busy(self) -> bool:
         return self._codex_lock.locked()
 
-    async def ask(self, text: str, interrupt: bool = True) -> str:
+    async def ask(
+        self, text: str, interrupt: bool = True, source: str = "web", requester: str = ""
+    ) -> str:
         """The single entry point to Codex. Used by both the REPL and the web.
 
         `interrupt=False` pro zásahy, o které posluchač nežádal: nová nálada
-        pak začne až po dohrání současné skladby.
+        pak začne až po dohrání současné skladby. `source` / `requester` jen
+        do provozního logu (web, repl, panel, auto-reseed).
         """
+        auto = not interrupt
+        if auto:
+            source = "auto-reseed"
+        telemetry.event(
+            "dj.request", source=source, requester=requester or None, text=text[:300]
+        )
+        reply = await self._ask(text, interrupt, auto)
+        telemetry.event("dj.reply", source=source, text=(reply or "")[:300])
+        return reply
+
+    async def _ask(self, text: str, interrupt: bool, auto: bool) -> str:
+        if not auto:
+            if reply := await self._local_command(text):
+                return reply
         if reply := await self._try_link(text):
+            telemetry.event("dj.apply", via="link", reply=reply[:200])
+            self.skips.turn(self._now(), by_user=True)
             return reply
         if interrupt and self._reseed_task and not self._reseed_task.done():
             # Posluchač má přednost před tahem, o který nežádal (přeseedování
             # po sérii přeskočení) — jinak by čekal půl minuty na cizí tah.
             log.info("ruším automatické přeseedování kvůli požadavku posluchače")
+            telemetry.event("dj.reseed", phase="cancelled_by_user")
             self._reseed_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._reseed_task
+        if not auto:
+            log.info("posluchač: %s", text)
+            # klid už od chvíle, kdy posluchač promluvil — tah trvá i 20 s
+            self.skips.turn(self._now(), by_user=True)
         async with self._codex_lock:
-            return await self.dj.turn(text, interrupt=interrupt)
+            try:
+                return await self.dj.turn(text, interrupt=interrupt, auto=auto)
+            finally:
+                self.skips.turn(self._now(), by_user=not auto)
+
+    @staticmethod
+    def _now() -> float:
+        return asyncio.get_running_loop().time()
+
+    async def _local_command(self, text: str) -> str | None:
+        """Jednoznačné povely i z webu bez modelu ("hlasitěji", "další")."""
+        cmd = local_command(text)
+        if not cmd:
+            return None
+        action, value = cmd
+        telemetry.event("dj.apply", via="local_command", action=action, value=value or None)
+        if action == "skip":
+            await self.player.skip()
+            return "Přeskakuju."
+        if action == "pause":
+            await self.player.toggle_pause(True)
+            return "Pozastaveno."
+        if action == "resume":
+            await self.player.toggle_pause(False)
+            return "Hraju dál."
+        if action == "stop":
+            self.dj.pending.clear()
+            await self.player.clear_queue()
+            await self.player.toggle_pause(True)
+            return "Zastaveno, fronta je prázdná."
+        st = await self.player.status()
+        if action == "louder":
+            value = st.volume + 10
+        elif action == "quieter":
+            value = st.volume - 10
+        value = max(0, min(130, value))
+        await self.player.set_volume(value)
+        return f"Hlasitost {value}."
 
     async def _try_link(self, text: str) -> str | None:
         """Odkaz na YouTube obslouží rovnou, bez modelu.
@@ -149,7 +213,8 @@ class App:
             await self.player.toggle_pause(False)
             return f"Zařazuju {track.label()}."
 
-        # playlist i kanál: postavit z toho rádio, ať to po dohrání pokračuje
+        # playlist i kanál: postavit z toho rádio, ať to po dohrání pokračuje.
+        # Je to nový pokyn, takže případný režim interpreta končí (set_seeds).
         seeds = target.tracks[:4]
         # odkaz je jednoznačné přání, takže i delší kusy, když kratší nejsou
         await self.pools.set_seeds(seeds, mood=target.label, allow_long=True)
@@ -176,6 +241,7 @@ class App:
             self.store.record_start(
                 ev.track.id, ev.track.title, ev.track.artist, self.pools.mood or None
             )
+            self.dj.note_started(ev.track.id)
             print(f"▶ {ev.track.label()}")
             self._set_status(f"▶ {ev.track.label()}")
 
@@ -185,6 +251,7 @@ class App:
 
         elif ev.kind == "skipped" and ev.track:
             self.store.record_outcome(ev.track.id, "skipped")
+            self.skips.skipped(ev.track.label(), self._now())
 
         elif ev.kind == "replaced" and ev.track:
             # Odsunula ji nová nálada nebo vyžádaný odkaz, ne posluchač. Jako
@@ -214,7 +281,8 @@ class App:
                 if need <= 0:
                     continue
 
-                tracks = await self.pools.next_tracks(need)
+                # v režimu interpreta od něj, jinak z poolů
+                tracks = await self.dj.next_tracks(need)
                 if tracks:
                     await self.player.enqueue(tracks)
                 elif not self.pools.pools:
@@ -222,11 +290,14 @@ class App:
                     # (odkaz, play_next). Až dohraje, bylo by ticho — tak z ní
                     # rádio postavíme. Bez modelu, hned.
                     await self._seed_from_current()
-                elif self.pools.pools:
+                elif self.pools.pools and not self.dj.focus:
+                    # (v režimu interpreta pooly jedou dokola samy; prázdná
+                    # dávka znamená jen, že všechno už čeká ve frontě)
                     # the pools ran dry and the radio yields nothing new anymore
                     await self._reseed(
-                        "Pooly se vyčerpaly. Zůstaň u stejné nálady, ale postav "
-                        "ji na jiných interpretech než dosud."
+                        "Pooly se vyčerpaly. Zůstaň u stejné nálady a u "
+                        "posledního výslovného přání posluchače, ale postav "
+                        "ji na jiných skladbách než dosud."
                     )
             except asyncio.CancelledError:
                 raise
@@ -246,21 +317,31 @@ class App:
         )
 
     async def _check_skip_burst(self) -> None:
-        """Three skips within ten minutes mean the mood missed the mark."""
-        skips = self.store.skip_burst(minutes=10)
-        if skips < 3 or skips == self._skips_at_last_check:
+        """Three skips since the last DJ turn mean the picks missed the mark.
+
+        Nový směr ale jen uvnitř toho, co posluchač chtěl: 25. 9. na "něco
+        pohodového, akustického" a tři přeskočení DJ sám přešel na "energickou
+        taneční" hudbu — pravý opak zadání. A v režimu interpreta se nic
+        nemění vůbec: přeskočená skladba Stypky neznamená "už ne Stypku".
+        """
+        if self.dj.focus:
             return
-        self._skips_at_last_check = skips
-        skipped = [
-            f"{p.artist} — {p.title}"
-            for p in self.store.recent_history(15)
-            if p.outcome == "skipped"
-        ][:6]
+        skipped = self.skips.due(self._now())
+        if not skipped:
+            return
+        wish = self.dj.wish.describe()
+        scope = (
+            f"Posluchač naposledy výslovně chtěl: {wish}. Drž se toho — změň "
+            "interprety a skladby, ne žánr, jazyk ani interpreta, o které si řekl."
+            if wish else
+            "Zkus jiný směr."
+        )
         await self._reseed(
-            "Uživatel právě přeskočil několik skladeb po sobě: "
+            "Posluchač přeskočil několik skladeb po sobě: "
             + "; ".join(skipped)
-            + ". Nálada se netrefila — postav ji znovu, jiným směrem. "
-            "Uživateli stačí jedna věta o tom, kam jsi to posunul."
+            + ". Výběr se netrefil. " + scope
+            + " Přeskočení nejsou vyjádření vkusu — `remember` nech prázdné. "
+            "Posluchači stačí jedna věta o tom, kam jsi to posunul."
         )
 
     async def _reseed(self, instruction: str) -> None:
@@ -268,9 +349,11 @@ class App:
 
         Keeps its distance so this doesn't turn into a loop that burns tokens.
         """
-        now = asyncio.get_running_loop().time()
+        now = self._now()
         if self._reseeding or self.codex_busy or now - self._last_reseed < 120:
             return
+        log.info("automatický tah: %s", instruction[:200])
+        telemetry.event("dj.reseed", phase="start", trigger=instruction[:300])
         self._reseeding = True
         self._last_reseed = now
         # Vlastní úloha: zrušit se smí jen tenhle tah, ne ten, kdo ho spustil
@@ -301,7 +384,7 @@ class App:
         if self.codex_busy:
             return "Codex právě pracuje (asi z webu) — zkus to za chvíli."
         try:
-            return await self.ask(text)
+            return await self.ask(text, source="repl")
         finally:
             st = await self.player.status()
             self._set_status(

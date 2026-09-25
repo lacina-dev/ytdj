@@ -58,6 +58,12 @@ for line in sys.stdin:
             if LOG:
                 with open(LOG, "a") as f:
                     f.write(json.dumps(reply) + "\n")
+        if MODE == "limit":
+            out({"method": "error", "params": {"threadId": tid, "turnId": turn_id,
+                                               "willRetry": True, "error": {
+                                                   "message": "unexpected status 429 Too Many Requests"}}})
+            time.sleep(30)
+            continue
         if MODE == "auth":
             for _ in range(3):
                 out({"method": "error", "params": {"threadId": tid, "turnId": turn_id,

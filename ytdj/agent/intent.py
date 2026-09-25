@@ -374,26 +374,50 @@ class ListenerIntent:
 # ---- povely, na které model není potřeba ----
 
 _COMMANDS: list[tuple[re.Pattern, str]] = [
-    (re.compile(r"^(dalsi|preskoc|skip|next|n)$"), "skip"),
-    (re.compile(r"^(pauza|pause|p|ticho)$"), "pause"),
+    (re.compile(r"^(dalsi|preskoc|skip|next|n|dalsi pisnick\w*|dalsi pisen|dalsi skladb\w*|"
+                r"jinou pisnick\w*|jinou skladb\w*|next song)$"), "skip"),
+    (re.compile(r"^(pauza|pause|p|ticho|pozastav)$"), "pause"),
     (re.compile(r"^(stop|zastav)$"), "stop"),
     (re.compile(r"^(pokracuj|hraj dal|resume|play)$"), "resume"),
-    (re.compile(r"^(hlasiteji|nahlas|louder|volume up|pridej|zesil)$"), "louder"),
-    (re.compile(r"^(tiseji|potichu|quieter|volume down|uber|ztlum|zeslab)$"), "quieter"),
+    (re.compile(r"^(hlasiteji|nahlas|louder|volume up|pridej|zesil|hlasitej|hlasit)$"), "louder"),
+    (re.compile(r"^(tiseji|potichu|quieter|volume down|uber|ztlum|zeslab|ztis|tisej|tis)$"),
+     "quieter"),
 ]
 _VOLUME = re.compile(r"^(?:hlasitost|volume|vol)\s+(\d{1,3})$")
+# slova kolem povelu, která nic nemění: "hlasitěji prosím", "trochu hlasitěji",
+# "dej to hlasitěji", "další prosím", "ztiš to trochu"
+_CMD_FILLER = {
+    "prosim", "prosimte", "trochu", "trosku", "malinko", "kousek", "o", "dej", "dejte",
+    "to", "tu", "jeste", "uz", "hned", "mi", "nam", "tam", "sem", "moc", "bit", "a",
+    "please", "can", "you", "turn", "it", "up", "down", "the", "pust", "tuhle", "tohle",
+}
 
 
 def local_command(text: str) -> tuple[str, int] | None:
     """Jednoznačný povel bez modelu: (akce, hodnota), jinak None.
 
     Z webu chodil každý text do Codexu — i "hlasitěji", na které se čekalo
-    dvacet vteřin. Tady jen celé krátké povely; "pusť něco hlasitějšího" je
+    dvacet vteřin. Tady jen krátké povely, i s vatou kolem ("trochu
+    hlasitěji prosím"); "pusť něco hlasitějšího" nebo "další od Kabátu" je
     přání, ne povel, a jde dál k modelu.
     """
     t = norm(text)
-    if not t or len(t) > 24:
+    if not t or len(t) > 40:
         return None
+    if m := _VOLUME.match(t):
+        return "volume", int(m.group(1))
+    words = t.split()
+    core = " ".join(w for w in words if w not in _CMD_FILLER)
+    # "turn it up/down" — anglická vata nese směr
+    if not core and {"turn", "up"} <= set(words):
+        return "louder", 0
+    if not core and {"turn", "down"} <= set(words):
+        return "quieter", 0
+    for candidate in (t, core):
+        for pattern, action in _COMMANDS:
+            if candidate and pattern.match(candidate):
+                return action, 0
+    return None
     if m := _VOLUME.match(t):
         return "volume", int(m.group(1))
     for pattern, action in _COMMANDS:
@@ -488,6 +512,8 @@ class Intent:
     remember: str = ""
     reply: str = ""
     auto: bool = False  # zadání od aplikace (přeseedování), ne od posluchače
+    # hotová semínka (DJ bez modelu) — resolve je nehledá znovu
+    seed_tracks: list = field(default_factory=list)
     note: str = ""  # co opravila pravidla — pro log
 
     @property

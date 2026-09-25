@@ -32,6 +32,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .offline import LIMIT, LOGIN, classify
+
 log = logging.getLogger(__name__)
 
 # Co DJ nepotřebuje. Hlavně pluginy: při každém startu app-serveru se jinak
@@ -64,13 +66,18 @@ class AppServerError(RuntimeError):
     pass
 
 
-class AppServerAuthError(AppServerError):
-    """401/403 — přihlášení Codexu neplatí; `codex exec` by dopadl stejně."""
+class AppServerFatal(AppServerError):
+    """Přihlášení (401/403) nebo limit (429) — `codex exec` by dopadl stejně.
+
+    `reason` je druh z offline.classify (login / limit).
+    """
+
+    def __init__(self, reason: str, text: str) -> None:
+        self.reason = reason
+        super().__init__(text)
 
 
-def _is_auth_error(text: str) -> bool:
-    t = text.lower()
-    return "401" in t or "403" in t or "unauthorized" in t or "not logged in" in t
+AppServerAuthError = AppServerFatal  # starší jméno
 
 
 def native_codex(wrapper: str | None) -> str | None:
@@ -341,9 +348,11 @@ class AppServer:
                     elif method == "error":
                         err = params.get("error") or {}
                         text = str(err.get("message") or err)[:300]
-                        # 4xx se opakovat nevyplatí (Codex by 5× zkoušel znovu, 60 s)
-                        if _is_auth_error(text):
-                            raise AppServerAuthError(text)
+                        # 401/429 se opakovat nevyplatí (Codex by 5× zkoušel
+                        # znovu, 60 s a víc) — ani když hlásí willRetry
+                        kind = classify(text)
+                        if kind in (LOGIN, LIMIT):
+                            raise AppServerFatal(kind, text)
                         if not params.get("willRetry"):
                             raise AppServerError(text)
                     elif method == "turn/completed":

@@ -107,6 +107,12 @@ class MpvPlayer(Player):
             # Vteřina zvuku v zásobě: na slabém stroji, kde vedle hraje yt-dlp
             # s node, by 0,2 s (výchozí) občas nestačilo a v repráku by lupnulo.
             "--audio-buffer=1",
+            # Začít hrát, až jsou v cache aspoň dvě vteřiny proudu. Bez toho
+            # mpv na Pi rozjelo skladbu s prvními bajty ze sítě a za zlomek
+            # vteřiny mu data došla — PipeWire hlásil výpadky přesně při
+            # startu každé skladby a v repráku to lupalo.
+            "--cache-pause-initial=yes",
+            "--cache-pause-wait=2",
             "--keep-open=no",
             # Když YouTube uprostřed skladby zavře spojení (rotace CDN, síť),
             # ffmpeg to bez tohohle vezme jako konec souboru — mpv ohlásí eof

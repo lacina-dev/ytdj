@@ -279,6 +279,12 @@ int kd_touch(int *x, int *y, int *z) {
 
     sort_int(xs, N);
     sort_int(ys, N);
+    /* PENIRQ občas cukne i bez prstu a převodník pak vrátí klidové hodnoty
+       (x≈0, y≈4095, z1≈0) — po kalibraci pravý dolní roh, tedy tlačítko
+       hlasitosti. Skutečný dotyk má z1 v řádu stovek a osy mimo dorazy. */
+    if (z1 < 60 || xs[N / 2] < 40 || ys[N / 2] > 4050) return 0;
+    /* medián nesmí stát na rozptýlených vzorcích (prst dosedá/zvedá se) */
+    if (xs[N - 2] - xs[1] > 150 || ys[N - 2] - ys[1] > 150) return 0;
     *x = xs[N / 2];
     *y = ys[N / 2];
     *z = z1 + 4095 - z2;

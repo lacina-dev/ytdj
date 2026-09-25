@@ -214,7 +214,9 @@ class KedeiTouch:
     DOWN_INTERVAL = 0.015  # s — vzorkování při držení
     IDLE_INTERVAL = 0.025  # s — hlídání PENIRQ
     RELEASE_SAMPLES = 3    # tolik prázdných vzorků za sebou = prst je pryč
-    PRESS_SAMPLES = 2      # tolik platných vzorků za sebou = opravdu dotyk
+    PRESS_SAMPLES = 3      # tolik shodných vzorků za sebou = opravdu dotyk
+    PRESS_SPREAD = 12      # px — jak blízko u sebe musí ty vzorky být
+    JUMP = 60              # px — větší skok při držení musí potvrdit další vzorek
     MOVE_THRESHOLD = 3     # px
 
     def __init__(self, rotate: int = 0, calibration: Calibration | None = None) -> None:
@@ -225,7 +227,8 @@ class KedeiTouch:
         self._down = False
         self._pos = (0, 0)
         self._misses = 0
-        self._hits = 0
+        self._candidates: list[tuple[int, int]] = []
+        self._jump: tuple[int, int] | None = None
 
     def _sample(self) -> tuple[int, int] | None:
         raw = self._dev.touch_raw()
@@ -243,15 +246,32 @@ class KedeiTouch:
             if pos is not None:
                 self._misses = 0
                 if not self._down:
-                    self._hits += 1
-                    if self._hits >= self.PRESS_SAMPLES:
-                        self._down, self._pos = True, pos
-                        return TouchEvent("down", *pos)
-                elif max(abs(pos[0] - self._pos[0]), abs(pos[1] - self._pos[1])) >= self.MOVE_THRESHOLD:
-                    self._pos = pos
-                    return TouchEvent("move", *pos)
+                    # Odporová vrstva při dosedání prstu hlásí nesmysly — stisk
+                    # platí, až když pár vzorků za sebou míří na stejné místo.
+                    self._candidates.append(pos)
+                    self._candidates = self._candidates[-self.PRESS_SAMPLES:]
+                    if len(self._candidates) == self.PRESS_SAMPLES:
+                        xs = sorted(p[0] for p in self._candidates)
+                        ys = sorted(p[1] for p in self._candidates)
+                        if xs[-1] - xs[0] <= self.PRESS_SPREAD and ys[-1] - ys[0] <= self.PRESS_SPREAD:
+                            self._down = True
+                            self._pos = (xs[len(xs) // 2], ys[len(ys) // 2])
+                            self._candidates = []
+                            return TouchEvent("down", *self._pos)
+                else:
+                    dist = max(abs(pos[0] - self._pos[0]), abs(pos[1] - self._pos[1]))
+                    if dist > self.JUMP and (
+                        self._jump is None
+                        or max(abs(pos[0] - self._jump[0]), abs(pos[1] - self._jump[1])) > self.PRESS_SPREAD
+                    ):
+                        self._jump = pos  # počkat, jestli to potvrdí další vzorek
+                    elif dist >= self.MOVE_THRESHOLD:
+                        self._jump = None
+                        self._pos = pos
+                        return TouchEvent("move", *pos)
             else:
-                self._hits = 0
+                self._candidates = []
+                self._jump = None
                 if self._down:
                     self._misses += 1
                     if self._misses >= self.RELEASE_SAMPLES:
@@ -260,7 +280,7 @@ class KedeiTouch:
             now = time.monotonic()
             if now >= deadline:
                 return None
-            interval = self.DOWN_INTERVAL if (self._down or self._hits) else self.IDLE_INTERVAL
+            interval = self.DOWN_INTERVAL if (self._down or self._candidates) else self.IDLE_INTERVAL
             time.sleep(min(interval, deadline - now))
 
     def close(self) -> None:

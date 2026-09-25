@@ -60,6 +60,9 @@ def _clamp_volume(volume: int) -> int:
 REQUEST_MAX_AGE = 600.0  # s — starší "chci další" už se ke startu nepřičítá
 RESOLVE_MATCH_AGE = 1800.0  # s — jak starý dotaz resolveru ještě patří ke startu
 STALL_MIN_MS = 200  # kratší zaváhání core-idle nejsou výpadek
+SLOW_HANDLER = 0.15  # s — handler události, který déle blokuje event loop, do logu
+SMART_LOCK_WAIT = 0.3  # s — déle na zámek playlistu chytré Další nečeká
+URGENT_NEXT = 2  # kolik nejbližších skladeb se řeší i během tahu Codexu (hold)
 
 
 def parse_resolver_line(text: str) -> tuple[str, dict[str, Any]] | None:
@@ -152,6 +155,9 @@ class MpvPlayer(Player):
         self._resolver_task: asyncio.Task | None = None
         # ytdj nastaví: když běží Codex, dopředu se nic neřeší (paměť)
         self.busy_check: Callable[[], bool] | None = None
+        # ytdj nastaví (fronta přání): je tahle skladba něčí přání? Chytré
+        # Další takové nepřeskočí ani nepředběhne. None = podle mark_requested.
+        self.is_protected: Callable[[str], bool] | None = None
         self._paused = False
         self._volume = _clamp_volume(cfg.volume)
         # Zápis hlasitosti do configu se odkládá: tažení slideru i držené "+"
@@ -194,7 +200,12 @@ class MpvPlayer(Player):
             f"--input-ipc-server={MPV_SOCKET}",
             f"--ytdl-format={self.cfg.ytdl_format}",
             f"--script-opts=ytdl_hook-ytdl_path={self._ytdl_shim()}",
-            "--prefetch-playlist=yes",  # pre-resolves the next track's URL -> no gap
+            # Bez --prefetch-playlist: mpv 0.40 při něm nespouští ytdl_hook,
+            # takže "dopředu" stahovalo HTML stránky watch?v=… (~580 kB, TLS,
+            # další dotazy DNS) hned po startu každé skladby — a pak ho stejně
+            # zahodilo ("Dropping finished prefetch of wrong URL"). Skladby
+            # dopředu chystá resolver (ytdl_resolver.py).
+            "--prefetch-playlist=no",
             "--gapless-audio=weak",
             "--cache=yes",
             # Vteřina zvuku v zásobě: na slabém stroji, kde vedle hraje yt-dlp
@@ -583,7 +594,7 @@ class MpvPlayer(Player):
     #   požadavek (skip / konec / první zařazení) → start-file → file-loaded
     #   (yt-dlp/resolver + otevření proudu) → core-idle=false (zvuk teče).
 
-    def _t_request(self, why: str) -> None:
+    def _t_request(self, why: str, **extra: Any) -> None:
         """Někdo chce další skladbu — od teď se měří čekání na zvuk."""
         try:
             now = time.monotonic()
@@ -603,6 +614,7 @@ class MpvPlayer(Player):
                 next_resolving=(nxt == self._res_busy) if nxt else None,
                 ready_ahead=sum(1 for v in window if v in self._res_ready),
                 queue=len(upcoming),
+                **extra,
             )
         except Exception:
             pass
@@ -695,6 +707,9 @@ class MpvPlayer(Player):
             telemetry.event("track.start", **fields)
         except Exception:
             pass
+        # první zvuk skladby — fronta přání z toho měří čekání přání → zvuk
+        if isinstance(load.get("entry"), int):
+            self._events.put_nowait(("sound", load["entry"], ""))
 
     def _t_end_file(self, kind: str, msg: dict, premature: bool) -> None:
         try:
@@ -807,10 +822,18 @@ class MpvPlayer(Player):
 
             ev = PlayerEvent(kind, track, detail=detail)
             for handler in self._handlers:
+                t0 = time.monotonic()
                 try:
                     await handler(ev)
                 except Exception:
                     log.exception("handler události selhal")
+                took = time.monotonic() - t0
+                if took > SLOW_HANDLER:
+                    # Handler běží v event loopu — co trvá, zdrží i IPC s mpv,
+                    # web a panel (status "přepnuto" až po něm).
+                    telemetry.event("player.slow_handler", event=kind,
+                                    handler=getattr(handler, "__qualname__", "?"),
+                                    took_ms=int(took * 1000))
 
     def _measure_quality(self) -> None:
         """Zjistí, co reálně hraje.
@@ -956,6 +979,159 @@ class MpvPlayer(Player):
             await self._sync()
         self._schedule_prefetch()
 
+    async def remove_upcoming(self, video_ids: set[str]) -> int:
+        """Odebere z čekajících (ne z hrající) položky s těmito videoId.
+
+        Fronta přání tak odebere zrušené přání nebo podkres staré nálady a
+        ostatní položky — i ty připravené dopředu — zůstanou, kde byly.
+        """
+        if not video_ids:
+            return 0
+        removed = 0
+        async with self._mutex:
+            await self._sync()
+            cur = self._cur_index()
+            if cur < 0:
+                return 0
+            # odzadu: indexy před mazanou položkou se nemění
+            for i in range(len(self._playlist) - 1, cur, -1):
+                if self._playlist[i][1] in video_ids:
+                    await self._command("playlist-remove", i)
+                    removed += 1
+            if removed:
+                await self._sync()
+        if removed:
+            self._schedule_prefetch()
+        return removed
+
+    async def arrange_front(self, tracks: list[Track]) -> int:
+        """Začátek fronty (hned za hrající) = přesně `tracks`, v tomhle pořadí.
+
+        Nejmenší možný zásah: co už na svém místě je, zůstane; co je ve frontě
+        dál, se přesune (playlist-move); co ve frontě není, se vloží
+        (loadfile insert-at, starší mpv append + move). Zbytek fronty (podkres)
+        se jen posune dozadu. Vrací počet změn playlistu — 0 = nic se nehnulo,
+        resolver nemusí nic přepočítávat.
+        """
+        if not tracks:
+            return 0
+        ops = 0
+        now = time.monotonic()
+        async with self._mutex:
+            await self._sync()
+            if self._cur_index() < 0:
+                # nic nehraje — na konec; append-play rozjede první z nich
+                for track in tracks:
+                    self._tracks[track.id] = track
+                await self._append(tracks)
+                ops = len(tracks)
+            for i, track in enumerate(tracks if not ops else []):
+                self._tracks[track.id] = track
+                cur = self._cur_index()
+                ids = [vid for _, vid in self._playlist]
+                dst = cur + 1 + i
+                if dst < len(ids) and ids[dst] == track.id:
+                    continue
+                src = next((j for j in range(dst + 1, len(ids)) if ids[j] == track.id), -1)
+                if src >= 0:
+                    await self._command("playlist-move", src, dst)
+                else:
+                    self._enqueued_at[track.id] = now
+                    res = None
+                    if self._insert_next_ok:
+                        res = await self._command(
+                            "loadfile", WATCH_URL.format(track.id), "insert-at", dst
+                        )
+                        if not _ok(res):
+                            self._insert_next_ok = False
+                            res = None
+                    if res is None:
+                        res = await self._command(
+                            "loadfile", WATCH_URL.format(track.id), "append-play"
+                        )
+                        eid = self._note_entry(res, track.id)
+                        await self._sync()
+                        at = self._index_of(eid)
+                        if at > dst:
+                            await self._command("playlist-move", at, dst)
+                    else:
+                        self._note_entry(res, track.id)
+                ops += 1
+                await self._sync()
+        if ops:
+            self._schedule_prefetch()
+        return ops
+
+    def mark_requested(self, video_ids: list[str]) -> None:
+        """Pro provozní log: tyhle skladby si někdo vyžádal (čekání do zvuku)."""
+        now = time.monotonic()
+        for vid in video_ids:
+            self._requested_at.setdefault(vid, now)
+
+    def _protected(self, vid: str) -> bool:
+        """Vyžádaná skladba (přání) — chytré Další ji nepřeskočí ani nepřesune."""
+        check = self.is_protected
+        if check is not None:
+            try:
+                return bool(check(vid))
+            except Exception:
+                return True  # v pochybnostech nesahat
+        return vid in self._requested_at
+
+    def smart_target(self) -> int | None:
+        """Index v upcoming_ids() připravené skladby podkresu, na kterou má
+        Další skočit, protože ta hned další připravená není — jinak None.
+
+        Přeskakuje (odsouvá o jedno místo) jen nepřipravené skladby podkresu;
+        na vyžádanou skladbu cestou narazí → None: přání se nepředbíhá.
+        """
+        up = self.upcoming_ids()
+        if not up or up[0] in self._res_ready:
+            return None
+        for k, vid in enumerate(up[:PREFETCH_AHEAD]):
+            if self._protected(vid):
+                return None
+            if vid in self._res_ready:
+                return k if k > 0 else None
+        return None
+
+    async def _smart_skip(self) -> dict[str, Any]:
+        """Chytré Další: další skladba podkresu se teprve řeší (~7 s ticha),
+        ale pozdější v okně je hotová → přesunout ji hned za hrající.
+
+        Přeskočené zůstávají ve frontě hned za ní (resolver je chystá dál),
+        takže se nic neztratí, jen se prohodí pořadí podkresu. Pod zámkem
+        playlistu; když je zámek déle obsazený, prostě obyčejné Další.
+        """
+        if self.smart_target() is None:
+            return {}
+        try:
+            await asyncio.wait_for(self._mutex.acquire(), SMART_LOCK_WAIT)
+        except asyncio.TimeoutError:
+            return {}
+        try:
+            await self._sync()
+            k = self.smart_target()
+            cur = self._cur_index()
+            if k is None or cur < 0:
+                return {}
+            up = self.upcoming_ids()
+            bypassed, target = up[:k], up[k]
+            src = next((j for j in range(cur + 1, len(self._playlist))
+                        if self._playlist[j][1] == target), -1)
+            if src <= cur + 1:
+                return {}
+            res = await self._command("playlist-move", src, cur + 1)
+            await self._sync()
+            if not _ok(res):
+                return {}
+            return {"smart_skip": True, "bypassed": bypassed}
+        except Exception:
+            log.debug("chytré Další selhalo", exc_info=True)
+            return {}
+        finally:
+            self._mutex.release()
+
     async def skip(self, by_user: bool = True) -> None:
         """Na další. Bez zámku — Další má být okamžité i během plnění fronty.
 
@@ -970,7 +1146,10 @@ class MpvPlayer(Player):
             await self._command("playlist-next", "force", wait=False)
             return
         self._replacing = not by_user
-        self._t_request("skip" if by_user else "replace")
+        extra: dict[str, Any] = {}
+        if by_user:
+            extra = await self._smart_skip()
+        self._t_request("skip" if by_user else "replace", **extra)
         await self._command("playlist-next", "force", wait=False)
         # Náš obraz posunout hned (mpv to potvrdí upozorněním za pár ms) —
         # další Další v sérii i okno pro resolver už počítají s novou "další".
@@ -1155,6 +1334,10 @@ class MpvPlayer(Player):
             # hotové, a jen nové nezačíná; na to, co chce mpv hned, dělá dál.
             held = bool(self.busy_check and self.busy_check())
             first = list(self._first)  # wait_ready: přednostně i během hold
+            # Dvě nejbližší nepřipravené jdou vždycky první a řeší se i během
+            # tahu Codexu — po výměně fronty (přání, nová nálada) by jinak
+            # čekaly, až tah doběhne, a Další hned po přání by bylo ~7 s ticha.
+            first += [v for v in ahead[:URGENT_NEXT] if v not in self._res_ready and v not in first]
             # Hrající / právě načítaná položka: resolver ji nesmí zahodit. Po
             # Další se nové okno posílá hned — dřív, než si mpv o skladbu, na
             # kterou přeskočilo, řekne — a bez tohohle by ji resolver z cache

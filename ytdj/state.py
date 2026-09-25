@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -88,6 +89,16 @@ class Store:
     def __init__(self, path=STATE_DB) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path, isolation_level=None)
+        # Zápisy běží v event loopu (handler události přehrávače). V režimu
+        # DELETE + FULL dělá každý zápis několik fsync na SD kartu — na Pi 3
+        # 0,1 s běžně a pod zátěží až 3 s (player.slow_handler 25. 9.), po
+        # kterou stál i web a panel: zvuk hrál za 0,6 s, displej ukázal
+        # přepnutí až za 3,3 s. WAL + NORMAL = žádný fsync při zápisu (jen při
+        # checkpointu); při výpadku proudu se může ztratit posledních pár
+        # záznamů historie, databáze zůstane celá.
+        with contextlib.suppress(sqlite3.Error):
+            self.db.execute("PRAGMA journal_mode=WAL")
+            self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.executescript(SCHEMA)
 
     # ---- writes ----

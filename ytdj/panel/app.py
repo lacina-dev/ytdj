@@ -31,7 +31,6 @@ log = logging.getLogger(__name__)
 
 VOL_STEP = 5
 KEY_VOL_STEP = 2  # na cvaknutí kolečka nebo stisk klávesy na repráku
-START_PROMPT = "Nic nehraje. Pusť hudbu a navaž na to, co jsem poslouchal naposledy."
 VOL_INTERVAL = 0.25  # at most ~4 volume requests per second while dragging
 FULL_REFRESH = 60.0  # s — jak často celý snímek, i když se nic nezměnilo
 HOLD = 4.0  # how long an optimistic state wins over a server that disagrees
@@ -337,6 +336,9 @@ class PanelApp:
             self._said_offline = False
         self.online = self.ever_online = True
         self.state = state
+        if self.wish.on_state(state) and self._overlay() is None:
+            # the DJ decided about a wish from this panel: show it, like the web does
+            self.wish.show_answer(time.monotonic())
         cur = state.get("current") or None
         key = (cur.get("id") or cur.get("title")) if isinstance(cur, dict) else None
         running = bool(state.get("playing")) and not bool(state.get("paused"))
@@ -405,6 +407,9 @@ class PanelApp:
             elapsed = min(elapsed, duration)
         queue_ = st.get("queue")
         nxt = queue_[0] if isinstance(queue_, list) and queue_ and isinstance(queue_[0], dict) else {}
+        nxt_req = nxt.get("req") if isinstance(nxt.get("req"), dict) else {}
+        reason = (cur or {}).get("reason")
+        now_who = str(reason.get("who") or "") if isinstance(reason, dict) and reason.get("kind") == "wish" else ""
         online = self.online
         return View(
             online=online,
@@ -430,6 +435,9 @@ class PanelApp:
             net=self.net.icon(),
             next_title=str(nxt.get("title") or ""),
             next_artist=str(nxt.get("artist") or ""),
+            next_who=str(nxt_req.get("who") or ""),
+            now_who=now_who,
+            wishes=self.wish.active_count(),
         )
 
     def _paint(self) -> None:
@@ -701,6 +709,10 @@ class PanelApp:
                 log.info("dotyk: přání")
                 self._log_action("wish", "touch", now)
                 self.wish.open(now)
+            elif name == "queue" and self.online:
+                log.info("dotyk: fronta přání")
+                self._log_action("queue", "touch", now)
+                self.wish.open_queue(now)
             elif self.online:
                 self._fire(name, now)
             else:
@@ -749,29 +761,17 @@ class PanelApp:
         return new
 
     def _start_dj(self) -> bool:
-        """Nic nehraje (třeba po restartu) — "Hrát" požádá DJ, ať naváže.
+        """Nic nehraje (třeba po restartu) — "Hrát" rozjede DJ podle situace.
 
-        Bez tohohle by šla hudba po startu Pi rozjet jen z webu, a ten je
-        schválně jen na localhostu.
+        Server pozná, že není co odpauzovat, a spustí chytrý rozjezd (čas,
+        den, kancelář, historie — ytdj.agent.context) jako tah DJe, ne jako
+        přání. Panel jen pošle "play", jako web.
         """
-        if self.prompting or (self.state or {}).get("busy"):
+        st = self.state or {}
+        if st.get("starting") or (st.get("busy") and not st.get("requests")):
             return False
-        self.prompting = True
         log.info("povel: rozjet DJ")
-
-        def ask() -> None:
-            error = None
-            t0 = time.monotonic()
-            try:
-                self.api.prompt(START_PROMPT)
-            except Exception as exc:
-                error = str(exc) or type(exc).__name__
-                log.warning("rozjetí DJ selhalo: %s", error)
-            emit("panel.dj_prompt", ok=error is None, error=error and error[:120],
-                            took_ms=int((time.monotonic() - t0) * 1000))
-            self.events.put(("result", "prompt", None, error))
-
-        threading.Thread(target=ask, name="panel-prompt", daemon=True).start()
+        self.commander.send("play")
         return True
 
     # ---- volume ----

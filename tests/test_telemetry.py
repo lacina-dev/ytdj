@@ -436,6 +436,49 @@ class ReportTest(unittest.TestCase):
             report.parse_when("zítra", now)
 
 
+class RequestReportTest(unittest.TestCase):
+    """Sekce přání: kolik od koho, přání → zvuk, splněno vs. nenašel."""
+
+    def test_request_section(self) -> None:
+        def ev(kind, ts, **f):
+            return json.dumps({"ts": f"2026-09-25T14:{ts}", "kind": kind, "sid": "s1", **f})
+
+        lines = [
+            ev("request.created", "00:00", id="a", who="Petr", source="web", text="pusť Kabát"),
+            ev("request.interpreted", "00:03", id="a", via="fast", intent_kind="artist", took_ms=3000),
+            ev("request.turn", "00:04", id="a", who="Petr"),
+            ev("request.started", "00:05", id="a", who="Petr", wait_ms=5000),
+            ev("request.created", "00:01", id="b", who="Jana", source="panel", text="Holky"),
+            ev("request.interpreted", "00:21", id="b", via="codex", intent_kind="songs", took_ms=20000),
+            ev("request.turn", "04:00", id="b", who="Jana"),
+            ev("request.started", "04:00", id="b", who="Jana", wait_ms=239000),
+            ev("request.done", "07:00", id="b", who="Jana", state="done"),
+            ev("request.created", "05:00", id="c", who="Jana", source="web", text="Nobody"),
+            ev("request.done", "05:20", id="c", who="Jana", state="notfound"),
+            ev("request.created", "06:00", id="d", who="Karel", source="web", text="x"),
+            ev("request.removed", "06:10", id="d", who="Karel", by="owner"),
+            ev("request.start", "08:00", ok=True, via="codex", took_ms=18000),
+        ]
+        d = Path(tempfile.mkdtemp(dir=_TMP))
+        (d / "events.jsonl").write_text("\n".join(lines) + "\n")
+        s = report.summarize(report.load_events(report.input_files([str(d)])))
+        rq = s["requests"]
+        self.assertEqual(rq["created"], 4)
+        self.assertEqual((rq["fulfilled"], rq["notfound"], rq["removed"]), (1, 1, 1))
+        self.assertEqual(rq["by_person"]["Jana"]["n"], 2)
+        self.assertEqual(rq["by_person"]["Jana"]["states"], {"done": 1, "notfound": 1})
+        self.assertEqual(rq["by_person"]["Petr"]["wait_ms"]["median"], 5000)
+        self.assertEqual(rq["wish_to_sound_ms"]["n"], 2)
+        self.assertEqual(rq["via"], {"fast": 1, "codex": 1})
+        self.assertEqual(rq["by_source"], {"web": 3, "panel": 1})
+        self.assertEqual(rq["idle_starts"]["n"], 1)
+        self.assertNotIn("request.created", s["other"])  # known kinds, not "other"
+        text = report.render(s)
+        self.assertIn("Přání (fronta pro víc lidí)", text)
+        self.assertIn("Jana: 2×", text)
+        self.assertIn("přání → první zvuk", text)
+
+
 class WebHelpersTest(unittest.TestCase):
     def test_short_ua(self) -> None:
         from ytdj.web.server import short_ua

@@ -53,6 +53,7 @@ STRINGS = {
         "idle_hint": "Ťukni na Hrát, nebo si řekni o Přání",
         "dj_picking": "DJ vybírá hudbu…",
         "next_up": "Pak: ",
+        "wish_of": "přeje si {who}",
         "wish": "Přání",
         "unknown": "Neznámá skladba",
         "offline_title": "ytdj neběží",
@@ -77,6 +78,7 @@ STRINGS = {
         "idle_hint": "Tap Play, or make a Wish",
         "dj_picking": "the DJ is picking music…",
         "next_up": "Then: ",
+        "wish_of": "{who}'s wish",
         "wish": "Wish",
         "unknown": "Unknown track",
         "offline_title": "ytdj is not running",
@@ -103,6 +105,8 @@ NET_TARGET = (W - NET_W - 6, 0, W, 44)
 WISH_BTN = (W - NET_W - WISH_W, 0, W - NET_W, 32)
 WISH_TARGET = (W - NET_W - WISH_W, 0, W - NET_W - 6, 44)
 TRACK = (0, 34, W, 126)
+# ťuknutí na název/„Pak:“ otevře frontu přání (pod tlačítky v liště, bez překryvu)
+TRACK_TARGET = (0, 46, W, 126)
 ELAPSED = (6, 128, 82, 160)
 BAR = (82, 128, 398, 160)
 TOTAL = (398, 128, 474, 160)
@@ -126,6 +130,7 @@ TARGETS: dict[str, Box] = {
     "vol_up": VOL_UP,
     "net": NET_TARGET,
     "wish": WISH_TARGET,
+    "queue": TRACK_TARGET,
 }
 
 
@@ -163,6 +168,9 @@ class View:
     net: tuple = ("?",)  # ("wifi", signal) | ("eth",) | ("off",) | ("?",) — the network button
     next_title: str = ""  # the first track in the queue, shown under the artist when there's room
     next_artist: str = ""
+    next_who: str = ""  # whose wish the next track is ("" = the DJ's own pick)
+    now_who: str = ""  # whose wish plays now — in the status strip instead of the mood
+    wishes: int = 0  # wishes waiting or playing — "Přání 3" on the button
 
 
 # ---- helpers ----
@@ -343,7 +351,7 @@ class Renderer:
         self._regions: list[tuple[str, Box, Callable[[View], tuple], Draw]] = [
             ("status", STATUS, self._sig_status, self._draw_status),
             ("net", NET_BTN, lambda v: (v.net, v.pressed == "net", v.closed), self._draw_net),
-            ("wish", WISH_BTN, lambda v: (v.online, v.pressed == "wish", v.closed), self._draw_wish),
+            ("wish", WISH_BTN, lambda v: (v.online, v.pressed == "wish", v.closed, v.wishes), self._draw_wish),
             ("track", TRACK, self._sig_track, self._draw_track),
             ("elapsed", ELAPSED, lambda v: (self._has_time(v), v.elapsed), self._draw_elapsed),
             ("bar", BAR, self._sig_bar, self._draw_bar),
@@ -380,7 +388,8 @@ class Renderer:
     # ---- status strip ----
 
     def _sig_status(self, v: View) -> tuple:
-        return (v.online, v.connecting, v.has_track, v.running, v.loading, v.paused, v.mood, v.busy, v.note, v.closed)
+        return (v.online, v.connecting, v.has_track, v.running, v.loading, v.paused, v.mood, v.busy, v.note,
+                v.closed, v.now_who)
 
     def _draw_status(self, d: ImageDraw.ImageDraw, size: tuple[int, int], v: View) -> None:
         w, h = size
@@ -420,12 +429,15 @@ class Renderer:
         x = 32
         d.text((x, cy), label, font=fb, fill=color, anchor="lm")
         x += fb.getlength(label)
-        if v.online and v.mood:
+        # whose wish plays — or, for the DJ's own picks, the mood
+        extra = self.s["wish_of"].format(who=v.now_who) if (v.now_who and v.has_track) else v.mood
+        if v.online and extra:
             room = w - right_w - 12 - x - fb.getlength(" · ")
             if room > 40:
                 d.text((x, cy), " · ", font=f, fill=FAINT, anchor="lm")
                 x += f.getlength(" · ")
-                d.text((x, cy), ellipsize(v.mood, f, room), font=f, fill=DIM, anchor="lm")
+                d.text((x, cy), ellipsize(extra, f, room), font=f,
+                       fill=ACCENT_TEXT if v.now_who and v.has_track else DIM, anchor="lm")
 
     def _draw_net(self, d: ImageDraw.ImageDraw, size: tuple[int, int], v: View) -> None:
         w, h = size
@@ -454,7 +466,7 @@ class Renderer:
         pressed = v.pressed == "wish"
         d.rounded_rectangle((4, 3, w - 4, h - 6), radius=8, fill=SURFACE_HI if pressed else SURFACE)
         f = self.fonts.status_b
-        label = self.s["wish"]
+        label = self.s["wish"] + (f" {v.wishes}" if v.wishes else "")
         icon_w = 20
         x = (w - (icon_w + 8 + f.getlength(label))) / 2
         cy = (h - 3) / 2
@@ -472,7 +484,7 @@ class Renderer:
             return ("off", v.connecting, v.target)
         if not v.has_track:
             return ("idle", v.busy)
-        return ("track", v.title, v.artist, v.skipping, v.next_title, v.next_artist)
+        return ("track", v.title, v.artist, v.skipping, v.next_title, v.next_artist, v.next_who)
 
     def _draw_track(self, d: ImageDraw.ImageDraw, size: tuple[int, int], v: View) -> None:
         w, h = size
@@ -510,7 +522,8 @@ class Renderer:
             # what "Další" would bring — only when the title leaves room for it
             f = self.fonts.status
             label = self.s["next_up"]
-            nxt = v.next_title.strip() + (f" · {v.next_artist.strip()}" if v.next_artist.strip() else "")
+            by = self.s["wish_of"].format(who=v.next_who.strip()) if v.next_who.strip() else v.next_artist.strip()
+            nxt = v.next_title.strip() + (f" · {by}" if by else "")
             d.text((x, 74), label, font=f, fill=FAINT, anchor="la")
             lx = x + f.getlength(label)
             d.text((lx, 74), ellipsize(nxt, f, max_w - (lx - x)), font=f, fill=DIM, anchor="la")

@@ -375,10 +375,12 @@ The API, if you want to script it:
 
 | endpoint | description |
 |---|---|
-| `GET /api/status` | player state, queue, history |
-| `GET /api/events` | SSE stream of the same |
-| `POST /api/prompt` | `{"text":"..."}` → `{"reply":"..."}`; 409 while Codex is busy |
-| `POST /api/control` | `{"action":"play\|pause\|next\|stop\|volume","value":int}` |
+| `GET /api/status` | player state, queue (`queue[].req` = whose wish), history, `requests[]`, `current.reason` |
+| `GET /api/events` | SSE: the full state when something changes, `event: pos` `[123.4]` every second in between |
+| `POST /api/prompt` | `{"text","who","source","play_next","wait":false}` → **202** `{"id","token","state"}` at once; progress and the DJ's reply arrive in `requests[]`. Without `who`/`wait` (old clients) it answers `{"reply"}` once the DJ decided. Plain commands ("další", "hlasitost 40") → 200 `{"reply"}` right away; 429 = too many open wishes of one person |
+| `GET /api/requests` | the wish queue alone |
+| `POST /api/requests/<id>` | `{"action":"remove\|next","token"}` — the author removes a wish or puts it right after the current track (`DELETE` = remove) |
+| `POST /api/control` | `{"action":"play\|pause\|next\|stop\|volume","value":int}`; `play` with nothing to play starts the DJ by the time of day → `{"starting":true}` |
 | `GET/POST /api/config` | read and write `config.toml` |
 | `GET /api/about` | what it's connected to and what the brain is |
 | `POST /api/restart` | ends the process so systemd restarts it; 409 outside systemd |
@@ -386,6 +388,39 @@ The API, if you want to script it:
 > **No authentication** — that's why it binds to `127.0.0.1`. Before exposing
 > it to your network, understand that anyone on it can then change the
 > configuration and spend requests against your subscription.
+
+### The wish queue (several people at once)
+
+Everybody's wishes go into one queue (`ytdj/wishes.py`) and nothing is ever
+refused with "the DJ is busy": the web gets `202` and an id at once, and every
+screen follows the wish through *čeká → DJ vybírá → ve frontě (za ~2 skladby) →
+hraje → hotovo | nenašel | chyba*. The DJ works through them one Codex turn at
+a time; a plain "pusť Kabát" takes the fast path (~3 s) and doesn't wait for
+somebody else's turn.
+
+The order is fair: whoever has waited longest since their last turn goes next
+(a newcomer first), one *block* per turn — a song is one track, an artist wish
+three, a mood wish its first three tracks. Petr's twenty-track "pusť Kabát"
+therefore plays three, then Jana's song, then Karel's, then Petr again; once
+nobody else is waiting, the rest of Kabát simply carries on as the background
+radio. "Zařadit hned" puts a wish right after the current track (one per
+person at a time) and never cuts it; saying "hned teď" does. A wish that is
+first in line does replace a background track that nobody asked for.
+
+Requests are materialised into the mpv playlist in that order (the queue *is*
+the playlist); a new wish is only inserted, the next two entries are left in
+place so prepared skips stay instant. The background radio sits behind all
+wishes and changes only on mood/genre wishes; automatic reseeding after skips
+touches only the background and never removes a wish.
+
+With nothing playing and nothing queued, ▶ (web), Hrát (panel) or
+`/api/control play` starts the DJ from `agent/context.py`: time of day, the
+day, the office, what played well here at this time — an automatic turn, not
+somebody's wish. After a restart of the service ytdj carries on where it was
+(the wishes and the background mood, `~/.local/share/ytdj/session.json`), but
+only when it was playing, the state is at most 15 minutes old and it isn't
+night (22–7 h): a cold boot in the morning or a reboot at night stays silent
+until somebody presses Play.
 
 ## Configuration
 
@@ -523,7 +558,7 @@ ends with `session.end`, so a start without an end means a crash or a kill.
 | resolver | `resolver.resolve` (`took_ms`, why: urgent / first / ahead), `resolver.get` (cache hit, how long mpv waited; `how: cancelled` when the listener skipped past a track that was still loading), `resolver.cancel`, `resolver.ahead` (window of the next 6 tracks in mpv's playlist order; `hold` while Codex thinks), `resolver.ready`, `resolver.exit`, `resolver.fallback` (fell back to slow standalone yt-dlp), `prefetch.ahead` |
 | system | `sys.sample` every 10 s (CPU, iowait, load, MemAvailable, swap and swap-in/out rates, temperature, CPU/RSS of ytdj/mpv/resolver, what is playing or resolving, whether Codex is thinking), `sys.throttle` (from `vcgencmd get_throttled`), `audio.xrun` (PipeWire xrun counters from a long-running `pw-top -b`, with context) |
 | web | `web.prompt` (text cut to 300 characters, reply, status, `took_ms`, client IP and a short user agent), `web.control`, `web.sse_open` / `web.sse_close`, `web.restart`, `web.config`, `web.error` |
-| player | `player.start`, `player.died` |
+| player | `player.start`, `player.died`, `player.slow_handler` (an event handler blocked the asyncio loop > 150 ms — the web/panel froze meanwhile) |
 | others | the DJ layer (`dj.*`), catalog (`catalog.*`), radio (`radio.*`) and panel (`panel.*`) write through the same `ytdj.telemetry.event()` |
 
 A summary in Czech, which on the Pi takes a few seconds even for several MB:

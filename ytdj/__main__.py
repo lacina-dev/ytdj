@@ -20,16 +20,17 @@ from contextlib import suppress
 
 from .agent import CodexDJ
 from . import telemetry
-from .agent.intent import SkipWatch, local_command
+from .agent.intent import SkipWatch
 from .config import Config, load_secrets, write_default_config, write_env_template
 from .diagnose import check_audio, yt_dlp_warning
 from .music import Catalog, RadioPools
-from .music.catalog import RE_URL
 from .player import MpvPlayer
 from .player.base import PlayerEvent, queue_transaction
 from .state import Store
 from .ui import Repl
 from .web import WebServer
+from .config import DATA_DIR
+from .wishes import WishQueue
 
 log = logging.getLogger("ytdj")
 
@@ -96,6 +97,57 @@ class App:
         # jediná cesta, jak z běžícího procesu načíst nastavení, která platí
         # až od startu (formáty, cookies, jazyk).
         self.restart_requested = asyncio.Event()
+        # ---- fronta přání pro víc lidí (fáze 2, ytdj/wishes.py) ----
+        # Přání z webu, displeje i terminálu; DJ je vyřizuje jedno po druhém a
+        # skladby střídá spravedlivě mezi lidmi. Podkres (pooly) jen za nimi.
+        self.wishes = WishQueue(
+            self.dj, self.player, self.pools, self.store, cfg,
+            lock=self._codex_lock,
+            state_file=DATA_DIR / "session.json",
+            on_change=self._poke_web,
+            on_listener=self._listener_spoke,
+            catalog=self.catalog,
+        )
+        self._start_task: asyncio.Task | None = None
+
+    def _poke_web(self) -> None:
+        if self.web:
+            self.web.poke()
+
+    async def _listener_spoke(self) -> None:
+        """Přání posluchače má přednost před automatickým přeseedováním."""
+        self.skips.turn(self._now(), by_user=True)
+        if self._reseed_task and not self._reseed_task.done():
+            log.info("ruším automatické přeseedování kvůli požadavku posluchače")
+            telemetry.event("dj.reseed", phase="cancelled_by_user")
+            self._reseed_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._reseed_task
+
+    async def play_or_start(self, source: str = "web") -> str:
+        """▶ na webu / Hrát na displeji / povel play.
+
+        Něco hraje nebo čeká → jen odpauzovat. Nic nehraje ani nečeká →
+        chytrý rozjezd (C7) podle času, dne, kanceláře a historie — jako
+        tah DJe, ne jako přání posluchače. Vrací "play" | "starting".
+        """
+        st = await self.player.status()
+        if st.current is not None or st.queue or self.wishes.has_requests():
+            await self.player.toggle_pause(False)
+            return "play"
+        if self.wishes.starting or (self._start_task and not self._start_task.done()):
+            return "starting"
+        telemetry.event("dj.start", source=source)
+        self._start_task = asyncio.create_task(self._start_idle(), name="ytdj-start")
+        return "starting"
+
+    async def _start_idle(self) -> None:
+        try:
+            reply = await self.wishes.start_idle()
+            if reply:
+                print(f"\n{reply}")
+        except Exception:
+            log.exception("rozjezd selhal")
 
     def _set_status(self, text: str) -> None:
         """Bottom REPL status bar — there is none in web-only mode."""
@@ -109,133 +161,31 @@ class App:
     async def ask(
         self, text: str, interrupt: bool = True, source: str = "web", requester: str = ""
     ) -> str:
-        """The single entry point to Codex. Used by both the REPL and the web.
+        """Přání posluchače (terminál, starší volající) nebo tah aplikace.
 
-        `interrupt=False` pro zásahy, o které posluchač nežádal: nová nálada
-        pak začne až po dohrání současné skladby. `source` / `requester` jen
-        do provozního logu (web, repl, panel, auto-reseed).
+        Posluchač jde frontou přání (ytdj/wishes.py): počká se, až ho DJ
+        vyřídí, a vrátí se odpověď. `interrupt=False` = zásah, o který nikdo
+        nežádal (přeseedování) — sahá jen na podkres, přání nechá být.
         """
-        auto = not interrupt
-        if auto:
-            source = "auto-reseed"
-        telemetry.event(
-            "dj.request", source=source, requester=requester or None, text=text[:300]
-        )
-        reply = await self._ask(text, interrupt, auto)
-        telemetry.event("dj.reply", source=source, text=(reply or "")[:300])
-        return reply
-
-    async def _ask(self, text: str, interrupt: bool, auto: bool) -> str:
-        if not auto:
-            if reply := await self._local_command(text):
-                return reply
-        if reply := await self._try_link(text):
-            telemetry.event("dj.apply", via="link", reply=reply[:200])
-            self.skips.turn(self._now(), by_user=True)
-            return reply
-        if interrupt and self._reseed_task and not self._reseed_task.done():
-            # Posluchač má přednost před tahem, o který nežádal (přeseedování
-            # po sérii přeskočení) — jinak by čekal půl minuty na cizí tah.
-            log.info("ruším automatické přeseedování kvůli požadavku posluchače")
-            telemetry.event("dj.reseed", phase="cancelled_by_user")
-            self._reseed_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await self._reseed_task
-        if not auto:
-            log.info("posluchač: %s", text)
-            # klid už od chvíle, kdy posluchač promluvil — tah trvá i 20 s
-            self.skips.turn(self._now(), by_user=True)
-        async with self._codex_lock:
+        if not interrupt:
+            telemetry.event("dj.request", source="auto-reseed", text=text[:300])
             try:
-                if not auto and (reply := await self.dj.fast_turn(text)):
-                    return reply
-                return await self.dj.turn(text, interrupt=interrupt, auto=auto)
+                reply = await self.wishes.background_turn(text)
             finally:
-                self.skips.turn(self._now(), by_user=not auto)
+                self.skips.turn(self._now(), by_user=False)
+            telemetry.event("dj.reply", source="auto-reseed", text=(reply or "")[:300])
+            return reply
+        if (reply := await self.wishes.try_local(text)) is not None:
+            return reply
+        w = self.wishes.submit(text, requester, source)
+        await self.wishes.wait(w)
+        telemetry.event("dj.reply", source=source, requester=w.who, id=w.id,
+                        text=(w.reply or "")[:300])
+        return w.reply
 
     @staticmethod
     def _now() -> float:
         return asyncio.get_running_loop().time()
-
-    async def _local_command(self, text: str) -> str | None:
-        """Jednoznačné povely i z webu bez modelu ("hlasitěji", "další")."""
-        cmd = local_command(text)
-        if not cmd:
-            return None
-        action, value = cmd
-        telemetry.event("dj.apply", via="local_command", action=action, value=value or None)
-        if action == "skip":
-            await self.player.skip()
-            return "Přeskakuju."
-        if action == "pause":
-            await self.player.toggle_pause(True)
-            return "Pozastaveno."
-        if action == "resume":
-            await self.player.toggle_pause(False)
-            return "Hraju dál."
-        if action == "stop":
-            self.dj.pending.clear()
-            await self.player.clear_queue()
-            await self.player.toggle_pause(True)
-            return "Zastaveno, fronta je prázdná."
-        st = await self.player.status()
-        if action == "louder":
-            value = st.volume + 10
-        elif action == "quieter":
-            value = st.volume - 10
-        value = max(0, min(130, value))
-        await self.player.set_volume(value)
-        return f"Hlasitost {value}."
-
-    async def _try_link(self, text: str) -> str | None:
-        """Odkaz na YouTube obslouží rovnou, bez modelu.
-
-        Je to jednoznačné zadání — u odkazu není co domýšlet, a Codex by na
-        něm strávil dvacet vteřin, aby došel ke stejnému závěru. Vrací None,
-        když v textu odkaz není nebo se ho nepodařilo rozluštit; pak to jde
-        obvyklou cestou.
-        """
-        match = RE_URL.search(text)
-        if not match:
-            return None
-        try:
-            target = await self.catalog.resolve_link(match.group(0))
-        except Exception:
-            log.exception("odkaz se nepodařilo zpracovat")
-            return None
-        if not target:
-            return "Tenhle odkaz jsem nerozluštil — zkus název skladby nebo interpreta."
-
-        if target.kind == "track":
-            track = target.tracks[0]
-            self.store.record_request(track.id, track.title, track.artist)
-            self.pools.remember_tracks(target.tracks)
-            self.pools.session_seen.add(track.id)
-            await self.player.enqueue_next(target.tracks)
-            await self.player.toggle_pause(False)
-            return f"Zařazuju {track.label()}."
-
-        # playlist i kanál: postavit z toho rádio, ať to po dohrání pokračuje.
-        # Je to nový pokyn, takže případný režim interpreta končí (set_seeds).
-        seeds = target.tracks[:4]
-        # odkaz je jednoznačné přání, takže i delší kusy, když kratší nejsou
-        await self.pools.set_seeds(seeds, mood=target.label, allow_long=True)
-        was_playing = (await self.player.status()).current is not None
-        async with queue_transaction(self.player):  # plnič se nevmísí
-            await self.player.clear_queue()
-            if target.kind == "playlist":
-                # u playlistu chce uživatel slyšet ten playlist, ne jen jeho náladu
-                from_list = target.tracks[: self.cfg.queue_target]
-                self.pools.remember_tracks(from_list)
-                self.pools.session_seen.update(t.id for t in from_list)
-                await self.player.enqueue(from_list)
-            else:
-                await self.player.enqueue(await self.pools.next_tracks(self.cfg.queue_target))
-        await self.player.toggle_pause(False)
-        if was_playing:
-            await self.player.skip(by_user=False)
-        what = "playlist" if target.kind == "playlist" else target.label
-        return f"Jedu podle odkazu — {what}."
 
     # ---- player events ----
 
@@ -254,7 +204,10 @@ class App:
 
         elif ev.kind == "skipped" and ev.track:
             self.store.record_outcome(ev.track.id, "skipped")
-            self.skips.skipped(ev.track.label(), self._now())
+            # Přeskočené přání někoho jiného není výtka podkresu — do série
+            # přeskočení (a automatického přeseedování) se počítá jen podkres.
+            if not self.wishes.is_request_track(ev.track.id):
+                self.skips.skipped(ev.track.label(), self._now())
 
         elif ev.kind == "replaced" and ev.track:
             # Odsunula ji nová nálada nebo vyžádaný odkaz, ne posluchač. Jako
@@ -276,6 +229,9 @@ class App:
             try:
                 await asyncio.sleep(1)
                 await self._check_skip_burst()
+                if self.wishes.needs_top_up():
+                    # přání se zhmotňují po blocích — další, když ubývají
+                    self.wishes.kick()
 
                 # Aspoň tolik, kolik přehrávač chystá dopředu (+1): jinak by
                 # klouzavé okno připravených skladeb bylo kratší, než je třeba
@@ -371,6 +327,9 @@ class App:
         now = self._now()
         if self._reseeding or self.codex_busy or now - self._last_reseed < 120:
             return
+        if self.wishes.has_requests() or self.wishes.starting:
+            # podkres se mění, jen když nikdo nečeká na své přání (D6)
+            return
         log.info("automatický tah: %s", instruction[:200])
         telemetry.event("dj.reseed", phase="start", trigger=instruction[:300])
         self._reseeding = True
@@ -399,11 +358,10 @@ class App:
         # Codex spins up its own session, so a turn takes seconds to tens of
         # seconds. Playback isn't held up — it runs in the same loop, but
         # independently.
-        self._set_status("⏳ ptám se Codexu…")
-        if self.codex_busy:
-            return "Codex právě pracuje (asi z webu) — zkus to za chvíli."
+        self._set_status("⏳ DJ vybírá…")
         try:
-            return await self.ask(text, source="repl")
+            # i z terminálu je to přání ve frontě — nic se neodmítá
+            return await self.ask(text, source="repl", requester="terminál")
         finally:
             st = await self.player.status()
             self._set_status(
@@ -414,7 +372,15 @@ class App:
 
     async def run(self, repl: bool = True) -> int:
         self.player.on_event(self._on_event)
+        self.player.on_event(self.wishes.on_event)
+        # chytré Další přeskakuje jen podkres, přání nikdy
+        if hasattr(self.player, "is_protected"):
+            self.player.is_protected = self.wishes.is_request_track
         await self.player.start()
+        self.wishes.start()
+        # Po restartu služby navázat (jen čerstvý stav, ne v noci — viz
+        # wishes.should_resume); na pozadí, ať web naběhne hned.
+        resume = asyncio.create_task(self.wishes.resume(), name="ytdj-resume")
 
         if self.web:
             try:
@@ -479,7 +445,14 @@ class App:
             pass
         finally:
             filler.cancel()
-            await asyncio.gather(filler, return_exceptions=True)
+            resume.cancel()
+            await asyncio.gather(filler, resume, return_exceptions=True)
+            # co hrálo a kdo na co čeká — pro navázání po restartu
+            if not self.player.died.is_set():
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(self.wishes.refresh_playing(), 2)
+            self.wishes.save()
+            await self.wishes.stop()
             # the web must go down before the store — SSE would otherwise touch
             # a closed SQLite
             if self.web:

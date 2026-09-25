@@ -35,7 +35,8 @@ class PlayerStatus:
 
 @dataclass(slots=True)
 class PlayerEvent:
-    kind: str  # "start" | "finished" | "skipped" | "replaced" | "error" | "idle"
+    # "start" | "sound" (první zvuk) | "finished" | "skipped" | "replaced" | "error" | "idle"
+    kind: str
     track: Track | None = None
     detail: str = ""
 

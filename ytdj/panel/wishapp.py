@@ -1,10 +1,14 @@
-"""The wish screens' state machine: quick picks → keyboard → the DJ's answer.
+"""The wish screens' state machine: quick picks → keyboard → the DJ's answer, and the queue.
 
 Lives inside `PanelApp` and runs on its main thread, like `NetController`.
-A wish goes out on a short-lived thread (a DJ turn takes 20–30 s on the Pi);
-its outcome comes back through the app's event queue as ("wish", …). When
-the DJ is busy with somebody else's wish (HTTP 409), the thread waits and
-tries again, so a wish from the panel is never just refused.
+A wish goes out on a short-lived thread; the server takes it at once (202 +
+id + an owner token) and the DJ works on it in its queue. How it's doing —
+the DJ picking, "ve frontě · za ~2 skladby", playing — comes with the status
+stream (`state["requests"]`), so the answer screen follows it without asking.
+There is no "DJ busy" any more: other people's wishes never block this one.
+
+The panel remembers the tokens of the wishes sent from it: only those get a
+× on the queue page, and only those can be put "Hned po téhle".
 """
 
 from __future__ import annotations
@@ -17,8 +21,9 @@ import time
 from typing import Callable
 
 from .hw import Box, TouchEvent
+from .netui import ROWS
 from .stats import emit
-from .wishui import CHIPS, STRINGS, WishRenderer, WishView, targets
+from .wishui import ACTIVE, CHIPS, STRINGS, QueueRow, WishRenderer, WishView, targets
 
 log = logging.getLogger(__name__)
 
@@ -26,21 +31,26 @@ MAX_WISH = 120  # characters — a wish, not an essay; the field shows its tail
 IDLE_CLOSE = 120.0  # s without a touch on the picks or the keyboard → back to the player
 ANSWER_CLOSE = 30.0  # s the DJ's answer stays up before the player comes back
 ERROR_CLOSE = 60.0
-PROMPT_TIMEOUT = 240.0  # a Codex turn on the Pi can take over a minute
-BUSY_RETRY = 2.0  # s between attempts while the DJ works on another wish
-BUSY_WAIT_MAX = 150.0  # s of waiting for a busy DJ before giving up
+QUEUE_CLOSE = 60.0
+PROMPT_TIMEOUT = 240.0  # the server answers at once (202); an older one only after the turn
 CAPS_TAP = 0.45
 TOUCH_SLOP = 14
 TOUCH_GRAB = 4
 MIN_PRESS = 0.02
-SOURCE = "panel"  # who asked — the request queue will show it next to the wish
+SOURCE = "panel"
+PANEL_WHO = "displej"  # the name on wishes typed here, unless somebody picks theirs
+
+STATE_PHASE = {
+    "waiting": "busy", "thinking": "busy", "queued": "queued", "playing": "playing",
+    "done": "ok", "notfound": "notfound", "error": "error", "removed": "error",
+}
 
 
-def post_prompt(api, body: dict, timeout: float = PROMPT_TIMEOUT) -> tuple[int, dict, str]:
-    """POST /api/prompt → (HTTP status, JSON body, error). Status 0 = no answer at all."""
+def post_json(api, path: str, body: dict, timeout: float = PROMPT_TIMEOUT) -> tuple[int, dict, str]:
+    """POST → (HTTP status, JSON body, error). Status 0 = no answer at all."""
     conn = api.connection(timeout)
     try:
-        conn.request("POST", api.prefix + "/api/prompt", body=json.dumps(body).encode(),
+        conn.request("POST", api.prefix + path, body=json.dumps(body).encode(),
                      headers={"Content-Type": "application/json", "User-Agent": "ytdj-panel"})
         resp = conn.getresponse()
         raw = resp.read()
@@ -55,6 +65,10 @@ def post_prompt(api, body: dict, timeout: float = PROMPT_TIMEOUT) -> tuple[int, 
         return 0, {}, str(exc) or type(exc).__name__
     finally:
         conn.close()
+
+
+def post_prompt(api, body: dict, timeout: float = PROMPT_TIMEOUT) -> tuple[int, dict, str]:
+    return post_json(api, "/api/prompt", body, timeout)
 
 
 class WishController:
@@ -87,7 +101,7 @@ class WishController:
         self.shift_at = 0.0
         self.hint = ""
         # the wish in flight / its answer
-        self.inflight = False
+        self.inflight = False  # the POST is on its way
         self.phase = ""
         self.wish = ""
         self.chip = ""  # which quick pick, for the log
@@ -95,6 +109,17 @@ class WishController:
         self.done_at = 0.0
         self.reply = ""
         self.error = ""
+        self.req_id = ""
+        self.eta = ""
+        self.play_next = False
+        self.started = False
+        # everybody's wishes (from the status stream) and the panel's own
+        self.requests: list[dict] = []
+        self.mine: dict[str, str] = {}  # id → owner token
+        self.people: list[str] = []
+        self.who = PANEL_WHO
+        self.scroll = 0
+        self.note = ""
         # gesture
         self.pressed: str | None = None
         self.press_at = 0.0
@@ -111,18 +136,81 @@ class WishController:
         if self._renderer is not None:
             self._renderer.invalidate()
 
+    # ---- the server's view ----
+
+    def active_count(self) -> int:
+        return sum(1 for r in self.requests if r.get("state") in ACTIVE)
+
+    def on_state(self, state: dict) -> bool:
+        """New status snapshot; True when the DJ has just decided about our wish."""
+        reqs = state.get("requests")
+        if isinstance(reqs, list):
+            self.requests = [r for r in reqs if isinstance(r, dict)]
+        people = state.get("people")
+        if isinstance(people, list):
+            self.people = [str(p) for p in people if isinstance(p, str)][:6]
+        if not self.req_id:
+            return False
+        r = next((x for x in self.requests if x.get("id") == self.req_id), None)
+        if r is None:
+            return False
+        before = self.phase
+        st = str(r.get("state") or "")
+        phase = STATE_PHASE.get(st, before)
+        self.eta = str(r.get("eta") or "")
+        self.play_next = bool(r.get("play_next"))
+        self.started = self.started or st in ("playing", "done")
+        reply = str(r.get("reply") or "").strip()
+        if phase == "error":
+            self.error = self.s["removed"] if st == "removed" else (reply or self.s["err_server"].format(e="?"))
+        elif reply:
+            self.reply = reply
+        if phase != before:
+            self.phase = phase
+            if before == "busy":
+                self.done_at = time.monotonic()
+                self.text = ""  # decided — the draft is done with
+                emit("panel.wish", ok=phase not in ("error", "notfound"), state=st,
+                     took_ms=int((time.monotonic() - self.sent_at) * 1000), len=len(self.wish),
+                     chip=self.chip or None, id=self.req_id)
+                return True
+        return False
+
+    def queue_rows(self) -> tuple[QueueRow, ...]:
+        rows = []
+        for r in self.requests:
+            st = str(r.get("state") or "")
+            label = str(r.get("state_cs") or st)
+            if st == "queued" and r.get("eta"):
+                label += f" · {r['eta']}"
+            if r.get("play_next") and st in ACTIVE:
+                label += " · hned"
+            if st in ("done", "notfound", "error") and r.get("reply"):
+                label += f" · {r['reply']}"
+            rows.append(QueueRow(id=str(r.get("id") or ""), who=str(r.get("who") or "?"),
+                                 text=str(r.get("text") or ""), state=st, label=label,
+                                 mine=str(r.get("id") or "") in self.mine))
+        return tuple(rows)
+
     # ---- navigation ----
 
     def open(self, now: float) -> None:
         self.last_touch = now
         self.pressed = None
         # a wish still on its way: show how it's doing rather than a blank form
-        self.page = "sent" if self.inflight else "home"
+        self.page = "sent" if self.phase == "busy" else "home"
+
+    def open_queue(self, now: float) -> None:
+        self.last_touch = now
+        self.pressed = None
+        self.scroll = 0
+        self.page = "queue"
 
     def close(self) -> None:
         self.page = None
         self.pressed = None
         self.hint = ""
+        self.note = ""
 
     def show_answer(self, now: float) -> None:
         """The answer came while the player was on screen — put it up."""
@@ -141,74 +229,102 @@ class WishController:
         if not text:
             return
         if self.inflight:
-            self._go("sent")  # one at a time; show the one that's on its way
+            self._go("sent")  # the POST is on its way — a split second
             return
         self.inflight = True
         self.phase = "busy"
         self.wish, self.chip = text, chip
-        self.reply = self.error = ""
+        self.reply = self.error = self.eta = ""
+        self.req_id = ""
+        self.play_next = self.started = False
         self.sent_at = now
         self._go("sent")
-        log.info("přání z panelu (%d znaků%s)", len(text), f", {chip}" if chip else "")
-        api, post, stop = self.api, self.post, self.stop
+        log.info("přání z panelu (%d znaků%s, %s)", len(text), f", {chip}" if chip else "", self.who)
+        api, post = self.api, self.post
+        body = {"text": text, "source": SOURCE, "who": self.who, "play_next": False, "wait": False}
 
         def run() -> None:
             t0 = time.monotonic()
-            waited = False
-            while True:
-                status, data, error = post_prompt(api, {"text": text, "source": SOURCE})
-                if status == 409 and time.monotonic() - t0 < BUSY_WAIT_MAX and not stop.is_set():
-                    if not waited:
-                        waited = True
-                        post(("wish", "wait"))
-                    stop.wait(BUSY_RETRY)
-                    continue
-                break
-            post(("wish", "result", status, data, error, int((time.monotonic() - t0) * 1000), waited))
+            status, data, error = post_prompt(api, body)
+            post(("wish", "result", status, data, error, int((time.monotonic() - t0) * 1000)))
 
         threading.Thread(target=run, name="panel-wish", daemon=True).start()
 
+    def _action(self, rid: str, action: str) -> None:
+        token = self.mine.get(rid)
+        if not token:
+            return
+        api, post = self.api, self.post
+
+        def run() -> None:
+            status, data, error = post_json(api, f"/api/requests/{rid}", {"action": action, "token": token}, 10.0)
+            post(("wish", "action", action, rid, status, data, error))
+
+        threading.Thread(target=run, name="panel-wish-action", daemon=True).start()
+
     def handle(self, msg: tuple) -> bool:
-        """A message from the sending thread; True when the answer has arrived."""
-        if msg[1] == "wait":
-            if self.inflight:
-                self.phase = "wait"
+        """A message from a sending thread; True when there is an answer to show."""
+        if msg[1] == "action":
+            _, _, action, rid, status, data, error = msg
+            ok = status == 200
+            emit("panel.wish_request", action=action, ok=ok, status=status, error=None if ok else error[:120])
+            if ok and action == "next" and rid == self.req_id:
+                self.play_next = True
+            if not ok:
+                self.note = (error or f"HTTP {status}")[:60]
             return False
-        _, _, status, data, error, took_ms, waited = msg
+        _, _, status, data, error, took_ms = msg[:6]
         self.inflight = False
+        if status == 202 and data.get("id"):
+            # accepted; the rest comes with the status stream
+            self.req_id = str(data["id"])
+            if data.get("token"):
+                self.mine[self.req_id] = str(data["token"])
+            emit("panel.wish_sent", ok=True, status=status, took_ms=took_ms, len=len(self.wish),
+                 chip=self.chip or None, id=self.req_id)
+            return False
         self.done_at = time.monotonic()
         ok = status == 200
         if ok:
+            # an older server answered only once the DJ was done — or a plain
+            # command ("další", "hlasitěji") that needed no DJ at all
             self.phase = "ok"
             self.reply = str(data.get("reply") or "").strip()
-            self.text = ""  # sent — the draft is done with
+            self.text = ""
         else:
             self.phase = "error"
-            if status == 409:
-                self.error = self.s["err_busy"]
-            elif status == 0:
+            if status == 0:
                 self.error = self.s["err_offline"]
+            elif status == 409:
+                self.error = self.s["err_busy"]
+            elif status == 429:
+                self.error = (error or "")[:160]
             else:
                 self.error = self.s["err_server"].format(e=(error or f"HTTP {status}")[:160])
             log.warning("přání z panelu selhalo: %s %s", status, error)
         emit(
             "panel.wish", ok=ok, status=status, took_ms=took_ms, len=len(self.wish),
-            chip=self.chip or None, waited=waited or None, error=None if ok else (error or "")[:120],
+            chip=self.chip or None, error=None if ok else (error or "")[:120],
         )
         return True
 
     # ---- view ----
 
+    def names(self) -> list[str]:
+        """Who can be picked on the panel: the panel itself and the recent names."""
+        out = [PANEL_WHO]
+        for p in self.people:
+            if p not in out:
+                out.append(p)
+        return out[:7]
+
     def view(self, now: float, note: str = "", server_busy: bool = False) -> WishView:
-        if self.phase in ("busy", "wait"):
-            elapsed = int(now - self.sent_at)
-        else:
-            elapsed = 0
+        elapsed = int(now - self.sent_at) if self.phase == "busy" else 0
+        rows = self.queue_rows() if self.page == "queue" else ()
         return WishView(
             page=self.page or "home",
             pressed=self.pressed if self.inside else None,
-            note=note,
-            busy_other=server_busy and not self.inflight,
+            note=note or self.note,
             text=self.text,
             kb_page=self.kb_page,
             shift=self.shift,
@@ -219,13 +335,20 @@ class WishController:
             elapsed=elapsed,
             reply=self.reply,
             error=self.error,
+            eta=self.eta,
+            can_next=self.phase == "queued" and not self.play_next and not self.started
+            and self.req_id in self.mine,
+            who=self.who,
+            count=self.active_count(),
+            rows=rows,
+            scroll=self.scroll,
         )
 
     # ---- timing ----
 
     def deadline(self, now: float) -> float:
         deadlines = [now + 60.0]
-        if self.page == "sent" and self.phase in ("busy", "wait"):
+        if self.page == "sent" and self.phase == "busy":
             e = now - self.sent_at
             deadlines.append(now + (int(e) + 1 - e) + 0.005)  # the seconds counter
         elif self.page:
@@ -234,11 +357,13 @@ class WishController:
 
     def _close_at(self) -> float:
         if self.page == "sent":
-            if self.phase == "ok":
+            if self.phase in ("queued", "playing", "ok", "notfound"):
                 return max(self.last_touch, self.done_at) + ANSWER_CLOSE
             if self.phase == "error":
                 return max(self.last_touch, self.done_at) + ERROR_CLOSE
             return float("inf")
+        if self.page == "queue":
+            return self.last_touch + QUEUE_CLOSE
         return self.last_touch + IDLE_CLOSE
 
     def timers(self, now: float) -> bool:
@@ -305,12 +430,19 @@ class WishController:
 
     def _fire(self, name: str, now: float) -> None:
         page = self.page
+        self.note = ""
         if page == "home":
             if name == "back":
                 self.close()
             elif name == "field":
                 self.kb_page, self.shift, self.hint = "abc", 0, ""
                 self._go("keys")
+            elif name == "who":
+                names = self.names()
+                i = names.index(self.who) if self.who in names else -1
+                self.who = names[(i + 1) % len(names)]
+            elif name == "queue":
+                self.open_queue(now)
             elif name.startswith("chip"):
                 i = int(name[4:])
                 if i < len(self.chips):
@@ -318,6 +450,19 @@ class WishController:
                     self.send(text, now, chip=label)
         elif page == "keys":
             self._key(name, now)
+        elif page == "queue":
+            rows = self.queue_rows()
+            if name == "back":
+                self.close()
+            elif name == "up":
+                self.scroll = max(0, self.scroll - ROWS)
+            elif name == "down":
+                if self.scroll + ROWS < len(rows):
+                    self.scroll += ROWS
+            elif name.startswith("rm"):
+                k = self.scroll + int(name[2:])
+                if k < len(rows) and rows[k].mine:
+                    self._action(rows[k].id, "remove")
         elif page == "sent":
             if name == "leave":
                 self.close()  # the wish carries on; its answer comes back up
@@ -328,6 +473,9 @@ class WishController:
                 self._go("home")
             elif name == "retry":
                 self.send(self.wish, now, chip=self.chip)
+            elif name == "next" and self.req_id:
+                self.play_next = True  # optimistic; the stream confirms it
+                self._action(self.req_id, "next")
 
     def _key(self, name: str, now: float) -> None:
         self.hint = ""

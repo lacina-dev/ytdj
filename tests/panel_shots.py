@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ytdj.panel.ui import Renderer, View  # noqa: E402
-from ytdj.panel.wishui import WishRenderer, WishView  # noqa: E402
+from ytdj.panel.wishui import QueueRow, WishRenderer, WishView  # noqa: E402
 
 PLAYING = View(
     online=True,
@@ -35,21 +35,38 @@ PLAYING = View(
     next_artist="Olympic",
 )
 
-WISH = WishView(page="home")
+WISH = WishView(page="home", count=3)
+ROWS = (
+    QueueRow("a", "Petr", "písničky od Kabátu", "playing", "hraje · dál: Burlaci", False),
+    QueueRow("b", "displej", "Holky z naší školky", "queued", "ve frontě · hned po téhle", True),
+    QueueRow("c", "Karel", "něco klidnějšího na odpoledne", "queued", "ve frontě · za ~1 skladbu", False),
+    QueueRow("d", "Jana", "Dancing Queen", "thinking", "DJ vybírá", False),
+    QueueRow("e", "Jana", "Jasná zpráva", "done", "hotovo · Zařazuju Jasnou zprávu.", False),
+)
 WISH_STATES = {
     "wish-home": WISH,
-    "wish-home-busy-other-draft": replace(WISH, busy_other=True, text="něco od Čechomoru", pressed="chip2"),
+    "wish-home-draft-who": replace(WISH, text="něco od Čechomoru", who="Robert", pressed="chip2"),
     "wish-keys-empty": replace(WISH, page="keys"),
     "wish-keys-typing": replace(WISH, page="keys", text="písničky od Čechomor", can_connect=True, pressed="c:r"),
     "wish-keys-accents": replace(WISH, page="keys", text="Žlutý pes, pak Ch", kb_page="áč", can_connect=True),
     "wish-keys-accents-shift": replace(WISH, page="keys", text="", kb_page="áč", shift=1, hint="napiš, co chceš slyšet"),
     "wish-keys-123": replace(WISH, page="keys", text="hity z 90", kb_page="123", can_connect=True),
     "wish-sent-busy": replace(WISH, page="sent", phase="busy", wish="písničky od Čechomoru", elapsed=12),
-    "wish-sent-wait": replace(WISH, page="sent", phase="wait", wish="jen česky", elapsed=5),
-    "wish-sent-ok": replace(
-        WISH, page="sent", phase="ok", wish="písničky od Čechomoru",
-        reply="Hraju Čechomor — jen to, dokud neřekneš jinak. Začínám „Proměnami“, pak Mezi horami a Vandrovali hudci.",
+    "wish-sent-queued-next": replace(
+        WISH, page="sent", phase="queued", wish="Holky z naší školky", eta="za ~2 skladby", can_next=True,
+        reply="Zařazuju Holky z naší školky od Olympicu. Na řadě za ~2 skladby.",
     ),
+    "wish-sent-playing": replace(
+        WISH, page="sent", phase="playing", wish="písničky od Čechomoru",
+        reply="Hraju Čechomor: po 3 skladbách, střídám s ostatními přáními. Hraje hned.",
+    ),
+    "wish-sent-notfound": replace(
+        WISH, page="sent", phase="notfound", wish="Wonderwall od Nobody",
+        reply="Nenašel jsem, o co sis řekl (Nobody — Wonderwall).",
+    ),
+    "wish-queue": replace(WISH, page="queue", rows=ROWS, count=4),
+    "wish-queue-pressed-x": replace(WISH, page="queue", rows=ROWS, count=4, pressed="rm1"),
+    "wish-queue-empty": replace(WISH, page="queue", rows=(), count=0),
     "wish-sent-error": replace(
         WISH, page="sent", phase="error", wish="něco klidnějšího",
         error="ytdj teď neodpovídá (možná se restartuje).",
@@ -73,6 +90,8 @@ STATES = {
     "idle-dj-thinking": replace(PLAYING, has_track=False, running=False, busy=True, mood=""),
     "idle": replace(PLAYING, has_track=False, running=False, mood="", can_next=False),
     "no-next-up": replace(PLAYING, next_title="", next_artist=""),
+    "wishes-queued": replace(PLAYING, title="Malá dáma", artist="Kabát", now_who="Petr", wishes=3,
+                             next_title="Holky z naší školky", next_artist="Olympic", next_who="Jana"),
     "pressed-wish": replace(PLAYING, pressed="wish"),
     "pressed-next": replace(PLAYING, pressed="next", note="povel selhal"),
     "pressed-play": replace(PLAYING, pressed="play"),

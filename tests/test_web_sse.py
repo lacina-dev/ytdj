@@ -97,11 +97,19 @@ class SseTest(unittest.TestCase):
         # 8 clients × ~3 ticks used to be ~24+ snapshots (5 mpv calls each)
         self.assertLessEqual(app.player.calls, 6)
         for chunks in streams:
+            # the full state once (nothing but the position changes), then
+            # only tiny "pos" events — ~25 B/s instead of ~2 kB/s per client
             data = [c for c in chunks if c.startswith("data: ")]
-            self.assertGreaterEqual(len(data), 3)
+            pos = [c for c in chunks if c.startswith("event: pos\n")]
+            self.assertEqual(len(data), 1)
+            self.assertGreaterEqual(len(pos), 2)
             state = json.loads(data[-1][6:])
             self.assertEqual(state["current"]["title"], "Holky z naší školky")
             self.assertIn("dj", state)
+            last = json.loads(pos[-1].split("data: ", 1)[1])
+            self.assertIsInstance(last, list)  # not an object: old readers skip it
+            self.assertGreater(last[0], state["position"])
+            self.assertLess(max(len(c) for c in pos), 40)
 
     def test_paused_player_gets_visible_pings(self):
         async def main():

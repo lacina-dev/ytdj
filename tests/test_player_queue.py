@@ -281,6 +281,8 @@ class Prefetch(unittest.TestCase):
                 req = [r for r in h.resolver if r.get("op") == "ahead"][-1]
                 self.assertTrue(req["hold"])
                 self.assertEqual(req["ids"], h.fake.upcoming()[:PREFETCH_AHEAD])
+                # dvě nejbližší se řeší i během tahu Codexu (Další hned po přání)
+                self.assertEqual(req["first"], [vid(1), vid(2)])
 
                 # wait_ready: přednostně i během hold, True, jakmile je hotová
                 async def resolved_later():
@@ -291,9 +293,88 @@ class Prefetch(unittest.TestCase):
                 task = asyncio.create_task(p.wait_ready(vid(3), timeout=2))
                 await h.settle(0.1)
                 req = [r for r in h.resolver if r.get("op") == "ahead"][-1]
-                self.assertEqual(req["first"], [vid(3)])
+                self.assertEqual(req["first"], [vid(3), vid(1), vid(2)])
                 self.assertTrue(await task)
                 self.assertFalse(await p.wait_ready(vid(2), timeout=0.2))
+
+        run(go())
+
+
+class SmartSkip(unittest.TestCase):
+    """Další, když ta hned další ještě není vyřešená, ale pozdější podkres ano."""
+
+    async def _setup(self, h, n=8, ready=(), protected=()):
+        p = h.player
+        await p.enqueue([T(i) for i in range(n)])
+        await h.settle()
+        p.is_protected = lambda v: v in {vid(x) for x in protected}
+        p._on_resolver_event("_state", {"ready": [vid(x) for x in ready], "busy": None,
+                                        "urgent": []})
+        return p
+
+    def _reqs(self, h):
+        return [f for k, f in h.events if k == "track.request" and f["why"] == "skip"]
+
+    def test_jumps_to_prepared_background_track(self) -> None:
+        async def go():
+            async with Harness() as h:
+                p = await self._setup(h, ready=(4, 5))
+                await p.skip()
+                await h.settle()
+                self.assertEqual(h.fake.current_vid(), vid(4))
+                # přeskočené nezmizely — jsou hned za ní, v původním pořadí
+                self.assertEqual(h.fake.upcoming()[:4], [vid(1), vid(2), vid(3), vid(5)])
+                req = self._reqs(h)[-1]
+                self.assertTrue(req["smart_skip"])
+                self.assertEqual(req["bypassed"], [vid(1), vid(2), vid(3)])
+                self.assertEqual(req["next_id"], vid(4))
+                self.assertEqual(await h.queue_ids(), h.fake.upcoming())
+
+        run(go())
+
+    def test_never_jumps_over_a_request(self) -> None:
+        async def go():
+            async with Harness() as h:
+                p = await self._setup(h, ready=(4,), protected=(2,))
+                await p.skip()
+                await h.settle()
+                self.assertEqual(h.fake.current_vid(), vid(1))
+                self.assertNotIn("smart_skip", self._reqs(h)[-1])
+
+        run(go())
+
+    def test_never_moves_a_request_forward(self) -> None:
+        async def go():
+            async with Harness() as h:
+                p = await self._setup(h, ready=(3,), protected=(3,))
+                await p.skip()
+                await h.settle()
+                self.assertEqual(h.fake.current_vid(), vid(1))
+
+        run(go())
+
+    def test_plain_next_when_next_is_ready(self) -> None:
+        async def go():
+            async with Harness() as h:
+                p = await self._setup(h, ready=(1, 4))
+                await p.skip()
+                await h.settle()
+                self.assertEqual(h.fake.current_vid(), vid(1))
+                self.assertNotIn("smart_skip", self._reqs(h)[-1])
+
+        run(go())
+
+    def test_burst_plays_only_prepared_while_any_exists(self) -> None:
+        async def go():
+            async with Harness() as h:
+                p = await self._setup(h, n=12, ready=(3, 5, 6))
+                played = []
+                for _ in range(3):
+                    await p.skip()
+                    await h.settle()
+                    played.append(h.fake.current_vid())
+                self.assertEqual(played, [vid(3), vid(5), vid(6)])
+                self.assertEqual(h.fake.upcoming()[:4], [vid(1), vid(2), vid(4), vid(7)])
 
         run(go())
 

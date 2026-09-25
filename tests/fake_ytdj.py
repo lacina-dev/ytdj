@@ -1,23 +1,27 @@
-"""A tiny stand-in for ytdj's web API, for trying the panel without mpv.
+"""A tiny stand-in for ytdj's web API, for trying the panel and the web UI without mpv.
 
-    python tests/fake_ytdj.py [--port 8765]
+    python tests/fake_ytdj.py [--port 8765] [--demo]
 
-Serves /api/status, /api/events (SSE, a snapshot per second when it changed,
-a "ping" event otherwise), /api/control with the same validation as the real
-server, /api/prompt (a DJ turn that takes `prompt_delay` seconds, 409 while
-another one runs) and the web UI itself on /, so the page can be tried
-without a Pi. Playback is simulated: the position advances while playing and
-the next track comes on when one ends (or on "next").
+Serves /api/status, /api/events (SSE: the full state when anything but the
+position changed, a tiny "pos" event otherwise, a "ping" when nothing moves),
+/api/control with the same validation as the real server, the request queue
+(POST /api/prompt → 202 + id + token, POST /api/requests/<id> to remove a
+wish or put it next) and the web UI itself on /, so the page can be tried
+without a Pi. A wish goes "thinking" → (after `prompt_delay`) "queued" with
+the DJ's reply; the queued wishes play in order as tracks end (or on "next").
+Clients that send neither "who" nor "wait" (the old panel and page) get the
+old blocking answer.
 
 POST /fake/state {"idle": true, "busy": true, "paused": true, "prompt_delay": 2,
 "prompt_status": 500, "sse": false} flips the fake into states that are hard
-to reach on the real thing.
+to reach on the real thing; `--demo` starts with a few people's wishes queued.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import secrets
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -36,6 +40,16 @@ TRACKS = [
     },
     {"id": "a3", "title": "Ruty šuty", "artist": "Lucie", "album": None, "duration": 188},
 ]
+STATE_CS = {"waiting": "čeká", "thinking": "DJ vybírá", "queued": "ve frontě", "playing": "hraje",
+            "done": "hotovo", "notfound": "nenašel", "error": "chyba", "removed": "odebráno"}
+ACTIVE = ("waiting", "thinking", "queued", "playing")
+
+
+def eta(ahead: int) -> str:
+    if ahead <= 0:
+        return "hned po téhle"
+    word = "skladbu" if ahead == 1 else "skladby" if ahead < 5 else "skladeb"
+    return f"za ~{ahead} {word}"
 
 
 class FakeYtdj:
@@ -49,6 +63,7 @@ class FakeYtdj:
         self.mood = "klidný večer, český rock"
         self.busy = False
         self.idle = False  # nothing loaded (after a restart, after Stop)
+        self.starting = False
         self.controls: list[tuple[str, object]] = []  # what the panel sent
         # the DJ
         self.prompt_delay = 2.0
@@ -57,6 +72,10 @@ class FakeYtdj:
         self.dj_text = ""
         self.dj_source = ""
         self.last: dict | None = None
+        # the request queue
+        self.requests: list[dict] = []
+        self.playing_req: dict | None = None  # the wish whose track plays now
+        self.actions: list[dict] = []  # POST /api/requests/<id>
 
     def _position(self) -> float:
         if self.paused:
@@ -64,79 +83,195 @@ class FakeYtdj:
         return self.pos + time.monotonic() - self.pos_at
 
     def _advance(self) -> None:
-        cur = TRACKS[self.index]
+        cur = self._current()
         if self._position() >= cur["duration"]:
             self._next()
 
+    def _queued(self) -> list[dict]:
+        order = sorted((r for r in self.requests if r["state"] == "queued"),
+                       key=lambda r: (not r["play_next"], r["seq"]))
+        return order
+
+    def _current(self) -> dict:
+        if self.playing_req is not None:
+            return self.playing_req["track"]
+        return TRACKS[self.index]
+
     def _next(self) -> None:
-        self.index = (self.index + 1) % len(TRACKS)
+        if self.playing_req is not None:
+            self.playing_req["state"] = "done"
+            self.playing_req["done_at"] = time.time()
+            self.playing_req = None
+        queued = self._queued()
+        if queued:
+            self.playing_req = queued[0]
+            queued[0]["state"] = "playing"
+        else:
+            self.index = (self.index + 1) % len(TRACKS)
         self.pos, self.pos_at = 0.0, time.monotonic()
+
+    def _public(self, r: dict) -> dict:
+        out = {k: r[k] for k in ("id", "who", "source", "text", "state", "reply", "play_next",
+                                 "created", "summary", "kind")}
+        out["state_cs"] = STATE_CS[r["state"]]
+        out["n_tracks"], out["n_played"] = 1, int(r["state"] in ("playing", "done"))
+        if r["state"] == "queued":
+            ahead = self._queued().index(r)
+            out["ahead"], out["eta"] = ahead, eta(ahead)
+        return out
+
+    def _requests(self) -> list[dict]:
+        live = [r for r in self.requests if r["state"] in ACTIVE]
+        rank = {"playing": 0, "queued": 1, "thinking": 2, "waiting": 3}
+        live.sort(key=lambda r: (rank[r["state"]], self._queued().index(r) if r["state"] == "queued" else 0,
+                                 r["seq"]))
+        done = sorted((r for r in self.requests if r["state"] not in ACTIVE),
+                      key=lambda r: -r.get("done_at", 0))[:6]
+        return [self._public(r) for r in live + done]
 
     def snapshot(self) -> dict:
         with self.lock:
+            if not self.idle:
+                self._advance()  # first: the requests' states follow the track change
+            busy = self.busy or self.starting or any(r["state"] == "thinking" for r in self.requests)
+            base = {"requests": self._requests(), "starting": self.starting,
+                    "people": sorted({r["who"] for r in self.requests if r["who"] != "displej"})}
             if self.idle:
                 return {
+                    **base,
                     "playing": False, "paused": False, "buffering": False, "current": None,
                     "position": 0.0, "duration": 0.0, "queue": [], "pools": "",
-                    "volume": self.volume, "quality": "", "mood": "", "busy": self.busy,
-                    "history": [], "dj": self._dj(),
+                    "volume": self.volume, "quality": "", "mood": "", "busy": busy,
+                    "history": [], "dj": self._dj(busy),
                 }
-            self._advance()
-            cur = TRACKS[self.index]
+            cur = dict(self._current())
+            if self.playing_req is not None:
+                r = self.playing_req
+                cur["reason"] = {"kind": "wish", "who": r["who"], "text": r["text"], "id": r["id"]}
+            else:
+                cur["reason"] = {"kind": "radio", "who": "", "text": self.mood}
+            queue = []
+            for r in self._queued():
+                queue.append({**r["track"], "req": {"id": r["id"], "who": r["who"]}})
+            queue += [TRACKS[(self.index + i) % len(TRACKS)] for i in (1, 2)]
             return {
+                **base,
                 "playing": not self.paused,
                 "paused": self.paused,
                 "buffering": False,
                 "current": cur,
                 "position": round(self._position(), 3),
                 "duration": float(cur["duration"]),
-                "queue": [TRACKS[(self.index + i) % len(TRACKS)] for i in (1, 2)],
+                "queue": queue,
                 "pools": "",
                 "volume": self.volume,
                 "quality": "opus 251 kb/s",
                 "mood": self.mood,
-                "busy": self.busy,
+                "busy": busy,
                 "history": [
                     {"artist": "Lucie", "title": "Amerika", "outcome": "finished"},
                     {"artist": "Kabát", "title": "Pohoda", "outcome": "skipped"},
                 ],
-                "dj": self._dj(),
+                "dj": self._dj(busy),
             }
 
-    def _dj(self) -> dict:
-        return {
-            "busy": self.busy,
-            "text": self.dj_text if self.busy else "",
-            "source": self.dj_source if self.busy else "",
-            "last": self.last,
+    def _dj(self, busy: bool) -> dict:
+        thinking = next((r for r in self.requests if r["state"] == "thinking"), None)
+        text = thinking["text"] if thinking else self.dj_text
+        source = thinking["source"] if thinking else self.dj_source
+        return {"busy": busy, "text": text if busy else "", "source": source if busy else "",
+                "last": self.last}
+
+    # ---- the request queue ----
+
+    def add_request(self, text: str, who: str, source: str = "web", play_next: bool = False,
+                    state: str = "thinking", reply: str = "") -> dict:
+        r = {
+            "id": secrets.token_hex(4), "token": secrets.token_urlsafe(9), "who": who,
+            "source": source, "text": text, "state": state, "reply": reply,
+            "play_next": play_next, "created": time.time(), "seq": len(self.requests),
+            "summary": "", "kind": "",
+            "track": {"id": f"w{len(self.requests)}", "title": text[:60].capitalize(),
+                      "artist": "vybral DJ", "album": None, "duration": 200},
         }
+        self.requests.append(r)
+        return r
+
+    def _decide(self, r: dict) -> None:
+        time.sleep(self.prompt_delay)
+        with self.lock:
+            if r["state"] != "thinking":
+                return
+            if self.prompt_status != 200:
+                r["state"], r["reply"] = "error", "DJ narazil na chybu: Codex selhal: timeout"
+                r["done_at"] = time.time()
+                return
+            r["state"] = "queued"
+            r["kind"], r["summary"] = "songs", "skladba"
+            ahead = self._queued().index(r)
+            r["reply"] = f"Jasně — pouštím: {r['text']}. Na řadě {eta(ahead)}."
+            if self.idle:
+                self.idle = False
+                self.playing_req = None
+                self._next()
 
     def prompt(self, data: dict) -> tuple[int, dict]:
         text = str(data.get("text") or "").strip()
         if not text:
             return 400, {"error": "Chybí text požadavku."}
+        source = str(data.get("source") or "web")
+        legacy = "who" not in data and "wait" not in data
         with self.lock:
-            if self.busy:
+            if legacy and self.busy:
                 return 409, {"error": "Codex právě pracuje"}
-            self.busy, self.dj_text = True, text
-            self.dj_source = str(data.get("source") or "web")
             self.prompts.append(dict(data))
-        time.sleep(self.prompt_delay)
+            who = str(data.get("who") or "").strip() or {"panel": "displej"}.get(source, "host")
+            r = self.add_request(text, who, source, play_next=data.get("play_next") is True)
+        if not legacy and data.get("wait") is not True:
+            threading.Thread(target=self._decide, args=(r,), daemon=True).start()
+            with self.lock:
+                pub = self._public(r)
+            return 202, {"id": r["id"], "token": r["token"], "who": who, "state": r["state"],
+                         "request": pub, "reply": ""}
+        # the old clients: block until the DJ decided, like before
+        self._decide(r)
         with self.lock:
-            self.busy = False
-            status = self.prompt_status
-            if status != 200:
-                self.last = {"text": text, "reply": "", "ok": False, "source": self.dj_source, "at": time.time()}
-                return status, {"error": "Codex selhal: timeout"}
-            reply = f"Jasně — pouštím: {text}. Nejdřív Olympic, pak podobné české kytary."
-            self.last = {"text": text, "reply": reply, "ok": True, "source": self.dj_source, "at": time.time()}
-            self.idle = False
-            return 200, {"reply": reply}
+            ok = r["state"] != "error"
+            self.last = {"text": text, "reply": r["reply"], "ok": ok, "source": source,
+                         "at": time.time()}
+            if not ok:
+                return self.prompt_status, {"error": "Codex selhal: timeout"}
+            return 200, {"reply": r["reply"], "id": r["id"], "state": r["state"]}
+
+    def request_action(self, rid: str, data: dict) -> tuple[int, dict]:
+        with self.lock:
+            self.actions.append({"id": rid, **data})
+            r = next((x for x in self.requests if x["id"] == rid), None)
+            if r is None:
+                return 404, {"error": "Takové přání neznám."}
+            if data.get("token") != r["token"]:
+                return 403, {"error": "Tohle přání ti nepatří."}
+            if r["state"] not in ACTIVE:
+                return 409, {"error": "Přání už je vyřízené."}
+            if data.get("action") == "remove":
+                r["state"], r["done_at"] = "removed", time.time()
+                if r is self.playing_req:
+                    self.playing_req = None
+                return 200, {"ok": True, "message": "Odebráno."}
+            if data.get("action") == "next":
+                r["play_next"] = True
+                return 200, {"ok": True, "message": "Hraje hned po téhle skladbě."}
+        return 400, {"error": "Neznámá akce."}
 
     def control(self, data: dict) -> tuple[int, dict]:
         action, value = data.get("action"), data.get("value")
         with self.lock:
             self.controls.append((action, value))
+            if action == "play" and self.idle:
+                # nothing to un-pause: the DJ starts by the time of day
+                self.starting = True
+                threading.Thread(target=self._start, daemon=True).start()
+                return 200, {"ok": True, "starting": True}
             if action in ("play", "pause"):
                 want = action == "pause"
                 if want != self.paused:
@@ -146,6 +281,10 @@ class FakeYtdj:
                 self._next()
             elif action == "stop":
                 self.idle = True
+                for r in self.requests:
+                    if r["state"] in ACTIVE:
+                        r["state"], r["done_at"] = "removed", time.time()
+                self.playing_req = None
             elif action == "volume":
                 if isinstance(value, bool) or not isinstance(value, (int, float)):
                     return 400, {"error": "Hlasitost musí být číslo 0–130."}
@@ -155,6 +294,37 @@ class FakeYtdj:
             else:
                 return 400, {"error": f"Neznámý povel: {action!r}"}
         return 200, {"ok": True}
+
+    def _start(self) -> None:
+        time.sleep(min(self.prompt_delay, 1.0))
+        with self.lock:
+            self.starting = False
+            self.idle = False
+            self.paused = False
+            self.mood = "ranní klid, známé české i zahraniční"
+            self.pos, self.pos_at = 0.0, time.monotonic()
+
+    def demo(self) -> None:
+        """A few people's wishes, as in the office on a busy afternoon."""
+        with self.lock:
+            p = self.add_request("písničky od Kabátu", "Petr", state="playing",
+                                 reply="Hraju Kabát — po 3 skladbách, střídám s ostatními.")
+            p["track"] = {"id": "k1", "title": "Malá dáma", "artist": "Kabát", "album": None,
+                          "duration": 231}
+            self.playing_req = p
+            j = self.add_request("Holky z naší školky", "Jana", state="queued",
+                                 reply="Zařazuju Holky z naší školky. Na řadě hned po téhle.")
+            j["track"] = {"id": "o1", "title": "Holky z naší školky", "artist": "Olympic",
+                          "album": None, "duration": 214}
+            k = self.add_request("něco klidnějšího na odpoledne", "Karel", state="queued",
+                                 reply="Zklidním to — akustický pop. Na řadě za ~1 skladbu.")
+            k["track"] = {"id": "c1", "title": "Tichá noc v Praze", "artist": "Calm Trio",
+                          "album": None, "duration": 199}
+            self.add_request("Dancing Queen", "displej", source="panel", state="thinking")
+            d = self.add_request("Jasná zpráva", "Jana", state="done",
+                                 reply="Zařazuju Jasnou zprávu.")
+            d["done_at"] = time.time() - 60
+            self.pos, self.pos_at = 47.0, time.monotonic()
 
 
 def make_server(port: int = 0, fake: FakeYtdj | None = None, sse: bool = True) -> tuple[ThreadingHTTPServer, FakeYtdj]:
@@ -192,6 +362,8 @@ def make_server(port: int = 0, fake: FakeYtdj | None = None, sse: bool = True) -
                                  "backend": {"engine": "codex CLI", "model": "výchozí"}, "restartable": False})
             elif self.path == "/api/config":
                 self._json(200, {"values": {}, "fields": []})
+            elif self.path == "/api/requests":
+                self._json(200, {"requests": fake.snapshot().get("requests", [])})
             else:
                 self._json(404, {"error": "Nenalezeno."})
 
@@ -201,7 +373,7 @@ def make_server(port: int = 0, fake: FakeYtdj | None = None, sse: bool = True) -
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Transfer-Encoding", "chunked")
             self.end_headers()
-            last, last_sent = None, 0.0
+            last_sig, last_pos, last_sent = None, None, 0.0
 
             def chunk(text: str) -> None:
                 raw = text.encode()
@@ -210,28 +382,53 @@ def make_server(port: int = 0, fake: FakeYtdj | None = None, sse: bool = True) -
 
             try:
                 while not getattr(self.server, "closing", False):
-                    payload = json.dumps(fake.snapshot(), ensure_ascii=False)
+                    snap = fake.snapshot()
+                    pos = round(float(snap.get("position") or 0), 1)
+                    sig = json.dumps({k: v for k, v in snap.items() if k != "position"}, ensure_ascii=False)
                     now = time.monotonic()
-                    if payload != last:
-                        last, last_sent = payload, now
-                        chunk(f"data: {payload}\n\n")
+                    if sig != last_sig:
+                        last_sig, last_pos, last_sent = sig, pos, now
+                        chunk(f"data: {json.dumps(snap, ensure_ascii=False)}\n\n")
+                    elif pos != last_pos:
+                        last_pos, last_sent = pos, now
+                        chunk(f"event: pos\ndata: [{pos}]\n\n")
                     elif now - last_sent >= 15:
                         last_sent = now
                         chunk("event: ping\ndata: 1\n\n")
-                    time.sleep(1.0)
+                    time.sleep(0.5)
                 self.wfile.write(b"0\r\n\r\n")
             except OSError:
                 pass
 
-        def do_POST(self) -> None:
-            if self.path not in ("/api/control", "/api/prompt", "/fake/state"):
+        def do_DELETE(self) -> None:
+            if self.path.startswith("/api/requests/"):
+                data = self._body()
+                if data is not None:
+                    self._json(*fake.request_action(self.path.rsplit("/", 1)[-1],
+                                                    {**data, "action": "remove"}))
+            else:
                 self._json(404, {"error": "Nenalezeno."})
-                return
+
+        def _body(self) -> dict | None:
             length = int(self.headers.get("Content-Length") or 0)
             try:
                 data = json.loads(self.rfile.read(length) or b"{}")
             except ValueError:
                 self._json(400, {"error": "Tělo požadavku není platný JSON."})
+                return None
+            return data if isinstance(data, dict) else {}
+
+        def do_POST(self) -> None:
+            if self.path.startswith("/api/requests/"):
+                data = self._body()
+                if data is not None:
+                    self._json(*fake.request_action(self.path.rsplit("/", 1)[-1], data))
+                return
+            if self.path not in ("/api/control", "/api/prompt", "/fake/state"):
+                self._json(404, {"error": "Nenalezeno."})
+                return
+            data = self._body()
+            if data is None:
                 return
             if self.path == "/api/prompt":
                 self._json(*fake.prompt(data))
@@ -252,8 +449,11 @@ def make_server(port: int = 0, fake: FakeYtdj | None = None, sse: bool = True) -
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--demo", action="store_true", help="start with a few people's wishes queued")
     args = p.parse_args()
-    server, _ = make_server(args.port)
+    server, fake = make_server(args.port)
+    if args.demo:
+        fake.demo()
     print(f"fake ytdj on http://127.0.0.1:{server.server_address[1]}")
     try:
         server.serve_forever()

@@ -28,6 +28,7 @@ VOL_STEP = 5
 KEY_VOL_STEP = 2  # na cvaknutí kolečka nebo stisk klávesy na repráku
 START_PROMPT = "Nic nehraje. Pusť hudbu a navaž na to, co jsem poslouchal naposledy."
 VOL_INTERVAL = 0.25  # at most ~4 volume requests per second while dragging
+FULL_REFRESH = 60.0  # s — jak často celý snímek, i když se nic nezměnilo
 HOLD = 4.0  # how long an optimistic state wins over a server that disagrees
 SKIP_HOLD = 6.0
 NOTE_TIME = 3.0
@@ -95,6 +96,7 @@ class PanelApp:
         self.vol_pending: int | None = None
 
         self._need_full = True
+        self._last_full = 0.0
         self.frames = 0  # show() calls — for tests and stats
 
     # ---- threads → queue ----
@@ -320,6 +322,10 @@ class PanelApp:
     def _paint(self) -> None:
         view = self._view()
         t0 = time.perf_counter()
+        # Občas celý snímek: kdyby se sklo rozešlo s tím, co si pamatujeme
+        # (rušení na sběrnici, cokoli), srovná se to samo — a stojí to 0,2 s.
+        if not self.pressed and time.monotonic() - self._last_full >= FULL_REFRESH:
+            self._need_full = True
         full = self._need_full
         boxes = self.renderer.render(view, full=full)
         t1 = time.perf_counter()
@@ -329,6 +335,8 @@ class PanelApp:
             for box in boxes:
                 self.screen.show(self.renderer.frame, None if full else box)
                 self.frames += 1
+            if full:
+                self._last_full = time.monotonic()
             self._need_full = False
         except Exception:
             # whatever made it to the glass is unknown now — start clean
@@ -349,7 +357,7 @@ class PanelApp:
 
     def _next_deadline(self) -> float:
         now = time.monotonic()
-        deadlines = [now + 60.0]
+        deadlines = [now + 60.0, self._last_full + FULL_REFRESH]
         for hold in (self.hold_running, self.hold_volume, self.hold_skip, self.note):
             if hold and hold.until != math.inf:
                 deadlines.append(hold.until)

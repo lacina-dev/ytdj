@@ -25,6 +25,7 @@ import glob
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import time
@@ -60,6 +61,11 @@ def feature_args() -> list[str]:
 
 IDLE_TTL = 600.0  # s bez tahu → proces končí (uvolní ~165 MB)
 START_TIMEOUT = 30.0  # s na initialize + thread/start (Pi pod zátěží)
+
+
+# Mrtvé přihlášení hlásí Codex jen do stderr; tah pak 5× zkouší znovu a bez
+# odpovědi vyčerpá celý rozpočet (26. 9. 01:56: 25 s, hláška "síť").
+_AUTH_DEAD = re.compile(r"refresh_token_(invalidated|expired|reused)|invalidated oauth token", re.I)
 
 
 class AppServerError(RuntimeError):
@@ -139,6 +145,7 @@ class AppServer:
         self._warm_lock = asyncio.Lock()
         self._prewarm: asyncio.Task | None = None
         self._fresh_thread = False  # vlákno ještě nemělo tah
+        self.auth_dead: str | None = None  # řádek stderr: token zneplatněný
 
     # ---- proces ----
 
@@ -157,6 +164,7 @@ class AppServer:
         )
         self._pending.clear()
         self._events = asyncio.Queue()
+        self.auth_dead = None
         self.thread_id = None
         self.thread_turns = 0
         self._reader = asyncio.create_task(self._read_loop(self.proc))
@@ -254,7 +262,11 @@ class AppServer:
     async def _read_stderr(self, proc: asyncio.subprocess.Process) -> None:
         assert proc.stderr
         while line := await proc.stderr.readline():
-            self.stderr_tail = (self.stderr_tail + [line.decode(errors="replace").rstrip()])[-20:]
+            text = line.decode(errors="replace").rstrip()
+            self.stderr_tail = (self.stderr_tail + [text])[-20:]
+            if self.auth_dead is None and _AUTH_DEAD.search(text):
+                self.auth_dead = text[-300:]
+                self._events.put_nowait({"method": "_auth_dead"})
 
     async def _refuse(self, msg: dict) -> None:
         """Schválení příkazů, souborů, vstupu… — DJ nic z toho nedovoluje."""
@@ -323,6 +335,8 @@ class AppServer:
         # zbytky z minulého tahu (pozdní notifikace) zahodit
         while not self._events.empty():
             self._events.get_nowait()
+        if self.auth_dead:  # nahlásil to už při startu
+            raise AppServerFatal(LOGIN, "Codex není přihlášen (token zneplatněný)")
         t_turn = time.monotonic()
         res = await self._request("turn/start", {
             "threadId": self.thread_id,
@@ -339,6 +353,8 @@ class AppServer:
                     params = msg.get("params") or {}
                     if method == "_closed":
                         raise AppServerError("app-server skončil uprostřed tahu")
+                    if self.auth_dead:
+                        raise AppServerFatal(LOGIN, "Codex není přihlášen (token zneplatněný)")
                     if params.get("threadId") not in (None, self.thread_id):
                         continue
                     if method == "item/completed":

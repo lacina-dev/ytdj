@@ -1,7 +1,7 @@
 """A fake `codex app-server` (JSON-RPC over stdio) for tests.
 
 Usage: fake_app_server.py app-server   (argv like the real binary)
-Behaviour by env FAKE_MODE: ok | crash | hang | ask | fail
+Behaviour by env FAKE_MODE: ok | crash | hang | ask | fail | limit | auth | authdead
 FAKE_LOG: file where every received message is appended (JSON lines).
 """
 
@@ -69,6 +69,14 @@ for line in sys.stdin:
                 out({"method": "error", "params": {"threadId": tid, "turnId": turn_id,
                                                    "willRetry": True, "error": {
                                                        "message": "unexpected status 401 Unauthorized"}}})
+            time.sleep(30)
+            continue
+        if MODE == "authdead":
+            # as on the Pi 26. 9.: only stderr says so, the turn just retries silently
+            sys.stderr.write("ERROR codex_login::auth::manager: Failed to refresh token "
+                             "status=401 Unauthorized detail=TokenErrorDetail { error_code: "
+                             "Some(\"refresh_token_invalidated\") }\n")
+            sys.stderr.flush()
             time.sleep(30)
             continue
         if MODE == "fail":

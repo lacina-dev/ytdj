@@ -157,7 +157,6 @@ class MpvPlayer(Player):
         env = self.cfg.child_env()
         env[ytdl_cache.ENV_REAL] = self.cfg.yt_dlp_path
         env[ytdl_cache.ENV_SOCKET] = str(RESOLVER_SOCKET)
-        await self._start_resolver()
         self.proc = await asyncio.create_subprocess_exec(
             *self._args(),
             env=env,
@@ -165,7 +164,9 @@ class MpvPlayer(Player):
             stderr=asyncio.subprocess.DEVNULL,
         )
 
-        for _ in range(100):  # ~5 s for the socket to appear
+        # Při bootu Pi 3 startuje všechno naráz a mpv socket občas nestihl
+        # do 5 s — ytdj pak spadl a systemd ho pouštěl znovu.
+        for _ in range(400):  # ~20 s for the socket to appear
             if MPV_SOCKET.exists():
                 try:
                     self.reader, self.writer = await asyncio.open_unix_connection(
@@ -179,6 +180,9 @@ class MpvPlayer(Player):
             raise RuntimeError(f"mpv nenastartoval (socket {MPV_SOCKET} nevznikl)")
 
         self._reader_task = asyncio.create_task(self._read_loop())
+        # Resolver až po mpv: jeho start (import yt-dlp) bere Pi 3 desítky
+        # vteřin CPU. Než naběhne, jde mpv přes yt-dlp postaru.
+        await self._start_resolver()
         self._dispatch_task = asyncio.create_task(self._dispatch_loop())
 
         for i, prop in enumerate(

@@ -244,3 +244,158 @@ async def find_artists(catalog, text: str) -> FastResult:
             res.reason = ""
             return res
     return res
+
+
+# ---- konkrétní skladba: "pusť Jasnou zprávu od Olympicu", "Oasis - Wonderwall" ----
+
+_DASH_SPLIT = re.compile(r"\s+[-–—]\s+")
+
+
+@dataclass
+class SongParse:
+    """Kandidáti (interpret, název) jak je posluchač napsal, v pořadí zkoušení."""
+
+    pairs: list[tuple[str, str]]
+
+
+def _strip_lead(words: list[str]) -> list[str]:
+    """Sloveso a vata na začátku pryč ("pusť mi prosím …")."""
+    i = 0
+    while i < len(words) and norm(words[i]) in _FILLER:
+        i += 1
+    return words[i:]
+
+
+def _is_title(words: list[str]) -> bool:
+    """Může to být název skladby? Ne, když je to jen vata nebo nálada."""
+    toks = [t for t in (norm(w) for w in words) if t]
+    content = [t for t in toks if t not in _FILLER]
+    if not content or len(toks) > 10:
+        return False
+    # "něco klidného od Kabátu" — přání nálady, ne název
+    return not all(_NOT_NAME.match(t) for t in content)
+
+
+def parse_song(text: str) -> SongParse | None:
+    """Přání konkrétní skladby, nebo None (pak rozhodne model)."""
+    raw = norm(text)
+    if not raw or local_command(text):
+        return None
+    if _SINGLE.search(raw) or _LIKE.search(raw) or _EXCEPT.search(raw):
+        return None
+    pairs: list[tuple[str, str]] = []
+    dash = _DASH_SPLIT.split(text.strip(), maxsplit=1)
+    if len(dash) == 2:
+        left = _strip_lead(dash[0].split())
+        right = dash[1].split()
+        if left and right and _is_title(left) and _is_title(right):
+            a, b = " ".join(left), " ".join(right)
+            pairs += [(a, b), (b, a)]  # "Oasis - Wonderwall" i "Wonderwall - Oasis"
+    else:
+        words = text.strip().split()
+        idx = [i for i, w in enumerate(words) if norm(w) == "od"]
+        if len(idx) == 1:
+            title = _strip_lead(words[: idx[0]])
+            artist = [w for w in words[idx[0] + 1:] if norm(w) not in _FILLER]
+            if title and artist and _is_title(title) and len(artist) <= MAX_NAME_TOKENS:
+                if not any(_NOT_NAME.match(norm(w)) for w in artist):
+                    pairs.append((" ".join(artist), " ".join(title)))
+    return SongParse(pairs) if pairs else None
+
+
+def _clean_words(text: str) -> list[str]:
+    return [t for t in norm(text).split() if t]
+
+
+def _artist_ok(tokens: list[str], name: str) -> bool:
+    """Jako name_matches, ale u skladby stačí i příjmení ("Kometu od Nohavici"):
+    nejednoznačnost jména tu rozhodne název, který musí sedět taky."""
+    if name_matches(tokens, name):
+        return True
+    words = [w for w in norm(name).split() if w != "the"]
+    return (
+        len(tokens) == 1 and len(words) >= 2 and len(words[-1]) >= 4
+        and declined(words[-1], tokens[0])
+    )
+
+
+def song_matches(track, artist: str, title: str) -> bool:
+    """Přísně: interpret i vlastní název (bez verzí v závorkách) sedí na zadání."""
+    from ..music.match import split_title  # čistá funkce hudební vrstvy
+
+    a_toks = [t for t in _clean_words(artist) if t != "the"]
+    credited = [p for p in re.split(r"\s*(?:,|&| feat\.? | ft\.? | x )\s*", track.artist) if p]
+    if not any(_artist_ok(a_toks, c) for c in credited + [track.artist]):
+        return False
+    base, _tags = split_title(track.title)
+    return name_matches(_clean_words(title), base)
+
+
+@dataclass
+class SongResult:
+    track: Any = None
+    artist: str = ""
+    title: str = ""
+    reason: str = ""
+    lookups: int = 0
+
+
+SONG_BUDGET = 3.5  # s — déle to nesmí zdržet cestu k modelu (zásah na laptopu 0.4–2 s)
+
+
+async def find_song(catalog, text: str, budget: float = SONG_BUDGET) -> SongResult:
+    """Konkrétní skladba z přání — jen když katalog potvrdí interpreta i název.
+
+    Nejdéle `budget` sekund; pak to jde k modelu, jako by se nic nenašlo.
+    """
+    res = SongResult()
+    parsed = parse_song(text)
+    if parsed is None:
+        res.reason = "not_song_phrase"
+        return res
+    try:
+        return await asyncio.wait_for(_find_song(catalog, parsed, res), budget)
+    except asyncio.TimeoutError:
+        res.track = None
+        res.reason = "timeout"
+        return res
+
+
+async def _find_song(catalog, parsed: SongParse, res: SongResult) -> SongResult:
+    async def attempt(a_q: str, t_q: str, artist: str, title: str) -> bool:
+        res.lookups += 1
+        hit = await catalog.search_song(a_q, t_q)
+        # katalog umí vrátit "aspoň něco od něj" — bere se jen přesná shoda
+        if hit is not None and song_matches(hit, artist, title):
+            res.track, res.artist, res.title, res.reason = hit, a_q, title, ""
+            return True
+        return False
+
+    try:
+        for artist, title in parsed.pairs:
+            a_var, t_var = variants(_clean_words(artist)), variants(_clean_words(title))
+            # 1) rovnou hledání skladby: jak to napsal, pak odhad 1. pádu
+            #    ("Jasnou zprávu od Olympicu" → "olympic" / "jasna zprava")
+            if await attempt(artist, title, artist, title):
+                return res
+            if len(a_var) > 1 or len(t_var) > 1:
+                a1 = a_var[1] if len(a_var) > 1 else artist
+                t1 = t_var[1] if len(t_var) > 1 else title
+                if await attempt(a1, t1, artist, title):
+                    return res
+            # 2) přes profil interpreta (1. pád od katalogu), víc kandidátů
+            tried: set[str] = set()
+            for q in a_var[:3]:
+                res.lookups += 1
+                found = await catalog.find_artist(q)
+                if not found or found.name in tried or not _artist_ok(_clean_words(artist), found.name):
+                    continue
+                tried.add(found.name)
+                for t_q in t_var[:2]:
+                    if await attempt(found.name, t_q, artist, title):
+                        return res
+            res.reason = f"no_strict_match:{artist} — {title}"
+    except Exception as exc:  # katalog umí selhat na čemkoli
+        res.track = None
+        res.reason = f"error:{type(exc).__name__}"
+    return res

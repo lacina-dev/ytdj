@@ -27,6 +27,8 @@ from ytdj.agent.codex import CodexDJ  # noqa: E402
 from ytdj.agent.fastpath import (  # noqa: E402
     declined,
     find_artists,
+    find_song,
+    parse_song,
     name_matches,
     parse,
     variants,
@@ -57,6 +59,18 @@ SONGS = {
 }
 
 
+# (artist, title) as the catalog has them
+SONGBOOK = [
+    T("jz", "Olympic", "Jasná zpráva"),
+    T("ol2", "Olympic", "Dávno"),
+    T("ww", "Oasis", "Wonderwall (Remastered)"),
+    T("br", "Queen", "Bohemian Rhapsody"),
+    T("km", "Jaromir Nohavica", "Kometa"),
+    T("md", "Kabát", "Malá dáma"),
+    T("po", "Kabát", "Pohoda"),
+]
+
+
 class FuzzyCatalog:
     """Like YouTube Music: returns the closest artist even for a declined name."""
 
@@ -83,6 +97,23 @@ class FuzzyCatalog:
         self.calls.append(("search", query))
         await asyncio.sleep(self.delay)
         return SONGS.get(norm(query), [])[:limit]
+
+    async def search_song(self, artist: str, title: str):
+        """Like the real one: fuzzy on both, and when the title isn't found it
+        still returns *some* track by that artist — the fast path must not bite."""
+        self.calls.append(("search_song", artist, title))
+        await asyncio.sleep(self.delay)
+        a, t = norm(artist)[:5], norm(title)[:5]
+        for s in SONGBOOK:
+            if a in norm(s.artist) and norm(s.title).startswith(t):
+                return s
+        for s in SONGBOOK:
+            if a in norm(s.artist):
+                return s  # "his track at least"
+        return None
+
+    async def radio(self, video_id: str, limit: int = 50):
+        return [T(f"r{i}", f"Similar {i}") for i in range(20)]
 
     async def artist_tracks(self, name: str, limit: int = 50):
         self.calls.append(("artist_tracks", name))
@@ -184,6 +215,54 @@ class WithCatalog(unittest.TestCase):
         self.assertLess(took, 3.0)
 
 
+class Songs(unittest.TestCase):
+    def song(self, text, cat=None, **kw):
+        return run(find_song(cat or FuzzyCatalog(), text, **kw))
+
+    def test_parse(self):
+        self.assertEqual(parse_song("pusť Jasnou zprávu od Olympicu").pairs,
+                         [("Olympicu", "Jasnou zprávu")])
+        self.assertEqual(parse_song("Oasis - Wonderwall").pairs[0], ("Oasis", "Wonderwall"))
+        self.assertEqual(parse_song("zahraj Bohemian Rhapsody od Queen prosím").pairs,
+                         [("Queen", "Bohemian Rhapsody")])
+        for text in ("pusť něco klidného od Kabátu", "zahraj jednu od Chinaski",
+                     "pusť něco od Kabátu", "pusť Kabát", "hraj písničky od Midi Lidi",
+                     "pusť hit od Olympicu", "něco jako Wonderwall od Oasis"):
+            self.assertIsNone(parse_song(text), text)
+
+    def test_accepted(self):
+        cases = [
+            ("pusť Jasnou zprávu od Olympicu", "jz"),  # both declined
+            ("zahraj Wonderwall od Oasis", "ww"),      # English, version tag in catalog
+            ("Oasis - Wonderwall", "ww"),
+            ("pusť Queen – Bohemian Rhapsody", "br"),
+            ("Bohemian Rhapsody - Queen", "br"),       # reversed order
+            ("pusť Kometu od Nohavici", "km"),         # surname is enough with a title
+            ("zahraj Malou dámu od Kabátu", "md"),
+        ]
+        for text, want in cases:
+            res = self.song(text)
+            self.assertEqual((res.track and res.track.id, res.reason), (want, ""), text)
+
+    def test_traps(self):
+        cases = [
+            "pusť Olympic od Kabátu",               # a title that is an artist's name
+            "pusť Wonderwall od Kabátu",            # right title, wrong artist
+            "pusť Holky z naší školky od Olympicu",  # catalog answers with another song
+            "pusť Kabát - Olympic",
+        ]
+        for text in cases:
+            res = self.song(text)
+            self.assertIsNone(res.track, text)
+            self.assertTrue(res.reason.startswith("no_strict_match"), (text, res.reason))
+
+    def test_time_budget(self):
+        t0 = time.monotonic()
+        res = self.song("pusť Jasnou zprávu od Olympicu", FuzzyCatalog(delay=1.0), budget=0.3)
+        self.assertEqual(res.reason, "timeout")
+        self.assertLess(time.monotonic() - t0, 0.8)
+
+
 def make(current=None, player=None):
     cfg = Config(**DEFAULTS)
     store = Store(Path(tempfile.mkdtemp(dir=_TMP)) / "state.db")
@@ -212,6 +291,23 @@ class FastTurn(unittest.TestCase):
         self.assertIsNone(run(dj.fast_turn("pusť Wonderwall")))
         self.assertEqual(player.log, [])
         self.assertEqual(dj.focus, "")
+
+
+class FastSong(unittest.TestCase):
+    def test_plays_song_now_then_similar(self):
+        dj, player = make(current=T("c", "Someone"))
+        reply = run(dj.fast_turn("pusť Jasnou zprávu od Olympicu"))
+        self.assertEqual(reply, "Hraju Olympic — Jasná zpráva, pak podobné.")
+        self.assertEqual(player.current.id, "jz")  # now, not after the current one
+        self.assertEqual(dj.focus, "")  # a song, not artist mode
+        self.assertEqual([p.seed.id for p in dj.pools.pools], ["jz"])  # radio from it
+        self.assertTrue(player.queue and player.queue[0].artist.startswith("Similar"))
+        self.assertIn("Jasnou zprávu", dj.wish.describe())
+
+    def test_mood_with_od_goes_to_model(self):
+        dj, player = make(current=T("c", "Someone"))
+        self.assertIsNone(run(dj.fast_turn("pusť něco klidného od Kabátu")))
+        self.assertEqual(player.log, [])
 
 
 class ReadyPlayer(FakePlayer):

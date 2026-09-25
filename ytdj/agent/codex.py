@@ -36,7 +36,7 @@ from ..music.radio import RadioPools
 from ..player.base import Player, queue_transaction
 from ..state import Store
 from .. import telemetry
-from .fastpath import FastResult, find_artists
+from .fastpath import FastResult, find_artists, find_song
 from .intent import Intent, ListenerIntent, Pair, build_intent, track_avoided
 from .prompts import ROLE, render_state
 
@@ -180,6 +180,15 @@ def _kill_tree(proc: asyncio.subprocess.Process) -> None:
         os.killpg(proc.pid, signal.SIGKILL)
 
 
+async def _reap(proc: asyncio.subprocess.Process) -> None:  # [latency]
+    """Nechá Codex po dokončeném tahu doběhnout; kdyby visel, zabije ho."""
+    try:
+        async with asyncio.timeout(60):
+            await proc.wait()
+    except (TimeoutError, Exception):
+        _kill_tree(proc)
+
+
 @dataclass
 class Plan:
     """Vyložené přání převedené na konkrétní skladby — ještě nic nehraje.
@@ -269,6 +278,11 @@ class CodexDJ:
         )
         return f"{ROLE}\n\n{state}\n\nUživatel říká: {user_input}"
 
+    # [latency] Obnovená session narůstá (na Pi 15k → 29k vstupních tokenů za
+    # 5 tahů, model 7.7 → 12.3 s); stav se posílá celý v každém zadání, takže
+    # stačí session po pár tazích začít znovu.
+    MAX_RESUMED_TURNS = 3
+
     def _args(self, resume: bool) -> list[str]:
         args = [self.codex, "exec"]
         if resume and self.thread_id:
@@ -307,6 +321,11 @@ class CodexDJ:
         try:
             async with asyncio.timeout(TURN_TIMEOUT):
                 raw, error, fatal = await self._read_events(proc)
+                # [latency] po turn.completed Codex na Pi ještě 5–8 s končí
+                # (zápis session, úklid) — na to se nečeká, uklidí se na pozadí
+                if raw.strip() and self._turn_done and not fatal:
+                    asyncio.create_task(_reap(proc))
+                    return parse_output(raw)
                 if not fatal:
                     await proc.wait()
         except TimeoutError:
@@ -348,6 +367,7 @@ class CodexDJ:
         """
         raw = ""
         error = ""
+        self._turn_done = False  # [latency]
         assert proc.stdout
         while True:
             line = await proc.stdout.readline()
@@ -364,6 +384,9 @@ class CodexDJ:
                 item = ev.get("item") or {}
                 if item.get("type") == "agent_message":
                     raw = item.get("text") or raw
+            elif kind == "turn.completed" and raw.strip():  # [latency]
+                self._turn_done = True
+                return raw, error, False
             elif kind in ("error", "turn.failed"):
                 error, fatal = _stream_error(ev)
                 if fatal:
@@ -380,15 +403,19 @@ class CodexDJ:
         """
         out: list[Track] = []
         missing: list[str] = []
-        for artist, title in pairs[:5]:
-            query = f"{artist} {title}".strip()
-            if not query:
-                continue
+        pairs = [(a, t) for a, t in pairs[:5] if f"{a} {t}".strip()]
+
+        async def one(artist: str, title: str) -> Track | None:
             try:
-                hit = await self.catalog.search_song(artist, title)
+                return await self.catalog.search_song(artist, title)
             except Exception as exc:
-                log.warning("hledání %r selhalo: %s", query, exc)
-                hit = None
+                log.warning("hledání %r selhalo: %s", f"{artist} {title}", exc)
+                return None
+
+        # [latency] naráz, ne jedno po druhém — na Pi to bylo 10–12 s po tahu
+        hits = await asyncio.gather(*(one(a, t) for a, t in pairs))
+        for (artist, title), hit in zip(pairs, hits):
+            query = f"{artist} {title}".strip()
             if hit is None:
                 log.info("%r se nenašlo, přeskakuji", query)
                 missing.append(f"{artist} — {title}" if artist and title else query)
@@ -677,6 +704,15 @@ class CodexDJ:
 
     async def fast_turn(self, text: str) -> str | None:
         """ "pusť Kabát" bez Codexu; None = nejisté, ať rozhodne model."""
+        plan = await self.fast_plan(text)
+        if plan is None:
+            return None
+        reply = await self.play(plan, interrupt=True)
+        self._remember_wish(plan.intent)
+        return reply
+
+    async def fast_plan(self, text: str) -> Plan | None:
+        """Rychlá cesta jako plán (nic nepřehrává) — pro frontu přání."""
         t0 = time.monotonic()
         try:
             res = await find_artists(self.catalog, text)
@@ -689,17 +725,36 @@ class CodexDJ:
         )
         if res.reason:
             log.info("rychlá cesta ne (%s): %s", res.reason, text)
-            return None
+            return await self._fast_song_plan(text)  # [fast-song] konkrétní skladba
         label = ", ".join(res.artists)
         intent = Intent(kind="artist", text=text, artists=res.artists, mood=label,
                         note="fast_path")
         log.info("rychlá cesta: %s → %s", text, label)
         telemetry.event("dj.intent", intent_kind="artist", auto=False,
                         artists=res.artists, repaired="fast_path")
-        plan = Plan(intent=intent, artist_tracks=interleave(res.tracks))
-        reply = await self.play(plan, interrupt=True)
-        self._remember_wish(intent)
-        return reply
+        return Plan(intent=intent, artist_tracks=interleave(res.tracks))
+
+    # [fast-song] — "pusť Jasnou zprávu od Olympicu" bez Codexu
+    async def _fast_song_plan(self, text: str) -> Plan | None:
+        """Skladba hned a pak rádio z ní ("… a podobné"); None = rozhodne model."""
+        t0 = time.monotonic()
+        song = await find_song(self.catalog, text)
+        telemetry.event(
+            "dj.fast_path", text=text[:300], what="song", accepted=song.track is not None,
+            track=song.track.label() if song.track else None,
+            reason=song.reason or None, lookups=song.lookups,
+            took_ms=int((time.monotonic() - t0) * 1000),
+        )
+        if song.track is None:
+            return None
+        t = song.track
+        intent = Intent(
+            kind="song", text=text, tracks=[(t.artist, t.title)],
+            mood=f"{t.artist} a podobné", note="fast_path_song",
+            reply=f"Hraju {t.label()}, pak podobné.",
+        )
+        log.info("rychlá cesta (skladba): %s → %s", text, t.label())
+        return Plan(intent=intent, requested=[t], seeds=[t])
 
     async def interpret(self, user_input: str, auto: bool = False) -> Intent:
         """Zeptá se modelu a vyloží odpověď. Nic nepřehrává.
@@ -711,10 +766,14 @@ class CodexDJ:
         for resume in (True, False):
             if resume and not self.thread_id:
                 continue
+            if resume and getattr(self, "_thread_turns", 0) >= self.MAX_RESUMED_TURNS:
+                self.thread_id = None  # [latency] session znovu, viz MAX_RESUMED_TURNS
+                continue
             try:
                 with telemetry.timer("dj.turn", resume=resume, auto=auto) as ev:
                     data = await self._run(self._args(resume), prompt)
                     ev["ok"] = True
+                self._thread_turns = getattr(self, "_thread_turns", 0) + 1 if resume else 1
             except CodexUnavailable:
                 raise
             except Exception as exc:

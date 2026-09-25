@@ -114,6 +114,8 @@ class StatusFeed(threading.Thread):
         self.on_offline = on_offline
         self.stop = stop
         self.mode: str | None = None  # "sse" | "poll" — jak právě stav chodí
+        # poslední celý stav: mezi nimi chodí jen pozice (událost "pos")
+        self._last: dict | None = None
 
     def _set_mode(self, mode: str, reason: str = "") -> None:
         if mode != self.mode:
@@ -172,6 +174,7 @@ class StatusFeed(threading.Thread):
             if conn.sock is not None:
                 conn.sock.settimeout(READ_TIMEOUT)
             data: list[str] = []
+            event = ""
             while not self.stop.is_set():
                 raw = resp.readline()
                 if not raw:
@@ -180,6 +183,8 @@ class StatusFeed(threading.Thread):
                 if line.startswith("data:"):
                     value = line[5:]
                     data.append(value[1:] if value.startswith(" ") else value)
+                elif line.startswith("event:"):
+                    event = line[6:].strip()
                 elif not line and data:
                     try:
                         state = json.loads("\n".join(data))
@@ -189,8 +194,17 @@ class StatusFeed(threading.Thread):
                         if isinstance(state, dict) and state:
                             got = True
                             self._set_mode("sse")
+                            self._last = state
                             self.on_state(state)
+                        elif (event == "pos" and isinstance(state, list) and state
+                              and isinstance(state[0], (int, float)) and self._last is not None):
+                            # jen pozice — zbytek stavu se nezměnil
+                            self._last = {**self._last, "position": float(state[0])}
+                            self.on_state(self._last)
                     data = []
+                    event = ""
+                elif not line:
+                    event = ""
                 # comments (": ping") and other fields just keep us alive
             return got
         finally:

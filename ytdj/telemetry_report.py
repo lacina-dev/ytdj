@@ -133,6 +133,10 @@ KNOWN = {
     "sys.sample", "sys.throttle", "audio.xrun",
     "web.prompt", "web.control", "web.sse_open", "web.sse_close", "web.restart",
     "web.config", "web.error",
+    "request.created", "request.interpreted", "request.queued", "request.started",
+    "request.done", "request.removed", "request.turn", "request.play_next",
+    "request.handover", "request.background", "request.start", "request.resume",
+    "request.steer", "web.request_action",
 }
 
 
@@ -173,6 +177,13 @@ def summarize(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
 
     errors: Counter = Counter()
     other: dict[str, list] = defaultdict(list)
+
+    # fronta přání: id → co o přání víme
+    wishes: dict[str, dict] = {}
+    turns: Counter = Counter()
+    idle_starts: list[dict] = []
+    resumes: Counter = Counter()
+    steers = 0
 
     for e in events:
         n += 1
@@ -264,6 +275,34 @@ def summarize(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
             web_restarts += 1
         elif kind == "web.error":
             web_errors += 1
+        elif kind.startswith("request.") and kind in KNOWN:
+            rid = e.get("id")
+            rec = wishes.setdefault(str(rid), {}) if rid else None
+            if kind == "request.created" and rec is not None:
+                rec.update(who=e.get("who") or "?", source=e.get("source") or "?",
+                           text=e.get("text"), ts=ts, play_next=bool(e.get("play_next")))
+            elif kind == "request.interpreted" and rec is not None:
+                rec.update(via=e.get("via"), intent=e.get("intent_kind"),
+                           decide_ms=e.get("took_ms"))
+            elif kind == "request.queued" and rec is not None:
+                rec.setdefault("ahead", e.get("ahead"))
+            elif kind == "request.started" and rec is not None:
+                rec.setdefault("wait_ms", e.get("wait_ms"))
+                rec.setdefault("who", e.get("who") or "?")
+            elif kind == "request.done" and rec is not None:
+                rec["state"] = e.get("state")
+                rec.setdefault("who", e.get("who") or "?")
+            elif kind == "request.removed" and rec is not None:
+                rec["state"] = "removed"
+                rec.setdefault("who", e.get("who") or "?")
+            elif kind == "request.turn":
+                turns[e.get("who") or "?"] += 1
+            elif kind == "request.start":
+                idle_starts.append(e)
+            elif kind == "request.resume":
+                resumes[e.get("reason") or "?"] += 1
+            elif kind == "request.steer":
+                steers += 1
         elif kind not in KNOWN:
             other[kind].append(e.get("took_ms"))
 
@@ -307,6 +346,46 @@ def summarize(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
     }
 
     other_out = {k: {"n": len(v), "took_ms": stats(v)} for k, v in sorted(other.items())}
+
+    # --- přání: kolik od koho, jak rychle zazněla, jak dopadla ---
+    people: dict[str, dict[str, Any]] = {}
+    for rec in wishes.values():
+        if "who" not in rec:
+            continue
+        pp = people.setdefault(rec["who"], {"n": 0, "states": Counter(), "waits": []})
+        pp["n"] += 1
+        pp["states"][rec.get("state") or "open"] += 1
+        if rec.get("wait_ms") is not None:
+            pp["waits"].append(rec["wait_ms"])
+    by_person = {
+        who: {"n": pp["n"], "states": dict(pp["states"]), "wait_ms": stats(pp["waits"]),
+              "turns": turns.get(who, 0)}
+        for who, pp in sorted(people.items(), key=lambda kv: -kv[1]["n"])
+    }
+    all_waits = [r["wait_ms"] for r in wishes.values() if r.get("wait_ms") is not None]
+    states = Counter(r.get("state") or "open" for r in wishes.values() if "who" in r)
+    medians = [st["wait_ms"]["median"] for st in by_person.values() if st["wait_ms"]]
+    requests_out = {
+        "created": sum(1 for r in wishes.values() if "text" in r),
+        "states": dict(states),
+        "fulfilled": states.get("done", 0) + states.get("playing", 0),
+        "notfound": states.get("notfound", 0),
+        "error": states.get("error", 0),
+        "removed": states.get("removed", 0),
+        "wish_to_sound_ms": stats(all_waits),
+        "via": dict(Counter(r.get("via") or "?" for r in wishes.values() if r.get("via"))),
+        "decide_ms": stats(r.get("decide_ms") for r in wishes.values() if r.get("decide_ms") is not None),
+        "by_source": dict(Counter(r.get("source") or "?" for r in wishes.values() if "source" in r)),
+        "by_person": by_person,
+        # spravedlnost: jak moc se liší typické čekání lidí (1 = všichni stejně)
+        "fairness_spread": round(max(medians) / min(medians), 2) if len(medians) > 1 and min(medians) > 0 else None,
+        "play_next": sum(1 for r in wishes.values() if r.get("play_next")),
+        "idle_starts": {"n": len(idle_starts),
+                        "via": dict(Counter(x.get("via") or "?" for x in idle_starts)),
+                        "took_ms": stats(x.get("took_ms") for x in idle_starts)},
+        "resumes": dict(resumes),
+        "steered": steers,
+    }
 
     return {
         "period": {"from": first, "to": last, "events": n,
@@ -370,6 +449,7 @@ def summarize(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
             "restarts": web_restarts,
             "errors": web_errors,
         },
+        "requests": requests_out,
         "errors": [{"kind": k, "error": m, "n": c} for (k, m), c in errors.most_common(10)],
         "other": other_out,
     }
@@ -548,6 +628,40 @@ def render(s: dict[str, Any]) -> str:
         w(f"  {_t(pr.get('ts'))} [{pr.get('status')}, {took}] {str(pr.get('text') or '')[:90]}")
         if pr.get("reply"):
             w(f"      → {str(pr['reply'])[:110]}")
+
+    rq = s.get("requests") or {}
+    if rq.get("created") or rq.get("idle_starts", {}).get("n"):
+        w("")
+        w("Přání (fronta pro víc lidí)")
+        w(f"  přijato {rq['created']}; splněno {rq['fulfilled']}, nenašel {rq['notfound']}, "
+          f"chyba {rq['error']}, odebráno {rq['removed']}"
+          + (f", ještě ve frontě {rq['states'].get('queued', 0) + rq['states'].get('open', 0)}"
+             if rq["states"].get("queued") or rq["states"].get("open") else ""))
+        w(f"  přání → první zvuk: {_fmt_ms(rq['wish_to_sound_ms'])}")
+        if rq["decide_ms"]:
+            w(f"  DJ rozhodl za: {_fmt_ms(rq['decide_ms'])}"
+              + (" (" + ", ".join(f"{k} {v}×" for k, v in sorted(rq['via'].items(), key=lambda kv: -kv[1])) + ")"
+                 if rq["via"] else ""))
+        if rq["by_source"]:
+            w("  odkud: " + ", ".join(f"{k} {v}×" for k, v in sorted(rq["by_source"].items(), key=lambda kv: -kv[1])))
+        for who, pp in rq["by_person"].items():
+            st = pp["states"]
+            w(f"  {who}: {pp['n']}× (splněno {st.get('done', 0)}, nenašel {st.get('notfound', 0)}"
+              + (f", chyba {st['error']}" if st.get("error") else "")
+              + (f", odebráno {st['removed']}" if st.get("removed") else "")
+              + f"), na řadě {pp['turns']}×, do zvuku {_fmt_ms(pp['wait_ms'])}")
+        if rq["fairness_spread"]:
+            w(f"  spravedlnost: nejdelší / nejkratší typické čekání = {rq['fairness_spread']}×")
+        if rq["play_next"]:
+            w(f"  „zařadit hned“ {rq['play_next']}×")
+        if rq["steered"]:
+            w(f"  změna směru (překvap mě / něco jiného) opravena {rq['steered']}×")
+        ist = rq["idle_starts"]
+        if ist["n"]:
+            w(f"  rozjezd bez přání (▶ v tichu) {ist['n']}×: {_fmt_ms(ist['took_ms'])}"
+              + (" (" + ", ".join(f"{k} {v}×" for k, v in ist["via"].items()) + ")" if ist["via"] else ""))
+        if rq["resumes"]:
+            w("  po restartu: " + ", ".join(f"{k} {v}×" for k, v in rq["resumes"].items()))
 
     if s["other"]:
         w("")

@@ -426,6 +426,12 @@ class WebServer:
         # mpv (5 IPC calls) and SQLite on its own, every second.
         self._payload: str | None = None
         self._seq = 0
+        # Pozice se mění každou vteřinu, zbytek stavu zřídka: celý stav jen při
+        # změně, pozice zvlášť jako drobná událost "pos" (~25 B/s místo ~2 kB/s).
+        self._sig: str | None = None
+        self._pos_payload: str | None = None
+        self._pos_seq = 0
+        self._last_pos: float | None = None
         self._changed: asyncio.Condition | None = None
         self._poke: asyncio.Event | None = None
         self._bcast: asyncio.Task | None = None
@@ -444,6 +450,8 @@ class WebServer:
             Route("/api/status", _safe(self._status), methods=["GET"]),
             Route("/api/events", _safe(self._events), methods=["GET"]),
             Route("/api/prompt", _safe(self._prompt), methods=["POST"]),
+            Route("/api/requests", _safe(self._requests), methods=["GET"]),
+            Route("/api/requests/{rid}", _safe(self._request_action), methods=["POST", "DELETE"]),
             Route("/api/control", _safe(self._control), methods=["POST"]),
             Route("/api/config", _safe(self._config_get), methods=["GET"]),
             Route("/api/config", _safe(self._config_post), methods=["POST"]),
@@ -510,6 +518,19 @@ class WebServer:
         except Exception:
             pools, mood = "", ""
 
+        wq = getattr(self.app, "wishes", None)
+        if wq is not None:
+            # proč hraje, co hraje, a čí je co ve frontě
+            try:
+                if current is not None:
+                    current["reason"] = wq.reason_for(current.get("id"))
+                for item in queue:
+                    tag = wq.queue_tag(item.get("id"))
+                    if tag:
+                        item["req"] = tag
+            except Exception:
+                log.debug("přání ke frontě se nepodařilo přiřadit", exc_info=True)
+
         history: list[dict] = []
         try:
             for rec in self.app.store.recent_history(20):
@@ -523,7 +544,23 @@ class WebServer:
         except Exception:
             log.debug("historii se nepodařilo přečíst", exc_info=True)
 
+        busy = self.busy
+        dj_text, dj_source = self._dj_text, self._dj_source
+        extra: dict[str, Any] = {}
+        if wq is not None:
+            busy = busy or wq.busy
+            thinking = next((w for w in wq.wishes if w.state == "thinking"), None)
+            if thinking is not None:
+                dj_text, dj_source = telemetry.clip(thinking.text, 200), thinking.source
+            elif wq.starting:
+                dj_text, dj_source = "rozjezd podle času a dne", "start"
+            extra = {
+                "requests": wq.public(),
+                "starting": wq.starting,
+                "people": wq.people(),
+            }
         return {
+            **extra,
             "playing": playing,
             "paused": paused,
             "buffering": buffering,
@@ -535,12 +572,12 @@ class WebServer:
             "volume": volume,
             "quality": quality,
             "mood": mood,
-            "busy": self.busy,
+            "busy": busy,
             "history": history,
             "dj": {
-                "busy": self.busy,
-                "text": self._dj_text if self.busy else "",
-                "source": self._dj_source if self.busy else "",
+                "busy": busy,
+                "text": dj_text if busy else "",
+                "source": dj_source if busy else "",
                 "last": self._dj_last,
             },
         }
@@ -573,13 +610,27 @@ class WebServer:
             while self._sse_clients > 0 and not self._closing.is_set():
                 self._poke.clear()
                 try:
-                    payload = json.dumps(await self._snapshot(), ensure_ascii=False)
+                    snap = await self._snapshot()
+                    pos = round(float(snap.get("position") or 0.0), 1)
+                    sig = json.dumps({k: v for k, v in snap.items() if k != "position"},
+                                     ensure_ascii=False)
                 except Exception:
                     log.exception("snímek stavu pro SSE selhal")
-                    payload = None
-                if payload is not None and payload != self._payload:
-                    self._payload = payload
+                    snap, sig = None, None
+                notify = False
+                if snap is not None and (sig != self._sig or self._payload is None):
+                    self._sig = sig
+                    self._payload = json.dumps(snap, ensure_ascii=False)
                     self._seq += 1
+                    self._last_pos = pos
+                    notify = True
+                elif snap is not None and pos != self._last_pos:
+                    self._last_pos = pos
+                    # pole, ne objekt: starší čtečky (panel) ho přeskočí jako ping
+                    self._pos_payload = f"event: pos\ndata: [{pos}]\n\n"
+                    self._pos_seq += 1
+                    notify = True
+                if notify:
                     async with self._changed:
                         self._changed.notify_all()
                 with contextlib.suppress(asyncio.TimeoutError):
@@ -588,12 +639,14 @@ class WebServer:
             # nobody listens (or shutting down): the next listener starts
             # from a fresh snapshot, not from one that may be minutes old
             self._payload = None
+            self._sig = None
 
     async def _events(self, request: Request) -> Response:
         who = _client(request)
 
         async def stream():
             seen = 0
+            pos_seen = self._pos_seq
             last_sent = time.monotonic()
             t_open = last_sent
             self._sse_clients += 1
@@ -610,12 +663,17 @@ class WebServer:
                     now = time.monotonic()
                     if self._seq != seen and self._payload is not None:
                         seen = self._seq
+                        pos_seen = self._pos_seq  # celý stav pozici obsahuje
                         last_sent = now
                         yield f"data: {self._payload}\n\n"
+                    elif self._pos_seq != pos_seen and self._pos_payload is not None:
+                        pos_seen = self._pos_seq
+                        last_sent = now
+                        yield self._pos_payload
                     elif now - last_sent >= KEEPALIVE:
                         last_sent = now
                         yield PING
-                    if self._seq == seen or self._payload is None:
+                    if (self._seq == seen or self._payload is None) and self._pos_seq == pos_seen:
                         wait = max(0.05, min(TICK * 2, KEEPALIVE - (time.monotonic() - last_sent)))
                         async with changed:
                             with contextlib.suppress(asyncio.TimeoutError):
@@ -680,6 +738,10 @@ class WebServer:
             rec["error"] = "prázdný text"
             return _json_error("Chybí text požadavku.", 400)
 
+        wq = getattr(self.app, "wishes", None)
+        if wq is not None:
+            return await self._wish(data, text, source, rec, request)
+
         # Lock-free serialization: there is no await between the test and the
         # assignment, so two turns can never meet within a single loop.
         # On top of that, `app.ask()` shares a lock with the REPL and with
@@ -716,6 +778,86 @@ class WebServer:
         rec["reply"] = telemetry.clip(reply or "", 300)
         return JSONResponse({"reply": reply or ""})
 
+    async def _wish(self, data: dict, text: str, source: str, rec: dict[str, Any],
+                    request: Request) -> Response:
+        """Přání do fronty: hned 202 + id; průběh a odpověď chodí stavem všem.
+
+        Starší klienti (bez "who" i "wait" v těle — stará stránka v cache,
+        starý panel) dostanou odpověď jako dřív: požadavek počká, až DJ
+        přání vyřídí (zařadí nebo zamítne), a vrátí {"reply"}.
+        """
+        wq = self.app.wishes
+        legacy = "who" not in data and "wait" not in data
+        wait = legacy or data.get("wait") is True
+        rec["legacy"] = legacy or None
+        # povely jako "další" nebo "hlasitěji" hned, bez fronty
+        local = await wq.try_local(text)
+        if local is not None:
+            rec["local"] = True
+            rec["reply"] = local
+            self.poke()
+            self.poke(later=0.3)
+            return JSONResponse({"reply": local, "local": True})
+        play_next = data.get("play_next") is True
+        try:
+            w = wq.submit(text, data.get("who"), source, play_next=play_next,
+                          client={"ip": rec.get("ip"), "ua": rec.get("ua")})
+        except Exception as exc:  # TooMany
+            if type(exc).__name__ != "TooMany":
+                raise
+            rec["error"] = "too_many"
+            return _json_error(str(exc), 429)
+        rec["id"], rec["who"] = w.id, w.who
+        self.poke()
+        if not wait:
+            return JSONResponse(
+                {"id": w.id, "token": w.token, "who": w.who, "state": w.state,
+                 "request": w.public(), "reply": ""},
+                status_code=202,
+            )
+        await wq.wait(w)
+        rec["reply"] = telemetry.clip(w.reply or "", 300)
+        rec["state"] = w.state
+        self._dj_last = {"text": telemetry.clip(text, 200), "source": source,
+                         "ok": w.state != "error", "reply": telemetry.clip(w.reply or "", 400),
+                         "at": time.time(), "who": w.who}
+        self.poke()
+        if w.state == "error":
+            return _json_error(f"Codex selhal: {w.reply}", 500)
+        if w.state in ("waiting", "thinking"):
+            return JSONResponse({"reply": "DJ na přání ještě pracuje — odpověď uvidíš ve frontě.",
+                                 "id": w.id, "state": w.state}, status_code=202)
+        return JSONResponse({"reply": w.reply or "Hotovo.", "id": w.id, "state": w.state})
+
+    async def _requests(self, request: Request) -> Response:
+        wq = getattr(self.app, "wishes", None)
+        return JSONResponse({"requests": wq.public() if wq else []})
+
+    async def _request_action(self, request: Request) -> Response:
+        """Autor s tokenem: odebrat (DELETE / action=remove) nebo zařadit hned."""
+        wq = getattr(self.app, "wishes", None)
+        if wq is None:
+            return _json_error("Fronta přání tu není.", 404)
+        rid = request.path_params.get("rid", "")
+        try:
+            data = await self._body(request)
+        except BadValue as exc:
+            return _json_error(str(exc), 400)
+        token = data.get("token") or request.headers.get("x-wish-token") or ""
+        action = "remove" if request.method == "DELETE" else str(data.get("action") or "")
+        if action == "remove":
+            ok, msg = await wq.remove(rid, token)
+        elif action == "next":
+            ok, msg = await wq.set_play_next(rid, token)
+        else:
+            return _json_error(f"Neznámá akce: {action!r}", 400)
+        telemetry.event("web.request_action", action=action, id=rid[:16], ok=ok, **_client(request))
+        self.poke()
+        if not ok:
+            status = 404 if msg.startswith("Takové") else 403 if "nepatří" in msg else 409
+            return _json_error(msg, status)
+        return JSONResponse({"ok": True, "message": msg})
+
     async def _control(self, request: Request) -> Response:
         t0 = time.monotonic()
         rec: dict[str, Any] = _client(request)
@@ -740,14 +882,27 @@ class WebServer:
 
         try:
             if action == "play":
-                await player.toggle_pause(False)
+                start = getattr(self.app, "play_or_start", None)
+                if start is not None:
+                    # nic nehraje ani nečeká → chytrý rozjezd podle situace (C7)
+                    did = await start("panel" if rec.get("ua") == "panel" else "web")
+                    rec["did"] = did
+                    if did == "starting":
+                        self.poke()
+                        return JSONResponse({"ok": True, "starting": True})
+                else:
+                    await player.toggle_pause(False)
             elif action == "pause":
                 await player.toggle_pause(True)
             elif action == "next":
                 await player.skip()
             elif action == "stop":
-                await player.clear_queue()
-                await player.toggle_pause(True)
+                wq = getattr(self.app, "wishes", None)
+                if wq is not None:
+                    await wq.stop_all()  # i přání všech — web se na to ptá
+                else:
+                    await player.clear_queue()
+                    await player.toggle_pause(True)
             elif action == "volume":
                 if isinstance(value, bool) or not isinstance(value, (int, float)):
                     return _json_error("Hlasitost musí být číslo 0–130.", 400)

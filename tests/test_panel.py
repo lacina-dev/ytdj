@@ -394,7 +394,7 @@ class PanelEventsTest(unittest.TestCase):
         self.touch.feed("move", x, y + 200)
         time.sleep(0.05)
         self.touch.feed("up", x, y + 200)
-        self.touch.tap(5, 60)  # nowhere near a button
+        self.touch.tap(240, 144)  # the progress bar — nowhere near a button
 
         # the speaker's wheel: one line per turn, not per click
         for _ in range(4):
@@ -613,9 +613,12 @@ class WishTest(unittest.TestCase):
         self._open()
         self.touch.tap(*center(chip_box(0)))
         self.assertTrue(wait_for(lambda: self.fake.prompts))
-        self.assertEqual(self.fake.prompts[0], {"text": "víc takového", "source": "panel"})
-        self.assertTrue(wait_for(lambda: self.app.wish.phase == "ok"))
+        self.assertEqual(self.fake.prompts[0], {"text": "víc takového", "source": "panel", "who": "displej",
+                                                "play_next": False, "wait": False})
+        # accepted at once, the DJ's decision comes with the status stream
+        self.assertTrue(wait_for(lambda: self.app.wish.phase == "queued"))
         self.assertIn("víc takového", self.app.wish.reply)
+        self.assertIn(self.app.wish.req_id, self.app.wish.mine)
         self.assertTrue(wait_for(lambda: self.app._shown_page == "wish:sent"))
         self.touch.tap(*center(BTN_R))  # Hotovo
         self.assertTrue(wait_for(lambda: self.app._shown_page == "player"))
@@ -636,7 +639,7 @@ class WishTest(unittest.TestCase):
         self._key("ok")
         self.assertTrue(wait_for(lambda: self.fake.prompts))
         self.assertEqual(self.fake.prompts[0]["text"], "čechomor")
-        self.assertTrue(wait_for(lambda: self.app.wish.phase == "ok"))
+        self.assertTrue(wait_for(lambda: self.app.wish.phase == "queued"))
         self.assertEqual(self.app.wish.text, "")  # sent drafts are forgotten
 
     def test_empty_wish_is_not_sent(self):
@@ -650,17 +653,68 @@ class WishTest(unittest.TestCase):
         self.assertTrue(self.app.wish.hint)
         self.assertEqual(self.fake.prompts, [])
 
-    def test_busy_dj_waits_then_sends(self):
+    def test_busy_dj_does_not_block(self):
         from ytdj.panel.wishui import chip_box
 
         self.fake.busy = True  # somebody else's wish is being worked on
         self._open()
         self.touch.tap(*center(chip_box(2)))
-        self.assertTrue(wait_for(lambda: self.app.wish.phase == "wait"))
-        self.assertEqual(self.fake.prompts, [])
-        self.fake.busy = False
-        self.assertTrue(wait_for(lambda: self.app.wish.phase == "ok", timeout=10))
+        # no more waiting for the DJ: the wish goes out at once and queues
+        self.assertTrue(wait_for(lambda: self.fake.prompts))
         self.assertEqual(self.fake.prompts[0]["text"], "jen česky")
+        self.assertTrue(wait_for(lambda: self.app.wish.phase == "queued"))
+
+    def test_right_after_this(self):
+        from ytdj.panel.wishui import BTN_L, chip_box
+
+        self._open()
+        self.touch.tap(*center(chip_box(3)))
+        self.assertTrue(wait_for(lambda: self.app.wish.phase == "queued"))
+        self.assertTrue(wait_for(lambda: self.app._shown_page == "wish:sent"))
+        self.touch.tap(*center(BTN_L))  # Hned po téhle
+        self.assertTrue(wait_for(lambda: self.fake.actions))
+        act = self.fake.actions[0]
+        self.assertEqual((act["action"], act["id"]), ("next", self.app.wish.req_id))
+        self.assertTrue(wait_for(lambda: self.fake.requests[0]["play_next"]))
+
+    def test_queue_page_removes_only_own(self):
+        from ytdj.panel.netui import BTN_R
+        from ytdj.panel.ui import TRACK_TARGET
+        from ytdj.panel.wishui import chip_box, rm_box, targets
+
+        with self.fake.lock:
+            other = self.fake.add_request("Dancing Queen", "Jana", state="queued", reply="ok")
+        self._open()
+        self.touch.tap(*center(chip_box(0)))
+        self.assertTrue(wait_for(lambda: self.app.wish.phase == "queued"))
+        self.assertTrue(wait_for(lambda: self.app._shown_page == "wish:sent"))
+        self.touch.tap(*center(BTN_R))  # Hotovo
+        self.assertTrue(wait_for(lambda: self.app._shown_page == "player"))
+        self.assertTrue(wait_for(lambda: self.app._view().wishes == 2), self.app._view().wishes)
+        self.touch.tap(*center(TRACK_TARGET))  # "Pak: …" → the queue
+        self.assertTrue(wait_for(lambda: self.app._shown_page == "wish:queue"))
+        view = self.app.wish.view(time.monotonic())
+        rows = {r.who: r for r in view.rows}
+        self.assertTrue(rows["displej"].mine)
+        self.assertFalse(rows["Jana"].mine)
+        mine_at = [r.id for r in view.rows].index(self.app.wish.req_id)
+        t = targets(view)
+        self.assertIn(f"rm{mine_at}", t)
+        self.assertEqual([k for k in t if k.startswith("rm")], [f"rm{mine_at}"])  # × only on ours
+        self.touch.tap(*center(rm_box(mine_at)))
+        self.assertTrue(wait_for(lambda: any(a.get("action") == "remove" for a in self.fake.actions)))
+        self.assertTrue(wait_for(lambda: self.fake.requests[-1]["state"] == "removed"))
+        self.assertEqual(other["state"], "queued")
+
+    def test_play_in_silence_asks_the_server_to_start(self):
+        from ytdj.panel.ui import PLAY
+
+        self.fake.idle = True
+        self.assertTrue(wait_for(lambda: not self.app._view().has_track))
+        self.touch.tap(*center(PLAY))
+        self.assertTrue(wait_for(lambda: ("play", None) in self.fake.controls))
+        self.assertEqual(self.fake.prompts, [])  # not a listener's wish any more
+        self.assertTrue(wait_for(lambda: self.app._view().has_track, timeout=5))
 
     def test_answer_comes_back_after_leaving(self):
         from ytdj.panel.netui import BTN_FULL
@@ -672,7 +726,7 @@ class WishTest(unittest.TestCase):
         self.assertTrue(wait_for(lambda: self.app.wish.phase == "busy"))
         self.touch.tap(*center(BTN_FULL))  # Zpět k přehrávání
         self.assertTrue(wait_for(lambda: self.app._shown_page == "player"))
-        self.assertTrue(wait_for(lambda: self.app.wish.phase == "ok"))
+        self.assertTrue(wait_for(lambda: self.app.wish.phase == "queued"))
         self.assertTrue(wait_for(lambda: self.app._shown_page == "wish:sent"))
 
     def test_failure_offers_retry(self):
@@ -685,7 +739,7 @@ class WishTest(unittest.TestCase):
         self.assertIn("chybu", self.app.wish.error)
         self.fake.prompt_status = 200
         self.touch.tap(*center(BTN_R))  # Zkusit znovu
-        self.assertTrue(wait_for(lambda: self.app.wish.phase == "ok"))
+        self.assertTrue(wait_for(lambda: self.app.wish.phase == "queued"))
         self.assertEqual([p["text"] for p in self.fake.prompts], ["něco klidnějšího"] * 2)
 
 

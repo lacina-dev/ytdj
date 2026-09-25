@@ -246,6 +246,12 @@ class Config:
     def child_env(self) -> dict[str, str]:
         """Environment for mpv — adds node to PATH if it is missing."""
         env = dict(os.environ)
+        # Resolver glibc čeká na ztracenou odpověď DNS 5 s, než to zkusí znovu.
+        # Na Pi (Wi-Fi, router) se to stávalo u ~každého sedmého dotazu na
+        # rrN---sn-….googlevideo.com — mpv pak otevíralo připravenou skladbu
+        # 5,2 s místo 0,3 s (log mpv: "Opening https…" → "Starting connection
+        # attempt" přesně +5,2 s). Vteřina stačí; kdo si nastavil vlastní, má ji.
+        env.setdefault("RES_OPTIONS", "timeout:1 attempts:3")
         if self.node_bin:
             env["PATH"] = f"{self.node_bin}:{env.get('PATH', '')}"
         return env

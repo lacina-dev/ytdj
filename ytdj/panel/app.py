@@ -38,6 +38,17 @@ TOUCH_SLOP = 14  # px a finger may wander off a button and still press it
 TOUCH_GRAB = 4  # px of grace around a button for the initial touch
 MIN_PRESS = 0.02  # s; shorter down→up is contact bounce, not a tap
 REPEAT_GUARD = 0.35  # s between two play/next taps — bounce must not double-fire
+# Držené −/+ hlasitosti opakuje krok: první opakování po REPEAT_DELAY (kratší
+# stisk je obyčejné ťuknutí = jeden krok při puštění), pak po REPEAT_INTERVAL,
+# po REPEAT_FAST_AFTER držení rychleji. Požadavky na server dál brzdí VOL_INTERVAL.
+REPEAT_DELAY = 0.45
+REPEAT_INTERVAL = 0.15
+REPEAT_FAST_AFTER = 1.5
+REPEAT_FAST_INTERVAL = 0.10
+# Odporová vrstva občas na chvilku "pustí" (výpadek vzorků delší než debounce
+# ovladače): nový dotyk na stejném tlačítku do té doby naváže na běžící opakování.
+REPEAT_REGRIP = 0.15
+VOL_BUTTONS = ("vol_up", "vol_down")
 
 
 @dataclass
@@ -104,6 +115,11 @@ class PanelApp:
         self.vol_sent_at = 0.0
         self.vol_sent: int | None = None
         self.vol_pending: int | None = None
+        # auto-repeat of a held −/+ button
+        self.repeat_at: float | None = None  # next step; None = not repeating
+        self.repeat_steps = 0  # steps done by repeating in this gesture
+        self.repeat_start = 0.0  # when the (possibly re-gripped) hold began
+        self.repeat_lost: tuple[str, float, float] | None = None  # (button, released at, start)
 
         self._need_full = True
         self._last_full = 0.0
@@ -218,9 +234,9 @@ class PanelApp:
                     self.hold_running = None
                 elif action == "next":
                     self.hold_skip = None
-                elif action == "volume" and self.pressed != "vol":
+                elif action == "volume" and not self._vol_gesture():
                     self.hold_volume = None
-            elif action == "volume" and self.hold_volume and self.pressed != "vol":
+            elif action == "volume" and self.hold_volume and not self._vol_gesture():
                 # let the server confirm; if it never does, fall back soon
                 self.hold_volume.until = min(self.hold_volume.until, time.monotonic() + HOLD)
         elif kind == "touch":
@@ -285,7 +301,7 @@ class PanelApp:
         vol = state.get("volume")
         if (
             self.hold_volume
-            and self.pressed != "vol"
+            and not self._vol_gesture()
             and self.vol_pending is None
             and isinstance(vol, (int, float))
             and int(vol) == self.hold_volume.value
@@ -408,6 +424,8 @@ class PanelApp:
                 deadlines.append(hold.until)
         if self.vol_pending is not None:
             deadlines.append(self.vol_sent_at + VOL_INTERVAL)
+        if self.repeat_at is not None:
+            deadlines.append(self.repeat_at)
         if self.online and self._is_running() and self.state and self.state.get("current"):
             # wake exactly when the displayed second changes
             pos = self._position(now)
@@ -420,6 +438,7 @@ class PanelApp:
             hold = getattr(self, name)
             if hold and now >= hold.until:
                 setattr(self, name, None)
+        self._repeat(now)
         if self.vol_pending is not None and now - self.vol_sent_at >= VOL_INTERVAL:
             self._send_volume(self.vol_pending)
         self.net.timers(now)
@@ -432,11 +451,36 @@ class PanelApp:
                 return name
         return None
 
+    def _vol_gesture(self) -> bool:
+        """A finger is setting the volume right now (drag or held −/+)."""
+        return self.pressed == "vol" or (self.pressed in VOL_BUTTONS and self.repeat_steps > 0)
+
     def _end_gesture(self) -> None:
-        if self.pressed == "vol":
+        if self._vol_gesture():
             self._finish_volume()
         self.pressed = None
         self.inside = False
+        self.repeat_at = None
+        self.repeat_steps = 0
+
+    def _repeat(self, now: float) -> None:
+        """Step the volume while −/+ is held (touch events stop while a finger rests)."""
+        if self.repeat_at is None or now < self.repeat_at:
+            return
+        name = self.pressed
+        if name not in VOL_BUTTONS or not self.inside or not self.online or self.net.page:
+            self.repeat_at = None
+            return
+        if self._vol_step(name, math.inf) is None:
+            self.repeat_at = None  # at the limit — nothing more to do until release
+            if self.repeat_steps == 0:
+                self.repeat_steps = 1  # the press did its job; release must not step
+            return
+        self.repeat_steps += 1
+        fast = now - self.repeat_start >= REPEAT_FAST_AFTER
+        # from the schedule, not from now, so a late wake-up doesn't slow the pace
+        nxt = self.repeat_at + (REPEAT_FAST_INTERVAL if fast else REPEAT_INTERVAL)
+        self.repeat_at = max(nxt, now + 0.02)
 
     def _touch(self, ev: TouchEvent, now: float | None = None) -> None:
         now = time.monotonic() if now is None else now
@@ -456,6 +500,17 @@ class PanelApp:
             log.info("dotyk: %s na %d,%d", name, ev.x, ev.y)
             if name == "vol":
                 self._drag_volume(ev.x)
+            elif name in VOL_BUTTONS:
+                lost, self.repeat_lost = self.repeat_lost, None
+                if lost and lost[0] == name and now - lost[1] <= REPEAT_REGRIP:
+                    # a glitch in the middle of a hold: carry on repeating
+                    self.repeat_steps, self.repeat_start = 1, lost[2]
+                    if self.hold_volume:
+                        self.hold_volume.until = math.inf
+                    self.repeat_at = now + REPEAT_INTERVAL
+                else:
+                    self.repeat_steps, self.repeat_start = 0, now
+                    self.repeat_at = now + REPEAT_DELAY
         elif ev.kind == "move":
             if not self.pressed:
                 return
@@ -464,6 +519,10 @@ class PanelApp:
                 self._drag_volume(ev.x)
             else:
                 self.inside = self._hit(ev.x, ev.y, TOUCH_SLOP) == self.pressed
+                if not self.inside and self.repeat_at is not None:
+                    self.repeat_at = None  # slid off −/+: stop stepping for good
+                    if self.repeat_steps:
+                        self._finish_volume()
         elif ev.kind == "up":
             name = self.pressed
             if not name:
@@ -471,6 +530,13 @@ class PanelApp:
             if name == "vol":
                 self._end_gesture()
                 return
+            if name in VOL_BUTTONS and self.repeat_steps:
+                # held and repeated: the steps are done, only the final value goes out
+                if self.inside and self.repeat_at is not None:
+                    self.repeat_lost = (name, now, self.repeat_start)
+                self._end_gesture()
+                return
+            self.repeat_at = None
             # resistive controllers often report garbage coordinates on
             # release; the last down/move position is the trustworthy one
             x, y = self.last_xy
@@ -503,14 +569,20 @@ class PanelApp:
             self.hold_skip = _Hold(self.track_key, now + SKIP_HOLD)
             log.info("povel: další")
             self.commander.send("next")
-        elif name in ("vol_up", "vol_down"):
-            cur = view.volume
-            if name == "vol_up":
-                new = cur if cur >= self.vol_max else min(self.vol_max, (cur // VOL_STEP + 1) * VOL_STEP)
-            else:
-                new = max(0, ((cur + VOL_STEP - 1) // VOL_STEP - 1) * VOL_STEP)
-            if new != cur:
-                self._set_volume(new, now + HOLD)
+        elif name in VOL_BUTTONS:
+            self._vol_step(name, now + HOLD)
+
+    def _vol_step(self, name: str, until: float) -> int | None:
+        """One −/+ step (snapped to VOL_STEP); the new volume, or None at the limit."""
+        cur = self._view().volume
+        if name == "vol_up":
+            new = cur if cur >= self.vol_max else min(self.vol_max, (cur // VOL_STEP + 1) * VOL_STEP)
+        else:
+            new = max(0, ((cur + VOL_STEP - 1) // VOL_STEP - 1) * VOL_STEP)
+        if new == cur:
+            return None
+        self._set_volume(new, until)
+        return new
 
     def _start_dj(self) -> None:
         """Nic nehraje (třeba po restartu) — "Hrát" požádá DJ, ať naváže.

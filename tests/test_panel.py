@@ -25,6 +25,7 @@ from ytdj.panel.ui import (  # noqa: E402
     NEXT,
     PLAY,
     VOL,
+    VOL_DOWN,
     VOL_UP,
     Fonts,
     Renderer,
@@ -160,6 +161,79 @@ class EndToEndTest(unittest.TestCase):
         self.assertLessEqual(len(sent), 6)
         self.assertTrue(wait_for(lambda: self.app.hold_volume is None, timeout=6))
         self.assertEqual(self.app._view().volume, final)
+
+    def _hold(self, box, seconds):
+        x, y = center(box)
+        self.touch.feed("down", x, y)
+        time.sleep(seconds)
+        self.touch.feed("up", x, y)
+        self.assertTrue(wait_for(lambda: self.app.pressed is None, step=0.005))
+        return self.app._view().volume
+
+    def _sent(self):
+        return [c[1] for c in self.fake.controls if c[0] == "volume"]
+
+    def test_volume_tap_is_one_step(self):
+        self.touch.tap(*center(VOL_DOWN), hold=0.15)  # 65 → 60
+        self.assertTrue(wait_for(lambda: self.fake.volume == 60))
+        time.sleep(0.8)
+        self.assertEqual(self._sent(), [60])
+        self.assertEqual(self.app._view().volume, 60)
+
+    def test_volume_hold_repeats(self):
+        shown = self._hold(VOL_DOWN, 1.5)
+        # 65 → 60 at 0.45 s, then every 0.15 s: several steps, all on the glass
+        self.assertLessEqual(shown, 40)
+        self.assertGreaterEqual(shown, 15)
+        self.assertEqual(shown % 5, 0)
+        self.assertTrue(wait_for(lambda: self.fake.volume == shown))
+        time.sleep(0.5)
+        self.assertEqual(self.app._view().volume, shown)  # no extra tap step on release
+        sent = self._sent()
+        self.assertEqual(sent[-1], shown)
+        # ~1 s of repeating at most ~4 requests/s, plus the final value
+        self.assertLessEqual(len(sent), 7)
+        self.assertEqual(sent, sorted(sent, reverse=True))
+
+    def test_volume_hold_clamps(self):
+        self.assertEqual(self._hold(VOL_UP, 1.6), 100)
+        self.assertTrue(wait_for(lambda: self.fake.volume == 100))
+        self.assertTrue(all(v <= 100 for v in self._sent()))
+        time.sleep(0.4)
+        self.assertEqual(self._hold(VOL_DOWN, 2.8), 0)
+        self.assertTrue(wait_for(lambda: self.fake.volume == 0))
+        self.assertTrue(all(0 <= v <= 100 for v in self._sent()))
+
+    def test_volume_slide_out_stops_repeat(self):
+        x, y = center(VOL_UP)
+        self.touch.feed("down", x, y)
+        time.sleep(0.8)  # 65 → 70 → 75 (→ 80)
+        self.touch.feed("move", x, y - 150)  # slid off the button, still touching
+        time.sleep(0.1)
+        stopped = self.app._view().volume
+        self.assertGreater(stopped, 65)
+        time.sleep(0.8)
+        self.assertEqual(self.app._view().volume, stopped)
+        self.touch.feed("up", x, y - 150)
+        self.assertTrue(wait_for(lambda: self.fake.volume == stopped))
+        time.sleep(0.4)
+        self.assertEqual(self.app._view().volume, stopped)
+
+    def test_volume_hold_survives_glitch(self):
+        x, y = center(VOL_UP)
+        self.touch.feed("down", x, y)
+        time.sleep(0.55)  # one repeat: 70
+        self.touch.feed("up", x, y)  # the resistive layer lets go for a moment
+        time.sleep(0.05)
+        self.touch.feed("down", x, y)
+        time.sleep(0.4)  # carries on at the repeat pace, no fresh 0.45 s delay
+        self.touch.feed("up", x, y)
+        self.assertTrue(wait_for(lambda: self.app.pressed is None, step=0.005))
+        shown = self.app._view().volume
+        self.assertGreaterEqual(shown, 80)
+        self.assertTrue(wait_for(lambda: self.fake.volume == shown))
+        time.sleep(0.3)
+        self.assertEqual(self.app._view().volume, shown)
 
     def test_offline_and_back(self):
         self._stop_server()

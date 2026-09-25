@@ -22,12 +22,17 @@ from .catalog import Catalog, Track
 
 log = logging.getLogger(__name__)
 
+RADIO_RETRY = 60.0  # s — po selhání rádia (síť, YouTube) nový pokus nejdřív za tolik
+
 
 @dataclass
 class Pool:
     seed: Track
     tracks: deque[Track] = field(default_factory=deque)
     last_good: str = ""  # last track not skipped — we reseed from it
+    # rádio pro pool selhalo (síť, YouTube) — do té doby ho nezkoušet, ale ani
+    # nezahazovat: po výpadku má pokračovat stejná nálada
+    retry_at: float = 0.0
 
     def __len__(self) -> int:
         return len(self.tracks)
@@ -52,6 +57,8 @@ class RadioPools:
         self.mood: str = ""
         # Vyžádaný interpret smí i dlouhé kusy — viz set_seeds().
         self.allow_long = False
+        # explicitní skladby (ytmusic isExplicit) do podkresu? Výchozí ne.
+        self.allow_explicit = bool(getattr(cfg, "allow_explicit_radio", False))
         # registry of everything we have seen in this session — the LLM works
         # only with videoIds, here we translate them back to Tracks
         self.known: dict[str, Track] = {}
@@ -92,9 +99,11 @@ class RadioPools:
         # rádia všech seedů naráz (dřív po sobě: 5 seedů = 4 s, než přání
         # nálady vůbec vědělo, co zahraje první)
         radios = await asyncio.gather(*(self._fetch_radio(seed.id) for seed in seeds))
-        for seed, tracks in zip(seeds, radios):
+        for seed, got in zip(seeds, radios):
+            tracks = got or []
             self.remember_tracks(tracks)
-            pool = Pool(seed=seed, tracks=deque(tracks), last_good=seed.id)
+            pool = Pool(seed=seed, tracks=deque(tracks), last_good=seed.id,
+                        retry_at=0.0 if got is not None else time.monotonic() + RADIO_RETRY)
             self.pools.append(pool)
             self.store.record_seed(seed.id, mood)
             summary.append(
@@ -180,7 +189,9 @@ class RadioPools:
         played = sorted((t for t in tracks if t.id in rank), key=lambda t: -rank[t.id])
         return fresh + played
 
-    async def _fetch_radio(self, video_id: str) -> list[Track]:
+    async def _fetch_radio(self, video_id: str) -> list[Track] | None:
+        """Rádio ze seedu; None = selhalo (síť, YouTube) — na rozdíl od [],
+        kdy rádio prostě nic nového nemá."""
         t0 = time.monotonic()
         seed = self.known.get(video_id)
         ev = {"seed": video_id, "label": seed.label() if seed else None}
@@ -193,7 +204,7 @@ class RadioPools:
             log.warning("rádio pro %s selhalo: %s", video_id, exc)
             ev["n"] = 0
             ev["error"] = f"{type(exc).__name__}: {exc}"[:300]
-            return []
+            return None
         finally:
             ev["took_ms"] = int((time.monotonic() - t0) * 1000)
             telemetry.event("radio.fetch", **ev)
@@ -222,8 +233,17 @@ class RadioPools:
             self._rr += 1
 
             if not pool.tracks:
+                now = time.monotonic()
+                if pool.retry_at > now:
+                    # rádio tohoto poolu nedávno selhalo — zkusí se později;
+                    # čekají-li tak všechny, nemá smysl točit se dokola
+                    if all(not p.tracks and p.retry_at > now for p in self.pools):
+                        break
+                    continue
                 await self._refill(pool)
                 if not pool.tracks:
+                    if pool.retry_at > time.monotonic():
+                        continue  # selhalo — pool zůstává (dřív se smazal i s náladou)
                     self.pools.remove(pool)
                     self._rr = 0
                     continue
@@ -308,6 +328,9 @@ class RadioPools:
         """Proč skladba do fronty nejde (klíč do statistiky radio.pool), None = jde."""
         if track.id in blocked:
             return "blacklisted"
+        if track.explicit and not self.artist and not self.allow_explicit:
+            # vulgární texty do podkresu ne; vyžádaný interpret / skladba jménem ano
+            return "explicit"
         if track.id in self.session_seen:
             return "session_seen"
         if track.id in recent:
@@ -334,6 +357,10 @@ class RadioPools:
             self._refill_artist(pool, history, blocked)
             return
         fresh = await self._fetch_radio(pool.last_good or pool.seed.id)
+        if fresh is None:
+            pool.retry_at = time.monotonic() + RADIO_RETRY
+            return
+        pool.retry_at = 0.0
         self.remember_tracks(fresh)
         new = [t for t in fresh if t.id not in self.session_seen]
         pool.tracks.extend(new)
@@ -366,6 +393,11 @@ class RadioPools:
         jako zahrané, ať o ně režim interpreta nepřijde."""
         for t in tracks:
             self.session_seen.discard(t.id)
+
+    def retrying(self) -> bool:
+        """Některý pool čeká na nový pokus o rádio (selhalo) — nepřeseedovávat."""
+        now = time.monotonic()
+        return any(p.retry_at > now for p in self.pools)
 
     def mark_finished(self, video_id: str) -> None:
         """Track finished playing — a good signal, use it as the pool's next seed."""

@@ -202,6 +202,8 @@ class DJFallback(unittest.TestCase):
     """CodexDJ: app-server failure → `codex exec` path, and telemetry says how."""
 
     def setUp(self):
+        import test_dj_apply  # noqa: F401 — its import sets YTDJ_CODEX_APP_SERVER=0; do it before we override
+
         self._env = os.environ.get("YTDJ_CODEX_APP_SERVER")
         os.environ["YTDJ_CODEX_APP_SERVER"] = "1"
 

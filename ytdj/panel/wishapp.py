@@ -16,6 +16,7 @@ from __future__ import annotations
 import http.client
 import json
 import logging
+import secrets
 import threading
 import time
 from typing import Callable
@@ -43,7 +44,10 @@ PANEL_WHO = "displej"  # the name on wishes typed here, unless somebody picks th
 STATE_PHASE = {
     "waiting": "busy", "thinking": "busy", "queued": "queued", "playing": "playing",
     "done": "ok", "notfound": "notfound", "error": "error", "removed": "error", "replaced": "ok",
+    "skipped": "ok",
 }
+# klíče čipů pro DJ bez modelu (agent/offline.py), ve stejném pořadí jako CHIPS
+CHIP_KEYS = ("more", "other", "czech", "calmer", "livelier", "surprise")
 
 
 def post_json(api, path: str, body: dict, timeout: float = PROMPT_TIMEOUT) -> tuple[int, dict, str]:
@@ -118,6 +122,10 @@ class WishController:
         self.mine: dict[str, str] = {}  # id → owner token
         self.people: list[str] = []
         self.who = PANEL_WHO
+        # Kdo je kdo, určuje id klienta, ne jméno: u displeje se lidé střídají,
+        # takže každá relace přání (otevření → zavření) je samostatný člověk.
+        self.cid: str | None = None
+        self.dj_offline = False
         self.scroll = 0
         self.note = ""
         # gesture
@@ -146,6 +154,7 @@ class WishController:
         reqs = state.get("requests")
         if isinstance(reqs, list):
             self.requests = [r for r in reqs if isinstance(r, dict)]
+        self.dj_offline = bool(state.get("dj_offline"))
         people = state.get("people")
         if isinstance(people, list):
             self.people = [str(p) for p in people if isinstance(p, str)][:6]
@@ -185,8 +194,12 @@ class WishController:
                 label += f" · {r['eta']}"
             if r.get("play_next") and st in ACTIVE:
                 label += " · hned"
-            if st in ("done", "notfound", "error") and r.get("reply"):
+            if st == "skipped" and r.get("skipped_by"):
+                label += f" · přeskočil {r['skipped_by']}"
+            elif st in ("done", "notfound", "error") and r.get("reply"):
                 label += f" · {r['reply']}"
+            if r.get("restored") and st in ACTIVE:
+                label += " · obnoveno po restartu"
             rows.append(QueueRow(id=str(r.get("id") or ""), who=str(r.get("who") or "?"),
                                  text=str(r.get("text") or ""), state=st, label=label,
                                  mine=str(r.get("id") or "") in self.mine))
@@ -210,6 +223,9 @@ class WishController:
         self.page = None
         self.pressed = None
         self.hint = ""
+        # další u displeje je jiný člověk: jméno zpět na "displej", nová relace
+        self.who = PANEL_WHO
+        self.cid = None
         self.note = ""
 
     def show_answer(self, now: float) -> None:
@@ -224,7 +240,7 @@ class WishController:
 
     # ---- sending ----
 
-    def send(self, text: str, now: float, chip: str = "") -> None:
+    def send(self, text: str, now: float, chip: str = "", chip_key: str = "") -> None:
         text = " ".join(text.split())[:MAX_WISH]
         if not text:
             return
@@ -241,7 +257,12 @@ class WishController:
         self._go("sent")
         log.info("přání z panelu (%d znaků%s, %s)", len(text), f", {chip}" if chip else "", self.who)
         api, post = self.api, self.post
-        body = {"text": text, "source": SOURCE, "who": self.who, "play_next": False, "wait": False}
+        if self.cid is None:
+            self.cid = "panel-" + secrets.token_hex(6)
+        body = {"text": text, "source": SOURCE, "who": self.who, "play_next": False, "wait": False,
+                "client": self.cid}
+        if chip_key:
+            body["chip"] = chip_key  # nálada funguje i bez mozku DJe
 
         def run() -> None:
             t0 = time.monotonic()
@@ -325,6 +346,7 @@ class WishController:
             page=self.page or "home",
             pressed=self.pressed if self.inside else None,
             note=note or self.note,
+            offline=self.dj_offline,
             text=self.text,
             kb_page=self.kb_page,
             shift=self.shift,
@@ -447,7 +469,8 @@ class WishController:
                 i = int(name[4:])
                 if i < len(self.chips):
                     label, text = self.chips[i]
-                    self.send(text, now, chip=label)
+                    self.send(text, now, chip=label,
+                              chip_key=CHIP_KEYS[i] if i < len(CHIP_KEYS) else "")
         elif page == "keys":
             self._key(name, now)
         elif page == "queue":

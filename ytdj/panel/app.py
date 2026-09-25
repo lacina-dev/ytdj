@@ -350,7 +350,8 @@ class PanelApp:
             self.wish.show_answer(time.monotonic())
         cur = state.get("current") or None
         key = (cur.get("id") or cur.get("title")) if isinstance(cur, dict) else None
-        running = bool(state.get("playing")) and not bool(state.get("paused"))
+        # při výpadku spojení nic nehraje, ať mpv tvrdí cokoli — hodiny stojí
+        running = bool(state.get("playing")) and not bool(state.get("paused")) and not state.get("outage")
         server_pos = _num(state.get("position"))
         # Skladba je na řadě, ale proud ještě neteče — hodiny musí stát, jinak
         # by běžely vteřiny, které z repráku nezazněly.
@@ -402,7 +403,7 @@ class PanelApp:
         now = time.monotonic()
         st = self.state or {}
         cur = st.get("current") if isinstance(st.get("current"), dict) else None
-        running = bool(st.get("playing")) and not bool(st.get("paused"))
+        running = bool(st.get("playing")) and not bool(st.get("paused")) and not st.get("outage")
         if self.hold_running:
             running = self.hold_running.value
         volume = st.get("volume")
@@ -447,6 +448,8 @@ class PanelApp:
             next_who=str(nxt_req.get("who") or ""),
             now_who=now_who,
             wishes=self.wish.active_count(),
+            outage=bool(st.get("outage")),
+            dj_offline=bool(st.get("dj_offline")),
         )
 
     def _paint(self) -> None:

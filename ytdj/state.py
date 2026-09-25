@@ -92,6 +92,9 @@ class RequestCount:
         return f"{self.count}× {name}"
 
 
+BLACKLIST_DAYS = 7  # jak dlouho se nepřehratelná skladba nenabízí (smazaná natrvalo)
+
+
 class Store:
     """SQLite stav. `background=True` (aplikace): zápisy jdou do vlastního vlákna.
 
@@ -119,6 +122,7 @@ class Store:
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.executescript(SCHEMA)
+        self._migrate_blacklist()
         self._writes: queue.Queue | None = None
         self._writer: threading.Thread | None = None
         self._pool = None  # ThreadPoolExecutor pro aread(), až bude potřeba
@@ -222,10 +226,28 @@ class Store:
             (video_id, title, artist, time.time()),
         )
 
-    def blacklist(self, video_id: str, reason: str) -> None:
+    def _migrate_blacklist(self) -> None:
+        """Sloupec `until` (platnost záznamu). Staré záznamy bez něj vznikaly
+        i z výpadků sítě ("nepřehratelné" u všeho, co mpv zkusilo) — dostanou
+        stejnou lhůtu jako nové, ať se samy vyčistí."""
+        with self._lock, contextlib.suppress(sqlite3.Error):
+            cols = {r[1] for r in self.db.execute("PRAGMA table_info(blacklist)")}
+            if "until" not in cols:
+                self.db.execute("ALTER TABLE blacklist ADD COLUMN until REAL")
+                self.db.execute(
+                    "UPDATE blacklist SET until = ts + ? WHERE until IS NULL",
+                    (BLACKLIST_DAYS * 86400,),
+                )
+
+    def blacklist(self, video_id: str, reason: str, days: float | None = BLACKLIST_DAYS) -> None:
+        """Skladbu nenabízet. `days=None` = natrvalo (smazané video); jinak
+        jen na čas — "nepřehratelné dnes" (věk, region, dočasně nedostupné)
+        nemusí platit navždy a omyl (výpadek sítě) se tak sám napraví."""
+        now = time.time()
+        until = None if days is None else now + days * 86400
         self._write(
-            "INSERT OR REPLACE INTO blacklist(video_id,reason,ts) VALUES(?,?,?)",
-            (video_id, reason, time.time()),
+            "INSERT OR REPLACE INTO blacklist(video_id,reason,ts,until) VALUES(?,?,?,?)",
+            (video_id, reason, now, until),
         )
 
     # ---- reads ----
@@ -236,7 +258,8 @@ class Store:
         return {r[0] for r in rows}
 
     def blacklisted(self) -> set[str]:
-        return {r[0] for r in self._read("SELECT video_id FROM blacklist")}
+        return {r[0] for r in self._read(
+            "SELECT video_id FROM blacklist WHERE until IS NULL OR until > ?", (time.time(),))}
 
     def recent_history(self, limit: int = 40) -> list[PlayRecord]:
         rows = self._read(

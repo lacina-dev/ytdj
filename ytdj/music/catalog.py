@@ -11,7 +11,7 @@ import asyncio
 import logging
 import re
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from ytmusicapi import YTMusic
@@ -38,6 +38,9 @@ class Track:
     artist: str
     album: str | None = None
     duration: int | None = None  # seconds
+    # ytmusic "isExplicit" (odznak E). None = neví se / ne — do podkresu se
+    # explicitní nepouštějí, vyžádané jménem ano (RadioPools._reject_reason)
+    explicit: bool | None = field(default=None, compare=False)
 
     def compact(self) -> dict:
         """What the LLM will see — without None fields."""
@@ -89,7 +92,45 @@ def to_track(item: dict) -> Track | None:
         artist=_artists(item),
         album=album if isinstance(album, str) else None,
         duration=_duration(item),
+        explicit=True if item.get("isExplicit") else None,
     )
+
+
+def _explicit_badge(renderer: Any) -> bool:
+    """Odznak "E" u položky ytmusic (musicInlineBadgeRenderer MUSIC_EXPLICIT_BADGE)."""
+    try:
+        for badge in (renderer or {}).get("badges") or []:
+            icon = (badge.get("musicInlineBadgeRenderer") or {}).get("icon") or {}
+            if icon.get("iconType") == "MUSIC_EXPLICIT_BADGE":
+                return True
+    except AttributeError:
+        pass
+    return False
+
+
+def _patch_watch_explicit() -> None:
+    """ytmusicapi u skladeb rádia (get_watch_playlist) `isExplicit` nevrací,
+    i když ho YouTube posílá — doplní se z odznaků. Idempotentní; když se
+    ytmusicapi změní, prostě se nic nedoplní."""
+    try:
+        from ytmusicapi.parsers import watch
+    except Exception:
+        return
+    orig = getattr(watch, "parse_watch_track", None)
+    if orig is None or getattr(orig, "_ytdj_explicit", False):
+        return
+
+    def parse_watch_track(data):  # type: ignore[no-untyped-def]
+        track = orig(data)
+        if isinstance(track, dict) and "isExplicit" not in track:
+            track["isExplicit"] = _explicit_badge(data)
+        return track
+
+    parse_watch_track._ytdj_explicit = True  # type: ignore[attr-defined]
+    watch.parse_watch_track = parse_watch_track
+
+
+_patch_watch_explicit()
 
 
 # Viz Catalog.__init__ — proč ne `cfg.language`.

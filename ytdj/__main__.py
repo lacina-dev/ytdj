@@ -121,6 +121,14 @@ class App:
     async def _listener_spoke(self) -> None:
         """Přání posluchače má přednost před automatickým přeseedováním."""
         self.skips.turn(self._now(), by_user=True)
+        if self._start_task and not self._start_task.done():
+            # Rozjezd (▶ v tichu) drží zámek Codexu — přání posluchače má
+            # přednost; hudbu pak určí to přání.
+            log.info("ruším rozjezd kvůli přání posluchače")
+            telemetry.event("dj.start", phase="cancelled_by_user")
+            self._start_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._start_task
         if self._reseed_task and not self._reseed_task.done():
             log.info("ruším automatické přeseedování kvůli požadavku posluchače")
             telemetry.event("dj.reseed", phase="cancelled_by_user")
@@ -150,8 +158,14 @@ class App:
             reply = await self.wishes.start_idle()
             if reply:
                 print(f"\n{reply}")
+        except asyncio.CancelledError:
+            raise
         except Exception:
             log.exception("rozjezd selhal")
+            # ať to vidí web i displej, ne jen log
+            self.wishes.note_last(text="▶ rozjezd podle času a dne", source="start", ok=False,
+                                  reply="Rozjezd se nepovedl — napiš DJovi, co chceš slyšet.")
+            self._poke_web()
 
     def _set_status(self, text: str) -> None:
         """Bottom REPL status bar — there is none in web-only mode."""
@@ -221,10 +235,15 @@ class App:
             self.store.record_outcome(ev.track.id, "replaced")
 
         elif ev.kind == "error" and ev.track:
-            # unavailable (age-restricted, region-blocked, Premium-only)
+            # [player/outage] Na černou listinu jen vlastnost videa (soukromé,
+            # smazané, věk, region) — a na čas; natrvalo jen smazané. Chyby
+            # z výpadku sítě/YouTube chodí jako "unavailable" a sem nepatří.
             self.store.record_outcome(ev.track.id, "error")
-            self.store.blacklist(ev.track.id, "nepřehratelné")
-            log.info("přeskakuji nepřehratelné: %s", ev.track.label())
+            cls = (ev.detail or "").split("|", 1)[0]
+            if cls in ("content", "removed"):
+                self.store.blacklist(ev.track.id, f"nepřehratelné ({cls})",
+                                     days=None if cls == "removed" else 7)
+                log.info("přeskakuji nepřehratelné (%s): %s", cls, ev.track.label())
 
     # ---- queue filler ----
 
@@ -273,7 +292,8 @@ class App:
                     # zatímco Jana a Karel teprve čekali).
                     if self.wishes.can_seed_background():
                         await self._seed_from_current()
-                elif self.pools.pools and not self.dj.focus:
+                elif self.pools.pools and not self.dj.focus and not self.pools.retrying():
+                    # (při výpadku rádia nevolat Codex každé 2 minuty — pooly to zkusí samy)
                     # (v režimu interpreta pooly jedou dokola samy; prázdná
                     # dávka znamená jen, že všechno už čeká ve frontě)
                     # the pools ran dry and the radio yields nothing new anymore

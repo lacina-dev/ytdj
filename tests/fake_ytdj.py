@@ -77,6 +77,8 @@ class FakeYtdj:
         self.playing_req: dict | None = None  # the wish whose track plays now
         self.actions: list[dict] = []  # POST /api/requests/<id>
         self.build = "fake-1"  # the page reloads itself when this changes
+        self.dj_offline = False  # the DJ's brain is down (Codex circuit breaker)
+        self.outage = None  # {"reason": …} while YouTube / the network is down
 
     def _position(self) -> float:
         if self.paused:
@@ -136,6 +138,7 @@ class FakeYtdj:
                 self._advance()  # first: the requests' states follow the track change
             busy = self.busy or self.starting or any(r["state"] == "thinking" for r in self.requests)
             base = {"requests": self._requests(), "starting": self.starting,
+                    "dj_offline": self.dj_offline, "outage": self.outage,
                     "build": self.build, "version": self.build,
                     "people": sorted({r["who"] for r in self.requests if r["who"] != "displej"})}
             if self.idle:
@@ -288,10 +291,10 @@ class FakeYtdj:
                     self.paused = True
             elif action == "volume":
                 if isinstance(value, bool) or not isinstance(value, (int, float)):
-                    return 400, {"error": "Hlasitost musí být číslo 0–130."}
+                    return 400, {"error": "Hlasitost musí být číslo 0–100."}
                 if not 0 <= int(value) <= 130:
-                    return 400, {"error": "Hlasitost musí být v rozsahu 0–130."}
-                self.volume = int(value)
+                    return 400, {"error": "Hlasitost musí být v rozsahu 0–100."}
+                self.volume = min(100, int(value))  # strop 100 jako skutečný server
             else:
                 return 400, {"error": f"Neznámý povel: {action!r}"}
         return 200, {"ok": True}
@@ -435,7 +438,8 @@ def make_server(port: int = 0, fake: FakeYtdj | None = None, sse: bool = True) -
                 self._json(*fake.prompt(data))
             elif self.path == "/fake/state":
                 with fake.lock:
-                    for key in ("idle", "busy", "paused", "prompt_delay", "prompt_status", "sse", "dj_text", "mood", "build"):
+                    for key in ("idle", "busy", "paused", "prompt_delay", "prompt_status", "sse", "dj_text", "mood", "build",
+                                "dj_offline", "outage"):
                         if key in data:
                             setattr(fake, key, data[key])
                 self._json(200, {"ok": True})

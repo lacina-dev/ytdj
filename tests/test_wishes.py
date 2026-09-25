@@ -182,6 +182,16 @@ class Rig:
                             state_file=self.dir / "session.json")
         self.player.on_event(self.wq.on_event)
         self.wq.start()
+        # Každý člověk v testech = jeden prohlížeč (id klienta podle jména);
+        # testy identity posílají `client` samy.
+        raw_submit = self.wq.submit
+
+        def submit(text, who="", source="web", play_next=False, client=None):
+            if client is None and who:
+                client = {"id": "client-" + "".join(c for c in who.casefold() if c.isalnum())}
+            return raw_submit(text, who, source, play_next=play_next, client=client)
+
+        self.wq.submit = submit  # type: ignore[method-assign]
         return self
 
     async def __aexit__(self, *exc) -> None:
@@ -234,7 +244,7 @@ def run(coro):
 
 def W(who: str, n: int, mono: float, kind: str = "songs", **kw) -> Wish:
     w = Wish(id=f"{who}{mono}", token="t", who=who, source="web", text="x", created=mono,
-             mono=mono, state="queued", kind=kind, **kw)
+             mono=mono, state="queued", kind=kind, cid=f"client-{who}", **kw)
     w.tracks = [T(f"{who}{mono:.0f}-{i}") for i in range(n)]
     return w
 
@@ -357,7 +367,7 @@ class Queue(unittest.TestCase):
                 played = [rig.fake.current_vid()]
                 for _ in range(6):
                     rig.fake.finish_current()
-                    await rig.settle(0.15)
+                    await rig.settle(0.3)  # na pomalém stroji dát replanu čas
                     played.append(rig.fake.current_vid())
                 names = ["J" if v == j.tracks[0].id else ("P" if "kab" in v else "-")
                          for v in played]
@@ -393,7 +403,8 @@ class Queue(unittest.TestCase):
 
         run(go())
 
-    def test_explicit_cut_cuts_somebodys_wish(self):
+    def test_explicit_cut_never_cuts_somebody_elses_wish(self):
+        """ "hned teď" utne podkres nebo vlastní skladbu — cizí přání ne."""
         async def go():
             async with Rig() as rig:
                 await rig.background()
@@ -405,8 +416,10 @@ class Queue(unittest.TestCase):
                 SCRIPT["Dancing Queen hned teď"] = SCRIPT["Dancing Queen"]
                 k = wq.submit("Dancing Queen hned teď", "Karel")
                 self.assertTrue(k.play_next and k.cut)
-                await rig.until(lambda: k.state == "playing")
-                self.assertEqual(rig.fake.current_vid(), k.tracks[0].id)
+                await rig.until(lambda: k.state == "queued")
+                await rig.settle(0.2)
+                self.assertEqual(rig.fake.current_vid(), KABAT[0].id)  # Petrovo hraje dál
+                self.assertEqual(rig.upcoming()[0], k.tracks[0].id)  # ale Karel je hned další
 
         run(go())
 
@@ -578,11 +591,20 @@ class Queue(unittest.TestCase):
                 self.assertEqual({w.who for w in rig2.wq.active()}, {"Petr", "Jana"})
                 self.assertIsNotNone(rig2.fake.current_vid())
                 self.assertIn("Jana", rig2.owners() + [rig2.wq.reason_for(rig2.fake.current_vid()).get("who")])
-                # a v noci ne
+                # v noci se hudba sama nerozjede — přání ale zůstanou (pozastavená)
             async with Rig() as rig3:
                 why = await rig3.wq.resume(saved, now=datetime(2026, 9, 25, 23, 0))
                 self.assertEqual(why, "night")
-                self.assertIsNone(rig3.fake.current_vid())
+                await rig3.settle(0.2)
+                self.assertEqual({w.who for w in rig3.wq.active()}, {"Petr", "Jana"})
+                self.assertTrue(rig3.player._paused)
+                self.assertTrue(all(w.restored for w in rig3.wq.active()))
+            # po restartu Pi (jiné boot_id) hodiny bez RTC lžou → nic
+            async with Rig() as rig4:
+                why = await rig4.wq.resume({**saved, "boot": "jiny-boot"},
+                                           now=datetime(2026, 9, 25, 10, 0))
+                self.assertEqual(why, "reboot")
+                self.assertEqual(rig4.wq.active(), [])
 
         run(go())
 
@@ -637,10 +659,12 @@ class Queue(unittest.TestCase):
     def test_too_many_from_one_person(self):
         async def go():
             async with Rig(codex_delay=1.0) as rig:
+                # výslovně přidávající přání se hromadí — až do stropu
                 for _ in range(wishes.MAX_ACTIVE):
-                    rig.wq.submit("Holky z naší školky", "Petr")
+                    rig.wq.submit("přidej Holky z naší školky", "Petr")
                 with self.assertRaises(wishes.TooMany):
-                    rig.wq.submit("Holky z naší školky", "Petr")
+                    rig.wq.submit("přidej Holky z naší školky", "Petr")
+                rig.wq.submit("přidej Holky z naší školky", "Jana")  # strop je na člověka
 
         run(go())
 
@@ -670,6 +694,7 @@ class WebApp:
         self.store = rig.store
         self.cfg = rig.cfg
         self.wishes = rig.wq
+        self.dj = rig.dj
         self._start_task = None
         self.codex_busy = False
 

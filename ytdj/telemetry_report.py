@@ -136,7 +136,7 @@ KNOWN = {
     "request.created", "request.interpreted", "request.queued", "request.started",
     "request.done", "request.removed", "request.turn", "request.play_next",
     "request.handover", "request.background", "request.start", "request.resume",
-    "request.steer", "web.request_action",
+    "request.steer", "web.request_action", "sys.loop_lag",
 }
 
 
@@ -184,6 +184,7 @@ def summarize(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
     idle_starts: list[dict] = []
     resumes: Counter = Counter()
     steers = 0
+    loop_lags: list[dict] = []
 
     for e in events:
         n += 1
@@ -275,6 +276,8 @@ def summarize(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
             web_restarts += 1
         elif kind == "web.error":
             web_errors += 1
+        elif kind == "sys.loop_lag":
+            loop_lags.append(e)
         elif kind.startswith("request.") and kind in KNOWN:
             rid = e.get("id")
             rec = wishes.setdefault(str(rid), {}) if rid else None
@@ -450,6 +453,12 @@ def summarize(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
             "errors": web_errors,
         },
         "requests": requests_out,
+        "loop_lag": {
+            "n": len(loop_lags),
+            "lag_ms": stats(x.get("lag_ms") for x in loop_lags),
+            "worst": [{k: x.get(k) for k in ("ts", "lag_ms", "stack", "ongoing") if x.get(k)}
+                      for x in sorted(loop_lags, key=lambda x: -(x.get("lag_ms") or 0))[:3]],
+        },
         "errors": [{"kind": k, "error": m, "n": c} for (k, m), c in errors.most_common(10)],
         "other": other_out,
     }
@@ -628,6 +637,14 @@ def render(s: dict[str, Any]) -> str:
         w(f"  {_t(pr.get('ts'))} [{pr.get('status')}, {took}] {str(pr.get('text') or '')[:90]}")
         if pr.get("reply"):
             w(f"      → {str(pr['reply'])[:110]}")
+
+    ll = s.get("loop_lag") or {}
+    if ll.get("n"):
+        w("")
+        w(f"Zaseknutý event loop (web, panel i přání stály): {ll['n']}×, {_fmt_ms(ll['lag_ms'])}")
+        for x in ll["worst"]:
+            w(f"  {_t(x.get('ts'))} {(x.get('lag_ms') or 0) / 1000:.1f} s: "
+              + " ← ".join((x.get("stack") or ["?"])[:4]))
 
     rq = s.get("requests") or {}
     if rq.get("created") or rq.get("idle_starts", {}).get("n"):

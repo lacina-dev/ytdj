@@ -11,6 +11,7 @@ import asyncio
 import os
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -55,14 +56,22 @@ class Catalog:
     def __init__(self) -> None:
         self.calls: list[tuple] = []
         self.radio_base = 0
+        self.delay = 0.0  # s na každé volání (pomalá síť na Pi)
 
     async def search_song(self, artist: str, title: str):
         self.calls.append(("search_song", artist, title))
+        await self._slow()
         if artist == "Nobody":
             return None
         return T(f"s-{title}"[:11], artist)
 
+    async def _slow(self) -> None:
+        # jako opravdový katalog: synchronní ytmusicapi ve vlákně (to_thread)
+        if self.delay:
+            await asyncio.to_thread(time.sleep, self.delay)
+
     async def artist_tracks(self, name: str, limit: int = 50):
+        await self._slow()
         return list(ARTISTS.get(name.lower(), []))[:limit]
 
     async def find_artist_tracks(self, name: str, limit: int = 10):
@@ -70,6 +79,7 @@ class Catalog:
 
     async def radio(self, video_id: str, limit: int = 50):
         self.calls.append(("radio", video_id))
+        await self._slow()
         base = self.radio_base
         return [T(f"r{base + i}", f"Radio {i % 9}") for i in range(30)]
 
@@ -107,18 +117,20 @@ SCRIPT = {
 class Rig:
     """Opravdový MpvPlayer nad falešným mpv + opravdová fronta přání."""
 
-    def __init__(self, codex_delay: float = 0.05, jitter: float = 0.001) -> None:
+    def __init__(self, codex_delay: float = 0.05, jitter: float = 0.001,
+                 background_store: bool = False) -> None:
         self.dir = Path(tempfile.mkdtemp(dir=_TMP))
         self.fake = FakeMpv(self.dir / "mpv.sock", jitter=jitter)
         self.cfg = Config(**DEFAULTS)
         self.player = MpvPlayer(self.cfg)
-        self.store = Store(self.dir / "state.db")
+        self.store = Store(self.dir / "state.db", background=background_store)
         self.catalog = Catalog()
         self.pools = RadioPools(self.catalog, self.store, self.cfg)
         self.dj = CodexDJ(self.cfg, self.catalog, self.pools, self.player, self.store)
         self.dj._wish_file = self.dir / "intent.json"
         self.dj.wish = ListenerIntent()
         self.codex_delay = codex_delay
+        self.fast_miss: dict[str, float] = {}
         self.asked: list[tuple[str, bool]] = []
         self.events: list[tuple[str, dict]] = []
         self.wq: WishQueue | None = None
@@ -126,6 +138,8 @@ class Rig:
     async def fast_plan(self, text: str):
         kind, what = SCRIPT.get(text, ("codex", None))
         if kind != "fast":
+            # rychlá cesta, která hledá a nakonec to vzdá (timeout na Pi)
+            await asyncio.sleep(self.fast_miss.get(text, 0))
             return None
         await asyncio.sleep(0.01)
         tracks = interleave([await self.catalog.artist_tracks(a) for a in what])
@@ -479,6 +493,21 @@ class Queue(unittest.TestCase):
                 self.assertEqual(wq.bg_reason["who"], "Karel")
 
         run(go())
+
+    def test_codex_turns_go_in_arrival_order(self):
+        """Pi 25. 9.: Janina rychlá cesta vypršela za 3,5 s a Karel, který přišel
+        později, ji na Codexu předběhl o celý tah."""
+        async def go():
+            async with Rig(codex_delay=0.2) as rig:
+                await rig.background()
+                rig.fast_miss["Holky z naší školky"] = 0.4
+                j = rig.wq.submit("Holky z naší školky", "Jana")
+                await asyncio.sleep(0.05)
+                k = rig.wq.submit("něco klidnějšího", "Karel")
+                await rig.until(lambda: j.state in ("queued", "playing") and k.state in ("queued", "playing"), timeout=5)
+                return [t for t, _ in rig.asked]
+
+        self.assertEqual(run(go()), ["Holky z naší školky", "něco klidnějšího"])
 
     def test_not_found_is_honest(self):
         async def go():

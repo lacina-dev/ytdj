@@ -420,6 +420,12 @@ class WishQueue:
         self.bg_reason: dict[str, str] = {"kind": "radio", "who": "", "text": ""}
         self.starting = False
         self._inflight: dict[str, asyncio.Task] = {}
+        # Na Codex se čeká v pořadí příchodu přání — i když se to dřívější
+        # zdrželo v rychlé cestě (Pi 25. 9.: Jana přišla před Karlem, ale
+        # její rychlá cesta vypršela za 3,5 s a Karel ji na Codexu předběhl
+        # o celý tah, 31 s).
+        self._codex_order: list[str] = []
+        self._codex_moved: asyncio.Event | None = None
         # vyložená přání se do fronty a podkresu promítají jedno po druhém
         self._apply_lock = asyncio.Lock()
         self.current_vid: str | None = None
@@ -536,6 +542,7 @@ class WishQueue:
             w.play_next = False
             w.note = "Jedno „hned“ na člověka — tohle jde do fronty normálně."
         self.wishes.append(w)
+        self._codex_order.append(w.id)
         self._trim()
         # kdo, odkud a čím — ať se v logu vždycky pozná panel, prohlížeč, skript
         telemetry.event("dj.request", source=source, requester=w.who, id=w.id,
@@ -590,6 +597,7 @@ class WishQueue:
         return True, "Odebráno."
 
     async def _drop(self, w: Wish, state: str) -> None:
+        self._codex_done(w.id)
         was = w.state
         w.state = state
         w.done_at = time.time()
@@ -675,10 +683,26 @@ class WishQueue:
                     self._inflight[w.id] = task
             await self._wake.wait()
 
+    def _codex_done(self, wid: str) -> None:
+        """Přání už na Codex nečeká (rozhodla rychlá cesta, dostal tah, zmizelo)."""
+        if wid in self._codex_order:
+            self._codex_order.remove(wid)
+            if self._codex_moved is not None:
+                self._codex_moved.set()
+                self._codex_moved = None
+
+    async def _codex_wait(self, w: Wish) -> None:
+        while self._codex_order and self._codex_order[0] != w.id and w.id in self._codex_order:
+            if self._codex_moved is None:
+                self._codex_moved = asyncio.Event()
+            await self._codex_moved.wait()
+
     async def _guarded(self, w: Wish) -> None:
+        cancelled = False
         try:
             await self._process(w)
         except asyncio.CancelledError:
+            cancelled = True  # ytdj končí — přání zůstává, jak je (obnova po restartu)
             raise
         except Exception as exc:
             log.exception("přání %s se nepodařilo vyřídit", w.id)
@@ -687,7 +711,8 @@ class WishQueue:
                 self._finish(w, "error")
         finally:
             self._inflight.pop(w.id, None)
-            if w.state in ("waiting", "thinking"):  # nic ho nevyřídilo
+            self._codex_done(w.id)
+            if not cancelled and w.state in ("waiting", "thinking"):  # nic ho nevyřídilo
                 w.reply = w.reply or "Přání se nepodařilo vyřídit."
                 self._finish(w, "error")
             self._changed()
@@ -716,12 +741,16 @@ class WishQueue:
                 plan = await fast(w.text)
                 if plan is not None:
                     w.via = "fast"
+        if plan is not None:
+            self._codex_done(w.id)  # rozhodnuto bez Codexu — další na řadě nečeká
         if plan is None:
             w.via = "codex"
-            if self.lock.locked():
+            if self.lock.locked() or (self._codex_order and self._codex_order[0] != w.id):
                 w.state = "waiting"  # na řadě u Codexu, až doběhne cizí tah
                 self._changed()
+            await self._codex_wait(w)
             async with self.lock:
+                self._codex_done(w.id)
                 if not w.active:
                     return
                 w.state = "thinking"
@@ -740,7 +769,7 @@ class WishQueue:
                 steered = intent is not before
             plan = await self.dj.resolve(intent)
             if steered and plan.failed:
-                seeds = self._history_seeds(exclude=before.artists)
+                seeds = await asyncio.to_thread(self._history_seeds, before.artists)
                 if seeds:
                     plan.failed, plan.seeds = "", seeds
         async with self._apply_lock:
@@ -951,7 +980,8 @@ class WishQueue:
             return
         try:
             dj.wish = wish.then(intent.text, time.time(), list(intent.artists), intent.mood)
-            dj.wish.save(dj._wish_file)
+            # zápis na SD kartu mimo event loop
+            asyncio.get_running_loop().run_in_executor(None, dj.wish.save, dj._wish_file)
         except Exception:
             log.debug("poslední přání se neuložilo", exc_info=True)
 
@@ -1056,7 +1086,7 @@ class WishQueue:
         t0 = time.monotonic()
         ok, via = False, "codex"
         try:
-            ctx = start_context(self.store, now=now, cfg=self.cfg)
+            ctx = await asyncio.to_thread(start_context, self.store, now, self.cfg)
             instruction = start_instruction(ctx)
             try:
                 reply = await self.background_turn(instruction, kind="start")
@@ -1097,7 +1127,7 @@ class WishQueue:
 
     async def _start_from_history(self) -> str:
         """Záchrana, když model neodpoví: rádio z toho, co se tu dohrávalo."""
-        seeds = self._history_seeds()
+        seeds = await asyncio.to_thread(self._history_seeds)
         if not seeds:
             return "Nemám z čeho začít — napiš DJovi, co chceš slyšet."
         await self._set_background(seeds=seeds, mood="jako minule", kind="start")
@@ -1279,6 +1309,17 @@ class WishQueue:
         return [x for x in self.wishes if x.state in ("queued", "playing")
                 and any(t.id == vid and t.id not in x.done_ids for t in x.tracks)]
 
+    def can_seed_background(self) -> bool:
+        """Smí plnič postavit podkres z hrající skladby? Jen když žádné přání
+        nečeká na DJe ani na zařazení svých skladeb do playlistu."""
+        for w in self.wishes:
+            if w.state in ("waiting", "thinking"):
+                return False
+            if w.state in ("queued", "playing") and any(
+                    self.owner.get(t.id) != w.id for t in w.pending()):
+                return False
+        return True
+
     def is_request_track(self, vid: str | None) -> bool:
         return self._owner_of(vid) is not None or any(x.current == vid for x in self.wishes if vid)
 
@@ -1312,9 +1353,10 @@ class WishQueue:
             return None
         return data if isinstance(data, dict) else None
 
-    def save(self) -> None:
+    def _snapshot_for_save(self) -> tuple[dict, str] | None:
+        """Stav k zápisu (v event loopu — jen paměť), None = není co psát."""
         if self.state_file is None:
-            return
+            return None
         data = self.session_state()
         sig = json.dumps({k: v for k, v in data.items() if k != "saved"}, sort_keys=True,
                          ensure_ascii=False)
@@ -1322,7 +1364,22 @@ class WishQueue:
         # jestli se po restartu naváže (RESUME_MAX_AGE).
         if sig == self._saved_sig and not (
                 self._playing and time.time() - self._saved_at > RESUME_MAX_AGE / 5):
-            return
+            return None
+        return data, sig
+
+    def save(self) -> None:
+        snap = self._snapshot_for_save()
+        if snap is not None:
+            self._write_state(*snap)
+
+    async def save_async(self) -> None:
+        """Stav se složí v event loopu, na SD kartu se píše ve vlákně."""
+        snap = self._snapshot_for_save()
+        if snap is not None:
+            await asyncio.to_thread(self._write_state, *snap)
+
+    def _write_state(self, data: dict, sig: str) -> None:
+        assert self.state_file is not None
         try:
             self.state_file.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.state_file.with_suffix(".tmp")
@@ -1342,7 +1399,7 @@ class WishQueue:
         while True:
             await asyncio.sleep(5.0)
             await self.refresh_playing()
-            self.save()
+            await self.save_async()
 
     async def resume(self, saved: dict | None = None, now: datetime | None = None) -> str:
         """Po startu ytdj: navázat, když to pravidlo (should_resume) dovolí."""

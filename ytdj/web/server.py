@@ -71,6 +71,8 @@ def build_ids() -> dict[str, str]:
         "app": _digest(sorted(PACKAGE_DIR.rglob("*.py")) + [INDEX_FILE]),
     }
 
+HIST_TTL = 5.0  # s — historie pro snímek se čte ze state.db nejvýš takhle často
+
 # how often the state is recomputed for SSE and how long silence may last
 TICK = 1.0
 KEEPALIVE = 15.0
@@ -441,6 +443,7 @@ class WebServer:
         # true for the duration of a Codex turn — /api/status and SSE pass it on
         self.busy = False
         self.build = build_ids()
+        self._hist: tuple | None = None  # (skladba, kdy, historie)
         self._sse_clients = 0
         # what the DJ is working on and how the last wish went — every client
         # sees it, not only the one that asked (status "dj")
@@ -562,7 +565,7 @@ class WebServer:
 
         history: list[dict] = []
         try:
-            for rec in self.app.store.recent_history(20):
+            for rec in await self._history():
                 history.append(
                     {
                         "artist": rec.artist or "",
@@ -612,6 +615,28 @@ class WebServer:
                 "last": self._dj_last,
             },
         }
+
+    async def _history(self) -> list:
+        """Posledních 20 přehrání — ze state.db mimo event loop, na chvíli v cache.
+
+        Snímek se počítá každou vteřinu; čtení z SD karty v event loopu umí
+        při zatížené kartě stát vteřiny (a s ním web i panel)."""
+        store = self.app.store
+        now = time.monotonic()
+        key = self._hist_key()
+        if self._hist is not None and self._hist[0] == key and now - self._hist[1] < HIST_TTL:
+            return self._hist[2]
+        aread = getattr(store, "aread", None)
+        rows = await aread("recent_history", 20) if aread else store.recent_history(20)
+        self._hist = (key, now, rows)
+        return rows
+
+    def _hist_key(self):
+        try:
+            st = self.app.player
+            return getattr(st, "_current_id", None)
+        except Exception:
+            return None
 
     async def _status(self, request: Request) -> Response:
         return JSONResponse(await self._snapshot())

@@ -32,6 +32,14 @@ class Pool:
         return len(self.tracks)
 
 
+async def _aread(store, name: str, *args):
+    """Čtení ze state.db mimo event loop (Store.aread), jinak přímo (atrapy)."""
+    aread = getattr(store, "aread", None)
+    if aread is not None:
+        return await aread(name, *args)
+    return getattr(store, name)(*args)
+
+
 class RadioPools:
     def __init__(self, catalog: Catalog, store: Store, cfg: Config) -> None:
         self.catalog = catalog
@@ -127,7 +135,7 @@ class RadioPools:
         )
         if not tracks:
             return {"artist": name, "pool_size": 0, "sample": []}
-        order = self._artist_rotation(tracks)
+        order = self._artist_rotation(tracks, await self._history(len(tracks)))
         self.pools = [Pool(seed=tracks[0], tracks=deque(order), last_good=tracks[0].id)]
         self._rr = 0
         self.mood = mood or name
@@ -142,7 +150,13 @@ class RadioPools:
             "sample": [t.label() for t in tracks[:5]],
         }
 
-    def _artist_rotation(self, tracks: list[Track]) -> list[Track]:
+    async def _history(self, n: int) -> list:
+        try:
+            return await _aread(self.store, "recent_history", max(200, 4 * n))
+        except Exception:  # starší / testovací Store bez historie
+            return []
+
+    def _artist_rotation(self, tracks: list[Track], history: list | None = None) -> list[Track]:
         """Pořadí pro režim interpreta: dosud nehrané (nejznámější první), pak
         už hrané od nejdávněji hraného.
 
@@ -151,10 +165,11 @@ class RadioPools:
         tytéž tři skladby třikrát během dvanácti. Takhle se pool protáčí přes
         všechny skladby, než se nějaká zopakuje, i přes více tahů a restartů.
         """
-        try:
-            history = self.store.recent_history(max(200, 4 * len(tracks)))
-        except Exception:  # starší / testovací Store bez historie
-            history = []
+        if history is None:
+            try:
+                history = self.store.recent_history(max(200, 4 * len(tracks)))
+            except Exception:  # starší / testovací Store bez historie
+                history = []
         rank: dict[str, int] = {}  # 0 = hrála naposledy
         for i, rec in enumerate(history):
             rank.setdefault(rec.video_id, i)
@@ -185,9 +200,10 @@ class RadioPools:
     async def next_tracks(self, count: int) -> list[Track]:
         """Pulls `count` tracks, alternating between pools, with filters applied."""
         out: list[Track] = []
-        blocked = self.store.blacklisted()
+        blocked = await _aread(self.store, "blacklisted")
         # vyžádaný interpret má přednost před pravidlem neopakování
-        recent = set() if self.artist else self.store.recently_played(self.cfg.repeat_days)
+        recent = set() if self.artist else await _aread(
+            self.store, "recently_played", self.cfg.repeat_days)
         artist_counts: dict[str, int] = {}
         # Dlouhé kusy se nezahazují, jen odloží: když se fronta z krátkých
         # nenaplní, sáhne se po nich (u vyžádaného interpreta).
@@ -310,7 +326,9 @@ class RadioPools:
     async def _refill(self, pool: Pool) -> None:
         """Reseeds from the last track not skipped — implicit feedback."""
         if self.artist:
-            self._refill_artist(pool)
+            history = await self._history(len(self._artist_all))
+            blocked = await _aread(self.store, "blacklisted")
+            self._refill_artist(pool, history, blocked)
             return
         fresh = await self._fetch_radio(pool.last_good or pool.seed.id)
         self.remember_tracks(fresh)
@@ -318,12 +336,15 @@ class RadioPools:
         pool.tracks.extend(new)
         log.debug("pool %s doplněn o %d", pool.seed.label(), len(new))
 
-    def _refill_artist(self, pool: Pool) -> None:
+    def _refill_artist(self, pool: Pool, history: list | None = None,
+                       blocked: set[str] | None = None) -> None:
         """Režim interpreta se nedoplňuje z rádia (to by uteklo jinam), ale
         znovu jeho skladbami; když zazněly všechny, jede se od začátku."""
-        skip = {t.id for t in pool.tracks} | self.store.blacklisted()
+        if blocked is None:
+            blocked = self.store.blacklisted()
+        skip = {t.id for t in pool.tracks} | blocked
         fresh = [
-            t for t in self._artist_rotation(self._artist_all)
+            t for t in self._artist_rotation(self._artist_all, history)
             if t.id not in self.session_seen and t.id not in skip
         ]
         if not fresh and not pool.tracks:
@@ -331,7 +352,7 @@ class RadioPools:
             telemetry.event("radio.artist_mode", artist=self.artist, restart=True,
                             n=len(self._artist_all))
             self.session_seen -= {t.id for t in self._artist_all}
-            fresh = self._artist_rotation(self._artist_all)
+            fresh = self._artist_rotation(self._artist_all, history)
         pool.tracks.extend(fresh)
 
     # ---- feedback ----

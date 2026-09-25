@@ -22,7 +22,12 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 
-from ytdj.agent.appserver import AppServer, AppServerError, native_codex  # noqa: E402
+from ytdj.agent.appserver import (  # noqa: E402
+    AppServer,
+    AppServerAuthError,
+    AppServerError,
+    native_codex,
+)
 from ytdj.agent.codex import DECISION_SCHEMA  # noqa: E402
 
 FAKE = Path(_TMP) / "codex"
@@ -65,6 +70,30 @@ class Fake(unittest.TestCase):
                          ("read-only", "never", "m1"))
         turn = next(m for m in msgs if m.get("method") == "turn/start")["params"]
         self.assertEqual(turn["outputSchema"], DECISION_SCHEMA)
+
+    def test_prewarm_hides_startup_and_disables_plugins(self):
+        os.environ["FAKE_START_DELAY"] = "0.5"
+
+        async def go():
+            app = AppServer(str(FAKE), _TMP)
+            app.prewarm()
+            await asyncio.sleep(1.0)  # the fast path runs meanwhile
+            res = await app.turn("p", DECISION_SCHEMA, timeout=5)
+            await app.close()
+            return res
+
+        try:
+            res = run(go())
+        finally:
+            del os.environ["FAKE_START_DELAY"]
+        self.assertLess(res.startup_ms, 300)  # the 0.5 s start was paid in advance
+        self.assertTrue(res.new_thread)
+        msgs = self.sent()
+        argv = msgs[0]["argv"]
+        self.assertEqual(argv[0], "app-server")
+        for feature in ("plugins", "remote_plugin", "apps", "shell_tool", "unified_exec"):
+            self.assertIn(f"features.{feature}=false", argv)
+        self.assertEqual([m.get("method") for m in msgs].count("initialize"), 1)
 
     def test_crash_mid_turn_raises_and_next_turn_restarts(self):
         async def go():
@@ -123,6 +152,22 @@ class Fake(unittest.TestCase):
 
         self.assertIn("usage limit", run(go()))
 
+    def test_auth_error_fails_fast_even_while_codex_retries(self):
+        os.environ["FAKE_MODE"] = "auth"
+
+        async def go():
+            app = AppServer(str(FAKE), _TMP)
+            try:
+                with self.assertRaises(AppServerAuthError):
+                    await app.turn("p", DECISION_SCHEMA, timeout=10)
+            finally:
+                await app.close()
+
+        import time as _t
+        t0 = _t.monotonic()
+        run(go())
+        self.assertLess(_t.monotonic() - t0, 5)  # not the minute of retries
+
     def test_idle_process_is_closed(self):
         async def go():
             app = AppServer(str(FAKE), _TMP, idle_ttl=0.3)
@@ -136,6 +181,13 @@ class Fake(unittest.TestCase):
 
 class DJFallback(unittest.TestCase):
     """CodexDJ: app-server failure → `codex exec` path, and telemetry says how."""
+
+    def setUp(self):
+        self._env = os.environ.get("YTDJ_CODEX_APP_SERVER")
+        os.environ["YTDJ_CODEX_APP_SERVER"] = "1"
+
+    def tearDown(self):
+        os.environ["YTDJ_CODEX_APP_SERVER"] = self._env or "0"
 
     def test_falls_back_to_exec(self):
         from test_dj_apply import make

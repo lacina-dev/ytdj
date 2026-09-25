@@ -24,6 +24,12 @@ def out(obj):
     sys.stdout.flush()
 
 
+if LOG:
+    with open(LOG, "a") as f:
+        f.write(json.dumps({"argv": sys.argv[1:]}) + "\n")
+if os.environ.get("FAKE_START_DELAY"):
+    time.sleep(float(os.environ["FAKE_START_DELAY"]))
+
 for line in sys.stdin:
     msg = json.loads(line)
     if LOG:
@@ -52,6 +58,13 @@ for line in sys.stdin:
             if LOG:
                 with open(LOG, "a") as f:
                     f.write(json.dumps(reply) + "\n")
+        if MODE == "auth":
+            for _ in range(3):
+                out({"method": "error", "params": {"threadId": tid, "turnId": turn_id,
+                                                   "willRetry": True, "error": {
+                                                       "message": "unexpected status 401 Unauthorized"}}})
+            time.sleep(30)
+            continue
         if MODE == "fail":
             out({"method": "error", "params": {"threadId": tid, "turnId": turn_id,
                                                "willRetry": False,

@@ -17,6 +17,8 @@ import logging
 import os
 import sys
 from contextlib import suppress
+from typing import Callable
+from pathlib import Path
 
 from ..config import MPV_SOCKET, Config, save_values
 from . import ytdl_cache
@@ -26,7 +28,8 @@ from .base import EventHandler, Player, PlayerEvent, PlayerStatus
 log = logging.getLogger(__name__)
 
 WATCH_URL = "https://music.youtube.com/watch?v={}"
-PREFETCH_AHEAD = 4  # kolik skladeb z fronty mít vyřešených dopředu (~20 s každá na Pi 3)
+PREFETCH_AHEAD = 4  # kolik skladeb z fronty mít vyřešených dopředu (~8 s každá na Pi 3)
+RESOLVER_SOCKET = MPV_SOCKET.parent / "ytdl-resolver.sock"
 
 # mpv nad 130 stejně nepustí a ručně zapsaná hodnota v configu by ho jinak
 # odmítla nastartovat
@@ -80,6 +83,10 @@ class MpvPlayer(Player):
         self._replacing = False  # další konec skladby způsobila aplikace, ne posluchač
         self._prefetch_task: asyncio.Task | None = None
         self._prefetch_wake = asyncio.Event()
+        self._resolver: asyncio.subprocess.Process | None = None
+        self._resolver_task: asyncio.Task | None = None
+        # ytdj nastaví: když běží Codex, dopředu se nic neřeší (paměť)
+        self.busy_check: Callable[[], bool] | None = None
         self._paused = False
         self._volume = _clamp_volume(cfg.volume)
         # Zápis hlasitosti do configu se odkládá: tažení slideru i držené "+"
@@ -149,7 +156,8 @@ class MpvPlayer(Player):
 
         env = self.cfg.child_env()
         env[ytdl_cache.ENV_REAL] = self.cfg.yt_dlp_path
-        env[ytdl_cache.ENV_DIR] = str(ytdl_cache.cache_dir())
+        env[ytdl_cache.ENV_SOCKET] = str(RESOLVER_SOCKET)
+        await self._start_resolver()
         self.proc = await asyncio.create_subprocess_exec(
             *self._args(),
             env=env,
@@ -205,6 +213,13 @@ class MpvPlayer(Player):
                 await asyncio.wait_for(self.proc.wait(), timeout=3)
         with suppress(FileNotFoundError):
             os.unlink(MPV_SOCKET)
+        for task in (self._resolver_task, self._prefetch_task):
+            if task:
+                task.cancel()
+        if self._resolver and self._resolver.returncode is None:
+            self._resolver.terminate()
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._resolver.wait(), timeout=3)
 
     # ---------- IPC ----------
 
@@ -397,6 +412,8 @@ class MpvPlayer(Player):
         title = await self._get("media-title")
         expected = self._current_id
         track = self._tracks.get(expected or "")
+        if vid is None:
+            return  # mpv právě načítá další skladbu — není co porovnat
         if vid != expected:
             log.warning(
                 "NESOULAD: mpv hraje %s (%r), ytdj ukazuje %s (%s)",
@@ -491,7 +508,7 @@ class MpvPlayer(Player):
 
     def _ytdl_shim(self) -> str:
         """Spustitelný soubor, který mpv volá místo yt-dlp (viz ytdl_cache)."""
-        shim = ytdl_cache.cache_dir() / "yt-dlp-cached"
+        shim = RESOLVER_SOCKET.parent / "yt-dlp-shim"
         body = f'#!/bin/sh\nexec "{sys.executable}" "{ytdl_cache.__file__}" "$@"\n'
         try:
             shim.parent.mkdir(parents=True, exist_ok=True)
@@ -499,52 +516,96 @@ class MpvPlayer(Player):
                 shim.write_text(body)
                 shim.chmod(0o755)
         except OSError:
-            log.warning("shim pro předem vyřešené streamy nejde vytvořit", exc_info=True)
+            log.warning("shim pro resolver nejde vytvořit", exc_info=True)
             return self.cfg.yt_dlp_path
         return str(shim)
 
+    def _resolver_python(self) -> str | None:
+        """Interpret, pod kterým je yt-dlp i s pluginy (z jeho shebangu)."""
+        try:
+            with open(self.cfg.yt_dlp_path, "rb") as f:
+                first = f.readline().decode(errors="replace").strip()
+        except OSError:
+            return None
+        if first.startswith("#!") and "python" in first:
+            return first[2:].strip().split()[0]
+        return None
+
+    async def _start_resolver(self) -> None:
+        python = self._resolver_python()
+        if not python:
+            log.warning("resolver nejde spustit (yt-dlp %s není Python skript) — "
+                        "skladby se budou řešit postaru", self.cfg.yt_dlp_path)
+            return
+        RESOLVER_SOCKET.parent.mkdir(parents=True, exist_ok=True)
+        self._resolver = await asyncio.create_subprocess_exec(
+            python, str(Path(__file__).with_name("ytdl_resolver.py")),
+            "--socket", str(RESOLVER_SOCKET),
+            env=self.cfg.child_env(),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+            preexec_fn=lambda: os.nice(5),  # zvuk má přednost
+        )
+        self._resolver_task = asyncio.create_task(self._watch_resolver(self._resolver))
+
+    async def _watch_resolver(self, proc: asyncio.subprocess.Process) -> None:
+        """Přeposílá log resolveru a po pádu ho spustí znovu."""
+        assert proc.stderr
+        async for line in proc.stderr:
+            log.info("resolver: %s", line.decode(errors="replace").rstrip())
+        code = await proc.wait()
+        if not self._stopping:
+            log.warning("resolver skončil (kód %s), startuji znovu", code)
+            await asyncio.sleep(2)
+            await self._start_resolver()
+            self._schedule_prefetch()
+
+    async def _resolver_call(self, req: dict) -> dict | None:
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_unix_connection(str(RESOLVER_SOCKET)), 3
+            )
+        except (OSError, asyncio.TimeoutError):
+            return None
+        try:
+            writer.write(json.dumps(req).encode() + b"\n")
+            await writer.drain()
+            line = await asyncio.wait_for(reader.readline(), 5)
+            return json.loads(line) if line else None
+        except (OSError, ValueError, asyncio.TimeoutError):
+            return None
+        finally:
+            writer.close()
+
     def _schedule_prefetch(self) -> None:
-        """Probudí (nebo spustí) úlohu, která drží další skladby vyřešené."""
+        """Probudí (nebo spustí) úlohu, která resolveru říká, co chystat dopředu."""
         self._prefetch_wake.set()
         if self._prefetch_task is None or self._prefetch_task.done():
             self._prefetch_task = asyncio.create_task(self._prefetch_loop())
 
     async def _prefetch_loop(self) -> None:
-        done: dict[str, float] = {}
+        sent: list[str] | None = None
         while True:
-            await self._prefetch_wake.wait()
+            try:
+                await asyncio.wait_for(self._prefetch_wake.wait(), 5.0)
+            except asyncio.TimeoutError:
+                pass  # i bez podnětu: resolver mohl spadnout, Codex mohl doběhnout
             self._prefetch_wake.clear()
-            await asyncio.sleep(1.0)  # fronta se mění po dávkách — počkat, až se usadí
+            await asyncio.sleep(0.5)  # fronta se mění po dávkách — počkat, až se usadí
             pos = self._pos
             ahead = [
                 vid for vid in self._order[pos + 1 : pos + 1 + PREFETCH_AHEAD]
                 if vid and vid != self._current_id
             ]
-            if not ahead:
+            if self.busy_check and self.busy_check():
+                ahead = []  # Codex si bere ~200 MB — node vedle by poslal Pi do swapu
+            if ahead == sent:
                 continue
-            if not await asyncio.to_thread(ytdl_cache.has_template):
-                # mpv ještě nikdy nevolal yt-dlp, takže nevíme s čím; první
-                # skladba to za chvíli zjistí
-                await asyncio.sleep(5.0)
-                self._prefetch_wake.set()
-                continue
-            now = asyncio.get_running_loop().time()
-            for vid in ahead:
-                if now - done.get(vid, -1e9) < ytdl_cache.MAX_AGE / 2:
-                    continue
-                t0 = asyncio.get_running_loop().time()
-                ok = await asyncio.to_thread(
-                    ytdl_cache.prefetch, vid, WATCH_URL.format(vid), self.cfg.yt_dlp_path
-                )
-                took = asyncio.get_running_loop().time() - t0
-                if ok:
-                    done[vid] = asyncio.get_running_loop().time()
-                    track = self._tracks.get(vid)
-                    log.info("připraveno dopředu (%.0f s): %s", took, track.label() if track else vid)
-                else:
-                    log.debug("dopředu se nepodařilo: %s", vid)
-                if self._prefetch_wake.is_set():
-                    break  # fronta se mezitím změnila — přepočítat
+            resp = await self._resolver_call({"op": "ahead", "ids": ahead})
+            if resp and resp.get("ok"):
+                sent = ahead
+            else:
+                sent = None  # resolver nežije — zkusit znovu při dalším kole
 
     # ---------- zapamatování hlasitosti ----------
 

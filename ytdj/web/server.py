@@ -555,7 +555,11 @@ class WebServer:
         # On top of that, `app.ask()` shares a lock with the REPL and with
         # automatic reseeding, so two concurrent turns can't overwrite each
         # other's pools.
-        if self.busy or getattr(self.app, "codex_busy", False):
+        # Automatické přeseedování (po sérii přeskočení) posluchače nezdržuje:
+        # app.ask() ho zruší a vezme požadavek hned. Odmítá se jen souběh dvou
+        # požadavků posluchače.
+        auto = getattr(self.app, "_reseeding", False)
+        if self.busy or (getattr(self.app, "codex_busy", False) and not auto):
             return _json_error("Codex právě pracuje", 409)
         self.busy = True
         try:

@@ -10,6 +10,7 @@ One asyncio loop, no locks, no cross-thread handoffs.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import shutil
@@ -72,6 +73,8 @@ class App:
         self.store = Store()
         self.catalog = Catalog(cfg)
         self.player = MpvPlayer(cfg)
+        # když Codex přemýšlí, resolver nic nechystá dopředu — oba naráz se do RAM nevejdou
+        self.player.busy_check = lambda: self.codex_busy
         self.pools = RadioPools(self.catalog, self.store, cfg)
         self.dj = CodexDJ(cfg, self.catalog, self.pools, self.player, self.store)
         # The REPL is built only in run(); prompt_toolkit touches stdin during
@@ -80,6 +83,7 @@ class App:
         self.repl: Repl | None = None
         self.web = WebServer(self, cfg.web_host, cfg.web_port) if cfg.web_enabled else None
         self._reseeding = False
+        self._reseed_task: asyncio.Task | None = None
         self._last_reseed = 0.0
         self._skips_at_last_check = 0
         # A single lock for all Codex turns — REPL, web, and automatic
@@ -107,6 +111,13 @@ class App:
         """
         if reply := await self._try_link(text):
             return reply
+        if interrupt and self._reseed_task and not self._reseed_task.done():
+            # Posluchač má přednost před tahem, o který nežádal (přeseedování
+            # po sérii přeskočení) — jinak by čekal půl minuty na cizí tah.
+            log.info("ruším automatické přeseedování kvůli požadavku posluchače")
+            self._reseed_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._reseed_task
         async with self._codex_lock:
             return await self.dj.turn(text, interrupt=interrupt)
 
@@ -262,14 +273,23 @@ class App:
             return
         self._reseeding = True
         self._last_reseed = now
+        # Vlastní úloha: zrušit se smí jen tenhle tah, ne ten, kdo ho spustil
+        # (třeba zpracování událostí přehrávače).
+        self._reseed_task = asyncio.create_task(self.ask(instruction, interrupt=False))
         try:
-            reply = await self.ask(instruction, interrupt=False)
+            reply = await self._reseed_task
             if reply:
                 print(f"\n{reply}")
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise  # ruší se nás samotné (vypínání), ne jen tah
+            # jinak přednost dostal požadavek posluchače
         except Exception:
             log.exception("přeseedování selhalo")
         finally:
             self._reseeding = False
+            self._reseed_task = None
 
     # ---- LLM ----
 

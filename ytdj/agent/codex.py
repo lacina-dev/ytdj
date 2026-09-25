@@ -252,6 +252,11 @@ class CodexDJ:
         except TimeoutError:
             _kill_tree(proc)
             raise RuntimeError(f"Codex neodpověděl do {TURN_TIMEOUT} s, ukončen")
+        except asyncio.CancelledError:
+            # tah zrušil přednostní požadavek posluchače — codex nesmí dál
+            # běžet na pozadí a zabírat paměť
+            _kill_tree(proc)
+            raise
 
         if fatal:
             raise RuntimeError(error)

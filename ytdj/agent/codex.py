@@ -263,16 +263,17 @@ class CodexDJ:
 
     async def _build_prompt(self, user_input: str) -> str:
         st = await self.player.status()
+        # [loop] čtení ze state.db a taste.md mimo event loop (SD karta pod zátěží)
+        recent, taste, top = await asyncio.to_thread(
+            lambda: (self.store.recent_history(25), self.store.taste(), self.store.top_requested(10))
+        )
         state = render_state(
             now_playing=st.current.label() if st.current else "",
             queue=[t.label() for t in st.queue],
             pools=self.pools.describe(),
-            history=[
-                f"{p.artist} — {p.title} [{p.outcome}]"
-                for p in self.store.recent_history(25)
-            ],
-            taste=self.store.taste(),
-            requested=[r.label() for r in self.store.top_requested(10)],
+            history=[f"{p.artist} — {p.title} [{p.outcome}]" for p in recent],
+            taste=taste,
+            requested=[r.label() for r in top],
             intent=self.wish.describe(),
             focus=self.focus,
         )

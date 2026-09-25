@@ -31,6 +31,7 @@ from .ui import Repl
 from .web import WebServer
 from .config import DATA_DIR
 from .wishes import WishQueue
+from .loopwatch import LoopWatch
 
 log = logging.getLogger("ytdj")
 
@@ -73,7 +74,8 @@ def cookie_warning(cfg: Config) -> str | None:
 class App:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
-        self.store = Store()
+        # zápisy ve vlastním vlákně: event loop nikdy nečeká na SD kartu
+        self.store = Store(background=True)
         self.catalog = Catalog(cfg)
         self.player = MpvPlayer(cfg)
         # když Codex přemýšlí, resolver nic nechystá dopředu — oba naráz se do RAM nevejdou
@@ -263,8 +265,12 @@ class App:
                 elif not self.pools.pools:
                     # Žádné pooly: došlo na vyžádanou skladbu bez rádia
                     # (odkaz, play_next). Až dohraje, bylo by ticho — tak z ní
-                    # rádio postavíme. Bez modelu, hned.
-                    await self._seed_from_current()
+                    # rádio postavíme. Bez modelu, hned. Ne ale, dokud na
+                    # zpracování čeká další přání — to podkres určí samo
+                    # (25. 9.: z "pusť Kabát" se stavělo rádio z Malé dámy,
+                    # zatímco Jana a Karel teprve čekali).
+                    if self.wishes.can_seed_background():
+                        await self._seed_from_current()
                 elif self.pools.pools and not self.dj.focus:
                     # (v režimu interpreta pooly jedou dokola samy; prázdná
                     # dávka znamená jen, že všechno už čeká ve frontě)
@@ -378,6 +384,9 @@ class App:
             self.player.is_protected = self.wishes.is_request_track
         await self.player.start()
         self.wishes.start()
+        # hlídač zaseknutého event loopu (sys.loop_lag se zásobníkem)
+        self.loopwatch = LoopWatch()
+        self.loopwatch.start()
         # Po restartu služby navázat (jen čerstvý stav, ne v noci — viz
         # wishes.should_resume); na pozadí, ať web naběhne hned.
         resume = asyncio.create_task(self.wishes.resume(), name="ytdj-resume")
@@ -453,6 +462,7 @@ class App:
                     await asyncio.wait_for(self.wishes.refresh_playing(), 2)
             self.wishes.save()
             await self.wishes.stop()
+            await self.loopwatch.stop()
             # the web must go down before the store — SSE would otherwise touch
             # a closed SQLite
             if self.web:

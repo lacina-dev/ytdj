@@ -35,7 +35,8 @@ from ytdj.music.radio import RadioPools  # noqa: E402
 from ytdj.player.base import PlayerEvent  # noqa: E402
 from ytdj.player.mpv import MpvPlayer  # noqa: E402
 from ytdj.state import Store  # noqa: E402
-from ytdj.wishes import BLOCK, Turns, Wish, WishQueue, fair_order, should_resume  # noqa: E402
+from ytdj.wishes import (BLOCK, SHARED_BLOCK, Turns, Wish, WishQueue, fair_order,  # noqa: F401
+                         should_resume)  # noqa: E402
 
 
 def vid(name: str) -> str:
@@ -253,8 +254,9 @@ class FairOrder(unittest.TestCase):
         petr = W("P", 20, 1, kind="artist")
         jana, karel = W("J", 1, 2), W("K", 1, 3)
         order = fair_order([petr, jana, karel], Turns(), limit=12)
-        self.assertEqual(whos(order), "PPPJKPPPPPPP"[: len(order)])
-        self.assertEqual(whos(order)[:BLOCK + 2], "P" * BLOCK + "JK")
+        # když čekají jiní, kolo má nejvýš SHARED_BLOCK skladeb; pak zase po BLOCK
+        self.assertEqual(whos(order), "PPJKPPPPPPPP"[: len(order)])
+        self.assertEqual(whos(order)[:SHARED_BLOCK + 2], "P" * SHARED_BLOCK + "JK")
 
     def test_started_block_finishes_before_newcomer(self):
         petr = W("P", 6, 1, kind="artist")
@@ -262,7 +264,8 @@ class FairOrder(unittest.TestCase):
         turns.start(petr)  # první skladba bloku právě hraje
         petr.current = petr.tracks[0].id
         jana = W("J", 1, 2)
-        self.assertEqual(whos(fair_order([petr, jana], turns)), "PPJPPP")
+        # blok se zkrátí na SHARED_BLOCK: P1 hraje, P2 ho dokončí, pak Jana
+        self.assertEqual(whos(fair_order([petr, jana], turns)), "PJPPPP")
 
     def test_least_recently_served_goes_first(self):
         turns = Turns()
@@ -321,9 +324,10 @@ class Queue(unittest.TestCase):
                 # Kabát utnul podkres (první na řadě) → hraje P1; P2 P3 dohrají blok,
                 # pak Jana, Karel, Jana, a teprve pak zase Petr
                 self.assertEqual(rig.fake.current_vid(), KABAT[0].id)
-                # (Petr byl na řadě dřív než Jana → jeho další blok jde před její druhé přání)
-                self.assertEqual(owners[:8], ["Petr", "Petr", "Jana", "Karel",
-                                              "Petr", "Petr", "Petr", "Jana"], owners)
+                # kolo po 2, když čekají jiní: P1 hraje, P2; Jana, Karel; P3 P4; Jana
+                # (Petr byl na řadě dřív než Jana → jeho další kolo jde před její druhé přání)
+                self.assertEqual(owners[:6], ["Petr", "Jana", "Karel", "Petr", "Petr", "Jana"],
+                                 owners)
                 # podkres až za přáními
                 first_bg = owners.index("-")
                 self.assertTrue(all(o == "-" for o in owners[first_bg:]), owners)
@@ -355,7 +359,8 @@ class Queue(unittest.TestCase):
                     played.append(rig.fake.current_vid())
                 names = ["J" if v == j.tracks[0].id else ("P" if "kab" in v else "-")
                          for v in played]
-                self.assertEqual("".join(names[:5]), "PPPJP", played)
+                # P1 hraje, P2 dokončí kolo (2, když čeká Jana), Jana, zbytek Kabátu
+                self.assertEqual("".join(names[:5]), "PPJPP", played)
                 # Jana je hotová; Petr sám → zbytek Kabátu pokračuje jako podkres
                 self.assertEqual(j.state, "done")
                 self.assertEqual(rig.pools.artist, "Kabát")

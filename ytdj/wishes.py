@@ -10,21 +10,22 @@ Vyřízené přání má konkrétní skladby; ty se *zhmotní* do playlistu mpv 
 pořád JE playlist mpv) v tomhle pořadí:
 
   1. "zařadit hned" (play_next) — hned za hrající, nejvýš jedno na člověka;
-  2. dohrání rozehraného bloku (interpret hraje po 3 skladbách za kolo);
+  2. dohrání rozehraného kola;
   3. spravedlivé střídání lidí: na řadě je ten, kdo nejdéle nic neslyšel
-     (nováček první), a dostane jeden blok ≤ BLOCK skladeb ze svého
-     nejstaršího přání;
+     (nováček první), a dostane jedno kolo ze svého nejstaršího přání —
+     nejvýš SHARED_BLOCK (2) skladby, když čekají i jiní, jinak BLOCK (3);
   4. podkres (rádio z poolů) — až za všemi přáními; plní ho plnič fronty.
 
 Příklad (P = Petr "pusť Kabát", J = Jana "Holky z naší školky",
 K = Karel "něco klidnějšího", hraje podkres R):
 
-    9:00:00  P pošle, rychlá cesta za 3 s: fronta  P1 P2 P3 | R R R …  (R se utne,
-             když je přání první na řadě — podkres není ničí přání)
-    9:00:10  J pošle; Codex 20 s → fronta  P2 P3 J1 | R …   (P1 hraje, blok dohraje)
-    9:00:15  K pošle; Codex 20 s → fronta  P2 P3 J1 K1 K2 K3 | R(K) …
-    …        P3 dohraje; Petr je sám s Kabátem → zbytek Kabátu přejde do podkresu,
-             jakmile nikdo jiný nečeká.
+    9:00:00  P pošle (J a K už čekají na DJe), rychlá cesta za 3 s: P1 hraje
+             (R se utne, když je přání první na řadě — podkres není ničí přání),
+             fronta  P2 | …   (kolo po 2, protože čekají i jiní)
+    9:00:20  J vyřízena → fronta  P2 J1 | …
+    9:00:35  K vyřízen (nálada, 3 skladby) → fronta  P2 J1 K1 K2 P3 P4 K3 | R(K) …
+    …        když už nikdo jiný nečeká, jede Petr po 3 a zbytek Kabátu přejde
+             do podkresu.
 
 Podkres mění jen přání nálady/žánru (a interpret, když už nikdo jiný nečeká);
 automatické přeseedování po sérii přeskočení sahá jen na podkres a přání nikdy
@@ -57,7 +58,8 @@ from .player.base import queue_transaction
 
 log = logging.getLogger(__name__)
 
-BLOCK = 3  # skladeb jednoho přání za jedno kolo
+BLOCK = 3  # skladeb jednoho přání za jedno kolo, když nikdo jiný nečeká
+SHARED_BLOCK = 2  # …a když čekají i jiní (kolegové se dostanou na řadu dřív)
 ARTIST_MAX = 12  # interpret při souběhu přání: nejvýš tolik skladeb, pak je hotovo
 HORIZON = 8  # kolik skladeb z přání držet zhmotněných v playlistu mpv
 STABLE = 2  # první dvě čekající položky se kvůli přeřazení nehýbou (připravené)
@@ -274,20 +276,28 @@ class Turns:
 
     turn_no: int = 0
     last: dict[str, int] = field(default_factory=dict)  # who → číslo kola
-    block: tuple[str, int] | None = None  # (id přání, kolik z bloku ještě zbývá)
+    block: tuple[str, int] | None = None  # (id přání, kolik z bloku už zaznělo)
 
     def copy(self) -> "Turns":
         return Turns(self.turn_no, dict(self.last), self.block)
 
-    def start(self, w: Wish) -> bool:
-        """Začala skladba přání `w`; True = začalo nové kolo (ne pokračování bloku)."""
-        if self.block and self.block[0] == w.id and self.block[1] > 0:
-            self.block = (w.id, self.block[1] - 1)
+    def start(self, w: Wish, size: int = BLOCK) -> bool:
+        """Začala skladba přání `w`; True = začalo nové kolo (ne pokračování bloku).
+
+        `size` = jak velký smí blok teď být (BLOCK, nebo SHARED_BLOCK, když
+        čekají i jiní) — počítá se v okamžiku startu, takže se blok zkrátí,
+        i když někdo přibude uprostřed něj."""
+        if self.block and self.block[0] == w.id and self.block[1] < size:
+            self.block = (w.id, self.block[1] + 1)
             return False
         self.turn_no += 1
         self.last[w.key] = self.turn_no
-        self.block = (w.id, BLOCK - 1)
+        self.block = (w.id, 1)
         return True
+
+
+def block_size(w: Wish, others_waiting: bool) -> int:
+    return SHARED_BLOCK if others_waiting else BLOCK
 
 
 def fair_order(
@@ -295,20 +305,30 @@ def fair_order(
     turns: Turns,
     prefix: list[tuple[Wish, Track]] | None = None,
     limit: int = 60,
+    waiting: set[str] | None = None,
 ) -> list[tuple[Wish, Track]]:
     """Pořadí skladeb z přání za hrající skladbou (a za pevným `prefix`).
 
     Deterministické vůči stavu: stejné přání + stejná historie kol = stejné
     pořadí. Proto se nové přání do fronty jen *vloží* a už zhmotněné položky
-    se nepřehazují.
+    se nepřehazují. `waiting` = kdo (Wish.key) má přání, o kterém DJ teprve
+    rozhoduje — i kvůli němu se kolo zkrátí na SHARED_BLOCK.
     """
     sim = turns.copy()
     used: set[str] = set()
-    for w, t in prefix or []:
-        sim.start(w)
-        used.add(t.id)
+    waiting = set(waiting or ())
     live = [w for w in wishes if w.state in ("queued", "playing")]
     queues: dict[str, list[Track]] = {}
+
+    def size(w: Wish) -> int:
+        others = any(k != w.key for k in waiting) or any(
+            x.key != w.key and any(t.id not in used for t in queues.get(x.id, x.pending()))
+            for x in live)
+        return block_size(w, others)
+
+    for w, t in prefix or []:
+        sim.start(w, size(w))
+        used.add(t.id)
     for w in live:
         q = []
         for t in w.pending():
@@ -328,14 +348,15 @@ def fair_order(
             t = q.pop(0)
             used.add(t.id)
             out.append((w, t))
-            sim.start(w)
+            sim.start(w, size(w))
 
     # 1. zařadit hned — kdo o to požádal (a ještě nic nehrálo), v pořadí přání
     for w in sorted((w for w in live if w.play_next and not w.started), key=lambda w: w.mono):
-        emit(w, BLOCK)
+        emit(w, size(w))
     # 2. dohrát rozehraný blok
-    if sim.block and sim.block[1] > 0 and sim.block[0] in by_id:
-        emit(by_id[sim.block[0]], sim.block[1])
+    if sim.block and sim.block[0] in by_id:
+        cur = by_id[sim.block[0]]
+        emit(cur, size(cur) - sim.block[1])
     # 3. střídání lidí: nejdéle neobsloužený první, nováček před všemi
     while len(out) < limit:
         heads: dict[str, Wish] = {}
@@ -347,7 +368,7 @@ def fair_order(
             break
         who = min(heads, key=lambda p: (sim.last.get(p, 0), heads[p].mono))
         before = len(out)
-        emit(heads[who], BLOCK)
+        emit(heads[who], size(heads[who]))
         if len(out) == before:
             break
     return out
@@ -962,7 +983,8 @@ class WishQueue:
         else:
             when = ""
         if intent.kind == "artist":
-            notes.append(f"{w.artist}: po {BLOCK} skladbách, střídám s ostatními přáními.")
+            notes.append(f"{w.artist}: když čekají i jiní, hraju po {SHARED_BLOCK} skladbách "
+                         "a střídám; jinak dál, dokud neřekneš jinak.")
         w.reply = " ".join(x for x in [intent.reply.strip(), *notes, when] if x).strip()
         w.settle()
         telemetry.event(
@@ -1179,12 +1201,19 @@ class WishQueue:
             prefix: list[tuple[Wish, Track]] = []
             eager = any(w.play_next and not w.started for w in live)
             if not eager:
-                for t in upcoming[:STABLE]:
+                sim = self.turns.copy()
+                for i, t in enumerate(upcoming[:STABLE]):
                     w = by_id.get(self.owner.get(t.id, ""))
                     if w is None or t.id in w.done_ids:
                         break
+                    # Další položka zůstává vždy (resolver ji chystá); druhá jen,
+                    # když dohrává rozehrané kolo — nové kolo téhož člověka by
+                    # jinak předběhlo ty, kdo mezitím přišli na řadu.
+                    if sim.start(w, self._turn_size(w)) and i > 0:
+                        break
                     prefix.append((w, t))
-            order = fair_order(live, self.turns, prefix, limit=max(0, HORIZON - len(prefix)))
+            order = fair_order(live, self.turns, prefix, limit=max(0, HORIZON - len(prefix)),
+                               waiting=self._deciding())
             self._order = prefix + order
             desired = [t for _, t in self._order]
             want = {t.id for t in desired}
@@ -1243,7 +1272,7 @@ class WishQueue:
             self.current_vid = vid
             w = self._owner_of(vid)
             if w is not None:
-                new_turn = self.turns.start(w)
+                new_turn = self.turns.start(w, self._turn_size(w))
                 for x in self._holders(vid):
                     x.current = vid
                     x.played += 1
@@ -1308,6 +1337,16 @@ class WishQueue:
             return []
         return [x for x in self.wishes if x.state in ("queued", "playing")
                 and any(t.id == vid and t.id not in x.done_ids for t in x.tracks)]
+
+    def _deciding(self) -> set[str]:
+        """Kdo má přání, o kterém DJ teprve rozhoduje."""
+        return {w.key for w in self.wishes if w.state in ("waiting", "thinking")}
+
+    def _turn_size(self, w: Wish) -> int:
+        others = any(k != w.key for k in self._deciding()) or any(
+            x.key != w.key and x.state in ("queued", "playing") and x.pending()
+            for x in self.wishes)
+        return block_size(w, others)
 
     def can_seed_background(self) -> bool:
         """Smí plnič postavit podkres z hrající skladby? Jen když žádné přání

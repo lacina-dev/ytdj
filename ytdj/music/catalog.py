@@ -171,7 +171,9 @@ class Catalog:
         """
         return await self.artist_tracks(name, limit)
 
-    async def search_song(self, artist: str, title: str) -> Track | None:
+    async def search_song(
+        self, artist: str, title: str, strict: bool = False
+    ) -> Track | None:
         """Najde konkrétní skladbu — a hlídá, že je od toho interpreta.
 
         Slepě brát první výsledek je zdroj většiny "to jsem nechtěl": na
@@ -183,16 +185,22 @@ class Catalog:
         Každé volání zapíše jednu událost `catalog.search` (co se chtělo, co
         se vybralo, odkud, se skóre vítěze i druhého v pořadí) a když nic
         nesedí, ještě `catalog.match_fail` s nejlepším odmítnutým kandidátem.
+
+        `strict=True` je pro výslovné přání skladby: jen jedno hledání skladeb,
+        bez profilu, videí a bez náhrady "aspoň něco od něj" — co nesedí, je
+        None. Chybějící skladba tak stojí jeden dotaz místo čtyř.
         """
         artist, title = _clean(artist), _clean(title)
         query = f"{artist} {title}".strip()
         if not query:
             return None
         ev: dict[str, Any] = {"artist": artist, "title": title, "lang": SEARCH_LANGUAGE}
+        if strict:
+            ev["strict"] = True
         t0 = time.monotonic()
         track: Track | None = None
         try:
-            track = await self._search_song(artist, title, query, ev)
+            track = await self._search_song(artist, title, query, ev, strict)
             return track
         except Exception as exc:
             ev["error"] = f"{type(exc).__name__}: {exc}"[:300]
@@ -205,7 +213,8 @@ class Catalog:
             telemetry.event("catalog.search", **ev)
 
     async def _search_song(
-        self, artist: str, title: str, query: str, ev: dict[str, Any]
+        self, artist: str, title: str, query: str, ev: dict[str, Any],
+        strict: bool = False,
     ) -> Track | None:
         ev["steps"] = steps = []
 
@@ -222,6 +231,12 @@ class Catalog:
         steps.append({"source": "songs", "query": query, "n": len(songs)})
         if best := self._pick(songs, artist, title, "songs", ev):
             return best
+
+        if strict:
+            # výslovné přání: bez náhrad a dalších kol (viz docstring)
+            self._match_fail(artist, title, songs, None, ev)
+            ev["source"] = None
+            return None
 
         if not artist:
             ev["source"] = "songs_first"

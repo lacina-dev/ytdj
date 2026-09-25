@@ -36,7 +36,7 @@ from ..music.radio import RadioPools
 from ..player.base import Player, queue_transaction
 from ..state import Store
 from .. import telemetry
-from .fastpath import FastResult, find_artists, find_song, verify_requested
+from .fastpath import FastResult, enforce_requested, find_artists, find_song
 from .intent import Intent, ListenerIntent, Pair, build_intent, track_avoided
 from .prompts import ROLE, render_state
 
@@ -462,8 +462,14 @@ class CodexDJ:
 
         plan.requested, missing = await self._resolve_pairs(intent.tracks)
         # [truthful] katalog umí vrátit "aspoň něco od něj" — to není vyžádaná skladba
-        plan.requested, wrong = verify_requested(intent.tracks, plan.requested)
+        # [truthful] a když posluchač jmenoval interpreta ("… od Olympicu"), tak od něj
+        plan.requested, wrong, other = await enforce_requested(
+            self.catalog, intent.text, intent.tracks, plan.requested
+        )
         missing += wrong
+        if other:  # [truthful] jiná verze, než jakou jmenoval — říct to, ne mlčet
+            intent.reply = ""
+            plan.notes.extend(other)
         if missing:
             plan.notes.append("Nenašel jsem: " + "; ".join(missing) + ".")
             if intent.tracks and not plan.requested:
@@ -759,7 +765,8 @@ class CodexDJ:
         intent = Intent(
             kind="song", text=text, tracks=[(t.artist, t.title)],
             mood=f"{t.artist} a podobné", note="fast_path_song",
-            reply=f"Hraju {t.label()}, pak podobné.",
+            reply=f"{song.note} Pak podobné." if song.note  # [truthful] jiná verze
+            else f"Hraju {t.label()}, pak podobné.",
         )
         log.info("rychlá cesta (skladba): %s → %s", text, t.label())
         return Plan(intent=intent, requested=[t], seeds=[t])

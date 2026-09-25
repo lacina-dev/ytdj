@@ -227,6 +227,51 @@ class PiReplays(unittest.TestCase):
         self.assertEqual(player.current.id, "c")  # and doesn't play it
         self.assertNotIn(("skip", False), player.log)
 
+    def _vagner(self):
+        vagner = T("hv", "Karel Vágner se svým orchestrem, Stanislav Hložek, Petr Kotvald",
+                   "Holky z naší školky")
+
+        async def catalog_without_olympic_version(artist, title, strict=False):
+            return vagner  # the only recording the catalog knows
+
+        dj, player, _ = make(current=T("c", "Someone"))
+        dj.catalog.search_song = catalog_without_olympic_version
+        return dj, player, vagner
+
+    def test_2346_other_version_is_said_out_loud(self):
+        # "pusť Holky z naší školky od Olympicu" → model picked the Vágner /
+        # Hložek / Kotvald recording and the reply kept quiet about it.
+        dj, player, vagner = self._vagner()
+        _, reply = run(go(dj, "pusť Holky z naší školky od Olympicu", decision(
+            action="play_next", reply="Pouštím Holky z naší školky.",
+            requested=[{"artist": vagner.artist, "title": "Holky z naší školky"}])))
+        self.assertEqual(player.current.id, "hv")  # most likely a misremembered artist
+        self.assertEqual(reply, f"Od Olympicu ji nemám — hraju verzi {vagner.artist}.")
+
+    def test_2346_insisted_artist_is_not_replaced(self):
+        dj, player, vagner = self._vagner()
+        _, reply = run(go(dj, "pusť Holky z naší školky jen od Olympicu", decision(
+            action="play_next", reply="Pouštím Holky z naší školky.",
+            requested=[{"artist": vagner.artist, "title": "Holky z naší školky"}])))
+        self.assertEqual(player.current.id, "c")  # nothing played or cut
+        self.assertIn("Nenašel jsem", reply)
+        self.assertIn("od Olympicu", reply)
+        self.assertNotIn("Pouštím", reply)
+
+    def test_named_artist_version_is_found_instead(self):
+        vagner = T("hv", "Karel Vágner, Stanislav Hložek, Petr Kotvald", "Holky z naší školky")
+        olympic = T("ho", "Olympic", "Holky z naší školky")
+
+        async def search(artist, title, strict=False):
+            return olympic if "olympic" in artist.lower() else vagner
+
+        dj, player, _ = make(current=T("c", "Someone"))
+        dj.catalog.search_song = search
+        run(go(dj, "pusť Holky z naší školky od Olympicu", decision(
+            action="play_next",
+            requested=[{"artist": vagner.artist, "title": "Holky z naší školky"}])))
+        self.assertEqual(player.current.id, "ho")
+
     def test_auto_turn_does_not_write_taste(self):
         # six "Uživateli nesedí…" lines in taste.md came from skip reseeds
         dj, _, store = make()

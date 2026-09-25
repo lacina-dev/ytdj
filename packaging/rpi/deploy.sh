@@ -44,6 +44,22 @@ if ! cmp -s packaging/rpi/51-ytdj-audio-priority.conf "$conf_dir/51-ytdj-audio-p
     echo "wireplumber: priorities installed, restarted"
 fi
 
+# ytdj a PO token server mimo jádro 0 (viz cpu-affinity.conf)
+aff_changed=
+for unit in ytdj ytdj-pot; do
+    d="$HOME/.config/systemd/user/$unit.service.d"
+    mkdir -p "$d"
+    if ! cmp -s packaging/rpi/cpu-affinity.conf "$d/50-cpu-affinity.conf"; then
+        install -m 644 packaging/rpi/cpu-affinity.conf "$d/50-cpu-affinity.conf"
+        aff_changed=1
+    fi
+done
+if [ -n "$aff_changed" ]; then
+    systemctl --user daemon-reload
+    systemctl --user restart ytdj-pot.service || true
+    echo "cpu: ytdj a ytdj-pot na jádrech 1–3 (restart ytdj níž)"
+fi
+
 # delší takt PipeWire proti lupání (viz 50-ytdj-pipewire.conf)
 pw_dir="$HOME/.config/pipewire/pipewire.conf.d"
 mkdir -p "$pw_dir"

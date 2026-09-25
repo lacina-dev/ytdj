@@ -26,6 +26,7 @@ from .. import telemetry
 from ..config import MPV_SOCKET, Config, save_values
 from ..telemetry_sampler import SystemSampler
 from . import ytdl_cache
+from .outage import classify_error, outage_reason, probe_connectivity
 from ..music.catalog import Track
 from .base import EventHandler, Player, PlayerEvent, PlayerStatus
 
@@ -45,7 +46,7 @@ RESOLVER_SOCKET = MPV_SOCKET.parent / "ytdl-resolver.sock"
 
 # mpv nad 130 stejně nepustí a ručně zapsaná hodnota v configu by ho jinak
 # odmítla nastartovat
-VOLUME_MAX = 130
+VOLUME_MAX = 100  # strop hlasitosti (mpv by šlo do 130 — zkreslení, zničené repro)
 SAVE_DELAY = 2.0  # sekund klidu, než se hlasitost zapíše do configu
 QUALITY_DELAY = 12.0  # než se klouzavý průměr bitrate ustálí
 # 774 má jmenovitě 251 kb/s, 141 pak 258; běžné formáty končí na 130. Práh
@@ -60,6 +61,12 @@ def _clamp_volume(volume: int) -> int:
 REQUEST_MAX_AGE = 600.0  # s — starší "chci další" už se ke startu nepřičítá
 RESOLVE_MATCH_AGE = 1800.0  # s — jak starý dotaz resolveru ještě patří ke startu
 STALL_MIN_MS = 200  # kratší zaváhání core-idle nejsou výpadek
+# Výpadek: tolik chyb přehrávání po sobě (bez zvuku mezi nimi) = nehrát dál,
+# držet frontu, zkoušet spojení a pak pokračovat od první chybné skladby.
+OUTAGE_AFTER = 2
+OUTAGE_FIRST_DELAY = 2.0  # s — první zkouška spojení, pak dvojnásobek…
+OUTAGE_MAX_DELAY = 60.0  # …nejvýš po minutě
+OUTAGE_MAX_RESUMES = 2  # po tolika obnoveních, kdy tatáž skladba zase selže, se přeskočí
 SLOW_HANDLER = 0.15  # s — handler události, který déle blokuje event loop, do logu
 SMART_LOCK_WAIT = 0.3  # s — déle na zámek playlistu chytré Další nečeká
 URGENT_NEXT = 2  # kolik nejbližších skladeb se řeší i během tahu Codexu (hold)
@@ -137,6 +144,16 @@ class MpvPlayer(Player):
         # položky opuštěné během načítání (Další) — jejich chyba není "nepřehratelné"
         self._abandoned: set[int] = set()
         self._prune_task: asyncio.Task | None = None
+        # ---- výpadek (síť / YouTube / cookies), viz outage.py ----
+        self._err_streak: list[int] = []  # položky, které selhaly od posledního zvuku
+        self._res_errors: dict[str, str] = {}  # vid → poslední chyba od resolveru
+        self._outage: dict[str, Any] | None = None
+        self._outage_task: asyncio.Task | None = None
+        self._outage_wake = asyncio.Event()
+        self._outage_level = 0  # stupeň prodlevy mezi zkouškami (drží se 10 min)
+        self._outage_last_end = 0.0
+        self._resumes: dict[int, int] = {}  # položka → kolikrát se od ní obnovovalo
+        self.probe: Callable[[], tuple[bool, str]] = probe_connectivity
         self._insert_next_ok = True  # mpv ≥ 0.38 umí `loadfile … insert-next`
         # playlist_entry_id (from mpv) -> videoId. Thanks to this we never
         # have to query mpv for anything while handling events — so no
@@ -226,6 +243,7 @@ class MpvPlayer(Player):
             # Nastavuje se rovnou na příkazové řádce, ne až přes IPC — jinak by
             # první skladba po startu stihla zaznít v původní hlasitosti.
             f"--volume={self._volume}",
+            f"--volume-max={VOLUME_MAX}",  # strop i pro cokoli, co jde do mpv přímo
         ]
         raw = []
         # An exported jar wins: it is the only source that survives without a
@@ -337,7 +355,8 @@ class MpvPlayer(Player):
                 await asyncio.wait_for(self.proc.wait(), timeout=3)
         with suppress(FileNotFoundError):
             os.unlink(MPV_SOCKET)
-        for task in (self._resolver_task, self._prefetch_task, self._prune_task):
+        for task in (self._resolver_task, self._prefetch_task, self._prune_task,
+                     self._outage_task):
             if task:
                 task.cancel()
         if self._resolver and self._resolver.returncode is None:
@@ -472,10 +491,22 @@ class MpvPlayer(Player):
                 # odsunula ji aplikace, ne posluchač — nepočítat jako "nelíbí"
                 kind = "replaced"
             self._replacing = False
+            detail = reason
+            if kind == "error":
+                # vlastnost skladby (černá listina), nebo výpadek (nic neblokovat)?
+                vid = self._entries.get(entry)
+                text = self._res_errors.get(vid or "") or str(msg.get("file_error") or "")
+                cls = classify_error(text)
+                detail = f"{cls}|{text[:200]}"
+                if cls == "transient":
+                    # "unavailable": přání ani černá listina na to nereagují —
+                    # skladba se po výpadku zkusí znovu
+                    kind = "unavailable"
+                    self._note_transient(entry, text)
             premature = self._note_premature_end(kind, msg.get("playlist_entry_id", -1))
             self._t_end_file(kind, msg, premature)
             self._time_pos = 0.0
-            self._events.put_nowait((kind, msg.get("playlist_entry_id", -1), reason))
+            self._events.put_nowait((kind, msg.get("playlist_entry_id", -1), detail))
             return
 
         if event == "idle":
@@ -528,6 +559,11 @@ class MpvPlayer(Player):
         """
         i = self._cur_index()
         if i < 0:
+            if self._outage is not None:
+                # při výpadku stojíme; fronta čeká od skladby, od které se obnoví
+                j = self._index_of(self._outage.get("resume_entry"))
+                if j >= 0:
+                    return [vid for _, vid in self._playlist[j:] if vid]
             return []
         return [vid for _, vid in self._playlist[i + 1 :] if vid]
 
@@ -541,6 +577,100 @@ class MpvPlayer(Player):
                 self._entries[eid] = vid
                 return eid
         return None
+
+    # ---------- výpadek ----------
+
+    def _note_transient(self, entry: int, text: str) -> None:
+        """Skladba selhala a vypadá to na výpadek, ne na ni. Bez IPC."""
+        if self._outage is not None or not isinstance(entry, int) or entry < 0:
+            return
+        self._err_streak.append(entry)
+        if len(self._err_streak) >= OUTAGE_AFTER:
+            self._enter_outage(text)
+
+    def _reclassify(self, entry: int, detail: str) -> tuple[str, str]:
+        """Chyba resolveru (stderr) mohla dorazit až po end-file od mpv: je-li
+        teď známá a jde o vlastnost videa, je to "error", ne výpadek."""
+        vid = self._entries.get(entry)
+        text = self._res_errors.get(vid or "")
+        if text:
+            cls = classify_error(text)
+            if cls != "transient":
+                with suppress(ValueError):
+                    self._err_streak.remove(entry)
+                return "error", f"{cls}|{text[:200]}"
+        return "unavailable", detail
+
+    def _enter_outage(self, text: str) -> None:
+        first = self._err_streak[0]
+        self._err_streak = []
+        now = time.monotonic()
+        if now - self._outage_last_end > 600:
+            self._outage_level = 0
+        reason = outage_reason(text)
+        self._outage = {"reason": reason, "since": time.time(), "detail": (text or "")[:200],
+                        "resume_entry": first, "t0": now}
+        log.warning("výpadek (%s): přehrávání stojí, zkouším spojení — %s", reason, text[:120])
+        telemetry.event("player.outage", phase="start", reason=reason,
+                        detail=telemetry.clip(text, 200), video_id=self._entries.get(first),
+                        level=self._outage_level)
+        self._events.put_nowait(("outage", first, reason))
+        self._outage_task = asyncio.create_task(self._outage_loop())
+
+    async def _outage_loop(self) -> None:
+        """Zastavit (fronta zůstane), zkoušet spojení s prodlevou, obnovit."""
+        with suppress(Exception):
+            await self._command("stop", "keep-playlist")
+        probes = 0
+        while self._outage is not None:
+            delay = min(OUTAGE_MAX_DELAY, OUTAGE_FIRST_DELAY * 2 ** self._outage_level)
+            self._outage_wake.clear()
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._outage_wake.wait(), delay)
+            probes += 1
+            try:
+                ok, why = await asyncio.to_thread(self.probe)
+            except Exception as exc:
+                ok, why = False, str(exc)
+            if ok:
+                break
+            self._outage_level = min(self._outage_level + 1, 6)
+            self._outage["detail"] = why[:200]
+            telemetry.event("player.outage", phase="probe", ok=False, detail=telemetry.clip(why, 200),
+                            probes=probes, next_s=min(OUTAGE_MAX_DELAY,
+                                                      OUTAGE_FIRST_DELAY * 2 ** self._outage_level))
+        await self._resume_after_outage(probes)
+
+    async def _resume_after_outage(self, probes: int) -> None:
+        outage = self._outage
+        if outage is None:
+            return
+        eid = outage["resume_entry"]
+        gave_up = None
+        async with self._mutex:
+            await self._sync()
+            idx = self._index_of(eid)
+            n = self._resumes.get(eid, 0) + 1
+            self._resumes[eid] = n
+            if idx >= 0 and n > OUTAGE_MAX_RESUMES:
+                # spojení je, a přesto tatáž skladba padá pořád dokola — vadná
+                # je nejspíš ona: přeskočit ji (bez černé listiny)
+                gave_up = eid
+                idx = idx + 1 if idx + 1 < len(self._playlist) else -1
+            self._outage = None
+            self._outage_last_end = time.monotonic()
+            self._outage_level = min(self._outage_level + 1, 6)  # opakuje-li se brzy, pomaleji
+            if idx >= 0:
+                self._t_request("resume")
+                await self._command("playlist-play-index", idx)
+        down = time.monotonic() - outage["t0"]
+        log.info("spojení je zpět po %.0f s — pokračuji", down)
+        telemetry.event("player.outage", phase="end", reason=outage["reason"], down_s=round(down, 1),
+                        probes=probes, gave_up=self._entries.get(gave_up) if gave_up else None)
+        if gave_up is not None:
+            self._events.put_nowait(("error", gave_up, "retry_failed|opakovaně selhala i se spojením"))
+        self._events.put_nowait(("outage_end", eid, ""))
+        self._schedule_prefetch()
 
     def _schedule_prune(self) -> None:
         if self._cur_index() > KEEP_HISTORY and (
@@ -648,6 +778,8 @@ class MpvPlayer(Player):
         if not idle:
             if load["t_play"] is None:
                 load["t_play"] = now
+                self._err_streak.clear()
+                self._resumes.pop(load.get("entry"), None)
                 self._t_emit_start(load)
             elif load["stall_t0"] is not None:
                 ms = _ms(load["stall_t0"], now) or 0
@@ -738,7 +870,7 @@ class MpvPlayer(Player):
                 fields["quality"] = self._quality
             self._load = None
             telemetry.event("track.end", **fields)
-            if kind in ("finished", "error"):
+            if kind in ("finished", "error", "unavailable") and self._outage is None:
                 self._t_request("eof" if kind == "finished" else "error")
         except Exception:
             pass
@@ -779,6 +911,13 @@ class MpvPlayer(Player):
             return
         if kind.startswith("_"):
             return
+        if kind in ("resolver.resolve", "resolver.get") and fields.get("video_id"):
+            if fields.get("ok"):
+                self._res_errors.pop(fields["video_id"], None)
+            elif fields.get("error"):
+                self._res_errors[fields["video_id"]] = str(fields["error"])
+                if len(self._res_errors) > 100:
+                    self._res_errors.pop(next(iter(self._res_errors)))
         if kind == "resolver.resolve" and fields.get("video_id"):
             if fields.get("ok"):
                 self._res_failed.discard(fields["video_id"])
@@ -800,6 +939,8 @@ class MpvPlayer(Player):
         the order the events arrived."""
         while True:
             kind, entry_id, detail = await self._events.get()
+            if kind == "unavailable":
+                kind, detail = self._reclassify(entry_id, detail)
 
             track = None
             if kind != "idle":
@@ -912,7 +1053,8 @@ class MpvPlayer(Player):
         for track in tracks:
             self._tracks[track.id] = track
             self._enqueued_at[track.id] = now
-            res = await self._command("loadfile", WATCH_URL.format(track.id), "append-play")
+            flag = "append" if self._outage is not None else "append-play"  # při výpadku nespouštět
+            res = await self._command("loadfile", WATCH_URL.format(track.id), flag)
             self._note_entry(res, track.id)
         await self._sync()
         return len(tracks)
@@ -1143,6 +1285,14 @@ class MpvPlayer(Player):
         (playlist-next nemění indexy, jen to, co hraje, takže se s ostatními
         změnami nepere.)
         """
+        if self._outage is not None:
+            # stojíme kvůli výpadku: Další = obnovit až od následující, a
+            # hned zkusit spojení
+            j = self._index_of(self._outage.get("resume_entry"))
+            if 0 <= j < len(self._playlist) - 1:
+                self._outage["resume_entry"] = self._playlist[j + 1][0]
+            self._outage_wake.set()
+            return
         upcoming = self.upcoming_ids()
         load = self._load
         if self._current_id is None and load is None and not upcoming:
@@ -1410,7 +1560,7 @@ class MpvPlayer(Player):
         idle = bool(await self._get("core-idle", False))
         return PlayerStatus(
             buffering=idle and not self._paused and current is not None,
-            playing=count > 0 and not self._paused,
+            playing=count > 0 and not self._paused and self._outage is None,
             paused=self._paused,
             current=current,
             position=float(await self._get("time-pos", 0) or 0),
@@ -1418,7 +1568,14 @@ class MpvPlayer(Player):
             queue=upcoming,
             volume=self._volume,
             quality=self._quality,
+            outage=self.outage,
         )
+
+    @property
+    def outage(self) -> dict | None:
+        """Výpadek: {"reason", "since", "detail"} — nehraje se a zkouší se spojení."""
+        o = self._outage
+        return {k: o[k] for k in ("reason", "since", "detail")} if o else None
 
     @property
     def queue_depth(self) -> int:

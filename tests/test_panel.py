@@ -622,8 +622,11 @@ class WishTest(unittest.TestCase):
         self._open()
         self.touch.tap(*center(chip_box(0)))
         self.assertTrue(wait_for(lambda: self.fake.prompts))
-        self.assertEqual(self.fake.prompts[0], {"text": "víc takového", "source": "panel", "who": "displej",
-                                                "play_next": False, "wait": False})
+        sent = dict(self.fake.prompts[0])
+        client = sent.pop("client")
+        self.assertTrue(client.startswith("panel-"))  # jedna relace přání = jeden člověk
+        self.assertEqual(sent, {"text": "víc takového", "source": "panel", "who": "displej",
+                                "play_next": False, "wait": False, "chip": "more"})
         # accepted at once, the DJ's decision comes with the status stream
         self.assertTrue(wait_for(lambda: self.app.wish.phase == "queued"))
         self.assertIn("víc takového", self.app.wish.reply)
@@ -631,6 +634,25 @@ class WishTest(unittest.TestCase):
         self.assertTrue(wait_for(lambda: self.app._shown_page == "wish:sent"))
         self.touch.tap(*center(BTN_R))  # Hotovo
         self.assertTrue(wait_for(lambda: self.app._shown_page == "player"))
+
+    def test_closing_the_wish_screen_starts_a_new_person(self):
+        from ytdj.panel.wishui import BTN_R, chip_box
+
+        self._open()
+        self.app.wish.who = "Robert"  # vybral si jméno
+        self.touch.tap(*center(chip_box(0)))
+        self.assertTrue(wait_for(lambda: self.app.wish.phase == "queued"))
+        first = self.fake.prompts[0]["client"]
+        self.assertEqual(self.fake.prompts[0]["who"], "Robert")
+        self.assertTrue(wait_for(lambda: self.app._shown_page == "wish:sent"))
+        self.touch.tap(*center(BTN_R))  # Hotovo
+        self.assertTrue(wait_for(lambda: self.app._shown_page == "player"))
+        self.assertEqual(self.app.wish.who, "displej")  # další u displeje je někdo jiný
+        self._open()
+        self.touch.tap(*center(chip_box(3)))
+        self.assertTrue(wait_for(lambda: len(self.fake.prompts) == 2))
+        self.assertNotEqual(self.fake.prompts[1]["client"], first)
+        self.assertEqual(self.fake.prompts[1]["who"], "displej")
 
     def test_czech_keyboard(self):
         from ytdj.panel.wishui import FIELD_BTN

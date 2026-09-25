@@ -66,6 +66,7 @@ STRINGS = {
         "queue_title": "Fronta přání",
         "queue_empty": "Nikdo si zrovna nic nepřeje.",
         "type": "Napsat vlastní přání…",
+        "offline": "DJ teď rozumí jen „pusť <interpret>“ a tlačítkům",
         "draft": "Pokračovat: ",
         "placeholder": "např. písničky od Olympicu",
         "cancel": "Zpět",
@@ -99,6 +100,7 @@ STRINGS = {
         "queue_title": "Wish queue",
         "queue_empty": "Nobody is wishing for anything.",
         "type": "Type your own wish…",
+        "offline": "The DJ only gets “play <artist>”, a song title and the buttons now",
         "draft": "Continue: ",
         "placeholder": "e.g. songs by Olympic",
         "cancel": "Back",
@@ -221,6 +223,7 @@ class WishView:
     count: int = 0  # wishes waiting or playing
     rows: tuple[QueueRow, ...] = ()
     scroll: int = 0
+    offline: bool = False  # mozek DJe nejede (jistič) — rozumí jen jednoduchým přáním
 
 
 def targets(v: WishView, lang: str = "cs") -> dict[str, Box]:
@@ -280,7 +283,8 @@ class WishRenderer(NetRenderer):
                 ("wtitle", H_TITLE, lambda v: (v.note,), self._draw_home_title, False),
                 ("who", WHO_BTN, lambda v: (v.who, v.pressed == "who"), self._draw_who_btn, False),
                 ("qbtn", QUEUE_BTN, lambda v: (v.count, v.pressed == "queue"), self._draw_queue_btn, False),
-                ("field", FIELD_BTN, lambda v: (v.text, v.pressed == "field"), self._draw_field_btn, False),
+                ("field", FIELD_BTN, lambda v: (v.text, v.pressed == "field", v.offline),
+                 self._draw_field_btn, False),
             ]
             for i in range(len(self.chips)):
                 regs.append((f"chip{i}", chip_box(i), self._chip_sig(i), self._chip_draw(i), False))
@@ -362,6 +366,10 @@ class WishRenderer(NetRenderer):
             d.text((x, cy), label, font=self.label, fill=DIM, anchor="lm")
             lx = x + self.label.getlength(label)
             d.text((lx, cy), ellipsize(v.text.strip(), self.value, room - (lx - x)), font=self.value, fill=TEXT, anchor="lm")
+        elif v.offline:
+            # mozek DJe nejede — ať je jasné, co teď funguje
+            d.text((x, cy), ellipsize(self.s["offline"], self.label, room), font=self.label,
+                   fill=ERR, anchor="lm")
         else:
             d.text((x, cy), self.s["type"], font=self.value, fill=TEXT if not pressed else ACCENT_TEXT, anchor="lm")
 

@@ -604,6 +604,11 @@
     color: var(--text);
   }
   .banner.show { display: flex; }
+  .banner.notice {
+    background: color-mix(in srgb, var(--warn) 13%, transparent);
+    border-color: color-mix(in srgb, var(--warn) 32%, transparent);
+  }
+  .banner.notice svg { color: var(--warn); }
   .banner svg { width: 17px; height: 17px; flex: none; color: var(--err); }
 
   /* ---------- settings ---------- */
@@ -844,6 +849,13 @@
     </svg>
     <span id="bannerText"></span>
   </div>
+  <!-- DJ bez mozku / výpadek YouTube: co teď funguje (ne chyba spojení s jukeboxem) -->
+  <div class="banner notice" id="notice" role="status">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+      <path d="M12 8v5"/><path d="M12 16.5v.01"/><circle cx="12" cy="12" r="9"/>
+    </svg>
+    <span id="noticeText"></span>
+  </div>
 
   <div class="cols">
 
@@ -909,11 +921,11 @@
           <p class="note"><span class="spinner"></span><span class="txt" id="busyText">DJ přemýšlí…</span></p>
         </div>
         <div class="chips" id="chips" role="group" aria-label="Rychlá přání">
-          <button class="chip" type="button" data-wish="víc takového">Víc takového</button>
-          <button class="chip" type="button" data-wish="něco úplně jiného než teď — jiné interprety i styl">Něco jiného</button>
-          <button class="chip" type="button" data-wish="jen česky">Jen česky</button>
-          <button class="chip" type="button" data-wish="něco klidnějšího">Klidnější</button>
-          <button class="chip" type="button" data-wish="něco živějšího">Živější</button>
+          <button class="chip" type="button" data-chip="more" data-wish="víc takového">Víc takového</button>
+          <button class="chip" type="button" data-chip="other" data-wish="něco úplně jiného než teď — jiné interprety i styl">Něco jiného</button>
+          <button class="chip" type="button" data-chip="czech" data-wish="jen česky">Jen česky</button>
+          <button class="chip" type="button" data-chip="calmer" data-wish="něco klidnějšího">Klidnější</button>
+          <button class="chip" type="button" data-chip="livelier" data-wish="něco živějšího">Živější</button>
         </div>
         <div class="reply" id="reply" role="status" aria-live="polite"></div>
         <p class="hint"><span class="kbd-only">Enter odešle, Shift+Enter udělá nový řádek. </span>Přání se přijme hned;
@@ -1058,6 +1070,7 @@
   var el = {
     conn: $("#conn"), connText: $("#connText"),
     banner: $("#banner"), bannerText: $("#bannerText"),
+    notice: $("#notice"), noticeText: $("#noticeText"),
     now: $("#now"), nowLabel: $("#nowLabel"), bars: $("#bars"),
     title: $("#title"), artist: $("#artist"), album: $("#album"), idleHint: $("#idleHint"),
     progress: $("#progress"), bar: $("#bar"), barFill: $("#barFill"),
@@ -1249,9 +1262,35 @@
     location.reload();
   }
 
+  function renderNotice(s) {
+    var text = "";
+    if (s.outage) {
+      text = "Vypadlo spojení s YouTube — čekám, fronta i přání zůstávají.";
+    } else if (s.dj_offline) {
+      var b = s.dj_brain || {};
+      text = "DJ teď nerozumí volnému textu — funguje „pusť <interpret>“, název písničky, " +
+             "odkaz a tlačítka nálad.";
+      if (b.retry_in_s > 0) text += " Zkusím ho znovu za " + Math.max(1, Math.round(b.retry_in_s / 60)) + " min.";
+    }
+    if (S.sig.notice !== text) {
+      S.sig.notice = text;
+      el.noticeText.textContent = text;
+      el.notice.classList.toggle("show", !!text);
+    }
+    // výsledek rozjezdu (▶ v tichu) vidí všichni — dřív jen v logu
+    var last = s.dj && s.dj.last;
+    if (last && last.source === "start" && last.at && last.at !== S.startSeen) {
+      if (S.startSeen !== undefined) showReply(last.reply || "", !last.ok, "");
+      S.startSeen = last.at;
+    } else if (S.startSeen === undefined) {
+      S.startSeen = last && last.source === "start" ? last.at : 0;
+    }
+  }
+
   function applyStatus(s) {
     checkBuild(s);
     S.status = s;
+    renderNotice(s);
 
     var cur = s.current || null;
     var playing = !!s.playing;
@@ -1261,7 +1300,7 @@
     var id = cur ? (cur.id || (cur.title + "|" + cur.artist)) : null;
 
     S.duration = dur;
-    S.running = playing && !paused;
+    S.running = playing && !paused && !s.outage;
     // na řadě, ale proud ještě neteče — čas stojí, dokud se neozve zvuk
     var wasLoading = S.loading;
     S.loading = S.running && !!s.buffering;
@@ -1291,7 +1330,8 @@
       el.artist.textContent = cur.artist || "";
       setHidden(el.album, !cur.album);
       el.album.textContent = cur.album || "";
-      var state = paused ? "pozastaveno" : (S.loading ? "načítám…" : (playing ? "hraje" : "připraveno"));
+      var state = s.outage ? "výpadek spojení" :
+                  (paused ? "pozastaveno" : (S.loading ? "načítám…" : (playing ? "hraje" : "připraveno")));
       // kvalita se změří až z pár vteřin proudu, do té doby tam nic není
       el.nowLabel.textContent = s.quality ? state + " · " + s.quality : state;
       el.bars.classList.toggle("still", !S.running || S.loading);
@@ -1429,9 +1469,13 @@
   var ICO_X = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
 
   function stateText(r) {
-    if (r.state === "queued" && r.eta) return "ve frontě · " + r.eta;
-    if (r.state === "thinking") return "DJ vybírá…";
-    return r.state_cs || r.state;
+    var t;
+    if (r.state === "queued" && r.eta) t = "ve frontě · " + r.eta;
+    else if (r.state === "thinking") t = "DJ vybírá…";
+    else if (r.state === "skipped" && r.skipped_by) t = "přeskočil " + r.skipped_by;
+    else t = r.state_cs || r.state;
+    if (r.restored && ACTIVE[r.state]) t += " · obnoveno po restartu";
+    return t;
   }
 
   function renderWishes(list) {
@@ -1492,6 +1536,18 @@
   }
   try { S.tokens = JSON.parse(load("ytdj.tokens") || "{}") || {}; } catch (e) { S.tokens = {}; }
   el.who.value = load("ytdj.who") || "";
+  // Kdo je kdo (spravedlnost, nahrazení vlastního přání) určuje tohle id, ne
+  // jméno: dva lidé za jednou IP nebo se stejným jménem jsou dva lidé.
+  S.client = load("ytdj.client") || "";
+  if (!/^[A-Za-z0-9_-]{6,40}$/.test(S.client)) {
+    var rnd = "";
+    try {
+      var a = new Uint8Array(9); crypto.getRandomValues(a);
+      for (var i = 0; i < a.length; i++) rnd += ("0" + a[i].toString(16)).slice(-2);
+    } catch (e) { rnd = Math.random().toString(36).slice(2) + Date.now().toString(36); }
+    S.client = "web-" + rnd;
+    store("ytdj.client", S.client);
+  }
   try {
     var draft = sessionStorage.getItem("ytdj.draft");
     if (draft) { el.prompt.value = draft; sessionStorage.removeItem("ytdj.draft"); }
@@ -1586,7 +1642,9 @@
 
   async function control(action, value) {
     try {
-      await postJSON("/api/control", { action: action, value: (value == null ? null : value) });
+      // kdo přeskočil — vlastník přeskočeného přání to uvidí
+      await postJSON("/api/control", { action: action, value: (value == null ? null : value),
+                                       who: el.who.value.trim(), client: S.client });
       hideBanner();
       if (!polling) setTimeout(refresh, 120);
     } catch (e) {
@@ -1683,7 +1741,8 @@
     setBusy(true);
     try {
       var data = await postJSON("/api/prompt", {
-        text: text, who: who, source: "web", play_next: !!el.playNext.checked, wait: false
+        text: text, who: who, source: "web", play_next: !!el.playNext.checked, wait: false,
+        client: S.client, chip: opts.chip || undefined
       });
       if (!opts.quiet) { el.prompt.value = ""; autosize(); }
       el.playNext.checked = false;
@@ -1713,7 +1772,7 @@
   el.chips.addEventListener("click", function (ev) {
     var b = ev.target.closest && ev.target.closest(".chip");
     if (!b || b.disabled) return;
-    send(b.getAttribute("data-wish"), { quiet: true });
+    send(b.getAttribute("data-wish"), { quiet: true, chip: b.getAttribute("data-chip") || "" });
   });
 
   function autosize() {

@@ -188,6 +188,29 @@ To control it from a phone, set `web_host = "0.0.0.0"`. Read the security note
 under [Web UI & API](#web-ui--api) first: there is no authentication, so anyone
 on that network can play music, change settings, and spend your subscription.
 
+### When the DJ says it can't reach its brain
+
+Codex logs in with a ChatGPT account and refreshes its own tokens. **Give the
+jukebox its own login** — never copy `~/.codex/auth.json` from another machine:
+the two would share one refresh token, and whichever refreshes first logs the
+other one out (on the Pi this showed up as `401 Unauthorized … Incorrect API key`).
+
+```bash
+packaging/rpi/codex-login.sh        # PI=user@host overrides the target
+```
+
+It runs `codex login --device-auth` on the Pi over ssh: open the link it prints
+on any device (a phone is fine), sign in, type the one-time code — the code
+expires in a few minutes. No restart is needed: the DJ notices the new
+`auth.json` and tries again straight away.
+
+While Codex is unavailable (not logged in, usage limit, network), the DJ keeps
+playing and says so in plain words instead of showing the error; it does not
+wait for the model on every wish, and it still handles artist and song wishes
+and the simple chips (*klidnější, živější, jen česky, víc takového, něco jiného,
+překvap mě*) on its own. `app.dj.status()["brain"]` reports the state
+(`online`, `reason`, `retry_in_s`, `message`).
+
 ## Touch panel
 
 A small screen next to the speaker that shows what's playing and does the
@@ -375,12 +398,12 @@ The API, if you want to script it:
 
 | endpoint | description |
 |---|---|
-| `GET /api/status` | player state, queue (`queue[].req` = whose wish), history, `requests[]`, `current.reason`, `build` (fingerprint of the page — an open tab reloads itself when it changes) and `version` (of the whole app) |
+| `GET /api/status` | player state, queue (`queue[].req` = whose wish), history, `requests[]`, `current.reason`, `build` (fingerprint of the page — an open tab reloads itself when it changes) and `version` (of the whole app), `dj_offline` + `dj_brain` (the DJ's model is down: what works and when it retries), `outage` (YouTube / network down — nothing plays, the queue waits). Names and wish texts are shown with rude words masked (`display_filter`, `display_blocklist`) |
 | `GET /api/events` | SSE: the full state when something changes, `event: pos` `[123.4]` every second in between |
-| `POST /api/prompt` | `{"text","who","source","play_next","wait":false}` → **202** `{"id","token","state"}` at once; progress and the DJ's reply arrive in `requests[]`. Without `who`/`wait` (old clients) it answers `{"reply"}` once the DJ decided. Plain commands ("další", "hlasitost 40") → 200 `{"reply"}` right away; 429 = too many open wishes of one person |
+| `POST /api/prompt` | `{"text","who","source","client","chip","play_next","wait":false}` → **202** `{"id","token","state"}` at once; progress and the DJ's reply arrive in `requests[]`. Without `who`/`wait` (old clients) it answers `{"reply"}` once the DJ decided. Plain commands ("další", "hlasitost 40") → 200 `{"reply"}` right away; 429 = too many open wishes of one person. `client` is a random id the browser keeps (the panel: one per wish session) — *that* is who a person is: a newer wish replaces the same client's older one, fairness and the per-person limit count clients, and the name is only a label. `chip` (`calmer`, `livelier`, `czech`, `more`, `other`, `surprise`) lets a mood button work even while the DJ's model is down |
 | `GET /api/requests` | the wish queue alone |
 | `POST /api/requests/<id>` | `{"action":"remove\|next","token"}` — the author removes a wish or puts it right after the current track (`DELETE` = remove) |
-| `POST /api/control` | `{"action":"play\|pause\|next\|stop\|volume","value":int}`; `play` with nothing to play starts the DJ by the time of day → `{"starting":true}`; `stop` is only a pause (nobody's wishes are removed — each person removes their own with the token) |
+| `POST /api/control` | `{"action":"play\|pause\|next\|stop\|volume","value":int}`; `play` with nothing to play starts the DJ by the time of day → `{"starting":true}`; `stop` is only a pause (nobody's wishes are removed — each person removes their own with the token); `next` may carry `who`, so the owner of a skipped wish sees "přeskočil X"; volume is capped at 100 everywhere |
 | `GET/POST /api/config` | read and write `config.toml` |
 | `GET /api/about` | what it's connected to and what the brain is |
 | `POST /api/restart` | ends the process so systemd restarts it; 409 outside systemd |
@@ -559,7 +582,7 @@ ends with `session.end`, so a start without an end means a crash or a kill.
 | resolver | `resolver.resolve` (`took_ms`, why: urgent / first / ahead), `resolver.get` (cache hit, how long mpv waited; `how: cancelled` when the listener skipped past a track that was still loading), `resolver.cancel`, `resolver.ahead` (window of the next 6 tracks in mpv's playlist order; `hold` while Codex thinks), `resolver.ready`, `resolver.exit`, `resolver.fallback` (fell back to slow standalone yt-dlp), `prefetch.ahead` |
 | system | `sys.sample` every 10 s (CPU, iowait, load, MemAvailable, swap and swap-in/out rates, temperature, CPU/RSS of ytdj/mpv/resolver, what is playing or resolving, whether Codex is thinking), `sys.throttle` (from `vcgencmd get_throttled`), `audio.xrun` (PipeWire xrun counters from a long-running `pw-top -b`, with context) |
 | web | `web.prompt` (text cut to 300 characters, reply, status, `took_ms`, client IP and a short user agent), `web.control`, `web.sse_open` / `web.sse_close`, `web.restart`, `web.config`, `web.error` |
-| player | `player.start`, `player.died`, `player.slow_handler` (an event handler blocked the asyncio loop > 150 ms — the web/panel froze meanwhile) |
+| player | `player.start`, `player.died`, `player.outage` (phase start / probe / end: playback held during a network/YouTube outage, resumed from the first failed track), `player.slow_handler` (an event handler blocked the asyncio loop > 150 ms — the web/panel froze meanwhile) |
 | others | the DJ layer (`dj.*`), catalog (`catalog.*`), radio (`radio.*`) and panel (`panel.*`) write through the same `ytdj.telemetry.event()` |
 
 A summary in Czech, which on the Pi takes a few seconds even for several MB:

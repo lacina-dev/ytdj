@@ -32,6 +32,8 @@ class FakeMpv:
         self.log: list[list] = []
         # jak mpv ohlásí konec přeskočené položky (opuštěná při načítání → "error")
         self.next_reason = "stop"
+        self.fail: set[str] = set()  # videoId, které se "nedají otevřít"
+        self.started: list[str] = []  # co opravdu začalo hrát
 
     # ---- pohled pro testy ----
 
@@ -115,11 +117,22 @@ class FakeMpv:
     # ---- příkazy ----
 
     def _start(self, idx: int | None) -> None:
-        self.cur = idx
-        if idx is None:
-            self._send({"event": "idle"})
-        else:
-            self._send({"event": "start-file", "playlist_entry_id": self.playlist[idx]["id"]})
+        """Jako mpv: položka, která se nedá otevřít (self.fail — výpadek sítě
+        nebo vadné video), skončí hned chybou a jede se na další."""
+        while True:
+            self.cur = idx
+            if idx is None:
+                self._send({"event": "idle"})
+                return
+            entry = self.playlist[idx]
+            self._send({"event": "start-file", "playlist_entry_id": entry["id"]})
+            if entry["filename"].rsplit("v=", 1)[-1] not in self.fail:
+                self.started.append(entry["filename"].rsplit("v=", 1)[-1])
+                return
+            self._notify()
+            self._send({"event": "end-file", "reason": "error", "file_error": "loading failed",
+                        "playlist_entry_id": entry["id"]})
+            idx = idx + 1 if idx + 1 < len(self.playlist) else None
 
     def _do(self, cmd: list):
         self.log.append(cmd)
@@ -180,6 +193,26 @@ class FakeMpv:
                 self.playlist.insert(self.playlist.index(target), e)
             if cur_entry is not None:
                 self.cur = self.playlist.index(cur_entry)
+            self._notify()
+            return None
+        if name == "stop":
+            if "keep-playlist" not in cmd[1:]:
+                self.playlist = []
+            if self.cur is not None and self.cur < len(self.playlist):
+                self._send({"event": "end-file", "reason": "stop",
+                            "playlist_entry_id": self.playlist[self.cur]["id"]})
+            self.cur = None
+            self._send({"event": "idle"})
+            self._notify()
+            return None
+        if name == "playlist-play-index":
+            idx = int(cmd[1])
+            if not 0 <= idx < len(self.playlist):
+                raise _Err("invalid index")
+            if self.cur is not None:
+                self._send({"event": "end-file", "reason": "stop",
+                            "playlist_entry_id": self.playlist[self.cur]["id"]})
+            self._start(idx)
             self._notify()
             return None
         if name == "playlist-next":

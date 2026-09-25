@@ -54,6 +54,9 @@ STRINGS = {
         "dj_picking": "DJ vybírá hudbu…",
         "next_up": "Pak: ",
         "wish_of": "přeje si {who}",
+        "outage": "výpadek spojení",
+        "outage_line": "Vypadl YouTube — čekám, fronta i přání zůstávají",
+        "dj_offline": "DJ bez mozku",
         "wish": "Přání",
         "unknown": "Neznámá skladba",
         "offline_title": "ytdj neběží",
@@ -79,6 +82,9 @@ STRINGS = {
         "dj_picking": "the DJ is picking music…",
         "next_up": "Then: ",
         "wish_of": "{who}'s wish",
+        "outage": "connection lost",
+        "outage_line": "Lost the connection to YouTube — waiting, the queue and wishes stay",
+        "dj_offline": "DJ offline",
         "wish": "Wish",
         "unknown": "Unknown track",
         "offline_title": "ytdj is not running",
@@ -171,6 +177,8 @@ class View:
     next_who: str = ""  # whose wish the next track is ("" = the DJ's own pick)
     now_who: str = ""  # whose wish plays now — in the status strip instead of the mood
     wishes: int = 0  # wishes waiting or playing — "Přání 3" on the button
+    outage: bool = False  # YouTube / síť vypadly — nic nehraje, fronta čeká
+    dj_offline: bool = False  # mozek DJe nejede (jistič Codexu)
 
 
 # ---- helpers ----
@@ -389,7 +397,7 @@ class Renderer:
 
     def _sig_status(self, v: View) -> tuple:
         return (v.online, v.connecting, v.has_track, v.running, v.loading, v.paused, v.mood, v.busy, v.note,
-                v.closed, v.now_who)
+                v.closed, v.now_who, v.outage, v.dj_offline)
 
     def _draw_status(self, d: ImageDraw.ImageDraw, size: tuple[int, int], v: View) -> None:
         w, h = size
@@ -408,6 +416,8 @@ class Renderer:
             right, right_color = v.note, ERR
         elif v.online and v.busy:
             right, right_color = self.s["busy"], ACCENT_TEXT
+        elif v.online and v.dj_offline:
+            right, right_color = self.s["dj_offline"], ERR
         right_w = 0
         if right:
             right = ellipsize(right, f, w * 0.45)
@@ -417,6 +427,9 @@ class Renderer:
         if not v.online:
             label = self.s["connecting"] if v.connecting else self.s["offline"]
             dot, color = (FAINT if v.connecting else ERR), (DIM if v.connecting else ERR)
+        elif v.outage:
+            # nic nehraje, i když by mpv tvrdilo "hraje" — čeká se na síť
+            label, dot, color = self.s["outage"], ERR, ERR
         elif not v.has_track:
             label, dot, color = self.s["idle"], FAINT, DIM
         elif v.running and v.loading:
@@ -484,7 +497,8 @@ class Renderer:
             return ("off", v.connecting, v.target)
         if not v.has_track:
             return ("idle", v.busy)
-        return ("track", v.title, v.artist, v.skipping, v.next_title, v.next_artist, v.next_who)
+        return ("track", v.title, v.artist, v.skipping, v.next_title, v.next_artist, v.next_who,
+                v.outage)
 
     def _draw_track(self, d: ImageDraw.ImageDraw, size: tuple[int, int], v: View) -> None:
         w, h = size
@@ -518,7 +532,10 @@ class Renderer:
         if sub:
             y = max(y + 2, 48) if len(lines) == 1 else y + 1
             d.text((x, y), ellipsize(sub, self.fonts.artist, max_w), font=self.fonts.artist, fill=sub_color, anchor="la")
-        if v.online and v.has_track and v.next_title and len(lines) == 1 and not v.skipping:
+        if v.online and v.outage and len(lines) == 1:
+            d.text((x, 74), ellipsize(self.s["outage_line"], self.fonts.status, max_w),
+                   font=self.fonts.status, fill=ERR, anchor="la")
+        elif v.online and v.has_track and v.next_title and len(lines) == 1 and not v.skipping:
             # what "Další" would bring — only when the title leaves room for it
             f = self.fonts.status
             label = self.s["next_up"]

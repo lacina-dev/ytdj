@@ -46,6 +46,9 @@ log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
 INDEX_FILE = STATIC_DIR / "index.html"
+VOLUME_MAX = 100  # strop hlasitosti — stejný jako fronta přání a displej
+# čipy nálad (web, displej) → klíče pro DJ bez modelu (agent/offline.py)
+CHIP_KEYS = frozenset({"calmer", "livelier", "czech", "more", "other", "surprise"})
 PACKAGE_DIR = Path(__file__).resolve().parents[1]
 
 # Tlačítko ▶ staré stránky (před frontou přání) posílalo rozjezd jako přání.
@@ -131,6 +134,8 @@ LIVE_KEYS = (
     "max_duration_request",
     "repeat_days",
     "artist_window",
+    "display_filter",
+    "display_blocklist",
 )
 
 CODEX_MODELS = [
@@ -252,6 +257,16 @@ FIELD_META: dict[str, tuple[str, str, tuple[int, int] | None]] = {
     "remote_components": (
         "Vzdálené komponenty yt-dlp",
         "Odkud si yt-dlp stahuje pomocný JS, standardně ejs:github.",
+        None,
+    ),
+    "display_filter": (
+        "Skrývat sprostá slova",
+        "Jména a texty přání na displeji a webu bez sprostých slov (DJ je dostane beze změny).",
+        None,
+    ),
+    "display_blocklist": (
+        "Slova navíc ke skrytí",
+        "Kořeny slov oddělené mezerou, např. „blbec trouba“ — skryje se každé slovo, které jimi začíná.",
         None,
     ),
     "mpv_extra_args": (
@@ -530,6 +545,7 @@ class WebServer:
         position = duration = 0.0
         volume = 100
         quality = ""
+        outage = None
         try:
             st = await self.app.player.status()
             playing = bool(st.playing)
@@ -541,6 +557,8 @@ class WebServer:
             queue = [_track_dict(t) for t in st.queue]
             volume = int(st.volume)
             quality = st.quality
+            # výpadek YouTube / sítě: {reason, since, detail} — fronta čeká
+            outage = getattr(st, "outage", None) or None
         except Exception:
             log.debug("stav přehrávače se nepodařilo přečíst", exc_info=True)
 
@@ -591,6 +609,14 @@ class WebServer:
                 "starting": wq.starting,
                 "people": wq.people(),
             }
+        last = self._dj_last
+        wq_last = getattr(wq, "last", None) if wq is not None else None
+        if wq_last and (last is None or (wq_last.get("at") or 0) >= (last.get("at") or 0)):
+            last = wq_last
+        brain = self._brain()
+        extra["dj_offline"] = brain is not None and not brain.get("online", True)
+        if brain is not None:
+            extra["dj_brain"] = brain
         return {
             **extra,
             "playing": playing,
@@ -606,15 +632,28 @@ class WebServer:
             "mood": mood,
             "busy": busy,
             "history": history,
+            "outage": outage,
             "build": self.build["ui"],
             "version": self.build["app"],
             "dj": {
                 "busy": busy,
                 "text": dj_text if busy else "",
                 "source": dj_source if busy else "",
-                "last": self._dj_last,
+                "last": last,
             },
         }
+
+    def _brain(self) -> dict | None:
+        """Stav mozku DJe (jistič Codexu) — {"online", "reason", "retry_in_s", "message"}."""
+        status = getattr(getattr(self.app, "dj", None), "status", None)
+        if not callable(status):
+            return None
+        try:
+            brain = status().get("brain")
+        except Exception:
+            log.debug("stav DJe se nepodařilo zjistit", exc_info=True)
+            return None
+        return brain if isinstance(brain, dict) else None
 
     async def _history(self) -> list:
         """Posledních 20 přehrání — ze state.db mimo event loop, na chvíli v cache.
@@ -822,7 +861,8 @@ class WebServer:
         except Exception as exc:
             log.exception("tah Codexu selhal")
             rec["error"] = telemetry.clip(f"{type(exc).__name__}: {exc}", 300)
-            return _json_error(f"Codex selhal: {exc}", 500)
+            # text výjimky posluchači nepatří (klíče, URL, interní hlášky)
+            return _json_error("DJ teď neodpověděl — zkus to prosím za chvíli znovu.", 500)
         else:
             last.update(ok=True, reply=telemetry.clip(reply or "", 400))
         finally:
@@ -855,7 +895,9 @@ class WebServer:
             return JSONResponse({"reply": "DJ vybírá hudbu podle času a dne." if did == "starting"
                                  else "Hraju dál.", "local": True})
         # povely jako "další" nebo "hlasitěji" hned, bez fronty
-        local = await wq.try_local(text)
+        by = " ".join(str(data.get("who") or "").split())[:24] or (
+            "displej" if source == "panel" else "někdo")
+        local = await wq.try_local(text, by=by)
         if local is not None:
             rec["local"] = True
             rec["reply"] = local
@@ -865,7 +907,11 @@ class WebServer:
         play_next = data.get("play_next") is True
         try:
             w = wq.submit(text, data.get("who"), source, play_next=play_next,
-                          client={"ip": rec.get("ip"), "ua": rec.get("ua")})
+                          client={"ip": rec.get("ip"), "ua": rec.get("ua"),
+                                  "id": data.get("client")})
+            chip = data.get("chip")
+            if isinstance(chip, str) and chip in CHIP_KEYS:
+                w.chip = chip  # tlačítko nálady — funguje i bez mozku DJe
         except Exception as exc:  # TooMany
             if type(exc).__name__ != "TooMany":
                 raise
@@ -882,12 +928,10 @@ class WebServer:
         await wq.wait(w)
         rec["reply"] = telemetry.clip(w.reply or "", 300)
         rec["state"] = w.state
-        self._dj_last = {"text": telemetry.clip(text, 200), "source": source,
-                         "ok": w.state != "error", "reply": telemetry.clip(w.reply or "", 400),
-                         "at": time.time(), "who": w.who}
         self.poke()
         if w.state == "error":
-            return _json_error(f"Codex selhal: {w.reply}", 500)
+            # odpověď je už srozumitelná věta (bez "Codex selhal: …" dvakrát)
+            return _json_error(w.reply or "DJ teď neodpověděl.", 500)
         if w.state in ("waiting", "thinking"):
             return JSONResponse({"reply": "DJ na přání ještě pracuje — odpověď uvidíš ve frontě.",
                                  "id": w.id, "state": w.state}, status_code=202)
@@ -943,9 +987,12 @@ class WebServer:
         if value is not None:
             rec["value"] = value if isinstance(value, (int, float, bool)) else telemetry.clip(value, 40)
         player = self.app.player
+        wq = getattr(self.app, "wishes", None)
 
         try:
             if action == "play":
+                if wq is not None:
+                    wq.note_pause(False)
                 start = getattr(self.app, "play_or_start", None)
                 if start is not None:
                     # nic nehraje ani nečeká → chytrý rozjezd podle situace (C7)
@@ -957,11 +1004,16 @@ class WebServer:
                 else:
                     await player.toggle_pause(False)
             elif action == "pause":
+                if wq is not None:
+                    wq.note_pause(True)  # úmyslná pauza — přání ji pár minut nezruší
                 await player.toggle_pause(True)
             elif action == "next":
+                if wq is not None:
+                    # kdo přeskočil — vlastník přeskočeného přání to uvidí
+                    by = " ".join(str(data.get("who") or "").split())[:24]
+                    wq.note_skip(by or ("displej" if rec.get("ua") == "panel" else "někdo"))
                 await player.skip()
             elif action == "stop":
-                wq = getattr(self.app, "wishes", None)
                 if wq is not None:
                     await wq.stop_all()  # jen pauza — cizí přání se nemažou
                 else:
@@ -969,17 +1021,19 @@ class WebServer:
                     await player.toggle_pause(True)
             elif action == "volume":
                 if isinstance(value, bool) or not isinstance(value, (int, float)):
-                    return _json_error("Hlasitost musí být číslo 0–130.", 400)
+                    return _json_error("Hlasitost musí být číslo 0–100.", 400)
                 if not (0 <= int(value) <= 130):
-                    return _json_error("Hlasitost musí být v rozsahu 0–130.", 400)
-                await player.set_volume(int(value))
+                    return _json_error("Hlasitost musí být v rozsahu 0–100.", 400)
+                # strop 100 všude (web, displej, přání, povely); 101–130 od
+                # starších klientů se ořízne, ne odmítne
+                await player.set_volume(min(VOLUME_MAX, int(value)))
             else:
                 rec["error"] = "neznámý povel"
                 return _json_error(f"Neznámý povel: {action!r}", 400)
         except Exception as exc:
             log.exception("povel %r selhal", action)
             rec["error"] = telemetry.clip(f"{type(exc).__name__}: {exc}", 300)
-            return _json_error(f"Povel se nepodařilo provést: {exc}", 500)
+            return _json_error("Povel se nepodařilo provést — podrobnosti v logu.", 500)
 
         # the other screens (panel, phones) see it now; mpv settles a moment later
         self.poke()
@@ -1003,6 +1057,7 @@ class WebServer:
             quality = (await self.app.player.status()).quality
         except Exception:
             quality = ""
+        brain = self._brain() or {}
 
         return JSONResponse(
             {
@@ -1018,7 +1073,10 @@ class WebServer:
                 "backend": {
                     "engine": "codex CLI",
                     "model": cfg.codex_model or "výchozí",
-                    "auth": "předplatné (bez API klíče)",
+                    # "předplatné" jen když mozek opravdu jede
+                    "auth": ("předplatné (bez API klíče)" if brain.get("online", True)
+                             else (brain.get("message") or "DJ teď nejede")),
+                    "online": bool(brain.get("online", True)),
                 },
                 # pod systemd nás znovu spustí on; bez něj se proces po
                 # čistém úklidu vymění sám přes execv (viz __main__)

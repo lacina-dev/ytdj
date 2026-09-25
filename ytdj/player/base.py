@@ -31,11 +31,19 @@ class PlayerStatus:
     # Skladba je na řadě a nepozastavená, ale ještě nehraje — yt-dlp a síť
     # teprve dodávají proud (na Pi 3 i několik vteřin). Čas mezitím stojí.
     buffering: bool = False
+    # Výpadek (síť / YouTube / cookies): {"reason", "since", "detail"}. Mezitím
+    # se nehraje, fronta i přání čekají a přehrávač zkouší spojení.
+    outage: dict | None = None
 
 
 @dataclass(slots=True)
 class PlayerEvent:
-    # "start" | "sound" (první zvuk) | "finished" | "skipped" | "replaced" | "error" | "idle"
+    # "start" | "sound" (první zvuk) | "finished" | "skipped" | "replaced" | "idle"
+    # "error": skladbu nejde přehrát (detail "content|…", "removed|…",
+    #          "retry_failed|…") — přání ji může odepsat
+    # "unavailable": selhala kvůli výpadku, ne kvůli sobě — nic neodepisovat,
+    #          po výpadku se zkusí znovu
+    # "outage" / "outage_end": přehrávání stojí kvůli výpadku / zase běží
     kind: str
     track: Track | None = None
     detail: str = ""

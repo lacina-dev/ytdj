@@ -37,6 +37,7 @@ def T(i: str, artist: str, title: str | None = None) -> Track:
 
 
 STYPKA = [T(f"s{i}", "David Stypka" if i % 3 else "David Stypka, Bandjeez") for i in range(8)]
+STYPKA[1] = T("s1", "David Stypka", "Dobré ráno, milá (feat. Ewa Farna)")
 MIDI = [T(f"m{i}", "Midi Lidi") for i in range(12)]
 KABAT = [T(f"k{i}", "Kabát", t) for i, t in enumerate(
     ["Pohoda", "Malá dáma", "Dole v dole", "Colorado", "Starej bar", "Burlaci"])]
@@ -71,6 +72,10 @@ class FakeCatalog:
         # radio from anything drifts to other artists — that's the point
         self.calls.append(("radio", video_id))
         return OTHERS[:30]
+
+
+async def _fallback_song(artist, title):
+    return T("md", "Kabát", "Malá dáma")
 
 
 class FakePlayer:
@@ -207,6 +212,20 @@ class PiReplays(unittest.TestCase):
             remember="Uživateli nesedí opera."), auto=True))
         self.assertEqual(player.queue[0].id, STYPKA[1].id)
         self.assertNotIn(("skip", False), player.log)  # auto turn doesn't cut the song
+
+    def test_2302_wrong_song_is_not_claimed(self):
+        # model: play_next "Kabát — Z nouze ctnost" (no such song); catalog
+        # answered with Kabát — Malá dáma and the reply claimed the asked title
+        dj, player, _ = make(current=T("c", "Kabát", "Na sever"))
+        dj.catalog.search_song = _fallback_song  # "at least something by him"
+        _, reply = run(go(dj, "Hraj z nouze cnost", decision(
+            action="play_next", reply="Pouštím „Z nouze ctnost“ od Kabátu.",
+            requested=[{"artist": "Kabát", "title": "Z nouze ctnost"}])))
+        self.assertNotIn("Pouštím", reply)
+        self.assertIn("Nenašel jsem", reply)
+        self.assertIn("Malá dáma", reply)  # says what the catalog offered instead
+        self.assertEqual(player.current.id, "c")  # and doesn't play it
+        self.assertNotIn(("skip", False), player.log)
 
     def test_auto_turn_does_not_write_taste(self):
         # six "Uživateli nesedí…" lines in taste.md came from skip reseeds

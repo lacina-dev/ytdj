@@ -254,7 +254,7 @@ handled **without the model**, instantly:
 | `next` / `skip` / `n` | skip |
 | `pause` / `p` | pause |
 | `resume` / `play` | resume |
-| `stop` | stop and clear the queue |
+| `stop` | pause (the wishes in the queue stay) |
 | `+` / `-` / `volume 70` | volume up / down / set (remembered across restarts) |
 | `status` / `?` | now playing |
 | `help` / `h` | command list |
@@ -375,12 +375,12 @@ The API, if you want to script it:
 
 | endpoint | description |
 |---|---|
-| `GET /api/status` | player state, queue (`queue[].req` = whose wish), history, `requests[]`, `current.reason` |
+| `GET /api/status` | player state, queue (`queue[].req` = whose wish), history, `requests[]`, `current.reason`, `build` (fingerprint of the page — an open tab reloads itself when it changes) and `version` (of the whole app) |
 | `GET /api/events` | SSE: the full state when something changes, `event: pos` `[123.4]` every second in between |
 | `POST /api/prompt` | `{"text","who","source","play_next","wait":false}` → **202** `{"id","token","state"}` at once; progress and the DJ's reply arrive in `requests[]`. Without `who`/`wait` (old clients) it answers `{"reply"}` once the DJ decided. Plain commands ("další", "hlasitost 40") → 200 `{"reply"}` right away; 429 = too many open wishes of one person |
 | `GET /api/requests` | the wish queue alone |
 | `POST /api/requests/<id>` | `{"action":"remove\|next","token"}` — the author removes a wish or puts it right after the current track (`DELETE` = remove) |
-| `POST /api/control` | `{"action":"play\|pause\|next\|stop\|volume","value":int}`; `play` with nothing to play starts the DJ by the time of day → `{"starting":true}` |
+| `POST /api/control` | `{"action":"play\|pause\|next\|stop\|volume","value":int}`; `play` with nothing to play starts the DJ by the time of day → `{"starting":true}`; `stop` is only a pause (nobody's wishes are removed — each person removes their own with the token) |
 | `GET/POST /api/config` | read and write `config.toml` |
 | `GET /api/about` | what it's connected to and what the brain is |
 | `POST /api/restart` | ends the process so systemd restarts it; 409 outside systemd |

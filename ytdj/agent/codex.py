@@ -36,7 +36,7 @@ from ..music.radio import RadioPools
 from ..player.base import Player, queue_transaction
 from ..state import Store
 from .. import telemetry
-from .fastpath import FastResult, find_artists, find_song
+from .fastpath import FastResult, find_artists, find_song, verify_requested
 from .intent import Intent, ListenerIntent, Pair, build_intent, track_avoided
 from .prompts import ROLE, render_state
 
@@ -460,8 +460,15 @@ class CodexDJ:
             return plan
 
         plan.requested, missing = await self._resolve_pairs(intent.tracks)
+        # [truthful] katalog umí vrátit "aspoň něco od něj" — to není vyžádaná skladba
+        plan.requested, wrong = verify_requested(intent.tracks, plan.requested)
+        missing += wrong
         if missing:
             plan.notes.append("Nenašel jsem: " + "; ".join(missing) + ".")
+            if intent.tracks and not plan.requested:
+                intent.reply = ""  # [truthful] odpověď modelu slibuje, co nehraje
+                if intent.kind != "songs":
+                    plan.notes.append("Místo toho hraju hudbu v tom duchu.")
         if intent.kind == "songs":
             if not plan.requested:
                 plan.failed = "Nenašel jsem, o co sis řekl" + (

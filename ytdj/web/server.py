@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import shlex
@@ -45,6 +46,30 @@ log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
 INDEX_FILE = STATIC_DIR / "index.html"
+PACKAGE_DIR = Path(__file__).resolve().parents[1]
+
+# Tlačítko ▶ staré stránky (před frontou přání) posílalo rozjezd jako přání.
+LEGACY_START_PROMPT = "Nic nehraje. Pusť hudbu a navaž na to, co jsem poslouchal naposledy."
+
+
+def _digest(paths) -> str:
+    h = hashlib.sha1()
+    for p in paths:
+        try:
+            h.update(p.read_bytes())
+        except OSError:
+            pass
+    return h.hexdigest()[:10]
+
+
+def build_ids() -> dict[str, str]:
+    """"ui" = otisk index.html (stránka se podle něj sama znovu načte, když
+    běží stará verze z cache — 25. 9. taková poslala "stop" všem); "app" =
+    otisk celého balíčku ytdj (panel ho loguje)."""
+    return {
+        "ui": _digest([INDEX_FILE]),
+        "app": _digest(sorted(PACKAGE_DIR.rglob("*.py")) + [INDEX_FILE]),
+    }
 
 # how often the state is recomputed for SSE and how long silence may last
 TICK = 1.0
@@ -415,6 +440,7 @@ class WebServer:
 
         # true for the duration of a Codex turn — /api/status and SSE pass it on
         self.busy = False
+        self.build = build_ids()
         self._sse_clients = 0
         # what the DJ is working on and how the last wish went — every client
         # sees it, not only the one that asked (status "dj")
@@ -470,7 +496,10 @@ class WebServer:
     async def _index(self, request: Request) -> Response:
         if not INDEX_FILE.is_file():
             return HTMLResponse(NO_INDEX_HTML, status_code=503)
-        return FileResponse(INDEX_FILE, headers={"Cache-Control": "no-cache"})
+        # no-cache + ETag (FileResponse): prohlížeč se vždycky zeptá, jestli
+        # se stránka nezměnila, a starou verzi z cache nepoužije
+        return FileResponse(INDEX_FILE, headers={"Cache-Control": "no-cache",
+                                                 "X-Ytdj-Build": self.build["ui"]})
 
     async def _static_fallback(self, request: Request) -> Response:
         rel = request.path_params.get("path", "")
@@ -574,6 +603,8 @@ class WebServer:
             "mood": mood,
             "busy": busy,
             "history": history,
+            "build": self.build["ui"],
+            "version": self.build["app"],
             "dj": {
                 "busy": busy,
                 "text": dj_text if busy else "",
@@ -790,6 +821,14 @@ class WebServer:
         legacy = "who" not in data and "wait" not in data
         wait = legacy or data.get("wait") is True
         rec["legacy"] = legacy or None
+        start = getattr(self.app, "play_or_start", None)
+        if text == LEGACY_START_PROMPT and start is not None:
+            # ▶ ze staré stránky v cache: rozjezd, ne přání cizího "hosta"
+            rec["legacy_start"] = True
+            did = await start("web")
+            self.poke()
+            return JSONResponse({"reply": "DJ vybírá hudbu podle času a dne." if did == "starting"
+                                 else "Hraju dál.", "local": True})
         # povely jako "další" nebo "hlasitěji" hned, bez fronty
         local = await wq.try_local(text)
         if local is not None:
@@ -899,7 +938,7 @@ class WebServer:
             elif action == "stop":
                 wq = getattr(self.app, "wishes", None)
                 if wq is not None:
-                    await wq.stop_all()  # i přání všech — web se na to ptá
+                    await wq.stop_all()  # jen pauza — cizí přání se nemažou
                 else:
                     await player.clear_queue()
                     await player.toggle_pause(True)

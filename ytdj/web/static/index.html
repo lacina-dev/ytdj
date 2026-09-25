@@ -875,9 +875,6 @@
           <button class="ctl" id="btnNext" aria-label="Další skladba" title="Další">
             <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 5.4v13.2c0 .8.9 1.2 1.5.8l9.3-6.6c.5-.4.5-1.2 0-1.6L7.5 4.6C6.9 4.2 6 4.6 6 5.4z"/><rect x="17.6" y="4.6" width="2.6" height="14.8" rx="1.3"/></svg>
           </button>
-          <button class="ctl" id="btnStop" aria-label="Zastavit a vyprázdnit frontu" title="Zastavit a vyprázdnit frontu">
-            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2.2"/></svg>
-          </button>
 
           <div class="vol">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -1066,7 +1063,7 @@
     progress: $("#progress"), bar: $("#bar"), barFill: $("#barFill"),
     elapsed: $("#elapsed"), total: $("#total"),
     btnPlay: $("#btnPlay"), icoPlay: $("#icoPlay"), icoPause: $("#icoPause"),
-    btnNext: $("#btnNext"), btnStop: $("#btnStop"),
+    btnNext: $("#btnNext"),
     vol: $("#vol"), volOut: $("#volOut"),
     composer: $("#composer"), prompt: $("#prompt"), btnSend: $("#btnSend"), busyText: $("#busyText"),
     chips: $("#chips"), reply: $("#reply"), reason: $("#reason"),
@@ -1240,7 +1237,20 @@
 
   function setBase(p) { S.posBase = Math.max(0, p); S.posBaseAt = nowMs(); }
 
+  // A page from before a deploy (cached tab) must not keep talking to the new
+  // server with old semantics: when the server's page differs, reload — the
+  // draft in the text field survives it.
+  function checkBuild(s) {
+    if (!s.build) return;
+    if (!S.build) { S.build = s.build; return; }
+    if (s.build === S.build || S.reloading) return;
+    S.reloading = true;
+    try { sessionStorage.setItem("ytdj.draft", el.prompt.value); } catch (e) {}
+    location.reload();
+  }
+
   function applyStatus(s) {
+    checkBuild(s);
     S.status = s;
 
     var cur = s.current || null;
@@ -1306,7 +1316,6 @@
     el.btnPlay.setAttribute("aria-label", playLabel);
     el.btnPlay.title = playLabel;
     el.btnNext.disabled = !cur && !(s.queue && s.queue.length);
-    el.btnStop.disabled = !playing && !cur;
 
     // --- volume ---
     if (!S.volDragging && nowMs() > S.volHoldUntil && s.volume != null) {
@@ -1483,6 +1492,10 @@
   }
   try { S.tokens = JSON.parse(load("ytdj.tokens") || "{}") || {}; } catch (e) { S.tokens = {}; }
   el.who.value = load("ytdj.who") || "";
+  try {
+    var draft = sessionStorage.getItem("ytdj.draft");
+    if (draft) { el.prompt.value = draft; sessionStorage.removeItem("ytdj.draft"); }
+  } catch (e) {}
   el.who.addEventListener("change", function () { store("ytdj.who", el.who.value.trim()); });
 
   function pruneTokens(list) {
@@ -1600,11 +1613,8 @@
   });
 
   el.btnNext.addEventListener("click", function () { control("next", null); });
-  el.btnStop.addEventListener("click", function () {
-    // one tap used to silence the office and throw away everybody's queue
-    if (!confirm("Zastavit hudbu a vyprázdnit frontu? Týká se to všech, kdo tu poslouchají.")) return;
-    control("stop", null);
-  });
+  // No ■ any more: in the office a stop wiped everybody's wishes (25. 9. from a
+  // stale tab). Pause is enough; each person removes their own wishes with ×.
 
   // volume: while dragging only the label updates, POST only on release
   el.vol.addEventListener("input", function () {

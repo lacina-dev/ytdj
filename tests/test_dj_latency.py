@@ -38,7 +38,7 @@ print(json.dumps({{"type": "thread.started", "thread_id": "t1"}}))
 print(json.dumps({{"type": "item.completed", "item": {{"type": "agent_message",
       "text": {json.dumps(json.dumps(DECISION))}}}}}))
 print(json.dumps({{"type": "turn.completed", "usage": {{}}}}), flush=True)
-time.sleep(3)
+time.sleep(1.5)
 """
 
 
@@ -49,11 +49,13 @@ class NoWaitForExit(unittest.TestCase):
         async def go():
             t0 = time.monotonic()
             data = await dj._run([sys.executable, "-c", LINGERING], "prompt")
-            return data, time.monotonic() - t0
+            took = time.monotonic() - t0
+            await asyncio.sleep(1.8)  # let the background reaper finish in this loop
+            return data, took
 
         data, took = asyncio.run(go())
         self.assertEqual(data["reply"], "ok")
-        self.assertLess(took, 2.0)  # not the 3 s the process keeps running
+        self.assertLess(took, 1.2)  # not the 1.5 s the process keeps running
         self.assertEqual(dj.thread_id, "t1")
 
 

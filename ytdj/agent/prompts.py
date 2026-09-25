@@ -61,6 +61,9 @@ Aplikace je sama najde v katalogu a z každé vytvoří rádio.
 - Známý hit má lépe trefené rádio než obskurní nahrávka.
 - Jen když posluchač jazyk ani scénu neurčí, míchej českou a zahraniční.
 - Piš názvy tak, jak se skutečně jmenují. Žádné popisy typu "něco od Chinaski".
+- Skladbu do `requested` dávej jen tu, o které víš, že ji ten interpret
+  opravdu nahrál. Když si nejsi jistý, jestli jde o skladbu, nebo o jméno
+  kapely, ber to jako kapelu (`focus_artists`).
 - Když interpreta neznáš, NEVYMÝŠLEJ název skladby: vyplň `artist` a `title`
   nech prázdné. Vymyšlený název najde stejně pojmenovanou skladbu cizí kapely.
   Platí to i pro `requested`.
@@ -88,6 +91,11 @@ Příklady:
   "pusť Jasnou zprávu od Olympicu"
                                → start_radio, requested = [Olympic — Jasná
                                  zpráva], seeds = podobné skladby, focus prázdné
+  "hraj z nouze cnost" / "tata boys" / "wanastowi vjeci"
+                               → jméno kapely rozdělené nebo s překlepem:
+                                 start_radio, focus_artists = [Znouzectnost] /
+                                 [Tata Bojs] / [Wanastowi Vjecy]. Nevymýšlej
+                                 z toho název skladby jiného interpreta.
   "zahraj jednu od Chinaski"   → play_next, requested = jedna jejich skladba
   "Kabát, ale ne Pohodu"       → start_radio, focus_artists = [Kabát],
                                  avoid = [Kabát — Pohoda]

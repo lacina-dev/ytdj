@@ -297,6 +297,32 @@ Need`, which is a different band that happens to have a song by that name.
 When nothing by the named artist can be found, nothing is returned — silence
 beats the wrong band.
 
+**The canonical recording, not just any.** The same song usually exists
+many times over: the album version, a live take, a remaster, a bargain-bin
+compilation. Among candidates that pass both vetoes (artist *and* title — the
+right band with a different song is rejected too), versions you didn't ask for
+are penalized — live, remix, acoustic, instrumental, karaoke, cover,
+sped-up/slowed — and play counts break the tie, so `Prince — Kiss` is the
+153M-play single rather than a 31K-play live take, and `Jiří Suchý — Pramínek
+vlasů` isn't a 5:45 no-diacritics upload from a compilation. Ask for a
+version and it flips: `Bohemian Rhapsody live` gets a live one, `One More
+Time (remix)` a remix. Every resolution is logged with its source and score
+(`'Prince' — 'Kiss' → Prince & The Revolution — Kiss [...] (songs, skóre
+1.17, přehrání 153000000)`).
+
+**Songs that only exist as someone's video.** When neither the song catalog
+nor the artist's profile has the title, videos are searched and read as
+`Artist - Title`, so `Monkey Business — Piece of My Life` plays the 2.7M-view
+clip instead of a different Monkey Business song. Only if that fails too does
+the artist's best-known track stand in.
+
+**A whole artist.** `artist_tracks` returns up to ~150 of an artist's songs
+from their profile's "Songs" playlist, most popular first, each song once,
+live takes and remixes last. The radio has an artist mode built on it
+(`RadioPools.set_artist`) that keeps playing that artist — no drifting radio,
+no two-per-artist cap, no 30-day repeat rule — until something else is asked
+for, starting over when the list runs out.
+
 **Artists who aren't in the catalog at all.** Live looping, DJ sets, the
 smaller scene — plenty of acts exist on YouTube only as a channel with videos,
 with no YouTube Music artist entity. Searching songs for them returns other
@@ -369,7 +395,7 @@ The API, if you want to script it:
 |---|---|---|
 | `codex_model` | `""` | `""` = Codex CLI default; e.g. `"gpt-5.4-mini"` is faster and cheaper on limits |
 | `web_enabled` / `web_host` / `web_port` | `true` / `127.0.0.1` / `8765` | web remote |
-| `language` / `location` | `cs` / `CZ` | YouTube Music catalog language and region; when search returns nothing in that language (a ytmusicapi parsing quirk, seen with `cs`), the app retries in English and switches over for the session |
+| `language` / `location` | `cs` / `CZ` | `location` is the YouTube Music region searches run in. The catalog itself is always read in English whatever `language` says: ytmusicapi 1.12 returns nothing for filtered searches in any other language (see Development notes). Titles and names are the publishers' own, so nothing is lost |
 | `cookies_browser` | auto-detected | browser profile for yt-dlp cookies, e.g. `"chrome:Profile 2"`; `"none"` = no cookies |
 | `cookies_file` | `""` | exported `cookies.txt`; wins over `cookies_browser` and is the only source that works without a desktop session |
 | `player_client` | `""` | yt-dlp client; empty lets yt-dlp choose (anonymous clients, no Premium). A client that carries the login, e.g. `web_music`, needs a PO token |
@@ -478,6 +504,47 @@ say nothing, costs nothing.
 
 Faster and lighter on limits: `codex_model = "gpt-5.4-mini"` in the config.
 
+## Provozní log a ladění
+
+Everything that matters for tuning the jukebox against real use is written
+as one JSON line per event to `~/.local/share/ytdj/events.jsonl`
+(`$YTDJ_EVENTS_FILE` overrides it). Writes go through a background thread in
+a single `write()` without fsync, so neither the asyncio loop nor mpv ever
+waits for the SD card. The file rotates by size — 5 MB × (current + 4 old
+`events.jsonl.1…4`), so at most ~25 MB, roughly a week of normal use
+(`YTDJ_EVENTS_MAX_MB`, `YTDJ_EVENTS_KEEP`). `YTDJ_TELEMETRY=0` switches
+logging off. Every line carries `ts`, `kind` and `sid` (one id per process
+run). Each run starts with `session.start` (version, pid, machine uptime) and
+ends with `session.end`, so a start without an end means a crash or a kill.
+
+| Area | Kinds |
+|---|---|
+| tracks | `track.request` (why: `skip` / `eof` / `replace` / `enqueue` / `error`, and whether the next track was already resolved), `track.start` (source `prefetched` / `on_demand`, `wait_ms` from the request to sound, `load_ms`, `buffer_ms`), `track.stall`, `track.end` (reason, `played_s`, stalls, premature cut), `track.quality`, `track.mismatch` |
+| resolver | `resolver.resolve` (`took_ms`, urgent or ahead), `resolver.get` (cache hit, how long mpv waited), `resolver.ahead`, `resolver.ready`, `resolver.exit`, `resolver.fallback` (fell back to slow standalone yt-dlp), `prefetch.ahead` |
+| system | `sys.sample` every 10 s (CPU, iowait, load, MemAvailable, swap and swap-in/out rates, temperature, CPU/RSS of ytdj/mpv/resolver, what is playing or resolving, whether Codex is thinking), `sys.throttle` (from `vcgencmd get_throttled`), `audio.xrun` (PipeWire xrun counters from a long-running `pw-top -b`, with context) |
+| web | `web.prompt` (text cut to 300 characters, reply, status, `took_ms`, client IP and a short user agent), `web.control`, `web.sse_open` / `web.sse_close`, `web.restart`, `web.config`, `web.error` |
+| player | `player.start`, `player.died` |
+| others | the DJ layer (`dj.*`), catalog (`catalog.*`), radio (`radio.*`) and panel (`panel.*`) write through the same `ytdj.telemetry.event()` |
+
+A summary in Czech, which on the Pi takes a few seconds even for several MB:
+
+    .venv/bin/python -m ytdj.telemetry report                 # everything in the log
+    .venv/bin/python -m ytdj.telemetry report --since 2h      # also 30m, 3d, today, yesterday, 2026-09-25
+    .venv/bin/python -m ytdj.telemetry report --since today --json   # machine-readable
+
+It covers played / skipped / failed tracks, the median and p90 wait for sound
+split by prefetched vs resolved-on-demand, how many skips landed on a track
+that wasn't ready yet, resolver times and cache hit rate, xruns with what was
+running at the time, memory headroom, temperature and throttling, prompts
+with latency, the most common errors, and counts plus `took_ms` stats for any
+other kinds (`dj.*`, `panel.*`, …).
+
+Copying the logs from the Pi and reading them on the laptop:
+
+    rsync -a -e "ssh -i ~/.ssh/lacina_deploy" \
+        'lacina@192.168.0.24:.local/share/ytdj/events.jsonl*' pi-logs/
+    python -m ytdj.telemetry report --file pi-logs/ --since yesterday
+
 ## Privacy & security
 
 - **No API keys or passwords are stored** — Codex CLI keeps its own OAuth
@@ -486,7 +553,9 @@ Faster and lighter on limits: `codex_model = "gpt-5.4-mini"` in the config.
   the model provider through Codex; YouTube Music queries carry your cookies
   if enabled. Nothing else.
 - **Local state** (`~/.local/share/ytdj/`): play history, ratings, blacklist —
-  plain SQLite, delete it anytime.
+  plain SQLite, delete it anytime. The operational log `events.jsonl` next
+  to it contains the text of requests (cut to 300 characters) and the IP
+  address of whoever sent them, but no cookies, tokens or config paths.
 - The web UI is unauthenticated and bound to localhost by default (see
   [Web UI & API](#web-ui--api)).
 
@@ -505,9 +574,13 @@ ytdj/
   config.py    XDG paths, browser & node auto-detection, config migration
   diagnose.py  --check-audio: what quality is on offer and what's missing
   state.py     SQLite: history, ratings, requests, blacklist, long-term taste
+  telemetry.py         operational event log (events.jsonl, rotation); `python -m ytdj.telemetry report`
+  telemetry_sampler.py sys.sample every 10 s + PipeWire xruns via pw-top
+  telemetry_report.py  summary of the log in Czech (or --json)
   music/
     catalog.py ytmusicapi → compact Track (thumbnails and feedback tokens stripped)
-    radio.py   seed pools, round-robin, filters (repeats, length, artist cap)
+    match.py   is this the track that was asked for? (vetoes, versions, plays)
+    radio.py   seed pools, round-robin, filters (repeats, length, artist cap), artist mode
   player/
     base.py    Player interface — agent logic does not depend on mpv
     mpv.py     JSON IPC over a unix socket
@@ -545,10 +618,12 @@ Hard-won details that are easy to re-discover the painful way:
 
 - `limit` in ytmusicapi is a **lower** bound, not an upper one — YTM paginates
   by 20; we trim on our side.
-- ytmusicapi with some catalog languages returns an empty search result for
-  **every** query (observed with `language="cs"` on 1.12.2) — the localized
-  response parses to nothing, silently. The catalog retries an empty result
-  in English and permanently switches when English does return hits.
+- ytmusicapi 1.12 returns an empty list for **every** filtered search
+  (`filter="songs"`, `"videos"`, `"artists"`) in any language but English: it
+  skips each result shelf whose localized heading doesn't contain the English
+  filter word ("song" is not in "Skladby"). Unfiltered search works. The
+  catalog therefore always talks to YouTube Music in English; `location`
+  still sets the region.
 - `codex exec --json` can exit with **code 0 even when the turn failed** —
   the failure lives only in the `error` / `turn.failed` events, and the
   message inside is JSON wrapped in JSON. 4xx errors (e.g. a model the

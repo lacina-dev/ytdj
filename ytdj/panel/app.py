@@ -22,6 +22,7 @@ from .client import Api, Commander, StatusFeed
 from .hw import Screen, Touch, TouchEvent
 from .netapp import NetController
 from .netui import NetRenderer, NetView
+from .stats import PanelStats, emit
 from .ui import STRINGS, TARGETS, Renderer, View, volume_at
 
 log = logging.getLogger(__name__)
@@ -49,6 +50,7 @@ REPEAT_FAST_INTERVAL = 0.10
 # ovladače): nový dotyk na stejném tlačítku do té doby naváže na běžící opakování.
 REPEAT_REGRIP = 0.15
 VOL_BUTTONS = ("vol_up", "vol_down")
+KEY_BURST_GAP = 1.0  # s — cvaknutí kolečka na repráku blíž u sebe jsou jedno otočení (jeden řádek logu)
 
 
 @dataclass
@@ -75,6 +77,8 @@ class PanelApp:
         self.vol_max = max(1, min(130, vol_max))
         self.s = STRINGS.get(lang, STRINGS["cs"])
         self.renderer = Renderer(lang)
+        take = getattr(touch, "take_stats", None)
+        self.stats = PanelStats(touch_stats=take if callable(take) else None)
 
         self.stop = threading.Event()
         self.events: queue.Queue[tuple] = queue.Queue()
@@ -85,7 +89,7 @@ class PanelApp:
 
             net_backend = NmcliBackend()
         # the network screens; web_port is what a phone on the LAN should open
-        self.net = NetController(net_backend, self.events.put, lang, self.api.port)
+        self.net = NetController(net_backend, self.events.put, lang, self.api.port, count=self.stats.count)
         self.key_vol_at = -math.inf  # last volume change from the speaker's keys
 
         # server state
@@ -96,6 +100,9 @@ class PanelApp:
         self._running = False  # as the server last said
         self._loading = False  # running, but the stream hasn't started yet
         self._said_offline = False
+        self.link_since = time.monotonic()  # od kdy platí online/offline (pro panel.link)
+        self.reconnects = 0
+        self.offline_reason = ""
         self.pos_base = 0.0
         self.pos_at = 0.0
 
@@ -120,10 +127,18 @@ class PanelApp:
         self.repeat_steps = 0  # steps done by repeating in this gesture
         self.repeat_start = 0.0  # when the (possibly re-gripped) hold began
         self.repeat_lost: tuple[str, float, float] | None = None  # (button, released at, start)
+        # pro provozní log: odkud gesto začalo a s jakou hlasitostí
+        self.down_xy = (0, 0)
+        self.gesture_vol0 = 0
+        self.gesture_moves = 0
+        self.gesture_regrip = False
+        # otočení kolečka na repráku: [akce, cvaknutí, hlasitost předtím, naposledy]
+        self.key_burst: list | None = None
 
         self._need_full = True
         self._last_full = 0.0
         self._shown_page = "player"  # which screen the glass shows
+        self._page_since = time.monotonic()
         self.frames = 0  # show() calls — for tests and stats
 
     # ---- threads → queue ----
@@ -142,8 +157,9 @@ class PanelApp:
         while not self.stop.is_set():
             try:
                 ev = self.touch.poll(0.5)
-            except Exception:
+            except Exception as exc:
                 log.exception("čtení dotyku selhalo")
+                self.stats.error("touch_poll", exc)
                 self.stop.wait(1.0)
                 continue
             if ev is not None:
@@ -167,13 +183,18 @@ class PanelApp:
         while not self.stop.is_set():
             try:
                 self._step()
-            except Exception:
+            except Exception as exc:
                 # a bug in one update must not leave the panel dead on the wall
                 log.exception("chyba v obsluze panelu")
+                self.stats.error("main_loop", exc)
                 self._need_full = True
                 self.renderer.invalidate()
                 self.net.renderer.invalidate()
                 self.stop.wait(1.0)
+        # poslední souhrny, ať se neztratí minuta před zastavením
+        self._log_gesture()
+        self._flush_key_burst()
+        self.stats.flush()
 
     def _step(self) -> None:
         timeout = self._next_deadline() - time.monotonic()
@@ -193,6 +214,7 @@ class PanelApp:
         self._paint()
 
     def shutdown(self) -> None:
+        # volá se i ze signálu — tady nic nezapisovat (zámek telemetrie), to dělá run()
         self.stop.set()
         self.commander.wake()
         self.events.put(("wake",))
@@ -219,6 +241,13 @@ class PanelApp:
             if self.online or not self._said_offline:  # once, not every retry
                 log.info("ytdj nedostupný: %s", msg[1])
                 self._said_offline = True
+                now = time.monotonic()
+                emit(
+                    "panel.link", state="offline", reason=str(msg[1])[:120],
+                    online_ms=int((now - self.link_since) * 1000) if self.online else None,
+                    mode=self.feed.mode,
+                )
+                self.link_since = now
             self.online = False
             self._end_gesture()
             # nothing we promised will happen now; show what's known
@@ -229,6 +258,7 @@ class PanelApp:
             if action == "prompt":
                 self.prompting = False
             if error:
+                emit("panel.command_error", action=action, value=value, error=str(error)[:120])
                 self.note = _Hold(self.s["failed"], time.monotonic() + NOTE_TIME)
                 if action in ("play", "pause"):
                     self.hold_running = None
@@ -251,6 +281,7 @@ class PanelApp:
             # tlačítka na repráku jdou stejnou cestou jako tlačítka na displeji
             log.info("klávesa: %s", msg[1])
             if not self.online:
+                self.stats.count("key_offline")
                 return
             now = time.monotonic()
             if msg[1] in ("vol_up", "vol_down"):
@@ -260,15 +291,30 @@ class PanelApp:
                 cur = self._view().volume
                 step = KEY_VOL_STEP if msg[1] == "vol_up" else -KEY_VOL_STEP
                 new = max(0, min(self.vol_max, cur + step))
+                burst = self.key_burst
+                if burst is None or burst[0] != msg[1] or now - burst[3] > KEY_BURST_GAP:
+                    self._flush_key_burst()
+                    self.key_burst = burst = [msg[1], 0, cur, now]
+                burst[1] += 1
+                burst[3] = now
                 if new != cur:
                     self._set_volume(new, now + HOLD)
                 self.key_vol_at = now
             else:
-                self._fire(msg[1], now)
+                self._fire(msg[1], now, source="mediakey")
 
     def _apply_state(self, state: dict, at: float) -> None:
         if not self.online:
             log.info("ytdj připojen")
+            now = time.monotonic()
+            if self.ever_online:
+                self.reconnects += 1
+            emit(
+                "panel.link", state="online", mode=self.feed.mode, reconnects=self.reconnects,
+                offline_ms=int((now - self.link_since) * 1000) if self._said_offline else None,
+            )
+            self.link_since = now
+            self._said_offline = False
         self.online = self.ever_online = True
         self.state = state
         cur = state.get("current") or None
@@ -388,25 +434,37 @@ class PanelApp:
         t1 = time.perf_counter()
         if not boxes:
             return
+        show_ms: list[float] = []
         try:
             for box in boxes:
+                ts = time.perf_counter()
                 self.screen.show(renderer.frame, None if full else box)
+                show_ms.append((time.perf_counter() - ts) * 1000)
                 self.frames += 1
             if full:
                 self._last_full = time.monotonic()
             self._need_full = False
+            if page != self._shown_page:
+                done = time.monotonic()
+                emit(
+                    "panel.screen", previous=self._shown_page, page=page,
+                    dwell_ms=int((done - self._page_since) * 1000),
+                )
+                self._page_since = done
             self._shown_page = page
-        except Exception:
+        except Exception as exc:
             # whatever made it to the glass is unknown now — start clean
             log.exception("zápis na displej selhal")
+            self.stats.error("show", exc)
             self._need_full = True
             self.renderer.invalidate()
             self.net.renderer.invalidate()
             self.stop.wait(1.0)
             return
         t2 = time.perf_counter()
+        px = 480 * 320 if full else sum((b[2] - b[0]) * (b[3] - b[1]) for b in boxes)
+        self.stats.paint((t1 - t0) * 1000, show_ms, px, full)
         if log.isEnabledFor(logging.DEBUG):
-            px = sum((b[2] - b[0]) * (b[3] - b[1]) for b in boxes)
             log.debug(
                 "kresba %.1f ms, displej %.1f ms, %d px v %s",
                 (t1 - t0) * 1000, (t2 - t1) * 1000, px, boxes,
@@ -426,6 +484,11 @@ class PanelApp:
             deadlines.append(self.vol_sent_at + VOL_INTERVAL)
         if self.repeat_at is not None:
             deadlines.append(self.repeat_at)
+        if self.key_burst is not None:
+            deadlines.append(self.key_burst[3] + KEY_BURST_GAP)
+        flush_at = self.stats.deadline()
+        if flush_at is not None:
+            deadlines.append(flush_at)
         if self.online and self._is_running() and self.state and self.state.get("current"):
             # wake exactly when the displayed second changes
             pos = self._position(now)
@@ -442,6 +505,27 @@ class PanelApp:
         if self.vol_pending is not None and now - self.vol_sent_at >= VOL_INTERVAL:
             self._send_volume(self.vol_pending)
         self.net.timers(now)
+        if self.key_burst is not None and now - self.key_burst[3] >= KEY_BURST_GAP:
+            self._flush_key_burst()
+        self.stats.maybe_flush(now)
+
+    def _flush_key_burst(self) -> None:
+        """Jedno otočení kolečka (klávesy na repráku) = jeden řádek logu."""
+        burst, self.key_burst = self.key_burst, None
+        if burst is None:
+            return
+        emit(
+            "panel.action", button=burst[0], source="mediakey", steps=burst[1],
+            vol_from=burst[2], vol_to=self._view().volume,
+        )
+
+    def _log_action(self, button: str, source: str, now: float, **extra: Any) -> None:
+        """panel.action — co se stisklo, kde a jak dlouho (dotyk) nebo odkud."""
+        if source == "touch":
+            extra.setdefault("x", self.down_xy[0])
+            extra.setdefault("y", self.down_xy[1])
+            extra.setdefault("press_ms", int((now - self.press_at) * 1000))
+        emit("panel.action", button=button, source=source, **extra)
 
     # ---- touch ----
 
@@ -458,10 +542,29 @@ class PanelApp:
     def _end_gesture(self) -> None:
         if self._vol_gesture():
             self._finish_volume()
+        self._log_gesture()
         self.pressed = None
         self.inside = False
         self.repeat_at = None
         self.repeat_steps = 0
+
+    def _log_gesture(self) -> None:
+        """Konec tažení po liště nebo podrženého −/+ → jeden řádek logu."""
+        name = self.pressed
+        now = time.monotonic()
+        if name == "vol":
+            emit(
+                "panel.volume_drag", x=self.down_xy[0], y=self.down_xy[1],
+                x_end=self.last_xy[0], moves=self.gesture_moves,
+                vol_from=self.gesture_vol0, vol_to=self._view().volume,
+                press_ms=int((now - self.press_at) * 1000),
+            )
+        elif name in VOL_BUTTONS and self.repeat_steps:
+            self._log_action(
+                name, "touch", now, hold=True, steps=self.repeat_steps,
+                vol_from=self.gesture_vol0, vol_to=self._view().volume,
+                regrip=self.gesture_regrip or None, slid_out=not self.inside or None,
+            )
 
     def _repeat(self, now: float) -> None:
         """Step the volume while −/+ is held (touch events stop while a finger rests)."""
@@ -486,17 +589,26 @@ class PanelApp:
         now = time.monotonic() if now is None else now
         if ev.kind == "down":
             if self.pressed:  # lost an "up" somewhere — start over
+                self.stats.count("lost_up")
                 self._end_gesture()
             name = self._hit(ev.x, ev.y, TOUCH_GRAB)
             # the network button works with ytdj down too — that's when it's needed most
-            if name is None or (not self.online and name != "net"):
+            if name is None:
+                self.stats.count("miss")
+                return
+            if not self.online and name != "net":
+                self.stats.count("offline")
                 return
             if name == "vol" and ev.x < TARGETS["vol"][0] + 50:
                 # the number, not the bar: a touch there would mean "mute",
                 # which is never what a finger resting next to the bar wants
+                self.stats.count("vol_number")
                 return
             self.pressed, self.press_at, self.inside = name, now, True
-            self.last_xy = (ev.x, ev.y)
+            self.last_xy = self.down_xy = (ev.x, ev.y)
+            self.gesture_vol0 = self._view().volume
+            self.gesture_moves = 0
+            self.gesture_regrip = False
             log.info("dotyk: %s na %d,%d", name, ev.x, ev.y)
             if name == "vol":
                 self._drag_volume(ev.x)
@@ -504,6 +616,8 @@ class PanelApp:
                 lost, self.repeat_lost = self.repeat_lost, None
                 if lost and lost[0] == name and now - lost[1] <= REPEAT_REGRIP:
                     # a glitch in the middle of a hold: carry on repeating
+                    self.stats.count("regrip")
+                    self.gesture_regrip = True
                     self.repeat_steps, self.repeat_start = 1, lost[2]
                     if self.hold_volume:
                         self.hold_volume.until = math.inf
@@ -515,6 +629,7 @@ class PanelApp:
             if not self.pressed:
                 return
             self.last_xy = (ev.x, ev.y)
+            self.gesture_moves += 1
             if self.pressed == "vol":
                 self._drag_volume(ev.x)
             else:
@@ -543,23 +658,33 @@ class PanelApp:
             inside = self._hit(x, y, TOUCH_SLOP) == name
             long_enough = now - self.press_at >= MIN_PRESS
             self.pressed, self.inside = None, False
-            if inside and long_enough and name == "net":
+            if not inside:
+                self.stats.count("slid_out")
+            elif not long_enough:
+                self.stats.count("too_short")
+            elif name == "net":
                 log.info("dotyk: síť")
+                self._log_action("net", "touch", now)
                 self.net.open(now)
-            elif inside and long_enough and self.online:
+            elif self.online:
                 self._fire(name, now)
+            else:
+                self.stats.count("offline")
 
-    def _fire(self, name: str, now: float) -> None:
+    def _fire(self, name: str, now: float, source: str = "touch") -> None:
         if name in ("play", "next"):
             if now - self.last_fire.get(name, 0.0) < REPEAT_GUARD:
+                self.stats.count("debounce" if source == "touch" else "key_debounce")
                 return
             self.last_fire[name] = now
         view = self._view()
         if name == "play" and not (self.state or {}).get("current"):
-            self._start_dj()
+            started = self._start_dj()
+            self._log_action("play", source, now, did="start_dj" if started else "dj_busy")
             return
         if name == "play":
             want = not view.running
+            self._log_action("play", source, now, did="play" if want else "pause")
             # freeze (or restart) the clock where it is right now
             self._set_pos(self._position(now), now)
             self.hold_running = _Hold(want, now + HOLD)
@@ -567,10 +692,14 @@ class PanelApp:
             self.commander.send("play" if want else "pause")
         elif name == "next":
             self.hold_skip = _Hold(self.track_key, now + SKIP_HOLD)
+            self._log_action("next", source, now, did="next")
             log.info("povel: další")
             self.commander.send("next")
         elif name in VOL_BUTTONS:
-            self._vol_step(name, now + HOLD)
+            before = view.volume
+            new = self._vol_step(name, now + HOLD)
+            self._log_action(name, source, now, hold=False, steps=1, vol_from=before,
+                             vol_to=before if new is None else new)
 
     def _vol_step(self, name: str, until: float) -> int | None:
         """One −/+ step (snapped to VOL_STEP); the new volume, or None at the limit."""
@@ -584,27 +713,31 @@ class PanelApp:
         self._set_volume(new, until)
         return new
 
-    def _start_dj(self) -> None:
+    def _start_dj(self) -> bool:
         """Nic nehraje (třeba po restartu) — "Hrát" požádá DJ, ať naváže.
 
         Bez tohohle by šla hudba po startu Pi rozjet jen z webu, a ten je
         schválně jen na localhostu.
         """
         if self.prompting or (self.state or {}).get("busy"):
-            return
+            return False
         self.prompting = True
         log.info("povel: rozjet DJ")
 
         def ask() -> None:
             error = None
+            t0 = time.monotonic()
             try:
                 self.api.prompt(START_PROMPT)
             except Exception as exc:
                 error = str(exc) or type(exc).__name__
                 log.warning("rozjetí DJ selhalo: %s", error)
+            emit("panel.dj_prompt", ok=error is None, error=error and error[:120],
+                            took_ms=int((time.monotonic() - t0) * 1000))
             self.events.put(("result", "prompt", None, error))
 
         threading.Thread(target=ask, name="panel-prompt", daemon=True).start()
+        return True
 
     # ---- volume ----
 

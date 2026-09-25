@@ -16,6 +16,7 @@ from typing import Callable
 from .hw import Box, TouchEvent
 from .net import Connected, NetBackend, NetError, NetStatus, WifiNet
 from .netui import ROWS, STRINGS, NetRenderer, NetView, targets
+from .stats import emit, scrub
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +30,8 @@ TOUCH_SLOP = 14
 TOUCH_GRAB = 4
 MIN_PRESS = 0.02
 MAX_PASSWORD = 63
+# klávesy, které smí do provozního logu — písmena hesla nikdy
+LOGGED_KEYS = frozenset({"ok", "cancel"})
 
 
 class NetController:
@@ -39,8 +42,10 @@ class NetController:
         lang: str = "cs",
         web_port: int = 8765,
         now: float | None = None,
+        count: Callable[[str], None] | None = None,
     ) -> None:
         self.backend = backend
+        self.count = count or (lambda key: None)  # odmítnuté dotyky → souhrn za minutu
         self.post = post
         self.lang = lang if lang in STRINGS else "cs"
         self.s = STRINGS[self.lang]
@@ -50,6 +55,9 @@ class NetController:
         self.page: str | None = None  # None = the player screen
         self.status: NetStatus | None = None
         self.inflight: set[str] = set()
+        self.job_started: dict[str, float] = {}
+        self._status_sig: tuple | None = None  # co se naposledy zapsalo jako panel.net_status
+        self.connect_attempts = 0
         self.next_status = now if now is not None else time.monotonic()
         self.last_touch = 0.0
 
@@ -87,6 +95,7 @@ class NetController:
         if kind in self.inflight:
             return
         self.inflight.add(kind)
+        self.job_started[kind] = time.monotonic()
 
         def run() -> None:
             value, error = None, None
@@ -108,13 +117,19 @@ class NetController:
         _, kind, value, error = msg
         self.inflight.discard(kind)
         now = time.monotonic()
+        took_ms = int((now - self.job_started.pop(kind, now)) * 1000)
         if kind == "status":
             if isinstance(value, NetStatus):
                 self.status = value
             elif error:
                 self.status = NetStatus(error=error)
+            self._log_status(took_ms)
             self.next_status = now + (STATUS_EVERY if self.page else STATUS_EVERY_IDLE)
         elif kind == "scan":
+            emit(
+                "panel.net_scan", ok=not error, error=error, took_ms=took_ms,
+                networks=None if error else len(value or []),
+            )
             if error:
                 self.scan_error = self._error_text(error)
             else:
@@ -123,6 +138,13 @@ class NetController:
                 self.scroll = 0
             self.scanned = True
         elif kind == "connect":
+            ip = value.ip4 if isinstance(value, Connected) else ""
+            emit(
+                "panel.net_connect_result", ssid=self.ssid, ok=not error,
+                error=scrub(error, self.password)[:120] if error else None,
+                ip=ip or None, took_ms=took_ms, attempt=self.connect_attempts,
+                abandoned=self.phase != "busy" or None,
+            )
             if self.phase != "busy":
                 return
             if error:
@@ -135,6 +157,27 @@ class NetController:
                 self.result = value if isinstance(value, Connected) else None
                 self._forget_password()
             self.next_status = now  # the addresses have probably changed
+
+    def _log_status(self, took_ms: int) -> None:
+        """Stav sítě do logu jen při změně (dotaz běží každých 5–30 s)."""
+        st = self.status
+        if st is None:
+            return
+        wifi, eth = st.link("wifi"), st.link("ethernet")
+        sig = (
+            st.error,
+            eth.ip4 if eth is not None and eth.up else "",
+            wifi.ip4 if wifi is not None and wifi.up else "",
+            wifi.ssid if wifi is not None and wifi.up else "",
+        )
+        if sig == self._status_sig:
+            return
+        self._status_sig = sig
+        emit(
+            "panel.net_status", error=st.error or None, eth_ip=sig[1] or None, wifi_ip=sig[2] or None,
+            wifi_ssid=sig[3] or None, wifi_signal=wifi.signal if wifi is not None and wifi.up else None,
+            mdns=st.mdns, took_ms=took_ms,
+        )
 
     def _error_text(self, code: str) -> str:
         return self.s.get(f"err_{code}", code)
@@ -179,6 +222,8 @@ class NetController:
     def _connect(self) -> None:
         pw = self.password if self.secure else None
         backend, ssid = self.backend, self.ssid
+        self.connect_attempts += 1
+        emit("panel.net_connect", ssid=ssid, secure=self.secure, attempt=self.connect_attempts)
         self.phase = "busy"
         self.result = None
         self.result_error = ""
@@ -274,6 +319,7 @@ class NetController:
             self.refresh()
         if self.page and self.page != "connect" and now - self.last_touch >= IDLE_CLOSE and not self.pressed:
             log.info("síť: nikdo nesahá, zpět na přehrávač")
+            emit("panel.net_action", page=self.page, button="idle_close")
             self.close()
             return True
         return False
@@ -303,6 +349,8 @@ class NetController:
             self.pressed, self.inside = name, name is not None
             self.press_at = now
             self.last_xy = (ev.x, ev.y)
+            if name is None:
+                self.count("net_miss")
             if name:
                 log.debug("síť: dotyk %s", "klávesa" if self.page == "keys" else name)
         elif ev.kind == "move":
@@ -319,8 +367,17 @@ class NetController:
                 return
             x, y = self.last_xy  # release coordinates on resistive glass are junk
             box = self._targets().get(name)
-            if box is None or not self._in(box, x, y, TOUCH_SLOP) or now - self.press_at < MIN_PRESS:
+            if box is None or not self._in(box, x, y, TOUCH_SLOP):
+                self.count("net_slid_out")
                 return
+            if now - self.press_at < MIN_PRESS:
+                self.count("net_too_short")
+                return
+            if self.page != "keys" or name in LOGGED_KEYS:
+                emit(
+                    "panel.net_action", page=self.page, button=name,
+                    press_ms=int((now - self.press_at) * 1000),
+                )
             self._fire(name, now)
 
     @staticmethod

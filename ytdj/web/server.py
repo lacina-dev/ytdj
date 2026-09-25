@@ -36,6 +36,7 @@ from starlette.staticfiles import StaticFiles
 import uvicorn
 
 from .. import config as cfgmod
+from .. import telemetry
 
 if TYPE_CHECKING:  # circular import — we pull in App for typing only
     from ..__main__ import App
@@ -344,6 +345,42 @@ def _json_error(message: str, status: int) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status)
 
 
+def short_ua(ua: str) -> str:
+    """User-Agent zkrácený na "prohlížeč/systém" — stačí odlišit panel, mobil a PC."""
+    ua = ua or ""
+    low = ua.lower()
+    if not ua:
+        return "?"
+    for key, name in (("curl/", "curl"), ("python", "python"), ("wget", "wget")):
+        if key in low:
+            return name
+    browser = "jiný"
+    for key, name in (("edg/", "Edge"), ("firefox/", "Firefox"), ("chrome/", "Chrome"),
+                      ("safari/", "Safari")):
+        if key in low:
+            browser = name
+            break
+    system = ""
+    for key, name in (("android", "Android"), ("iphone", "iPhone"), ("ipad", "iPad"),
+                      ("windows", "Windows"), ("mac os", "Mac"), ("linux", "Linux")):
+        if key in low:
+            system = name
+            break
+    return f"{browser}/{system}" if system else browser
+
+
+def _client(request: Request) -> dict[str, str]:
+    try:
+        ip = request.client.host if request.client else "?"
+    except Exception:
+        ip = "?"
+    return {"ip": ip, "ua": short_ua(request.headers.get("user-agent", ""))}
+
+
+def _took(t0: float) -> int:
+    return int((time.monotonic() - t0) * 1000)
+
+
 def _safe(handler: Callable) -> Callable:
     """A single request crashing must not take down the server or the loop."""
 
@@ -352,8 +389,10 @@ def _safe(handler: Callable) -> Callable:
             return await handler(request)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             log.exception("požadavek %s %s selhal", request.method, request.url.path)
+            telemetry.event("web.error", path=request.url.path, method=request.method,
+                            error=telemetry.clip(f"{type(exc).__name__}: {exc}", 300))
             return _json_error("Vnitřní chyba serveru — podrobnosti v logu.", 500)
 
     wrapper.__name__ = getattr(handler, "__name__", "handler")
@@ -370,6 +409,7 @@ class WebServer:
 
         # true for the duration of a Codex turn — /api/status and SSE pass it on
         self.busy = False
+        self._sse_clients = 0
 
         self._server: uvicorn.Server | None = None
         self._task: asyncio.Task | None = None
@@ -484,9 +524,14 @@ class WebServer:
         return JSONResponse(await self._snapshot())
 
     async def _events(self, request: Request) -> Response:
+        who = _client(request)
+
         async def stream():
             last_payload: str | None = None
             last_sent = 0.0
+            t_open = time.monotonic()
+            self._sse_clients += 1
+            telemetry.event("web.sse_open", clients=self._sse_clients, **who)
             try:
                 while not self._closing.is_set():
                     if await request.is_disconnected():
@@ -515,6 +560,10 @@ class WebServer:
                 raise
             except Exception:
                 log.exception("SSE stream skončil chybou")
+            finally:
+                self._sse_clients -= 1
+                telemetry.event("web.sse_close", clients=self._sse_clients,
+                                duration_s=int(time.monotonic() - t_open), **who)
 
         return StreamingResponse(
             stream(),
@@ -541,13 +590,27 @@ class WebServer:
         return data
 
     async def _prompt(self, request: Request) -> Response:
+        t0 = time.monotonic()
+        rec: dict[str, Any] = _client(request)
+        resp = await self._prompt_inner(request, rec)
+        rec["status"] = resp.status_code
+        telemetry.event("web.prompt", took_ms=_took(t0), **rec)
+        return resp
+
+    async def _prompt_inner(self, request: Request, rec: dict[str, Any]) -> Response:
         try:
             data = await self._body(request)
         except BadValue as exc:
+            rec["error"] = str(exc)
             return _json_error(str(exc), 400)
 
         text = (data.get("text") or "").strip()
+        # Text přání se zapisuje (zkrácený): je to hlavní signál pro ladění
+        # toho, jestli DJ vyhověl.
+        rec["text"] = telemetry.clip(text, 300)
+        rec["len"] = len(text)
         if not text:
+            rec["error"] = "prázdný text"
             return _json_error("Chybí text požadavku.", 400)
 
         # Lock-free serialization: there is no await between the test and the
@@ -560,26 +623,43 @@ class WebServer:
         # požadavků posluchače.
         auto = getattr(self.app, "_reseeding", False)
         if self.busy or (getattr(self.app, "codex_busy", False) and not auto):
+            rec["error"] = "Codex právě pracuje"
             return _json_error("Codex právě pracuje", 409)
+        if auto:
+            rec["preempted_auto"] = True
         self.busy = True
         try:
             ask = getattr(self.app, "ask", None)
             reply = await (ask(text) if ask else self.app.dj.turn(text))
         except Exception as exc:
             log.exception("tah Codexu selhal")
+            rec["error"] = telemetry.clip(f"{type(exc).__name__}: {exc}", 300)
             return _json_error(f"Codex selhal: {exc}", 500)
         finally:
             self.busy = False
+        rec["reply"] = telemetry.clip(reply or "", 300)
         return JSONResponse({"reply": reply or ""})
 
     async def _control(self, request: Request) -> Response:
+        t0 = time.monotonic()
+        rec: dict[str, Any] = _client(request)
+        resp = await self._control_inner(request, rec)
+        rec["status"] = resp.status_code
+        telemetry.event("web.control", took_ms=_took(t0), **rec)
+        return resp
+
+    async def _control_inner(self, request: Request, rec: dict[str, Any]) -> Response:
         try:
             data = await self._body(request)
         except BadValue as exc:
+            rec["error"] = str(exc)
             return _json_error(str(exc), 400)
 
         action = data.get("action")
         value = data.get("value")
+        rec["action"] = telemetry.clip(action, 40) if action is not None else None
+        if value is not None:
+            rec["value"] = value if isinstance(value, (int, float, bool)) else telemetry.clip(value, 40)
         player = self.app.player
 
         try:
@@ -599,9 +679,11 @@ class WebServer:
                     return _json_error("Hlasitost musí být v rozsahu 0–130.", 400)
                 await player.set_volume(int(value))
             else:
+                rec["error"] = "neznámý povel"
                 return _json_error(f"Neznámý povel: {action!r}", 400)
         except Exception as exc:
             log.exception("povel %r selhal", action)
+            rec["error"] = telemetry.clip(f"{type(exc).__name__}: {exc}", 300)
             return _json_error(f"Povel se nepodařilo provést: {exc}", 500)
 
         return JSONResponse({"ok": True})
@@ -648,6 +730,7 @@ class WebServer:
 
     async def _restart(self, request: Request) -> Response:
         log.info("restart na vyžádání z webu")
+        telemetry.event("web.restart", **_client(request))
         self.app.restart_requested.set()
         return JSONResponse({"ok": True})
 
@@ -711,6 +794,12 @@ class WebServer:
                 setattr(self.app.cfg, key, value)
             elif getattr(self.app.cfg, key, None) != value:
                 restart.append(key)
+        # jen klíče a čísla/přepínače — cesty a texty (cookies…) se nepíšou
+        telemetry.event(
+            "web.config", keys=sorted(changes), restart=restart,
+            values={k: v for k, v in changes.items() if isinstance(v, (bool, int, float))},
+            **_client(request),
+        )
 
         return JSONResponse({"ok": True, "restart_required": restart})
 

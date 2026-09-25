@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 import os
 import stat
@@ -21,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fake_ytdj import make_server  # noqa: E402
+from test_panel import EventLog  # noqa: E402
 
 from ytdj.panel.app import PanelApp  # noqa: E402
 from ytdj.panel.net import (  # noqa: E402
@@ -252,6 +254,7 @@ class FakeNet:
 
 class NetFlowTest(unittest.TestCase):
     def setUp(self):
+        self.log = EventLog()
         self.server, self.fake = make_server(0)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.tmp = tempfile.TemporaryDirectory()
@@ -273,6 +276,7 @@ class NetFlowTest(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.tmp.cleanup()
+        self.log.close()
 
     def page(self):
         return self.app.net.page
@@ -379,6 +383,22 @@ class NetFlowTest(unittest.TestCase):
         self.assertTrue(wait_for(lambda: self.page() == "overview"))
         self.assertTrue(wait_for(lambda: self.app.net.urls()[:1] == (f"http://192.168.1.57:{self.app.api.port}",)))
 
+        # the event log: the SSID and the outcome are there, the password never
+        self.assertTrue(self.log.wait("panel.net_connect_result", ssid="síť-4", ok=True))
+        self.assertTrue(self.log.find("panel.net_connect", ssid="síť-4", secure=True))
+        self.assertTrue(self.log.find("panel.net_scan", ok=True, networks=7))
+        self.assertTrue(self.log.find("panel.action", button="net", source="touch"))
+        pages = [(e["previous"], e["page"]) for e in self.log.all("panel.screen")]
+        for step in (("player", "overview"), ("overview", "list"), ("list", "keys"), ("keys", "connect")):
+            self.assertIn(step, pages)
+        keys = [e["button"] for e in self.log.all("panel.net_action") if e["page"] == "keys"]
+        self.assertIn("ok", keys)
+        self.assertFalse([k for k in keys if k not in ("ok", "cancel")])  # typed characters never
+        self.assertTrue(self.log.wait("panel.net_status", wifi_ssid="síť-4", wifi_ip="192.168.1.57"))
+        text = self.log.text()
+        self.assertNotIn(SECRET, text)
+        self.assertNotIn(json.dumps(SECRET)[1:-1], text)
+
     def test_connect_failure_and_retry(self):
         self.net.fail = "wrong_password"
         self.open_net()
@@ -401,6 +421,27 @@ class NetFlowTest(unittest.TestCase):
         self.tap(dict(kb_keys(self.app.net.kb_page))["ok"])
         self.assertTrue(wait_for(lambda: self.app.net.phase == "ok"))
         self.assertEqual(self.net.connects[-1], ("síť-0", "heslo124"))
+        self.assertTrue(wait_for(lambda: len(self.log.all("panel.net_connect_result")) == 2))
+        results = self.log.all("panel.net_connect_result")
+        self.assertEqual([(r["ok"], r.get("error"), r["attempt"]) for r in results],
+                         [(False, "wrong_password", 1), (True, None, 2)])
+        self.assertNotIn("heslo12", self.log.text())
+
+    def test_error_text_never_carries_the_password(self):
+        # a backend that (wrongly) puts the password into its error message
+        self.net.fail = f"nmcli: bad key {SECRET} for síť-0"
+        self.open_net()
+        self.tap(WIFI_BTN)
+        self.assertTrue(wait_for(lambda: len(self.app.net.nets) == 7))
+        self.tap(list_row(0))
+        self.assertTrue(wait_for(lambda: self.page() == "keys"))
+        self.type_text(SECRET)
+        self.tap(dict(kb_keys(self.app.net.kb_page))["ok"])
+        self.assertTrue(wait_for(lambda: self.app.net.phase == "error"))
+        res = self.log.wait("panel.net_connect_result", ok=False)
+        self.assertTrue(res)
+        self.assertIn("•••", res[0]["error"])
+        self.assertNotIn(SECRET, self.log.text())
 
     def test_open_network_and_cancel(self):
         self.open_net()

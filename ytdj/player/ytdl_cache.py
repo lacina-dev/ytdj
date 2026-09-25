@@ -21,6 +21,7 @@ import os
 import re
 import socket
 import sys
+import time
 
 ENV_REAL = "YTDJ_YTDL_REAL"      # cesta ke skutečnému yt-dlp
 ENV_SOCKET = "YTDJ_YTDL_SOCKET"  # socket resolveru
@@ -55,6 +56,37 @@ def _ask_resolver(path: str, argv: list[str]) -> dict | None:
         return None
 
 
+def _note_fallback(argv: list[str], reason: str) -> None:
+    """Zapíše do provozního logu, že skladba šla mimo resolver (pomalu).
+
+    ytdj se importovat nesmí (start musí být rychlý), takže se řádek připíše
+    rovnou — jeden krátký zápis s O_APPEND je atomický i vedle zapisovatele
+    v ytdj. Cestu a sid předává MpvPlayer v prostředí.
+    """
+    path = os.environ.get("YTDJ_EVENTS_FILE")
+    if not path or os.environ.get("YTDJ_TELEMETRY", "1") == "0":
+        return
+    try:
+        m = VIDEO_ID.search(argv[-1]) if argv else None
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+        ms = int(time.time() * 1000) % 1000
+        tz = time.strftime("%z")
+        rec = {
+            "ts": f"{ts}.{ms:03d}{tz[:3]}:{tz[3:]}",
+            "kind": "resolver.fallback",
+            "sid": os.environ.get("YTDJ_SID", ""),
+            "video_id": m.group(1) if m else None,
+            "reason": reason,
+        }
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        try:
+            os.write(fd, (json.dumps(rec) + "\n").encode())
+        finally:
+            os.close(fd)
+    except Exception:
+        pass
+
+
 def _exec_real(argv: list[str]) -> None:
     real = os.environ.get(ENV_REAL) or "yt-dlp"
     # s nižší prioritou: yt-dlp a node vytíží jádro na desítky vteřin a na Pi 3
@@ -72,7 +104,9 @@ def main(argv: list[str]) -> int:
     path = os.environ.get(ENV_SOCKET)
     if path and _is_single_json(argv):
         resp = _ask_resolver(path, argv)
-        if resp is not None:
+        if resp is None:
+            _note_fallback(argv, "resolver neodpovídá")
+        else:
             if resp.get("ok") and resp.get("json"):
                 sys.stdout.write(resp["json"])
                 sys.stdout.flush()
@@ -82,6 +116,7 @@ def main(argv: list[str]) -> int:
                 # video se přehrát nedá — to samé by řeklo i yt-dlp, jen o 20 s později
                 print(f"ERROR: {error}", file=sys.stderr)
                 return 1
+            _note_fallback(argv, error or "prázdná odpověď")
     _exec_real(argv)
     return 127  # nedosažitelné
 

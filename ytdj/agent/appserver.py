@@ -34,12 +34,43 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
+# Co DJ nepotřebuje. Hlavně pluginy: při každém startu app-serveru se jinak
+# stahuje a na SD kartu zapisuje 27 MB katalog pluginů (Pi 26. 9. 00:40:12,
+# iowait 41–56 %, tah 26 s). Bez nástrojů shellu navíc model nemá jak cokoli
+# spustit — na Pi chybí bubblewrap, takže sandbox read-only nejde vynutit.
+DISABLED_FEATURES = [
+    "plugins", "remote_plugin", "plugin_sharing", "apps", "browser_use",
+    "browser_use_external", "computer_use", "image_generation", "shell_tool",
+    "unified_exec", "shell_snapshot", "multi_agent", "skill_search", "tool_suggest",
+    "goals", "hooks", "realtime_conversation", "view_image", "sleep_tool",
+    "in_app_browser", "in_app_chat", "workspace_dependencies", "worktrees",
+    "skill_mcp_dependency_install", "code_mode_host", "daemon_auto_start",
+]
+
+
+def feature_args() -> list[str]:
+    """`-c features.X=false` pro každou vypnutou funkci (i pro `codex exec`)."""
+    out: list[str] = []
+    for f in DISABLED_FEATURES:
+        out += ["-c", f"features.{f}=false"]
+    return out
+
+
 IDLE_TTL = 600.0  # s bez tahu → proces končí (uvolní ~165 MB)
 START_TIMEOUT = 30.0  # s na initialize + thread/start (Pi pod zátěží)
 
 
 class AppServerError(RuntimeError):
     pass
+
+
+class AppServerAuthError(AppServerError):
+    """401/403 — přihlášení Codexu neplatí; `codex exec` by dopadl stejně."""
+
+
+def _is_auth_error(text: str) -> bool:
+    t = text.lower()
+    return "401" in t or "403" in t or "unauthorized" in t or "not logged in" in t
 
 
 def native_codex(wrapper: str | None) -> str | None:
@@ -98,6 +129,9 @@ class AppServer:
         self.thread_id: str | None = None
         self.thread_turns = 0
         self.stderr_tail: list[str] = []
+        self._warm_lock = asyncio.Lock()
+        self._prewarm: asyncio.Task | None = None
+        self._fresh_thread = False  # vlákno ještě nemělo tah
 
     # ---- proces ----
 
@@ -107,7 +141,7 @@ class AppServer:
 
     async def _start(self) -> None:
         self.proc = await asyncio.create_subprocess_exec(
-            self.binary, "app-server", *self.extra_args,
+            self.binary, "app-server", *feature_args(), *self.extra_args,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -226,16 +260,18 @@ class AppServer:
 
     # ---- tah ----
 
-    async def turn(self, prompt: str, schema: dict, timeout: float) -> TurnResult:
-        """Jeden tah; vrací text poslední zprávy agenta (JSON podle `schema`)."""
-        t0 = time.monotonic()
-        startup_ms = 0
-        if not self.alive:
-            await self._start()
-            startup_ms = int((time.monotonic() - t0) * 1000)
-        self._touch()
-        new_thread = False
-        if self.thread_id is None or self.thread_turns >= self.max_turns:
+    async def warm(self) -> bool:
+        """Proces a vlákno připravené k tahu; True = vlákno je nové.
+
+        Volá se i dopředu (při příchodu přání, souběžně s rychlou cestou),
+        ať start procesu (na Pi 2–8 s) neplatí posluchač. Souběžná volání
+        se počkají na jeden start.
+        """
+        async with self._warm_lock:
+            if not self.alive:
+                await self._start()
+            if self.thread_id is not None and self.thread_turns < self.max_turns:
+                return self._fresh_thread
             # nové vlákno: kontext nenarůstá (stav jde celý v každém zadání)
             params: dict[str, Any] = {
                 "cwd": self.cwd,
@@ -250,8 +286,32 @@ class AppServer:
             if not self.thread_id:
                 raise AppServerError(f"thread/start bez id: {str(res)[:200]}")
             self.thread_turns = 0
-            new_thread = True
-            startup_ms = int((time.monotonic() - t0) * 1000)
+            self._fresh_thread = True
+            self._touch()
+            return True
+
+    def prewarm(self) -> None:
+        """Nastartuje na pozadí (bez čekání); chyby jen do logu."""
+        if self.alive and self.thread_id is not None and self.thread_turns < self.max_turns:
+            return
+        if self._prewarm and not self._prewarm.done():
+            return
+
+        async def go() -> None:
+            try:
+                await self.warm()
+            except Exception as exc:
+                log.info("předstart app-serveru selhal: %s", exc)
+                await self.close()
+
+        self._prewarm = asyncio.create_task(go())
+
+    async def turn(self, prompt: str, schema: dict, timeout: float) -> TurnResult:
+        """Jeden tah; vrací text poslední zprávy agenta (JSON podle `schema`)."""
+        t0 = time.monotonic()
+        new_thread = await self.warm()
+        startup_ms = int((time.monotonic() - t0) * 1000)  # ~0, když byl předstartovaný
+        self._touch()
 
         # zbytky z minulého tahu (pozdní notifikace) zahodit
         while not self._events.empty():
@@ -278,9 +338,14 @@ class AppServer:
                         item = params.get("item") or {}
                         if item.get("type") == "agentMessage":
                             text = item.get("text") or text
-                    elif method == "error" and not params.get("willRetry"):
+                    elif method == "error":
                         err = params.get("error") or {}
-                        raise AppServerError(str(err.get("message") or err)[:300])
+                        text = str(err.get("message") or err)[:300]
+                        # 4xx se opakovat nevyplatí (Codex by 5× zkoušel znovu, 60 s)
+                        if _is_auth_error(text):
+                            raise AppServerAuthError(text)
+                        if not params.get("willRetry"):
+                            raise AppServerError(text)
                     elif method == "turn/completed":
                         turn = params.get("turn") or {}
                         if turn_id and turn.get("id") not in (None, turn_id):
@@ -298,6 +363,7 @@ class AppServer:
                 })
             raise
         self.thread_turns += 1
+        self._fresh_thread = False
         self._touch()
         if not text.strip():
             raise AppServerError("tah bez odpovědi")

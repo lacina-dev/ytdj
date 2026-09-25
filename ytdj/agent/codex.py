@@ -36,7 +36,13 @@ from ..music.radio import RadioPools
 from ..player.base import Player, queue_transaction
 from ..state import Store
 from .. import telemetry
-from .appserver import AppServer, app_server_enabled, default_binary
+from .appserver import (
+    AppServer,
+    AppServerAuthError,
+    app_server_enabled,
+    default_binary,
+    feature_args,
+)
 from .fastpath import FastResult, enforce_requested, find_artists, find_song
 from .intent import Intent, ListenerIntent, Pair, build_intent, track_avoided
 from .prompts import ROLE, render_state
@@ -299,6 +305,7 @@ class CodexDJ:
                 "-C", str(self._dir),
                 "-s", "read-only",  # the sandbox stays; Codex has nothing to run
             ]
+        args += feature_args()  # [app-server] bez pluginů a shellu i u exec
         args += [
             "--json",
             "--skip-git-repo-check",
@@ -730,6 +737,7 @@ class CodexDJ:
 
     async def fast_plan(self, text: str) -> Plan | None:
         """Rychlá cesta jako plán (nic nepřehrává) — pro frontu přání."""
+        self.prewarm()  # [app-server] kdyby přání šlo k modelu, ať Codex už běží
         t0 = time.monotonic()
         try:
             res = await find_artists(self.catalog, text)
@@ -775,8 +783,7 @@ class CodexDJ:
         return Plan(intent=intent, requested=[t], seeds=[t])
 
     # [app-server]
-    async def _via_app_server(self, prompt: str, auto: bool) -> dict | None:
-        """Tah přes trvale běžící Codex; None = selhalo, ať to vezme `codex exec`."""
+    def _app(self) -> AppServer | None:
         if not app_server_enabled():
             return None
         if self.app is None:
@@ -787,12 +794,29 @@ class CodexDJ:
                 binary, str(self._dir), model=self.cfg.codex_model,
                 max_turns_per_thread=self.MAX_RESUMED_TURNS,
             )
+        return self.app
+
+    def prewarm(self) -> None:
+        """Nastartuje Codex na pozadí, souběžně s rychlou cestou přání."""
+        if app := self._app():
+            app.prewarm()
+
+    async def _via_app_server(self, prompt: str, auto: bool) -> dict | None:
+        """Tah přes trvale běžící Codex; None = selhalo, ať to vezme `codex exec`."""
+        if self._app() is None:
+            return None
         t0 = time.monotonic()
         try:
             res = await self.app.turn(prompt, DECISION_SCHEMA, timeout=TURN_TIMEOUT)
             data = parse_output(res.text)
         except asyncio.CancelledError:
             raise
+        except AppServerAuthError as exc:
+            # exec by čekal minutu na stejnou chybu — rovnou to říct
+            telemetry.event("dj.turn", how="app_server", auto=auto, ok=False,
+                            error=f"auth: {exc}"[:300],
+                            took_ms=int((time.monotonic() - t0) * 1000))
+            raise CodexUnavailable(f"Codex není přihlášen: {exc}"[:300]) from exc
         except Exception as exc:
             log.warning("app-server selhal (%s) — beru codex exec", exc)
             telemetry.event(

@@ -20,6 +20,7 @@ _TMP = tempfile.mkdtemp(prefix="ytdj-test-")
 os.environ["XDG_DATA_HOME"] = _TMP  # before ytdj.config is imported
 os.environ["XDG_CONFIG_HOME"] = _TMP
 os.environ["YTDJ_EVENTS_FILE"] = str(Path(_TMP) / "events.jsonl")
+os.environ["YTDJ_CODEX_APP_SERVER"] = "0"  # no real Codex in unit tests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 

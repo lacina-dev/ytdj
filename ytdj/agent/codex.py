@@ -376,7 +376,7 @@ class CodexDJ:
             # user changes the mood, they want to hear different music right
             # away, not in three minutes.
             if was_playing:
-                await self.player.skip()
+                await self.player.skip(by_user=False)
         elif d.action == "play_next":
             requested = await self._requested_tracks(d)
             if not requested:

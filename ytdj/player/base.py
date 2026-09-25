@@ -30,7 +30,7 @@ class PlayerStatus:
 
 @dataclass(slots=True)
 class PlayerEvent:
-    kind: str  # "start" | "finished" | "skipped" | "error" | "idle"
+    kind: str  # "start" | "finished" | "skipped" | "replaced" | "error" | "idle"
     track: Track | None = None
     detail: str = ""
 
@@ -59,7 +59,10 @@ class Player(ABC):
     async def clear_queue(self) -> None: ...
 
     @abstractmethod
-    async def skip(self) -> None: ...
+    async def skip(self, by_user: bool = True) -> None:
+        """Na další skladbu. `by_user=False`, když hrající skladbu odsouvá
+        aplikace sama (nové rádio, vyžádaný odkaz) — pak to není signál, že
+        se skladba nelíbila, a konec se ohlásí jako "replaced"."""
 
     @abstractmethod
     async def toggle_pause(self, paused: bool | None = None) -> None: ...

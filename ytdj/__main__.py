@@ -150,7 +150,7 @@ class App:
             await self.player.enqueue(await self.pools.next_tracks(self.cfg.queue_target))
         await self.player.toggle_pause(False)
         if was_playing:
-            await self.player.skip()
+            await self.player.skip(by_user=False)
         what = "playlist" if target.kind == "playlist" else target.label
         return f"Jedu podle odkazu — {what}."
 
@@ -170,6 +170,13 @@ class App:
 
         elif ev.kind == "skipped" and ev.track:
             self.store.record_outcome(ev.track.id, "skipped")
+
+        elif ev.kind == "replaced" and ev.track:
+            # Odsunula ji nová nálada nebo vyžádaný odkaz, ne posluchač. Jako
+            # "skipped" by se počítala do série přeskočení a ta spouští další
+            # přeseedování, které zase odsune skladbu — smyčka, kdy DJ každé
+            # dvě minuty sám mění náladu a nic nedohraje.
+            self.store.record_outcome(ev.track.id, "replaced")
 
         elif ev.kind == "error" and ev.track:
             # unavailable (age-restricted, region-blocked, Premium-only)

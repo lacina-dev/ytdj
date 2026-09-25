@@ -74,6 +74,7 @@ class MpvPlayer(Player):
         self._pos = 0
         self._count = 0
         self._time_pos = 0.0  # průběžná pozice — pro detekci useknuté skladby
+        self._replacing = False  # další konec skladby způsobila aplikace, ne posluchač
         self._paused = False
         self._volume = _clamp_volume(cfg.volume)
         # Zápis hlasitosti do configu se odkládá: tažení slideru i držené "+"
@@ -281,6 +282,10 @@ class MpvPlayer(Player):
                 "error": "error",
                 "redirect": "skipped",
             }.get(reason, "skipped")
+            if kind == "skipped" and self._replacing:
+                # odsunula ji aplikace, ne posluchač — nepočítat jako "nelíbí"
+                kind = "replaced"
+            self._replacing = False
             self._note_premature_end(kind, msg.get("playlist_entry_id", -1))
             self._time_pos = 0.0
             self._events.put_nowait((kind, msg.get("playlist_entry_id", -1), reason))
@@ -430,7 +435,8 @@ class MpvPlayer(Player):
         self._order = [self._current_id] if self._current_id else []
         self._count = await self._get("playlist-count", 0) or 0
 
-    async def skip(self) -> None:
+    async def skip(self, by_user: bool = True) -> None:
+        self._replacing = not by_user
         await self._command("playlist-next", "force", wait=False)
 
     async def toggle_pause(self, paused: bool | None = None) -> None:

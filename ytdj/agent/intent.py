@@ -37,7 +37,13 @@ def _stem_hit(word: str, tokens: list[str]) -> bool:
     Krátká slova (U2, ABBA) musí sedět celá.
     """
     if len(word) <= 3:
-        return word in tokens
+        if word in tokens:
+            return True
+        # "Ewa" → "Ewu", "Ema" → "Emu": u krátkého jména se skloňuje jen
+        # koncová samohláska
+        if len(word) == 3 and word[-1] in "aeiouy":
+            return any(len(t) == 3 and t[:2] == word[:2] and t[-1] in "aeiouy" for t in tokens)
+        return False
     stem = word[: max(3, len(word) - 2)]
     return any(t.startswith(stem) and len(t) <= len(word) + 3 for t in tokens)
 
@@ -134,9 +140,14 @@ vic jeste dalsi zase znovu taky take
 neco nejake nejaky nejakou pisnicky pisnicek pisne pisen skladby skladeb songy
 veci hudbu muziku hity hitu nejvetsi zname nejznamejsi od z ze to toho tohle mi
 nam si me
-play put on some songs by music tracks more please the only just
+hod hodte hodit sup supni soupni soupnete pustis pustite muzete muzes mohli
+prosim te tam sem nejaky nejakou nejakej trochu chvili chvilku
+ty ta ten tu tech jeho jejich jeji
+play put on some songs by music tracks more please the only just can you could
 """.split())
-_JOIN = {"a", "and", "i", "nebo", "or", "plus"}
+# spojky mezi interprety, i pořadí ("Midi Lidi a pak Tata Bojs")
+_JOIN = {"a", "and", "i", "nebo", "or", "plus", "pak", "potom", "nakonec",
+         "then", "after", "that"}
 
 
 def main_part(user_text: str) -> str:

@@ -296,5 +296,42 @@ class Avoid(unittest.TestCase):
         self.assertFalse(track_avoided("Kabát", "Pohoda", [("Olympic", "")]))
 
 
+class OfficePhrasings(unittest.TestCase):
+    """Orchestrator's probe: realistic office requests → artist mode or not."""
+
+    def test_artist_requests(self):
+        cases = [
+            ("dej tam Kryštof", ["Kryštof"], ["Kryštof"]),
+            ("hoď tam něco od Lucie", ["Lucie"], ["Lucie"]),
+            ("hraj Ewu Farnou", ["Ewa Farná"], ["Ewa Farná"]),
+            ("pusť Lucii Bílou", ["Lucie Bílá"], ["Lucie Bílá"]),
+            ("hraj Vondráčkovou", ["Helena Vondráčková"], ["Helena Vondráčková"]),
+            ("chci slyšet Zagorovou", ["Hana Zagorová"], ["Hana Zagorová"]),
+            ("hraj ty největší hity Queen", ["Queen"], ["Queen"]),
+            ("pusť Midi Lidi a pak Tata Bojs", ["Midi Lidi", "Tata Bojs"],
+             ["Midi Lidi", "Tata Bojs"]),
+            ("šoupni tam Chinaski", ["Chinaski"], ["Chinaski"]),
+            ("pustíš prosím tě Kabát", ["Kabát"], ["Kabát"]),
+            ("můžete pustit trochu Olympic", ["Olympic"], ["Olympic"]),
+            ("hoďte sem zase Tata Bojs", ["Tata Bojs"], ["Tata Bojs"]),
+            ("can you put on some Queen", ["Queen"], ["Queen"]),
+            ("play some Oasis", ["Oasis"], ["Oasis"]),
+        ]
+        for text, cands, want in cases:
+            self.assertEqual(artist_request(text, cands), want, text)
+
+    def test_not_artist_requests(self):
+        cases = [
+            ("pusť něco klidného od Kabátu", ["Kabát"]),
+            ("rock, třeba Kabát", ["Kabát"]),
+            ("něco jako Kabát", ["Kabát"]),
+            ("pusť Wonderwall", ["Oasis"]),
+            ("zahraj jednu od Chinaski", ["Chinaski"]),
+            ("hraj Emu Destinnovou a pak něco veselého", ["Ema Destinnová"]),
+        ]
+        for text, cands in cases:
+            self.assertEqual(artist_request(text, cands), [], text)
+
+
 if __name__ == "__main__":
     unittest.main()

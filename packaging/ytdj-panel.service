@@ -20,6 +20,15 @@ Environment=YTDJ_LOG=info
 # Tady se při prvním startu zkompiluje knihovna ovladače.
 CacheDirectory=ytdj-panel
 Environment=YTDJ_PANEL_LIB_DIR=/var/cache/ytdj-panel
+# Provozní události panelu (dotyky, obrazovky, spojení s ytdj, výkon kreslení)
+# zvlášť od ytdj — ten běží pod uživatelem a píše do ~/.local/share/ytdj.
+# LogsDirectory adresář vytvoří a zpřístupní i přes ProtectSystem=strict;
+# 0755 + soubor 0644, takže ho uživatel přečte pro telemetry report bez sudo:
+#   python -m ytdj.telemetry report  (s YTDJ_EVENTS_FILE=/var/log/ytdj-panel/events.jsonl)
+LogsDirectory=ytdj-panel
+LogsDirectoryMode=0755
+UMask=0022
+Environment=YTDJ_EVENTS_FILE=/var/log/ytdj-panel/events.jsonl
 Restart=always
 RestartSec=3
 # Panel po SIGTERM ještě dopíše na displej, že je vypnutý — stačí chvilka.

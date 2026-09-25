@@ -18,6 +18,8 @@ from collections import deque
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
+from .stats import emit
+
 log = logging.getLogger(__name__)
 
 # the server sends a keepalive every 15 s; silence much longer than that
@@ -111,14 +113,24 @@ class StatusFeed(threading.Thread):
         self.on_state = on_state
         self.on_offline = on_offline
         self.stop = stop
+        self.mode: str | None = None  # "sse" | "poll" — jak právě stav chodí
+
+    def _set_mode(self, mode: str, reason: str = "") -> None:
+        if mode != self.mode:
+            if self.mode is not None or mode != "sse":
+                emit("panel.feed_mode", mode=mode, previous=self.mode, reason=reason[:120])
+            self.mode = mode
 
     def run(self) -> None:
         backoff = BACKOFF_MIN
         poll_until = 0.0
+        why_poll = ""
         while not self.stop.is_set():
             try:
                 if time.monotonic() < poll_until:
-                    self.on_state(self.api.status())
+                    state = self.api.status()
+                    self._set_mode("poll", why_poll)
+                    self.on_state(state)
                     backoff = BACKOFF_MIN
                     self.stop.wait(POLL_INTERVAL)
                     continue
@@ -129,6 +141,7 @@ class StatusFeed(threading.Thread):
                 continue
             except _NoStream as exc:
                 log.info("SSE nejde (%s), přecházím na dotazování", exc)
+                why_poll = str(exc)
                 poll_until = time.monotonic() + POLL_SPELL
                 continue
             except NET_ERRORS as exc:
@@ -174,6 +187,7 @@ class StatusFeed(threading.Thread):
                     else:
                         if isinstance(state, dict) and state:
                             got = True
+                            self._set_mode("sse")
                             self.on_state(state)
                     data = []
                 # comments (": ping") and other fields just keep us alive

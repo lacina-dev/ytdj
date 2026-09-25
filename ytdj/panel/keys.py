@@ -21,6 +21,8 @@ import threading
 from pathlib import Path
 from typing import Callable
 
+from .stats import emit
+
 log = logging.getLogger(__name__)
 
 EV_KEY = 1
@@ -82,11 +84,13 @@ class MediaKeys(threading.Thread):
                 continue
             self.open[fd] = (path, name)
             log.info("klávesy: poslouchám %s", name)
+            emit("panel.keys_device", state="attached", name=name[:80], path=path)
 
     def _drop(self, fd: int) -> None:
         path, name = self.open.pop(fd)
         os.close(fd)
         log.info("klávesy: %s odpojeno", name)
+        emit("panel.keys_device", state="detached", name=name[:80], path=path)
 
     def run(self) -> None:
         while not self.stop.is_set():

@@ -11,7 +11,10 @@ import logging
 import os
 import signal
 import sys
+import time
 import tomllib
+
+from .stats import emit
 
 
 def _config() -> dict:
@@ -75,6 +78,8 @@ def main(argv: list[str] | None = None) -> int:
             touch = SimTouch(sys.stdin)
     except Exception as exc:
         log.error("displej se nepodařilo otevřít (%s): %s", args.driver, exc)
+        emit("panel.driver_error", where="open", driver=args.driver,
+                        error=f"{type(exc).__name__}: {exc}"[:200])
         return 1
 
     if tuple(screen.size) != (480, 320):
@@ -85,9 +90,17 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, lambda *_: app.shutdown())
     signal.signal(signal.SIGINT, lambda *_: app.shutdown())
     log.info("panel běží (%s), ytdj na %s", args.driver, args.url)
+    emit(
+        "panel.startup", driver=args.driver, rotate=args.rotate, size=list(screen.size),
+        calibration=getattr(touch, "calibration_source", "n/a"), url=args.url, lang=args.lang,
+        vol_max=app.vol_max, media_keys=app.media_keys, pid=os.getpid(),
+    )
+    started = time.monotonic()
     try:
         app.run()
     finally:
+        emit("panel.stop", uptime_s=int(time.monotonic() - started),
+                        frames=app.frames, reconnects=app.reconnects)
         app.close_screen()
         for dev in (touch, screen):
             try:

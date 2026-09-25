@@ -87,6 +87,7 @@ class _Device:
         lib.kd_madctl.argtypes = [ctypes.c_int]
         lib.kd_blit_rgb.argtypes = [ctypes.c_int] * 4 + [ctypes.c_char_p, ctypes.c_int]
         lib.kd_touch.argtypes = [ctypes.POINTER(ctypes.c_int)] * 3
+        lib.kd_pen_down.argtypes = []
         rc = lib.kd_open(0)
         if rc != 0:
             raise OSError(f"KeDei: nepodařilo se namapovat registry (kd_open={rc})")
@@ -120,6 +121,10 @@ class _Device:
         with self.lock:
             ok = self.lib.kd_touch(ctypes.byref(x), ctypes.byref(y), ctypes.byref(z))
         return (x.value, y.value, z.value) if ok else None
+
+    def pen_down(self) -> bool:
+        """Jen úroveň PENIRQ (jedno čtení GPIO) — pro statistiku anomálií."""
+        return bool(self.lib.kd_pen_down())
 
 
 def _check_rotate(rotate: int) -> int:
@@ -188,13 +193,19 @@ class Calibration:
         cy = solve([float(s[1]) for _, s in pairs])
         return cls(*cx, *cy)
 
+    source = "custom"  # odkud kalibrace je — do provozního logu
+
     @classmethod
     def load(cls, path: Path = CALIBRATION) -> Calibration:
         try:
-            return cls(*json.loads(path.read_text())["coef"])
+            cal = cls(*json.loads(path.read_text())["coef"])
+            cal.source = f"file:{path}"
+            return cal
         except FileNotFoundError:
             log.info("kalibrace dotyku %s neexistuje — používám výchozí", path)
-            return cls.default()
+            cal = cls.default()
+            cal.source = "default"
+            return cal
 
     def save(self, path: Path = CALIBRATION) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -229,10 +240,33 @@ class KedeiTouch:
         self._misses = 0
         self._candidates: list[tuple[int, int]] = []
         self._jump: tuple[int, int] | None = None
+        # Anomálie převodníku za poslední souhrn (panel.touch_driver). Jen
+        # přičítání v tomhle vlákně; `take_stats()` z hlavního vlákna vymění
+        # celý slovník — případná ztráta jednoho přičtení nevadí.
+        self._stats: dict[str, int] = {}
+
+    @property
+    def calibration_source(self) -> str:
+        return getattr(self._cal, "source", "custom")
+
+    def _bump(self, key: str) -> None:
+        st = self._stats
+        st[key] = st.get(key, 0) + 1
+
+    def take_stats(self) -> dict[str, int]:
+        st, self._stats = self._stats, {}
+        return st
 
     def _sample(self) -> tuple[int, int] | None:
         raw = self._dev.touch_raw()
-        if raw is None or raw[2] < MIN_PRESSURE:
+        if raw is None:
+            # PENIRQ hlásí prst, ale převodník nedal použitelné vzorky
+            # (zvedl se uprostřed měření, klidové hodnoty, rozptyl)
+            if self._dev.pen_down():
+                self._bump("invalid_samples")
+            return None
+        if raw[2] < MIN_PRESSURE:
+            self._bump("low_pressure")
             return None
         x, y = self._cal.map(raw[0], raw[1])
         if self._rotate == 180:
@@ -257,19 +291,26 @@ class KedeiTouch:
                             self._down = True
                             self._pos = (xs[len(xs) // 2], ys[len(ys) // 2])
                             self._candidates = []
+                            self._bump("downs")
                             return TouchEvent("down", *self._pos)
+                        self._bump("spread_rejected")  # dosedající prst, vzorky rozházené
                 else:
                     dist = max(abs(pos[0] - self._pos[0]), abs(pos[1] - self._pos[1]))
                     if dist > self.JUMP and (
                         self._jump is None
                         or max(abs(pos[0] - self._jump[0]), abs(pos[1] - self._jump[1])) > self.PRESS_SPREAD
                     ):
+                        if self._jump is not None:
+                            self._bump("jump_dropped")  # předchozí skok nikdo nepotvrdil
                         self._jump = pos  # počkat, jestli to potvrdí další vzorek
                     elif dist >= self.MOVE_THRESHOLD:
                         self._jump = None
                         self._pos = pos
                         return TouchEvent("move", *pos)
             else:
+                if self._candidates:
+                    # prst "dosedl" (1–2 vzorky), ale stisk se nepotvrdil
+                    self._bump("aborted_press")
                 self._candidates = []
                 self._jump = None
                 if self._down:

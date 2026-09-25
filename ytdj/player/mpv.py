@@ -375,11 +375,29 @@ class MpvPlayer(Player):
         codec = await self._get("audio-codec-name")
         bitrate = await self._get("audio-bitrate")
         if not bitrate:
+            await self._log_playing()
             return
         kbps = int(bitrate) // 1000
         premium = " (Premium)" if kbps >= PREMIUM_KBPS else ""
         self._quality = f"{codec or 'audio'} {kbps} kb/s{premium}"
         log.info("kvalita: %s", self._quality)
+        await self._log_playing()
+
+    async def _log_playing(self) -> None:
+        """Zapíše, co mpv doopravdy přehrává — důkaz pro "displej ukazuje něco
+        jiného, než hraje". ID je z adresy, kterou mpv otevřel, název z JSONu,
+        který mu vydal yt-dlp (nebo cache)."""
+        vid = await self._current_video_id()
+        title = await self._get("media-title")
+        expected = self._current_id
+        track = self._tracks.get(expected or "")
+        if vid != expected:
+            log.warning(
+                "NESOULAD: mpv hraje %s (%r), ytdj ukazuje %s (%s)",
+                vid, title, expected, track.label() if track else "?",
+            )
+        else:
+            log.info("mpv hraje %s: %r", vid, title)
 
     async def _current_video_id(self) -> str | None:
         path = await self._get("path")

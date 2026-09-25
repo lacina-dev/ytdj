@@ -57,6 +57,29 @@ def _entry(video_id: str) -> Path:
     return cache_dir() / f"{video_id}.json"
 
 
+def _pending(video_id: str) -> Path:
+    """Značka "tuhle skladbu právě řeší prefetch"."""
+    return cache_dir() / f"{video_id}.pending"
+
+
+def _wait_for_prefetch(video_id: str, limit: float = 90.0) -> bytes | None:
+    """Když skladbu zrovna řeší prefetch, počká na něj.
+
+    Druhé yt-dlp pro tutéž skladbu by se s prvním jen přetahovalo o CPU —
+    na Pi 3 by pak obě trvala dvakrát déle.
+    """
+    marker = _pending(video_id)
+    deadline = time.time() + limit
+    while time.time() < deadline:
+        try:
+            if time.time() - marker.stat().st_mtime > limit:
+                return None  # zbytek po spadlém prefetchi
+        except OSError:
+            return _take(video_id)  # prefetch skončil — s výsledkem, nebo bez
+        time.sleep(0.25)
+    return None
+
+
 def _is_single_json(argv: list[str]) -> bool:
     """Jen dotaz typu "dej JSON jednoho videa" — nic jiného necachujeme."""
     return ("-J" in argv or "--dump-single-json" in argv) and _video_id(argv) is not None
@@ -72,6 +95,11 @@ def _take(video_id: str) -> bytes | None:
         return None
     path.unlink(missing_ok=True)  # jednorázově — případný opakovaný pokus vyřeší znovu
     if age > MAX_AGE or not data.strip():
+        return None
+    try:  # pojistka: nikdy nevydat JSON jiného videa, než o které mpv žádá
+        if json.loads(data).get("id") != video_id:
+            return None
+    except (ValueError, AttributeError):
         return None
     return data
 
@@ -110,22 +138,27 @@ def prefetch(video_id: str, url: str, real: str, timeout: float = 120.0) -> bool
             return True  # už je a ještě dlouho vydrží
     except OSError:
         pass
-    try:
-        proc = subprocess.run(
-            [real, *template, url],
-            capture_output=True,
-            timeout=timeout,
-            preexec_fn=lambda: os.nice(10),  # přehrávání má přednost
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    if proc.returncode != 0 or not proc.stdout.strip():
-        return False
+    marker = _pending(video_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_bytes(proc.stdout)
-    tmp.replace(path)
-    return True
+    marker.touch()
+    try:
+        try:
+            proc = subprocess.run(
+                [real, *template, url],
+                capture_output=True,
+                timeout=timeout,
+                preexec_fn=lambda: os.nice(10),  # přehrávání má přednost
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return False
+        tmp = path.with_suffix(".tmp")
+        tmp.write_bytes(proc.stdout)
+        tmp.replace(path)
+        return True
+    finally:
+        marker.unlink(missing_ok=True)
 
 
 def main(argv: list[str]) -> int:
@@ -136,7 +169,7 @@ def main(argv: list[str]) -> int:
             _save_template(argv)
         except OSError:
             pass
-        if vid and (data := _take(vid)) is not None:
+        if vid and ((data := _take(vid)) is not None or (data := _wait_for_prefetch(vid)) is not None):
             sys.stdout.buffer.write(data)
             sys.stdout.flush()
             return 0

@@ -195,6 +195,39 @@ class Skips(unittest.TestCase):
         self.assertIsNone(w.due(5))
 
 
+class SkipBurstInArtistMode(unittest.TestCase):
+    """Pi 25. 9. 22:13–22:14: deset přeskočení Kabátu za sebou nesmí režim
+    interpreta ukončit ani spustit automatický tah (C1–C5: jen to, dokud
+    posluchač neřekne jinak). Přeskakování = prohlížení interpreta."""
+
+    def _app(self, focus: str):
+        import asyncio
+        from types import SimpleNamespace
+        from ytdj.__main__ import App
+
+        app = App.__new__(App)  # bez přehrávače, katalogu a webu
+        app.dj = SimpleNamespace(
+            focus=focus, wish=SimpleNamespace(describe=lambda: "„pusť Kabát“"))
+        app.skips = SkipWatch(quiet_after_user=0)
+        app.reseeds = []
+
+        async def fake_reseed(instruction):
+            app.reseeds.append(instruction)
+
+        app._reseed = fake_reseed
+        app._now = lambda: 1000.0
+        for i in range(10):
+            app.skips.skipped(f"Kabát — {i}", 990.0 + i)
+        asyncio.run(app._check_skip_burst())
+        return app
+
+    def test_artist_mode_ignores_skip_burst(self):
+        self.assertEqual(self._app("Kabát").reseeds, [])
+
+    def test_without_artist_mode_burst_reseeds(self):
+        self.assertEqual(len(self._app("").reseeds), 1)
+
+
 def _d(**kw):
     base = {"action": "start_radio", "seeds": [], "requested": [], "focus_artists": [],
             "after_current": False, "avoid": [], "mood": "", "volume": 0,

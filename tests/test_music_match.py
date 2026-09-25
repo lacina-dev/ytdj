@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import types
 import unittest
@@ -30,10 +31,11 @@ from ytdj.music import match  # noqa: E402
 # Události z testů nesmí skončit v ~/.local/share/ytdj/events.jsonl.
 _EVENTS_DIR = tempfile.TemporaryDirectory()
 EVENTS = Path(_EVENTS_DIR.name) / "events.jsonl"
-telemetry._path = EVENTS
+os.environ["YTDJ_EVENTS_FILE"] = str(EVENTS)  # telemetry čte cíl při každém zápisu
 
 
 def events(kind: str) -> list[dict]:
+    telemetry.flush()  # zápis běží ve vlastním vlákně
     if not EVENTS.exists():
         return []
     rows = [json.loads(line) for line in EVENTS.read_text(encoding="utf-8").splitlines()]

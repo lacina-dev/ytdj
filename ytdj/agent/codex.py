@@ -25,6 +25,7 @@ import logging
 import os
 import shutil
 import signal
+import time
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +35,8 @@ from ..music.catalog import Catalog, Track
 from ..music.radio import RadioPools
 from ..player.base import Player
 from ..state import Store
+from .. import telemetry
+from .intent import Intent, ListenerIntent, Pair, build_intent, track_avoided
 from .prompts import ROLE, render_state
 
 log = logging.getLogger(__name__)
@@ -90,6 +93,23 @@ DECISION_SCHEMA = {
                 "additionalProperties": False,
             },
         },
+        # Režim interpreta: "hraj X" = jen X, dokud posluchač neřekne jinak.
+        "focus_artists": {"type": "array", "items": {"type": "string"}},
+        # true = až po hrající skladbě; jinak vyžádané začne hned
+        "after_current": {"type": "boolean"},
+        # co posluchač výslovně nechce ("Kabát, ale ne Pohodu")
+        "avoid": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "artist": {"type": "string"},
+                    "title": {"type": "string"},
+                },
+                "required": ["artist", "title"],
+                "additionalProperties": False,
+            },
+        },
         "mood": {"type": "string"},
         "volume": {"type": "integer"},
         "remember": {"type": "string"},
@@ -99,6 +119,9 @@ DECISION_SCHEMA = {
         "action",
         "seeds",
         "requested",
+        "focus_artists",
+        "after_current",
+        "avoid",
         "mood",
         "volume",
         "remember",
@@ -153,14 +176,30 @@ def _kill_tree(proc: asyncio.subprocess.Process) -> None:
 
 
 @dataclass
-class Decision:
-    action: str = "nothing"
-    seeds: list[dict] = field(default_factory=list)
-    requested: list[dict] = field(default_factory=list)
-    mood: str = ""
-    volume: int = 0
-    remember: str = ""
-    reply: str = ""
+class Plan:
+    """Vyložené přání převedené na konkrétní skladby — ještě nic nehraje.
+
+    requested  vyžádané skladby (hrají první, bez pravidla o neopakování)
+    artist_tracks  skladby vyžádaných interpretů, prostřídané (kind == "artist")
+    seeds      z čeho postavit rádio (nálada, skladba)
+    notes      pravdivé doplňky odpovědi ("Nenašel jsem: …")
+    failed     proč se nedá nic zahrát; pak se přehrávání nemění
+    """
+
+    intent: Intent
+    requested: list[Track] = field(default_factory=list)
+    artist_tracks: list[Track] = field(default_factory=list)
+    seeds: list[Track] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    failed: str = ""
+
+
+def parse_output(raw: str) -> dict:
+    """Výstup `codex exec -o` → slovník podle DECISION_SCHEMA."""
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError("rozhodnutí není objekt")
+    return data
 
 
 class CodexDJ:
@@ -192,6 +231,18 @@ class CodexDJ:
         self._schema.write_text(json.dumps(DECISION_SCHEMA))
         self._out = self._dir / "decision.json"
 
+        # Režim interpreta ("hraj X" = jen X, dokud neřekne jinak) drží pooly
+        # (RadioPools.set_artist); tady jen jména, jak je posluchač řekl.
+        self._focus_artists: list[str] = []
+        # Vyžádané skladby, které čekají ve frontě a ještě nezačaly. Automatický
+        # tah (přeseedování) je nesmí smést — 25. 9. tak zmizel vyžádaný Stypka.
+        self.pending: dict[str, Track] = {}
+        # co posluchač výslovně nechce — platí do dalšího jeho pokynu
+        self.avoid: list[Pair] = []
+        # Co posluchač naposledy výslovně chtěl — přežije i restart.
+        self._wish_file = DATA_DIR / "dj-intent.json"
+        self.wish = ListenerIntent.load(self._wish_file)
+
     # ---- calling Codex ----
 
     async def _build_prompt(self, user_input: str) -> str:
@@ -206,6 +257,8 @@ class CodexDJ:
             ],
             taste=self.store.taste(),
             requested=[r.label() for r in self.store.top_requested(10)],
+            intent=self.wish.describe(),
+            focus=self.focus,
         )
         return f"{ROLE}\n\n{state}\n\nUživatel říká: {user_input}"
 
@@ -231,7 +284,7 @@ class CodexDJ:
             args += ["-m", self.cfg.codex_model]
         return args
 
-    async def _run(self, args: list[str], prompt: str) -> Decision:
+    async def _run(self, args: list[str], prompt: str) -> dict:
         self._out.unlink(missing_ok=True)
         proc = await asyncio.create_subprocess_exec(
             *args,
@@ -276,16 +329,7 @@ class CodexDJ:
             # jen z eventů, návratový kód nestačí.
             raise RuntimeError(error or "Codex nevrátil žádné rozhodnutí")
 
-        data = json.loads(raw)
-        return Decision(
-            action=data.get("action", "nothing"),
-            seeds=data.get("seeds") or [],
-            requested=data.get("requested") or [],
-            mood=data.get("mood", ""),
-            volume=int(data.get("volume") or 0),
-            remember=data.get("remember", ""),
-            reply=data.get("reply", ""),
-        )
+        return parse_output(raw)
 
     async def _read_events(
         self, proc: asyncio.subprocess.Process
@@ -319,109 +363,366 @@ class CodexDJ:
                     _kill_tree(proc)
                     return raw, error, True
 
-    # ---- executing the decision ----
+    # ---- resolve: přání → konkrétní skladby (katalog, bez přehrávače) ----
 
-    async def _resolve_tracks(self, seeds: list[dict]) -> list[Track]:
-        """Codex names the tracks; we look up the videoId ourselves."""
+    async def _resolve_pairs(self, pairs: list[Pair]) -> tuple[list[Track], list[str]]:
+        """Codex names the tracks; we look up the videoId ourselves.
+
+        Vrací (nalezené, názvy nenalezených) — nenalezené se posluchači řeknou,
+        místo aby odpověď tvrdila, že hrají.
+        """
         out: list[Track] = []
-        for seed in seeds[:5]:
-            artist = (seed.get("artist") or "").strip()
-            title = (seed.get("title") or "").strip()
+        missing: list[str] = []
+        for artist, title in pairs[:5]:
             query = f"{artist} {title}".strip()
             if not query:
                 continue
             try:
                 hit = await self.catalog.search_song(artist, title)
             except Exception as exc:
-                log.warning("hledání seedu %r selhalo: %s", query, exc)
-                continue
-            if hit:
+                log.warning("hledání %r selhalo: %s", query, exc)
+                hit = None
+            if hit is None:
+                log.info("%r se nenašlo, přeskakuji", query)
+                missing.append(f"{artist} — {title}" if artist and title else query)
+            elif all(t.id != hit.id for t in out):
                 out.append(hit)
+        return out, missing
+
+    async def _artist_tracks(self, name: str) -> list[Track]:
+        """Skladby interpreta, nejznámější první (katalog hlídá, že jsou jeho)."""
+        try:
+            full = getattr(self.catalog, "artist_tracks", None)
+            if full is not None:
+                return await full(name, limit=100)
+            return await self.catalog.find_artist_tracks(name, limit=30)
+        except Exception as exc:
+            log.warning("skladby interpreta %r selhaly: %s", name, exc)
+            return []
+
+    async def resolve(self, intent: Intent) -> Plan:
+        """Dohledá v katalogu, co přání znamená. Přehrávače se nedotkne.
+
+        Plan.failed je vyplněné, když z přání nejde nic zahrát — tehdy se
+        přehrávání nemá měnit a posluchač má slyšet proč.
+        """
+        with telemetry.timer("dj.resolve", intent_kind=intent.kind) as ev:
+            plan = await self._resolve(intent)
+            ev.update(
+                asked_tracks=[f"{a} — {t}" for a, t in intent.tracks] or None,
+                resolved_tracks=[t.label() for t in plan.requested] or None,
+                asked_artists=intent.artists or None,
+                artist_tracks=len(plan.artist_tracks) if intent.kind == "artist" else None,
+                seeds_asked=len(intent.seeds),
+                seeds_resolved=len(plan.seeds),
+                notes=plan.notes or None,
+                failed=plan.failed or None,
+            )
+        return plan
+
+    async def _resolve(self, intent: Intent) -> Plan:
+        plan = Plan(intent=intent)
+        if not intent.changes_music:
+            return plan
+
+        plan.requested, missing = await self._resolve_pairs(intent.tracks)
+        if missing:
+            plan.notes.append("Nenašel jsem: " + "; ".join(missing) + ".")
+        if intent.kind == "songs":
+            if not plan.requested:
+                plan.failed = "Nenašel jsem, o co sis řekl" + (
+                    f" ({'; '.join(missing)})." if missing else "."
+                )
+            return plan
+
+        if intent.kind == "artist":
+            per_artist = [await self._artist_tracks(a) for a in intent.artists]
+            unknown = [a for a, ts in zip(intent.artists, per_artist) if not ts]
+            if unknown:
+                plan.notes.append("Od " + ", ".join(unknown) + " jsem v katalogu nic nenašel.")
+            plan.artist_tracks = interleave(per_artist)
+            if not plan.artist_tracks:
+                plan.failed = " ".join(plan.notes)
+            return plan
+
+        seeds, _ = await self._resolve_pairs(intent.seeds)
+        if intent.more_like_current:
+            # "víc takového" = od toho, co hraje teď, ne od čehokoli
+            cur = (await self.player.status()).current
+            if cur and all(t.id != cur.id for t in seeds):
+                seeds = [cur] + seeds[:4]
+        plan.seeds = seeds or list(plan.requested[:3])
+        if not plan.seeds:
+            if intent.tracks:
+                plan.failed = " ".join(plan.notes) or (
+                    "Nic z toho, o co sis řekl, jsem v katalogu nenašel."
+                )
             else:
-                log.info("seed %r se nenašel, přeskakuji", query)
+                plan.failed = "Ani jednu z navržených skladeb se nepodařilo najít."
+        return plan
+
+    # ---- fronta ----
+
+    @property
+    def focus(self) -> str:
+        """Interpreti, jejichž režim právě běží ("" = žádný)."""
+        if not getattr(self.pools, "artist", ""):
+            return ""
+        return ", ".join(self._focus_artists) or self.pools.artist
+
+    def _allowed(self, tracks: list[Track]) -> list[Track]:
+        if not self.avoid:
+            return tracks
+        out = [t for t in tracks if not track_avoided(t.artist, t.title, self.avoid)]
+        for t in tracks:
+            if t not in out:
+                log.info("vynechávám (posluchač nechce): %s", t.label())
         return out
 
-    async def _requested_tracks(self, d: Decision) -> list[Track]:
-        """Co si posluchač vyžádal jménem — dohledat a zapsat do evidence.
+    async def next_tracks(self, count: int) -> list[Track]:
+        """Další skladby do fronty (z poolů) — bez toho, co posluchač nechce."""
+        out: list[Track] = []
+        for _ in range(4):  # vyřazené nahradit, ale nezacyklit se
+            batch = self._allowed(await self.pools.next_tracks(count - len(out)))
+            out += batch
+            if len(out) >= count or not self.avoid:
+                break
+        return out
+
+    def note_started(self, video_id: str) -> None:
+        """Přehrávač začal skladbu — vyžádaná už nečeká."""
+        self.pending.pop(video_id, None)
+
+    # ---- play: plán → přehrávač ----
+
+    def _record_requests(self, tracks: list[Track]) -> None:
+        """Co si posluchač vyžádal jménem — do evidence.
 
         Zapisuje se i to, co se pak nezahraje: chtěl to slyšet tak jako tak a
         z těch počtů se staví, co si lidi žádají nejčastěji.
         """
-        tracks = await self._resolve_tracks(d.requested)
         for t in tracks:
             self.store.record_request(t.id, t.title, t.artist)
             # ať to pooly nenabídnou znovu za dvě skladby
             self.pools.session_seen.add(t.id)
+            self.pending[t.id] = t
         self.pools.remember_tracks(tracks)
-        return tracks
 
-    async def _apply(self, d: Decision, interrupt: bool = True) -> str:
-        if d.remember.strip():
-            self.store.remember(d.remember)
+    async def play(self, plan: Plan, interrupt: bool = True) -> str:
+        """Provede plán na přehrávači a vrátí pravdivou odpověď."""
+        intent = plan.intent
+        auto = intent.auto
+        if intent.remember.strip() and not auto:
+            # Automatický tah (série přeskočení) nesmí psát do vkusu: 25. 9. tak
+            # vzniklo šest řádků "uživateli nesedí…", které nikdo neřekl.
+            self.store.remember(intent.remember)
+        if plan.failed:
+            telemetry.event("dj.apply", intent_kind=intent.kind, applied=False, failed=plan.failed[:200])
+            return plan.failed
+        if auto and self.focus and intent.changes_music:
+            # Režim interpreta mění jen posluchač. (Automatické tahy se v něm
+            # ani nespouštějí — tohle je pojistka.)
+            log.info("automatický tah v režimu interpreta %s ignoruji", self.focus)
+            telemetry.event("dj.apply", intent_kind=intent.kind, applied=False, reason="artist_mode")
+            return ""
 
-        if d.action == "start_radio":
-            seeds = await self._resolve_tracks(d.seeds)
-            if not seeds:
-                return "Ani jednu z navržených skladeb se nepodařilo najít."
-            requested = await self._requested_tracks(d)
-            was_playing = (await self.player.status()).current is not None
-            # Když si posluchač řekl o konkrétního interpreta, smí rádio sáhnout
-            # i po delších kusech — u některých interpretů nic kratšího není.
-            await self.pools.set_seeds(
-                seeds, mood=d.mood, allow_long=bool(d.requested)
-            )
-            await self.player.clear_queue()
-            # vyžádané jdou první a bez ohledu na to, kdy hrály naposledy —
-            # do next_tracks, kde by je smetl filtr opakování, se vůbec nedostanou
-            await self.player.enqueue(requested)
-            fresh = await self.pools.next_tracks(self.cfg.queue_target)
-            await self.player.enqueue(fresh)
+        notes = list(plan.notes)
+        if intent.kind in ("artist", "song", "mood"):
+            await self._play_radio(plan, interrupt)
+            if intent.kind == "artist":
+                notes.append(f"Hraju {self.focus} — jen to, dokud neřekneš jinak.")
+        elif intent.kind == "songs":
+            self._record_requests(plan.requested)
+            st = await self.player.status()
+            await self.player.enqueue_next(plan.requested)
             await self.player.toggle_pause(False)
-            # clear_queue lets the currently playing track finish. But when the
-            # user changes the mood, they want to hear different music right
-            # away, not in three minutes. Když náladu mění DJ sám (po sérii
-            # přeskočení), hrající skladbu neutínáme — nová přijde po ní.
-            if was_playing and interrupt:
+            # "pusť X" znamená teď, ne za čtyři minuty — 25. 9. vyžádaný Stypka
+            # čekal za sedmiminutovou skladbou a nezahrál se vůbec
+            now = interrupt and not intent.play_next
+            skipped = st.current is not None and now
+            if skipped:
                 await self.player.skip(by_user=False)
-        elif d.action == "play_next":
-            requested = await self._requested_tracks(d)
-            if not requested:
-                return "Nenašel jsem, o co jsi si řekl."
-            await self.player.enqueue_next(requested)
-            await self.player.toggle_pause(False)
-        elif d.action == "skip":
-            await self.player.skip()
-        elif d.action == "stop":
-            await self.player.clear_queue()
-            await self.player.toggle_pause(True)
-        elif d.action == "pause":
-            await self.player.toggle_pause(True)
-        elif d.action == "resume":
-            await self.player.toggle_pause(False)
-        elif d.action == "volume" and d.volume:
-            await self.player.set_volume(d.volume)
+            log.info("tah: skladby %s (hned=%s)", [t.label() for t in plan.requested], now)
+            telemetry.event(
+                "dj.apply", intent_kind="songs", play_next=[t.label() for t in plan.requested],
+                cut_current=skipped,
+            )
+        elif intent.kind == "control":
+            if intent.control == "skip":
+                await self.player.skip()
+            elif intent.control == "stop":
+                self.pending.clear()
+                await self.player.clear_queue()
+                await self.player.toggle_pause(True)
+            elif intent.control == "pause":
+                await self.player.toggle_pause(True)
+            elif intent.control == "resume":
+                await self.player.toggle_pause(False)
+            elif intent.control == "volume" and intent.volume:
+                await self.player.set_volume(intent.volume)
+            telemetry.event("dj.apply", intent_kind="control", action=intent.control,
+                            volume=intent.volume or None)
 
-        return d.reply or "Hotovo."
+        return " ".join([intent.reply.strip(), *notes]).strip() or "Hotovo."
+
+    async def _play_radio(self, plan: Plan, interrupt: bool) -> None:
+        intent = plan.intent
+        auto = intent.auto
+        self._record_requests(plan.requested)
+
+        # Vyžádané, které ještě čekají ve frontě: automatický tah je nechá,
+        # nový pokyn posluchače je nahrazuje.
+        st = await self.player.status()
+        keep: list[Track] = []
+        if auto:
+            keep = [t for t in st.queue if t.id in self.pending]
+        else:
+            self.pending = {t.id: t for t in plan.requested}
+
+        if intent.kind == "artist":
+            label = ", ".join(intent.artists)
+            await self.pools.set_artist(label, plan.artist_tracks, mood=intent.mood or label)
+        else:
+            await self.pools.set_seeds(
+                plan.seeds, mood=intent.mood, allow_long=bool(plan.requested)
+            )
+        if not auto:
+            # nový pokyn posluchače: režim interpreta a výjimky jen podle něj
+            self._focus_artists = list(intent.artists) if intent.kind == "artist" else []
+            self.avoid = list(intent.exclude)
+        await self.player.clear_queue()
+        # vyžádané jdou první a bez ohledu na to, kdy hrály naposledy —
+        # do next_tracks, kde by je smetl filtr opakování, se vůbec nedostanou
+        first = keep + [t for t in plan.requested if t not in keep]
+        await self.player.enqueue(first)
+        fresh = await self.next_tracks(max(1, self.cfg.queue_target - len(first)))
+        await self.player.enqueue(fresh)
+        await self.player.toggle_pause(False)
+        # clear_queue lets the currently playing track finish. But when the
+        # user changes the mood, they want to hear different music right
+        # away, not in three minutes. Když náladu mění DJ sám (po sérii
+        # přeskočení), hrající skladbu neutínáme — nová přijde po ní.
+        cut = st.current is not None and interrupt
+        if cut:
+            await self.player.skip(by_user=False)
+        upcoming = [t.label() for t in (first + fresh)[:5]]
+        log.info(
+            "tah (%s, %s): %s | interpret=%s | vyžádané=%s | dál=%s",
+            "auto" if auto else "posluchač", intent.kind, intent.mood,
+            self.focus or "-", [t.label() for t in plan.requested], upcoming,
+        )
+        telemetry.event(
+            "dj.apply", intent_kind=intent.kind, auto=auto, artist_mode=self.focus or None,
+            kept_requests=[t.label() for t in keep] or None,
+            requested=[t.label() for t in plan.requested] or None,
+            queued=upcoming, cut_current=cut,
+            artist_pool=len(plan.artist_tracks) if intent.kind == "artist" else None,
+        )
+
+    def _remember_wish(self, intent: Intent) -> None:
+        """Poslední výslovné přání — jen tahy posluchače, které mění, co hraje."""
+        if intent.auto or not intent.changes_music:
+            return
+        self.wish = self.wish.then(
+            intent.text, time.time(), list(self._focus_artists) if self.focus else [],
+            intent.mood,
+        )
+        self.wish.save(self._wish_file)
 
     # ---- public API ----
 
-    async def turn(self, user_input: str, interrupt: bool = True) -> str:
-        prompt = await self._build_prompt(user_input)
+    async def interpret(self, user_input: str, auto: bool = False) -> Intent:
+        """Zeptá se modelu a vyloží odpověď. Nic nepřehrává.
 
+        Vyhazuje CodexUnavailable / RuntimeError, když model neodpoví.
+        """
+        prompt = await self._build_prompt(user_input)
+        last_exc: Exception | None = None
         for resume in (True, False):
             if resume and not self.thread_id:
                 continue
             try:
-                decision = await self._run(self._args(resume), prompt)
+                with telemetry.timer("dj.turn", resume=resume, auto=auto) as ev:
+                    data = await self._run(self._args(resume), prompt)
+                    ev["ok"] = True
             except CodexUnavailable:
                 raise
             except Exception as exc:
                 log.warning("codex exec selhal (resume=%s): %s", resume, exc)
+                last_exc = exc
                 if resume:
                     self.thread_id = None  # session was lost, retry from scratch
-                    continue
-                return f"(Codex selhal: {exc}) — hudba hraje dál"
-            log.info("rozhodnutí: %s, seedů=%d", decision.action, len(decision.seeds))
-            return await self._apply(decision, interrupt)
+                continue
+            telemetry.event(
+                "dj.decision",
+                action=data.get("action"),
+                seeds=_labels(data.get("seeds")),
+                requested=_labels(data.get("requested")),
+                focus_artists=data.get("focus_artists") or None,
+                avoid=_labels(data.get("avoid")),
+                after_current=bool(data.get("after_current")),
+                mood=str(data.get("mood") or "")[:120],
+                remember=str(data.get("remember") or "")[:200] or None,
+            )
+            intent = build_intent(user_input, data, auto=auto)
+            if intent.note:
+                log.info("oprava rozhodnutí: %s", intent.note)
+            log.info(
+                "přání (%s): %s | interpreti=%s | skladby=%s | bez=%s | %s",
+                "auto" if auto else "posluchač", intent.kind, intent.artists or "-",
+                intent.tracks or "-", intent.exclude or "-", intent.mood,
+            )
+            telemetry.event(
+                "dj.intent", intent_kind=intent.kind, auto=auto,
+                artists=intent.artists or None,
+                tracks=[f"{a} — {t}" for a, t in intent.tracks] or None,
+                seeds=[f"{a} — {t}" for a, t in intent.seeds] or None,
+                exclude=[f"{a} — {t}" for a, t in intent.exclude] or None,
+                play_next=intent.play_next, more_like_current=intent.more_like_current,
+                control=intent.control or None, mood=intent.mood[:120],
+                repaired=intent.note or None,
+            )
+            return intent
+        raise RuntimeError(str(last_exc) if last_exc else "Codex neodpověděl")
 
-        return "(Codex neodpověděl) — hudba hraje dál"
+    async def turn(
+        self, user_input: str, interrupt: bool = True, auto: bool = False
+    ) -> str:
+        """Jeden tah: vyložit → dohledat → zahrát. `auto` = zadání od aplikace."""
+        try:
+            intent = await self.interpret(user_input, auto=auto)
+        except CodexUnavailable:
+            raise
+        except Exception as exc:
+            return f"(Codex selhal: {exc}) — hudba hraje dál"
+        plan = await self.resolve(intent)
+        reply = await self.play(plan, interrupt)
+        if not plan.failed:
+            self._remember_wish(intent)
+        return reply
+
+
+def _labels(items) -> list[str] | None:
+    out = []
+    for it in items or []:
+        if isinstance(it, dict):
+            a = str(it.get("artist") or "").strip()
+            t = str(it.get("title") or "").strip()
+            out.append(f"{a} — {t}" if a and t else a or t)
+    return [x for x in out if x] or None
+
+
+def interleave(lists: list[list[Track]]) -> list[Track]:
+    """Skladby více interpretů střídavě (Kabát, Škwor, Kabát, …), bez duplicit."""
+    out: list[Track] = []
+    seen: set[str] = set()
+    queues = [list(x) for x in lists]
+    while any(queues):
+        for q in queues:
+            while q:
+                t = q.pop(0)
+                if t.id not in seen:
+                    seen.add(t.id)
+                    out.append(t)
+                    break
+    return out

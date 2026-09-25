@@ -99,12 +99,16 @@ class App:
     def codex_busy(self) -> bool:
         return self._codex_lock.locked()
 
-    async def ask(self, text: str) -> str:
-        """The single entry point to Codex. Used by both the REPL and the web."""
+    async def ask(self, text: str, interrupt: bool = True) -> str:
+        """The single entry point to Codex. Used by both the REPL and the web.
+
+        `interrupt=False` pro zásahy, o které posluchač nežádal: nová nálada
+        pak začne až po dohrání současné skladby.
+        """
         if reply := await self._try_link(text):
             return reply
         async with self._codex_lock:
-            return await self.dj.turn(text)
+            return await self.dj.turn(text, interrupt=interrupt)
 
     async def _try_link(self, text: str) -> str | None:
         """Odkaz na YouTube obslouží rovnou, bez modelu.
@@ -259,7 +263,7 @@ class App:
         self._reseeding = True
         self._last_reseed = now
         try:
-            reply = await self.ask(instruction)
+            reply = await self.ask(instruction, interrupt=False)
             if reply:
                 print(f"\n{reply}")
         except Exception:

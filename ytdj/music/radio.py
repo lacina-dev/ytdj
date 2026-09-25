@@ -9,6 +9,7 @@ LLM is no longer involved.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections import deque
@@ -88,8 +89,10 @@ class RadioPools:
         self._artist_all = []
         summary = []
         self.remember_tracks(seeds)
-        for seed in seeds:
-            tracks = await self._fetch_radio(seed.id)
+        # rádia všech seedů naráz (dřív po sobě: 5 seedů = 4 s, než přání
+        # nálady vůbec vědělo, co zahraje první)
+        radios = await asyncio.gather(*(self._fetch_radio(seed.id) for seed in seeds))
+        for seed, tracks in zip(seeds, radios):
             self.remember_tracks(tracks)
             pool = Pool(seed=seed, tracks=deque(tracks), last_good=seed.id)
             self.pools.append(pool)

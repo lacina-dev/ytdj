@@ -42,7 +42,7 @@ PANEL_WHO = "displej"  # the name on wishes typed here, unless somebody picks th
 
 STATE_PHASE = {
     "waiting": "busy", "thinking": "busy", "queued": "queued", "playing": "playing",
-    "done": "ok", "notfound": "notfound", "error": "error", "removed": "error",
+    "done": "ok", "notfound": "notfound", "error": "error", "removed": "error", "replaced": "ok",
 }
 
 

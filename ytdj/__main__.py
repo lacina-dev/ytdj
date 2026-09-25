@@ -79,7 +79,9 @@ class App:
         self.catalog = Catalog(cfg)
         self.player = MpvPlayer(cfg)
         # když Codex přemýšlí, resolver nic nechystá dopředu — oba naráz se do RAM nevejdou
-        self.player.busy_check = lambda: self.codex_busy
+        # …a ani když DJ rozhoduje o přání: resolver pak bude hned volný pro
+        # jeho první skladbu (yt-dlp běží po jednom a nedá se přerušit)
+        self.player.busy_check = lambda: self.codex_busy or self.wishes.busy
         self.pools = RadioPools(self.catalog, self.store, cfg)
         self.dj = CodexDJ(cfg, self.catalog, self.pools, self.player, self.store)
         # The REPL is built only in run(); prompt_toolkit touches stdin during

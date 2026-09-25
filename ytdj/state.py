@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS plays (
     outcome  TEXT NOT NULL DEFAULT 'started'   -- started|finished|skipped|replaced|error
 );
 CREATE INDEX IF NOT EXISTS plays_video_ts ON plays(video_id, ts);
+-- time-range statistics (context for starting without a request)
+CREATE INDEX IF NOT EXISTS plays_ts ON plays(ts);
 
 CREATE TABLE IF NOT EXISTS feedback (
     video_id TEXT NOT NULL,
@@ -56,6 +58,18 @@ class PlayRecord:
     title: str
     artist: str
     outcome: str
+
+
+@dataclass(slots=True)
+class TimedPlay:
+    """One row of `plays` with its time — for statistics by time of day."""
+
+    ts: float
+    video_id: str
+    title: str
+    artist: str
+    outcome: str
+    mood: str  # plays.seed_id: the app stores the pools' mood there
 
 
 @dataclass(slots=True)
@@ -161,6 +175,62 @@ class Store:
             (*params, limit),
         ).fetchall()
         return [RequestCount(*r) for r in rows]
+
+    def plays_in(
+        self, ranges: list[tuple[float, float]], outcomes: tuple[str, ...] = ("finished", "skipped")
+    ) -> list[TimedPlay]:
+        """Plays inside any of the [start, end) time ranges, oldest first. Read-only.
+
+        Meant for "the same time of day on previous days" — a few dozen ranges.
+        """
+        if not ranges or not outcomes:
+            return []
+        where = " OR ".join("(ts >= ? AND ts < ?)" for _ in ranges)
+        marks = ",".join("?" for _ in outcomes)
+        rows = self.db.execute(
+            f"""SELECT ts, video_id, COALESCE(title,''), COALESCE(artist,''),
+                       outcome, COALESCE(seed_id,'')
+                  FROM plays WHERE outcome IN ({marks}) AND ({where}) ORDER BY ts""",
+            (*outcomes, *(t for r in ranges for t in r)),
+        ).fetchall()
+        return [TimedPlay(*r) for r in rows]
+
+    def requests_in(self, ranges: list[tuple[float, float]]) -> list[tuple[float, str, str]]:
+        """(ts, artist, title) of tracks asked for by name inside the ranges."""
+        if not ranges:
+            return []
+        where = " OR ".join("(ts >= ? AND ts < ?)" for _ in ranges)
+        return self.db.execute(
+            f"""SELECT ts, COALESCE(artist,''), COALESCE(title,'')
+                  FROM requests WHERE {where} ORDER BY ts""",
+            tuple(t for r in ranges for t in r),
+        ).fetchall()
+
+    def artist_counts(self, since: float, until: float | None = None) -> list[tuple[str, int]]:
+        """(artist, plays) in [since, until), errors not counted. Read-only."""
+        until = time.time() if until is None else until
+        return self.db.execute(
+            """SELECT COALESCE(artist,''), COUNT(*) FROM plays
+                WHERE ts >= ? AND ts < ? AND outcome != 'error'
+                GROUP BY artist""",
+            (since, until),
+        ).fetchall()
+
+    def ratings(self) -> dict[str, str]:
+        """Latest like/dislike per track (the feedback table is small)."""
+        rows = self.db.execute("SELECT video_id, rating FROM feedback ORDER BY ts").fetchall()
+        return {vid: rating for vid, rating in rows}
+
+    def last_mood(self, before: float | None = None) -> tuple[str, float] | None:
+        """The mood of the newest seeding before `before`, with its timestamp."""
+        before = time.time() if before is None else before
+        row = self.db.execute(
+            """SELECT mood, ts FROM seeds
+                WHERE ts < ? AND mood IS NOT NULL AND mood != ''
+                ORDER BY ts DESC LIMIT 1""",
+            (before,),
+        ).fetchone()
+        return (row[0], row[1]) if row else None
 
     def skip_burst(self, minutes: int = 10) -> int:
         """How many skips in the last N minutes — a signal the vibe is off."""

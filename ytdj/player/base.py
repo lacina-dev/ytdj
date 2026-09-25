@@ -7,9 +7,11 @@ layer — swapping mpv for pear-desktop / YTMDesktop means writing a different
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Awaitable, Callable
+from typing import AsyncContextManager, Awaitable, Callable
 
 from ..music.catalog import Track
 
@@ -41,7 +43,38 @@ class PlayerEvent:
 EventHandler = Callable[[PlayerEvent], Awaitable[None]]
 
 
+def queue_transaction(player: object) -> AsyncContextManager:
+    """`async with queue_transaction(player):` — sled změn fronty naráz.
+
+    Tah DJe (vyčistit frontu, zařadit vyžádané, dosypat, přeskočit) se nesmí
+    prolnout s plničem fronty, jinak se jeho skladby ocitnou mezi vyžádanými
+    nebo před nimi. Přehrávač bez transakcí (testovací atrapy) → nic.
+    """
+    fn = getattr(player, "transaction", None)
+    return fn() if callable(fn) else contextlib.nullcontext()
+
+
 class Player(ABC):
+    _txn_lock: asyncio.Lock | None = None
+    # Kolik skladeb chce přehrávač mít ve frontě, aby je stihl připravit
+    # dopředu (plnič fronty drží aspoň tolik + 1).
+    prefetch_depth: int = 0
+    # Zvýší se při každém vyčištění fronty — plnič podle toho pozná, že
+    # skladby, které si mezitím vybral, patří ke staré náladě.
+    generation: int = 0
+
+    async def wait_ready(self, video_id: str, timeout: float) -> bool:
+        """Připravit skladbu přednostně a počkat, až půjde pustit bez čekání.
+
+        False = přehrávač to neumí / nestihlo se (volající pak utne hned).
+        """
+        return False
+
+    def transaction(self) -> asyncio.Lock:
+        """Zámek pro sled několika změn fronty (viz queue_transaction)."""
+        if self._txn_lock is None:
+            self._txn_lock = asyncio.Lock()
+        return self._txn_lock
     @abstractmethod
     async def start(self) -> None: ...
 

@@ -13,8 +13,18 @@ do swapu a v repráku to lupalo.
 
 Protokol (unixový socket, jeden JSON řádek dotaz → jeden řádek odpověď):
   {"op": "get", "argv": [...]}   JSON pro mpv (jako `yt-dlp -J`), čeká na výsledek
-  {"op": "ahead", "ids": [...]}  co vyřešit dopředu, v tomhle pořadí; nahrazuje
-                                 předchozí seznam (zastaralé se zahodí)
+  {"op": "ahead", "ids": [...], "hold": false}
+                                 co vyřešit dopředu, v tomhle pořadí; nahrazuje
+                                 předchozí seznam (zastaralé se zahodí). S hold
+                                 se hotové drží, ale nic nového dopředu nezačne
+                                 (běží Codex, paměť) — urgentní dotazy mpv ano.
+                                 "first": [...] se řeší před vším v ahead, i s hold;
+                                 "keep": [...] se nechá v cache, ale neřeší se
+                                 (hrající / právě načítaná skladba)
+  {"op": "cancel", "ids": [...]} mpv tyhle opustilo při načítání (posluchač
+                                 dal Další): jejich čekající "get" hned vrátí
+                                 chybu "zrušeno", ať se mpv pohne dál, a
+                                 z urgentních vypadnou
   {"op": "ping"}
 
 Stav a měření posílá na stderr strojově čitelnými řádky `EVENT {json}`, které
@@ -72,7 +82,11 @@ class Resolver:
         self.failed: dict[str, tuple[float, str]] = {}
         self.urgent: list[str] = []  # na tyhle čeká mpv
         self.ahead: list[str] = []
+        self.hold = False  # nic nového dopředu (běží Codex)
+        self.first: list[str] = []  # přednostně, i během hold (ytdj čeká na přepnutí)
         self.busy: str | None = None
+        self.waiting: dict[str, int] = {}  # vid → kolik "get" na něj čeká
+        self.cancelled: set[str] = set()
 
     def _state(self) -> None:
         """Co je nachystané a na čem se dělá — volá se se zamčeným cv."""
@@ -89,8 +103,8 @@ class Resolver:
                     self.cv.wait()
                     vid = self._next()
                 self.busy = vid
-                why = "urgent" if vid in self.urgent else "ahead"
-                ydl = self.ydl
+                why = "urgent" if vid in self.urgent else ("first" if vid in self.first else "ahead")
+                ydl, tmpl = self.ydl, self.template
                 self._state()
             t0 = time.monotonic()
             try:
@@ -104,7 +118,13 @@ class Resolver:
                 self.busy = None
                 if vid in self.urgent:
                     self.urgent.remove(vid)
-                if result is not None:
+                if self.template is not tmpl:
+                    # mezitím přišel dotaz s jinými volbami (jiný formát) —
+                    # výsledek k nim nepatří; kdo na něj čeká, dostane nový
+                    log(f"{vid}: šablona se změnila, výsledek zahazuji")
+                    if vid in self.waiting and vid not in self.cancelled:
+                        self.urgent.insert(0, vid)
+                elif result is not None:
                     self.ready[vid] = (time.time(), result)
                     log(f"vyřešeno {vid} za {took:.1f} s")
                 else:
@@ -121,7 +141,7 @@ class Resolver:
         now = time.time()
         for vid in self.urgent:
             return vid
-        for vid in self.ahead:
+        for vid in self.first + ([] if self.hold else self.ahead):
             fresh = vid in self.ready and now - self.ready[vid][0] < MAX_AGE / 2
             if not fresh and vid not in self.failed:
                 return vid
@@ -138,10 +158,17 @@ class Resolver:
         opts["quiet"] = True
         opts["no_warnings"] = True
         t0 = time.monotonic()
+        changed = self.template is not None
         self.ydl = yt_dlp.YoutubeDL(opts)
         self.template = template
+        if changed:
+            # Hotové JSONy jsou s jinými volbami (formát!) — mpv by dostalo
+            # třeba video HLS místo zvuku. Stává se jen, když se resolveru
+            # zeptá někdo jiný než mpv (ruční ladění shimem).
+            self.ready.clear()
+            self.failed.clear()
         log("šablona od mpv převzata")
-        emit("resolver.template", took_ms=int((time.monotonic() - t0) * 1000))
+        emit("resolver.template", took_ms=int((time.monotonic() - t0) * 1000), changed=changed)
 
     def get(self, argv: list[str], timeout: float = 150.0) -> tuple[str | None, str | None]:
         m = VIDEO_ID.search(argv[-1]) if argv else None
@@ -150,7 +177,14 @@ class Resolver:
         vid = m.group(1)
         t0 = time.monotonic()
         with self.cv:
-            data, error, how, blocked_by = self._get(vid, argv, timeout)
+            self.waiting[vid] = self.waiting.get(vid, 0) + 1
+            try:
+                data, error, how, blocked_by = self._get(vid, argv, timeout)
+            finally:
+                self.waiting[vid] -= 1
+                if self.waiting[vid] <= 0:
+                    del self.waiting[vid]
+                    self.cancelled.discard(vid)
             # "hit" = mpv dostalo hotové, "wait" = řešilo se, zatímco mpv čekalo
             emit("resolver.get", video_id=vid, hit=how == "hit", how=how,
                  wait_ms=int((time.monotonic() - t0) * 1000), ok=data is not None,
@@ -161,10 +195,16 @@ class Resolver:
     def _get(self, vid: str, argv: list[str], timeout: float):
         self.set_template(argv)
         self.failed.pop(vid, None)  # mpv to chce teď — zkusit znovu
-        hit = self.ready.pop(vid, None)
+        self.cancelled.discard(vid)
+        # Hotové zůstává v cache, dokud je ve frontě (zahodí ho až set_ahead):
+        # mpv si skladbu vyžádá i při --prefetch-playlist a potom znovu, když
+        # se fronta mezitím změnila a na skladbu dojde později.
+        hit = self.ready.get(vid)
         if hit and time.time() - hit[0] < MAX_AGE:
             log(f"z cache {vid}")
             return hit[1], None, "hit", None
+        if hit:
+            del self.ready[vid]
         how = "stale" if hit else ("joined" if self.busy == vid else "miss")
         # na co mpv čeká, protože jediné vlákno dělá jinou skladbu dopředu
         blocked_by = self.busy if self.busy and self.busy != vid else None
@@ -174,7 +214,9 @@ class Resolver:
         deadline = time.monotonic() + timeout
         while True:
             if vid in self.ready:
-                return self.ready.pop(vid)[1], None, how, blocked_by
+                return self.ready[vid][1], None, how, blocked_by
+            if vid in self.cancelled:
+                return None, "zrušeno", "cancelled", blocked_by
             if vid in self.failed and vid not in self.urgent and self.busy != vid:
                 return None, self.failed.pop(vid)[1], how, blocked_by
             left = deadline - time.monotonic()
@@ -182,17 +224,33 @@ class Resolver:
                 return None, "vypršel čas", how, blocked_by
             self.cv.wait(left)
 
-    def set_ahead(self, ids: list[str]) -> None:
+    def cancel(self, ids: list[str]) -> None:
+        with self.cv:
+            for vid in ids:
+                if vid not in self.waiting:
+                    continue  # mpv na ni nečeká — není co rušit
+                self.cancelled.add(vid)
+                if vid in self.urgent:
+                    self.urgent.remove(vid)
+                emit("resolver.cancel", video_id=vid, busy=self.busy == vid)
+            self._state()
+            self.cv.notify_all()
+
+    def set_ahead(self, ids: list[str], hold: bool = False, first: list[str] | None = None,
+                  keep: list[str] | None = None) -> None:
         with self.cv:
             self.ahead = [i for i in ids if isinstance(i, str) and len(i) == 11]
+            self.first = [i for i in first or () if isinstance(i, str) and len(i) == 11]
+            self.hold = bool(hold)
             # co už nikdo nechce, v paměti nedržet
-            keep = set(self.ahead) | set(self.urgent)
+            keep = (set(self.ahead) | set(self.first) | set(self.urgent) | set(self.waiting)
+                    | set(keep or ()))
             dropped = 0
             for d in (self.ready, self.failed):
                 for vid in [v for v in d if v not in keep]:
                     del d[vid]
                     dropped += 1
-            emit("resolver.ahead", n=len(self.ahead),
+            emit("resolver.ahead", n=len(self.ahead), hold=self.hold,
                  ready=sum(1 for v in self.ahead if v in self.ready), dropped=dropped)
             self._state()
             self.cv.notify_all()
@@ -223,7 +281,12 @@ def serve(path: str) -> None:
                         data, err = resolver.get(list(req.get("argv") or []))
                         resp = {"ok": data is not None, "json": data, "error": err}
                     elif op == "ahead":
-                        resolver.set_ahead(list(req.get("ids") or []))
+                        resolver.set_ahead(list(req.get("ids") or []), bool(req.get("hold")),
+                                           list(req.get("first") or []),
+                                           list(req.get("keep") or []))
+                        resp = {"ok": True}
+                    elif op == "cancel":
+                        resolver.cancel(list(req.get("ids") or []))
                         resp = {"ok": True}
                     elif op == "ping":
                         resp = {"ok": True, "template": resolver.template is not None}

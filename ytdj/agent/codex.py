@@ -33,9 +33,10 @@ from pathlib import Path
 from ..config import DATA_DIR, Config
 from ..music.catalog import Catalog, Track
 from ..music.radio import RadioPools
-from ..player.base import Player
+from ..player.base import Player, queue_transaction
 from ..state import Store
 from .. import telemetry
+from .fastpath import FastResult, find_artists
 from .intent import Intent, ListenerIntent, Pair, build_intent, track_avoided
 from .prompts import ROLE, render_state
 
@@ -129,6 +130,10 @@ DECISION_SCHEMA = {
     ],
     "additionalProperties": False,
 }
+
+
+# Jak dlouho nechat hrát starou skladbu, než se nová vyřeší (pak se utne tak jako tak).
+FIRST_TRACK_WAIT = 15.0  # s
 
 
 class CodexUnavailable(RuntimeError):
@@ -242,6 +247,8 @@ class CodexDJ:
         # Co posluchač naposledy výslovně chtěl — přežije i restart.
         self._wish_file = DATA_DIR / "dj-intent.json"
         self.wish = ListenerIntent.load(self._wish_file)
+        # čekání na připravenost první nové skladby, než se utne stará
+        self._switch_task: asyncio.Task | None = None
 
     # ---- calling Codex ----
 
@@ -541,7 +548,7 @@ class CodexDJ:
             now = interrupt and not intent.play_next
             skipped = st.current is not None and now
             if skipped:
-                await self.player.skip(by_user=False)
+                await self._switch_when_ready(plan.requested[0], st.current)
             log.info("tah: skladby %s (hned=%s)", [t.label() for t in plan.requested], now)
             telemetry.event(
                 "dj.apply", intent_kind="songs", play_next=[t.label() for t in plan.requested],
@@ -590,21 +597,23 @@ class CodexDJ:
             # nový pokyn posluchače: režim interpreta a výjimky jen podle něj
             self._focus_artists = list(intent.artists) if intent.kind == "artist" else []
             self.avoid = list(intent.exclude)
-        await self.player.clear_queue()
-        # vyžádané jdou první a bez ohledu na to, kdy hrály naposledy —
-        # do next_tracks, kde by je smetl filtr opakování, se vůbec nedostanou
-        first = keep + [t for t in plan.requested if t not in keep]
-        await self.player.enqueue(first)
-        fresh = await self.next_tracks(max(1, self.cfg.queue_target - len(first)))
-        await self.player.enqueue(fresh)
+        # vyčistit a naplnit naráz — plnič fronty se mezi to nevmísí
+        async with queue_transaction(self.player):
+            await self.player.clear_queue()
+            # vyžádané jdou první a bez ohledu na to, kdy hrály naposledy —
+            # do next_tracks, kde by je smetl filtr opakování, se vůbec nedostanou
+            first = keep + [t for t in plan.requested if t not in keep]
+            await self.player.enqueue(first)
+            fresh = await self.next_tracks(max(1, self.cfg.queue_target - len(first)))
+            await self.player.enqueue(fresh)
         await self.player.toggle_pause(False)
         # clear_queue lets the currently playing track finish. But when the
         # user changes the mood, they want to hear different music right
         # away, not in three minutes. Když náladu mění DJ sám (po sérii
         # přeskočení), hrající skladbu neutínáme — nová přijde po ní.
-        cut = st.current is not None and interrupt
+        cut = st.current is not None and interrupt and bool(first + fresh)
         if cut:
-            await self.player.skip(by_user=False)
+            await self._switch_when_ready((first + fresh)[0], st.current)
         upcoming = [t.label() for t in (first + fresh)[:5]]
         log.info(
             "tah (%s, %s): %s | interpret=%s | vyžádané=%s | dál=%s",
@@ -619,6 +628,41 @@ class CodexDJ:
             artist_pool=len(plan.artist_tracks) if intent.kind == "artist" else None,
         )
 
+    async def _switch_when_ready(self, first: Track, old: Track) -> None:
+        """Utnout hrající skladbu, až bude ta nová připravená k přehrání.
+
+        Utnout hned znamená 5–10 s ticha, než yt-dlp na Pi novou skladbu
+        vyřeší. Umí-li přehrávač počkat na připravenost (`wait_ready`), hraje
+        stará skladba dál a přepne se až pak — na pozadí, ať tah (a zámek
+        Codexu, který zdržuje předpřípravu) skončí hned. Neumí-li to, utne
+        se hned jako dřív.
+        """
+        wait = getattr(self.player, "wait_ready", None)
+        if wait is None:
+            await self.player.skip(by_user=False)
+            return
+        if self._switch_task and not self._switch_task.done():
+            self._switch_task.cancel()  # novější pokyn vyhrává
+
+        async def switch() -> None:
+            t0 = time.monotonic()
+            try:
+                ready = await wait(first.id, timeout=FIRST_TRACK_WAIT)
+            except Exception:
+                ready = False
+            st = await self.player.status()
+            # mezitím mohla stará dohrát nebo ji posluchač přeskočil sám
+            still = st.current is not None and st.current.id == old.id
+            ours = bool(st.queue) and st.queue[0].id == first.id
+            if still and ours:
+                await self.player.skip(by_user=False)
+            telemetry.event(
+                "dj.switch", first=first.label(), ready=bool(ready),
+                switched=still and ours, took_ms=int((time.monotonic() - t0) * 1000),
+            )
+
+        self._switch_task = asyncio.create_task(switch())
+
     def _remember_wish(self, intent: Intent) -> None:
         """Poslední výslovné přání — jen tahy posluchače, které mění, co hraje."""
         if intent.auto or not intent.changes_music:
@@ -630,6 +674,32 @@ class CodexDJ:
         self.wish.save(self._wish_file)
 
     # ---- public API ----
+
+    async def fast_turn(self, text: str) -> str | None:
+        """ "pusť Kabát" bez Codexu; None = nejisté, ať rozhodne model."""
+        t0 = time.monotonic()
+        try:
+            res = await find_artists(self.catalog, text)
+        except Exception as exc:  # katalog umí selhat na čemkoli
+            res = FastResult(reason=f"error:{type(exc).__name__}")
+        telemetry.event(
+            "dj.fast_path", text=text[:300], accepted=not res.reason,
+            artists=res.artists or None, reason=res.reason or None,
+            lookups=res.lookups, took_ms=int((time.monotonic() - t0) * 1000),
+        )
+        if res.reason:
+            log.info("rychlá cesta ne (%s): %s", res.reason, text)
+            return None
+        label = ", ".join(res.artists)
+        intent = Intent(kind="artist", text=text, artists=res.artists, mood=label,
+                        note="fast_path")
+        log.info("rychlá cesta: %s → %s", text, label)
+        telemetry.event("dj.intent", intent_kind="artist", auto=False,
+                        artists=res.artists, repaired="fast_path")
+        plan = Plan(intent=intent, artist_tracks=interleave(res.tracks))
+        reply = await self.play(plan, interrupt=True)
+        self._remember_wish(intent)
+        return reply
 
     async def interpret(self, user_input: str, auto: bool = False) -> Intent:
         """Zeptá se modelu a vyloží odpověď. Nic nepřehrává.

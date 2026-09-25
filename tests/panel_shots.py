@@ -16,6 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ytdj.panel.ui import Renderer, View  # noqa: E402
+from ytdj.panel.wishui import WishRenderer, WishView  # noqa: E402
 
 PLAYING = View(
     online=True,
@@ -30,7 +31,30 @@ PLAYING = View(
     volume=65,
     mood="klidný večer, český rock",
     can_next=True,
+    next_title="Jasná zpráva",
+    next_artist="Olympic",
 )
+
+WISH = WishView(page="home")
+WISH_STATES = {
+    "wish-home": WISH,
+    "wish-home-busy-other-draft": replace(WISH, busy_other=True, text="něco od Čechomoru", pressed="chip2"),
+    "wish-keys-empty": replace(WISH, page="keys"),
+    "wish-keys-typing": replace(WISH, page="keys", text="písničky od Čechomor", can_connect=True, pressed="c:r"),
+    "wish-keys-accents": replace(WISH, page="keys", text="Žlutý pes, pak Ch", kb_page="áč", can_connect=True),
+    "wish-keys-accents-shift": replace(WISH, page="keys", text="", kb_page="áč", shift=1, hint="napiš, co chceš slyšet"),
+    "wish-keys-123": replace(WISH, page="keys", text="hity z 90", kb_page="123", can_connect=True),
+    "wish-sent-busy": replace(WISH, page="sent", phase="busy", wish="písničky od Čechomoru", elapsed=12),
+    "wish-sent-wait": replace(WISH, page="sent", phase="wait", wish="jen česky", elapsed=5),
+    "wish-sent-ok": replace(
+        WISH, page="sent", phase="ok", wish="písničky od Čechomoru",
+        reply="Hraju Čechomor — jen to, dokud neřekneš jinak. Začínám „Proměnami“, pak Mezi horami a Vandrovali hudci.",
+    ),
+    "wish-sent-error": replace(
+        WISH, page="sent", phase="error", wish="něco klidnějšího",
+        error="ytdj teď neodpovídá (možná se restartuje).",
+    ),
+}
 
 STATES = {
     "playing": PLAYING,
@@ -47,6 +71,9 @@ STATES = {
     ),
     "volume-dragging": replace(PLAYING, volume=42, pressed="vol"),
     "idle-dj-thinking": replace(PLAYING, has_track=False, running=False, busy=True, mood=""),
+    "idle": replace(PLAYING, has_track=False, running=False, mood="", can_next=False),
+    "no-next-up": replace(PLAYING, next_title="", next_artist=""),
+    "pressed-wish": replace(PLAYING, pressed="wish"),
     "pressed-next": replace(PLAYING, pressed="next", note="povel selhal"),
     "pressed-play": replace(PLAYING, pressed="play"),
 }
@@ -59,6 +86,13 @@ def main() -> None:
         r = Renderer("cs")
         r.render(view, full=True)
         r.frame.save(out / f"{name}.png")
+        print(out / f"{name}.png")
+    share = None
+    for name, view in WISH_STATES.items():
+        wr = WishRenderer("cs", share=share)
+        share = share or wr
+        wr.render(view, full=True)
+        wr.frame.save(out / f"{name}.png")
         print(out / f"{name}.png")
 
     # timings: first frame, then a second of playback

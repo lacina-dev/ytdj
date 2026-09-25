@@ -50,7 +50,10 @@ STRINGS = {
         "busy": "DJ přemýšlí…",
         "silence": "Ticho",
         "nothing": "nic nehraje",
+        "idle_hint": "Ťukni na Hrát, nebo si řekni o Přání",
         "dj_picking": "DJ vybírá hudbu…",
+        "next_up": "Pak: ",
+        "wish": "Přání",
         "unknown": "Neznámá skladba",
         "offline_title": "ytdj neběží",
         "connecting_title": "Připojuji se k ytdj…",
@@ -71,7 +74,10 @@ STRINGS = {
         "busy": "DJ is thinking…",
         "silence": "Silence",
         "nothing": "nothing playing",
+        "idle_hint": "Tap Play, or make a Wish",
         "dj_picking": "the DJ is picking music…",
+        "next_up": "Then: ",
+        "wish": "Wish",
         "unknown": "Unknown track",
         "offline_title": "ytdj is not running",
         "connecting_title": "Connecting to ytdj…",
@@ -88,10 +94,14 @@ STRINGS = {
 # ---- layout (boxes are left, top, right, bottom — right/bottom exclusive) ----
 
 NET_W = 58
-STATUS = (0, 0, W - NET_W, 32)
+WISH_W = 112
+STATUS = (0, 0, W - NET_W - WISH_W, 32)
 NET_BTN = (W - NET_W, 0, W, 32)  # the network button's drawing, in the status strip
 # …and its touch target: taller than the strip it sits in, nothing else is there
 NET_TARGET = (W - NET_W - 6, 0, W, 44)
+# the wish button ("Přání" → the screen for typing a wish), left of the network one
+WISH_BTN = (W - NET_W - WISH_W, 0, W - NET_W, 32)
+WISH_TARGET = (W - NET_W - WISH_W, 0, W - NET_W - 6, 44)
 TRACK = (0, 34, W, 126)
 ELAPSED = (6, 128, 82, 160)
 BAR = (82, 128, 398, 160)
@@ -115,6 +125,7 @@ TARGETS: dict[str, Box] = {
     "vol": VOL,
     "vol_up": VOL_UP,
     "net": NET_TARGET,
+    "wish": WISH_TARGET,
 }
 
 
@@ -150,6 +161,8 @@ class View:
     can_next: bool = False
     closed: bool = False
     net: tuple = ("?",)  # ("wifi", signal) | ("eth",) | ("off",) | ("?",) — the network button
+    next_title: str = ""  # the first track in the queue, shown under the artist when there's room
+    next_artist: str = ""
 
 
 # ---- helpers ----
@@ -282,6 +295,18 @@ def icon_plus(d: ImageDraw.ImageDraw, cx: float, cy: float, s: float, fill) -> N
     d.rectangle((cx - 2, cy - s / 2, cx + 2, cy + s / 2), fill=fill)
 
 
+def icon_bubble(d: ImageDraw.ImageDraw, cx: float, cy: float, s: float, fill) -> None:
+    """A speech bubble — "say what you want to hear"."""
+    w, h = s, s * 0.72
+    x0, y0 = cx - w / 2, cy - h / 2 - s * 0.08
+    d.rounded_rectangle((x0, y0, x0 + w, y0 + h), radius=s * 0.22, fill=fill)
+    d.polygon([(x0 + w * 0.22, y0 + h - 1), (x0 + w * 0.22, y0 + h + s * 0.26), (x0 + w * 0.5, y0 + h - 1)], fill=fill)
+    for i in (-1, 0, 1):  # three dots of "…"
+        r = s * 0.06
+        px, py = cx + i * s * 0.24, y0 + h / 2
+        d.ellipse((px - r, py - r, px + r, py + r), fill=BG)
+
+
 def icon_wifi(d: ImageDraw.ImageDraw, cx: float, cy: float, s: float, lit: int, on, off) -> None:
     """A Wi-Fi fan with `lit` of its 4 levels (dot + 3 arcs) coloured `on`; cy is the dot."""
     r = s * 0.13
@@ -318,6 +343,7 @@ class Renderer:
         self._regions: list[tuple[str, Box, Callable[[View], tuple], Draw]] = [
             ("status", STATUS, self._sig_status, self._draw_status),
             ("net", NET_BTN, lambda v: (v.net, v.pressed == "net", v.closed), self._draw_net),
+            ("wish", WISH_BTN, lambda v: (v.online, v.pressed == "wish", v.closed), self._draw_wish),
             ("track", TRACK, self._sig_track, self._draw_track),
             ("elapsed", ELAPSED, lambda v: (self._has_time(v), v.elapsed), self._draw_elapsed),
             ("bar", BAR, self._sig_bar, self._draw_bar),
@@ -420,6 +446,25 @@ class Renderer:
         else:
             icon_wifi(d, cx, cy + 7, 17, 0, on, FAINT if kind == "?" else ERR)
 
+    def _draw_wish(self, d: ImageDraw.ImageDraw, size: tuple[int, int], v: View) -> None:
+        w, h = size
+        d.line((0, h - 1, w, h - 1), fill=LINE)
+        if v.closed:
+            return
+        pressed = v.pressed == "wish"
+        d.rounded_rectangle((4, 3, w - 4, h - 6), radius=8, fill=SURFACE_HI if pressed else SURFACE)
+        f = self.fonts.status_b
+        label = self.s["wish"]
+        icon_w = 20
+        x = (w - (icon_w + 8 + f.getlength(label))) / 2
+        cy = (h - 3) / 2
+        if v.online:
+            icon_color, color = ACCENT, (ACCENT_TEXT if pressed else TEXT)
+        else:
+            icon_color = color = FAINT
+        icon_bubble(d, x + icon_w / 2, cy, icon_w, icon_color)
+        d.text((x + icon_w + 8, cy), label, font=f, fill=color, anchor="lm")
+
     # ---- title + artist ----
 
     def _sig_track(self, v: View) -> tuple:
@@ -427,7 +472,7 @@ class Renderer:
             return ("off", v.connecting, v.target)
         if not v.has_track:
             return ("idle", v.busy)
-        return ("track", v.title, v.artist, v.skipping)
+        return ("track", v.title, v.artist, v.skipping, v.next_title, v.next_artist)
 
     def _draw_track(self, d: ImageDraw.ImageDraw, size: tuple[int, int], v: View) -> None:
         w, h = size
@@ -438,8 +483,10 @@ class Renderer:
             title_color, sub_color = DIM if v.connecting else TEXT, FAINT
         elif not v.has_track:
             title, title_color = self.s["silence"], DIM
-            sub = self.s["dj_picking"] if v.busy else self.s["nothing"]
-            sub_color = ACCENT_TEXT if v.busy else FAINT
+            # what the two big buttons do when nothing plays — "Hrát" starts
+            # the DJ, which isn't obvious from a play icon
+            sub = self.s["dj_picking"] if v.busy else self.s["idle_hint"]
+            sub_color = ACCENT_TEXT if v.busy else DIM
         else:
             title = v.title.strip() or self.s["unknown"]
             sub = v.artist.strip()
@@ -459,6 +506,14 @@ class Renderer:
         if sub:
             y = max(y + 2, 48) if len(lines) == 1 else y + 1
             d.text((x, y), ellipsize(sub, self.fonts.artist, max_w), font=self.fonts.artist, fill=sub_color, anchor="la")
+        if v.online and v.has_track and v.next_title and len(lines) == 1 and not v.skipping:
+            # what "Další" would bring — only when the title leaves room for it
+            f = self.fonts.status
+            label = self.s["next_up"]
+            nxt = v.next_title.strip() + (f" · {v.next_artist.strip()}" if v.next_artist.strip() else "")
+            d.text((x, 74), label, font=f, fill=FAINT, anchor="la")
+            lx = x + f.getlength(label)
+            d.text((lx, 74), ellipsize(nxt, f, max_w - (lx - x)), font=f, fill=DIM, anchor="la")
 
     # ---- progress ----
 

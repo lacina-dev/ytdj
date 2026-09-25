@@ -510,6 +510,9 @@ class TelemetryTest(unittest.TestCase):
     """Co jde do events.jsonl — jedna událost na operaci, ne na kandidáta."""
 
     def setUp(self):
+        # another test module imported after this one may have pointed the
+        # telemetry elsewhere (tests.test_dj_context does, at import time)
+        os.environ["YTDJ_EVENTS_FILE"] = str(EVENTS)
         clear_events()
 
     def test_search_records_choice_source_and_runner_up(self):

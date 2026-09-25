@@ -24,6 +24,8 @@ from .netapp import NetController
 from .netui import NetRenderer, NetView
 from .stats import PanelStats, emit
 from .ui import STRINGS, TARGETS, Renderer, View, volume_at
+from .wishapp import WishController
+from .wishui import WishRenderer, WishView
 
 log = logging.getLogger(__name__)
 
@@ -90,6 +92,10 @@ class PanelApp:
             net_backend = NmcliBackend()
         # the network screens; web_port is what a phone on the LAN should open
         self.net = NetController(net_backend, self.events.put, lang, self.api.port, count=self.stats.count)
+        # the wish screens borrow the network screens' fonts — no second copy in RAM
+        self.wish = WishController(
+            self.api, self.events.put, lang, share=self.net.renderer, count=self.stats.count, stop=self.stop,
+        )
         self.key_vol_at = -math.inf  # last volume change from the speaker's keys
 
         # server state
@@ -141,6 +147,14 @@ class PanelApp:
         self._page_since = time.monotonic()
         self.frames = 0  # show() calls — for tests and stats
 
+    def _overlay(self):
+        """The screen drawn over the player (network or wish), or None."""
+        if self.net.page:
+            return self.net
+        if self.wish.page:
+            return self.wish
+        return None
+
     # ---- threads → queue ----
 
     def _on_state(self, state: dict) -> None:
@@ -190,6 +204,7 @@ class PanelApp:
                 self._need_full = True
                 self.renderer.invalidate()
                 self.net.renderer.invalidate()
+                self.wish.invalidate()
                 self.stop.wait(1.0)
         # poslední souhrny, ať se neztratí minuta před zastavením
         self._log_gesture()
@@ -271,12 +286,17 @@ class PanelApp:
                 self.hold_volume.until = min(self.hold_volume.until, time.monotonic() + HOLD)
         elif kind == "touch":
             at = msg[2] if len(msg) > 2 else time.monotonic()
-            if self.net.page:
-                self.net.touch(msg[1], at)
+            overlay = self._overlay()
+            if overlay is not None:
+                overlay.touch(msg[1], at)
             else:
                 self._touch(msg[1], at)
         elif kind == "net":
             self.net.handle(msg)
+        elif kind == "wish":
+            if self.wish.handle(msg) and self._overlay() is None:
+                # the answer to a wish from this panel: show it, like the web does
+                self.wish.show_answer(time.monotonic())
         elif kind == "key":
             # tlačítka na repráku jdou stejnou cestou jako tlačítka na displeji
             log.info("klávesa: %s", msg[1])
@@ -384,6 +404,7 @@ class PanelApp:
         if duration > 0:
             elapsed = min(elapsed, duration)
         queue_ = st.get("queue")
+        nxt = queue_[0] if isinstance(queue_, list) and queue_ and isinstance(queue_[0], dict) else {}
         online = self.online
         return View(
             online=online,
@@ -407,21 +428,29 @@ class PanelApp:
             can_next=cur is not None or bool(queue_),
             closed=closed,
             net=self.net.icon(),
+            next_title=str(nxt.get("title") or ""),
+            next_artist=str(nxt.get("artist") or ""),
         )
 
     def _paint(self) -> None:
         now = time.monotonic()
-        page = self.net.page or "player"
-        renderer: Renderer | NetRenderer
+        page = self.net.page or (f"wish:{self.wish.page}" if self.wish.page else "player")
+        renderer: Renderer | NetRenderer | WishRenderer
+        view: View | NetView | WishView
         if page == "player":
-            view: View | NetView = self._view()
+            view = self._view()
             renderer, pressed = self.renderer, self.pressed
         else:
             note = ""
             if now - self.key_vol_at < NOTE_TIME and self.online:
                 note = self.net.s["volume"].format(v=self._view().volume)
-            view = self.net.view(now, note)
-            renderer, pressed = self.net.renderer, self.net.pressed
+            if self.net.page:
+                view = self.net.view(now, note)
+                renderer, pressed = self.net.renderer, self.net.pressed
+            else:
+                busy = bool((self.state or {}).get("busy")) and self.online
+                view = self.wish.view(now, note, busy)
+                renderer, pressed = self.wish.renderer, self.wish.pressed
         if page != self._shown_page:
             self._need_full = True  # another screen: one full frame
         t0 = time.perf_counter()
@@ -459,6 +488,7 @@ class PanelApp:
             self._need_full = True
             self.renderer.invalidate()
             self.net.renderer.invalidate()
+            self.wish.invalidate()
             self.stop.wait(1.0)
             return
         t2 = time.perf_counter()
@@ -474,7 +504,7 @@ class PanelApp:
 
     def _next_deadline(self) -> float:
         now = time.monotonic()
-        deadlines = [now + 60.0, self._last_full + FULL_REFRESH, self.net.deadline(now)]
+        deadlines = [now + 60.0, self._last_full + FULL_REFRESH, self.net.deadline(now), self.wish.deadline(now)]
         if now - self.key_vol_at < NOTE_TIME:
             deadlines.append(self.key_vol_at + NOTE_TIME)  # the volume toast on net pages
         for hold in (self.hold_running, self.hold_volume, self.hold_skip, self.note):
@@ -505,6 +535,7 @@ class PanelApp:
         if self.vol_pending is not None and now - self.vol_sent_at >= VOL_INTERVAL:
             self._send_volume(self.vol_pending)
         self.net.timers(now)
+        self.wish.timers(now)
         if self.key_burst is not None and now - self.key_burst[3] >= KEY_BURST_GAP:
             self._flush_key_burst()
         self.stats.maybe_flush(now)
@@ -571,7 +602,7 @@ class PanelApp:
         if self.repeat_at is None or now < self.repeat_at:
             return
         name = self.pressed
-        if name not in VOL_BUTTONS or not self.inside or not self.online or self.net.page:
+        if name not in VOL_BUTTONS or not self.inside or not self.online or self._overlay() is not None:
             self.repeat_at = None
             return
         if self._vol_step(name, math.inf) is None:
@@ -666,6 +697,10 @@ class PanelApp:
                 log.info("dotyk: síť")
                 self._log_action("net", "touch", now)
                 self.net.open(now)
+            elif name == "wish" and self.online:
+                log.info("dotyk: přání")
+                self._log_action("wish", "touch", now)
+                self.wish.open(now)
             elif self.online:
                 self._fire(name, now)
             else:

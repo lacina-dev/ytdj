@@ -16,7 +16,7 @@
     --line-soft: rgba(255, 255, 255, 0.05);
     --text: #ece9e4;
     --text-dim: #a3a099;
-    --text-faint: #6f6d68;
+    --text-faint: #8e8b84;
     --accent: #d8a657;
     --accent-soft: rgba(216, 166, 87, 0.16);
     --accent-text: #e8b76a;
@@ -37,7 +37,7 @@
       --line-soft: rgba(30, 24, 12, 0.07);
       --text: #1d1b17;
       --text-dim: #5f5b53;
-      --text-faint: #8b867d;
+      --text-faint: #6e695f;
       --accent: #9a6f1c;
       --accent-soft: rgba(154, 111, 28, 0.14);
       --accent-text: #8a6216;
@@ -180,17 +180,19 @@
   .bars i {
     display: block;
     width: 2px;
+    height: 100%;
     background: var(--accent);
     border-radius: 1px;
-    height: 30%;
+    transform-origin: 50% 100%;
+    transform: scaleY(.3);
     animation: eq 1.15s ease-in-out infinite;
   }
   .bars i:nth-child(2) { animation-delay: .22s; }
   .bars i:nth-child(3) { animation-delay: .45s; }
   .bars i:nth-child(4) { animation-delay: .1s; }
-  @keyframes eq { 0%,100% { height: 22%; } 50% { height: 100%; } }
-  .bars.still i { animation-play-state: paused; height: 26%; opacity: .5; }
-  @media (prefers-reduced-motion: reduce) { .bars i { animation: none; height: 55%; } }
+  @keyframes eq { 0%,100% { transform: scaleY(.22); } 50% { transform: scaleY(1); } }
+  .bars.still i { animation: none; transform: scaleY(.26); opacity: .5; }
+  @media (prefers-reduced-motion: reduce) { .bars i { animation: none; transform: scaleY(.55); } }
 
   .track-title {
     margin: 0;
@@ -214,6 +216,12 @@
     overflow-wrap: anywhere;
   }
   .idle .track-title { color: var(--text-dim); font-weight: 500; }
+  .idle-hint {
+    margin: 8px 0 0;
+    font-size: .95rem;
+    color: var(--text-dim);
+    max-width: 36em;
+  }
 
   /* ---------- position ---------- */
 
@@ -227,10 +235,11 @@
   }
   .track-bar > span {
     position: absolute;
-    inset: 0 auto 0 0;
-    width: 0;
+    inset: 0;
     background: var(--accent);
     border-radius: 99px;
+    transform-origin: 0 50%;
+    transform: scaleX(0);
   }
   .times {
     display: flex;
@@ -325,6 +334,11 @@
   }
   input[type=range]:hover::-webkit-slider-thumb { background: var(--accent); }
   input[type=range]:hover::-moz-range-thumb { background: var(--accent); }
+  @media (pointer: coarse) {
+    input[type=range] { height: 44px; }
+    input[type=range]::-webkit-slider-thumb { width: 24px; height: 24px; margin-top: -10px; }
+    input[type=range]::-moz-range-thumb { width: 24px; height: 24px; }
+  }
 
   /* ---------- prompt for the DJ ---------- */
 
@@ -369,15 +383,40 @@
   .send svg { width: 19px; height: 19px; }
   .send[disabled] { opacity: .35; cursor: not-allowed; }
 
+  .composer { position: relative; overflow: hidden; }
   .composer .note {
     display: none;
     align-items: center;
     gap: 9px;
     padding: 0 16px 13px;
-    font-size: .82rem;
+    font-size: .84rem;
     color: var(--text-dim);
   }
   .composer.busy .note { display: flex; }
+  .composer .note .txt { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .linkbtn {
+    flex: none;
+    border: 0;
+    background: none;
+    padding: 6px 4px;
+    min-height: 32px;
+    color: var(--accent-text);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    font-size: .84rem;
+  }
+  /* creeps toward the usual length of a DJ turn; never claims "done" early */
+  .eta {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: 3px;
+    background: var(--accent);
+    transform-origin: 0 50%;
+    transform: scaleX(0);
+    transition: transform 1s linear;
+    opacity: 0;
+  }
+  .composer.sending .eta { opacity: .85; }
 
   .spinner {
     width: 14px; height: 14px; flex: none;
@@ -401,6 +440,7 @@
     white-space: pre-wrap;
   }
   .reply.show { display: block; }
+  .reply .q { display: block; margin-bottom: 4px; font-size: .82rem; color: var(--text-dim); white-space: normal; }
   .reply.error {
     background: color-mix(in srgb, var(--err) 12%, transparent);
     border-color: color-mix(in srgb, var(--err) 30%, transparent);
@@ -409,9 +449,34 @@
 
   .hint {
     margin-top: 10px;
-    font-size: .76rem;
+    font-size: .78rem;
     color: var(--text-faint);
   }
+  @media (pointer: coarse) { .kbd-only { display: none; } }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .chip {
+    min-height: 38px;
+    padding: 7px 14px;
+    border-radius: 99px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--text-dim);
+    font-size: .88rem;
+    transition: background .15s, color .15s, border-color .15s;
+  }
+  .chip:hover { background: var(--surface-2); color: var(--text); }
+  .chip:active { border-color: var(--accent); color: var(--accent-text); }
+  .chip[disabled] { opacity: .45; cursor: not-allowed; }
+  @media (pointer: coarse) { .chip { min-height: 44px; } }
+
+  .djline {
+    margin: 12px 0 0;
+    font-size: .84rem;
+    color: var(--text-dim);
+    overflow-wrap: anywhere;
+  }
+  .djline b { color: var(--text); font-weight: 500; }
 
   /* ---------- context: mood + seeds ---------- */
 
@@ -511,6 +576,7 @@
   .hist .mark svg { width: 14px; height: 14px; display: block; }
   .hist .finished { color: var(--ok); }
   .hist .skipped { color: var(--text-faint); }
+  .hist .other { color: var(--text-faint); }
   .hist li.skipped-row .t {
     color: var(--text-dim);
     text-decoration: line-through;
@@ -731,6 +797,7 @@
         <h1 class="track-title" id="title">Ticho</h1>
         <p class="track-artist" id="artist" hidden></p>
         <p class="track-album" id="album" hidden></p>
+        <p class="idle-hint" id="idleHint" hidden>Stiskni ▶ a DJ naváže na to, co tu hrálo naposledy — nebo mu níž napiš, co chceš slyšet.</p>
 
         <div class="progress" id="progress" hidden>
           <div class="track-bar" role="progressbar" id="bar" aria-label="Pozice ve skladbě"
@@ -746,7 +813,7 @@
           <button class="ctl" id="btnNext" aria-label="Další skladba" title="Další">
             <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 5.4v13.2c0 .8.9 1.2 1.5.8l9.3-6.6c.5-.4.5-1.2 0-1.6L7.5 4.6C6.9 4.2 6 4.6 6 5.4z"/><rect x="17.6" y="4.6" width="2.6" height="14.8" rx="1.3"/></svg>
           </button>
-          <button class="ctl" id="btnStop" aria-label="Zastavit a vyprázdnit frontu" title="Stop">
+          <button class="ctl" id="btnStop" aria-label="Zastavit a vyprázdnit frontu" title="Zastavit a vyprázdnit frontu">
             <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2.2"/></svg>
           </button>
 
@@ -764,18 +831,29 @@
       <section aria-label="Zadání pro DJe">
         <div class="composer" id="composer">
           <div class="row">
-            <textarea id="prompt" rows="1" enterkeyhint="send" autocomplete="off"
-                      placeholder="Řekni, co chceš slyšet… („hraj něco veselýho“)"></textarea>
+            <textarea id="prompt" rows="1" enterkeyhint="send" autocomplete="off" maxlength="500"
+                      aria-label="Přání pro DJe"
+                      placeholder="Co chceš slyšet? Třeba „písničky od Olympicu“"></textarea>
             <button class="send" id="btnSend" aria-label="Odeslat DJovi">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M12 19V5"/><path d="M5.5 11.5 12 5l6.5 6.5"/>
               </svg>
             </button>
           </div>
-          <p class="note"><span class="spinner"></span><span id="busyText">DJ přemýšlí…</span></p>
+          <p class="note"><span class="spinner"></span><span class="txt" id="busyText">DJ přemýšlí…</span>
+            <button class="linkbtn" id="btnCancelWait" type="button" hidden>Neposílat</button></p>
+          <span class="eta" id="eta" aria-hidden="true"></span>
+        </div>
+        <div class="chips" id="chips" role="group" aria-label="Rychlá přání">
+          <button class="chip" type="button" data-wish="víc takového">Víc takového</button>
+          <button class="chip" type="button" data-wish="něco jiného">Něco jiného</button>
+          <button class="chip" type="button" data-wish="jen česky">Jen česky</button>
+          <button class="chip" type="button" data-wish="něco klidnějšího">Klidnější</button>
+          <button class="chip" type="button" data-wish="něco živějšího">Živější</button>
         </div>
         <div class="reply" id="reply" role="status" aria-live="polite"></div>
-        <p class="hint">Enter odešle, Shift+Enter udělá nový řádek. Odpověď trvá 15–25 s.</p>
+        <p class="djline" id="djLine" hidden></p>
+        <p class="hint"><span class="kbd-only">Enter odešle, Shift+Enter udělá nový řádek. </span>DJ odpovídá obvykle za 20–30&nbsp;s.</p>
       </section>
 
       <section class="context" id="context" aria-label="Kontext DJe" hidden>
@@ -897,6 +975,11 @@
     loading: false,      // running, but the stream hasn't started yet
     sending: false,      // waiting for /api/prompt from this browser
     sendStartedAt: 0,
+    waiting: false,      // …or still waiting for the DJ to finish somebody else's wish
+    waitCancelled: false,
+    mine: [],            // texts this browser sent — their answers are in the reply box already
+    lost: null,          // {text, at}: the answer never came back to us (dropped connection)
+    title: "",
     volDragging: false,
     volHoldUntil: 0,     // after sending the volume, don't overwrite the slider for a while
     lastUpdate: 0,
@@ -908,13 +991,14 @@
     conn: $("#conn"), connText: $("#connText"),
     banner: $("#banner"), bannerText: $("#bannerText"),
     now: $("#now"), nowLabel: $("#nowLabel"), bars: $("#bars"),
-    title: $("#title"), artist: $("#artist"), album: $("#album"),
+    title: $("#title"), artist: $("#artist"), album: $("#album"), idleHint: $("#idleHint"),
     progress: $("#progress"), bar: $("#bar"), barFill: $("#barFill"),
     elapsed: $("#elapsed"), total: $("#total"),
     btnPlay: $("#btnPlay"), icoPlay: $("#icoPlay"), icoPause: $("#icoPause"),
     btnNext: $("#btnNext"), btnStop: $("#btnStop"),
     vol: $("#vol"), volOut: $("#volOut"),
     composer: $("#composer"), prompt: $("#prompt"), btnSend: $("#btnSend"), busyText: $("#busyText"),
+    btnCancelWait: $("#btnCancelWait"), eta: $("#eta"), chips: $("#chips"), djLine: $("#djLine"),
     reply: $("#reply"),
     context: $("#context"), moodWrap: $("#moodWrap"), mood: $("#mood"),
     poolsWrap: $("#poolsWrap"), pools: $("#pools"),
@@ -937,7 +1021,16 @@
     S.connected = ok;
     el.conn.className = "conn " + (ok ? "online" : "offline");
     el.connText.textContent = label || (ok ? (polling ? "spojeno (dotazování)" : "spojeno") : "odpojeno");
-    if (ok) hideBanner();
+    if (ok) {
+      hideBanner();
+    } else if (S.status) {
+      // what plays is unknown now (ytdj restarting stops the music):
+      // don't let the clock and the equalizer pretend otherwise
+      setBase(predictPos());
+      S.running = false;
+      el.bars.classList.add("still");
+      el.nowLabel.textContent = "spojení ztraceno";
+    }
   }
 
   function showBanner(text) {
@@ -945,6 +1038,8 @@
     el.banner.classList.add("show");
   }
   function hideBanner() { el.banner.classList.remove("show"); }
+
+  var OFFLINE_TEXT = "Jukebox teď neodpovídá — možná se právě restartuje. Zkouším se připojit znovu…";
 
   function onStatus(data) {
     S.lastUpdate = nowMs();
@@ -968,10 +1063,18 @@
     var handle = function (ev) {
       var data;
       try { data = JSON.parse(ev.data); } catch (e) { return; }
+      // the stream works again: the stop-gap polling can go
+      if (pollTimer) { stopPolling(); setConnected(true); }
       if (data && typeof data === "object") onStatus(data);
     };
     es.onmessage = handle;
     es.addEventListener("status", handle);
+    // the server's keepalive — while paused nothing else comes for a long time
+    es.addEventListener("ping", function () {
+      S.lastUpdate = nowMs();
+      if (pollTimer) stopPolling();
+      if (!S.connected) setConnected(true);
+    });
     es.onerror = function () {
       sseFails++;
       setConnected(false);
@@ -1011,17 +1114,29 @@
       onStatus(data);
     } catch (e) {
       setConnected(false);
-      showBanner("Backend neodpovídá. Běží ytdj na 127.0.0.1:8765?");
+      showBanner(OFFLINE_TEXT);
     }
   }
 
-  // watchdog: if no state arrived for ~6 s, something is wrong
+  // Watchdog. While a track plays the server sends every second, so ~6 s of
+  // silence is suspicious; paused or idle, nothing changes and only a
+  // keepalive comes every 15 s. Before crying wolf, ask once: only when that
+  // fails is the connection really gone.
+  var probing = false;
   setInterval(function () {
-    if (S.lastUpdate && nowMs() - S.lastUpdate > 6000) {
-      setConnected(false);
-      showBanner("Spojení se serverem se přerušilo, zkouším se připojit znovu…");
-      if (!pollTimer) startPolling();
-    }
+    if (!S.lastUpdate || probing || pollTimer) return;
+    var limit = (S.running && !S.loading) ? 6000 : 40000;
+    if (nowMs() - S.lastUpdate < limit) return;
+    probing = true;
+    fetch("/api/status", { cache: "no-store" })
+      .then(function (res) { if (!res.ok) throw new Error("HTTP " + res.status); return res.json(); })
+      .then(function (data) { onStatus(data); })
+      .catch(function () {
+        setConnected(false);
+        showBanner(OFFLINE_TEXT);
+        startPolling();
+      })
+      .then(function () { probing = false; });
   }, 2000);
 
   document.addEventListener("visibilitychange", function () {
@@ -1070,6 +1185,10 @@
     }
 
     // --- now playing ---
+    setHidden(el.idleHint, !!cur || !!s.busy || S.sending);
+    var docTitle = cur ? (cur.title || "Neznámá skladba") + (cur.artist ? " — " + cur.artist : "") + " · ytdj"
+                       : "ytdj — AI DJ";
+    if (docTitle !== S.title) { S.title = docTitle; document.title = docTitle; }
     if (cur) {
       el.now.classList.remove("idle");
       el.title.textContent = cur.title || "Neznámá skladba";
@@ -1086,7 +1205,7 @@
       el.title.textContent = "Ticho";
       setHidden(el.artist, true);
       setHidden(el.album, true);
-      el.nowLabel.textContent = "nic nehraje";
+      el.nowLabel.textContent = s.busy ? "DJ vybírá hudbu…" : "nic nehraje";
       el.bars.classList.add("still");
     }
 
@@ -1097,8 +1216,9 @@
     var showPause = S.running;
     setHidden(el.icoPlay, showPause);
     setHidden(el.icoPause, !showPause);
-    el.btnPlay.setAttribute("aria-label", showPause ? "Pozastavit" : "Přehrát");
-    el.btnPlay.title = showPause ? "Pauza" : "Přehrát";
+    var playLabel = showPause ? "Pozastavit" : (cur || (s.queue && s.queue.length) ? "Přehrát" : "Pustit hudbu (DJ naváže)");
+    el.btnPlay.setAttribute("aria-label", playLabel);
+    el.btnPlay.title = playLabel;
     el.btnNext.disabled = !cur && !(s.queue && s.queue.length);
     el.btnStop.disabled = !playing && !cur;
 
@@ -1113,6 +1233,7 @@
 
     // --- busy DJ ---
     setBusy(!!s.busy || S.sending);
+    renderDj(s);
 
     // --- mood and seeds ---
     renderContext(s);
@@ -1181,40 +1302,93 @@
     }).join("");
   }
 
+  // What the DJ is doing for other people, and the answer to a wish of ours
+  // whose reply got lost on the way (a phone that locked mid-request).
+  function renderDj(s) {
+    var dj = s.dj;
+    var line = "";
+    if (dj && dj.last && S.lost && dj.last.text === S.lost.text.slice(0, 200) &&
+        !dj.busy && (dj.last.at || 0) >= S.lost.at - 120) {
+      showReply(dj.last.ok ? (dj.last.reply || "Hotovo.") : "DJ přání dostal, ale narazil na chybu. Zkus to znovu.",
+                !dj.last.ok, S.lost.text);
+      if (dj.last.ok && el.prompt.value.trim() === S.lost.text) { el.prompt.value = ""; autosize(); }
+      S.lost = null;
+    }
+    if (dj && dj.last && dj.last.ok && !dj.busy && S.mine.indexOf(dj.last.text) < 0 &&
+        Date.now() / 1000 - (dj.last.at || 0) < 3600) {
+      line = "Naposledy si někdo přál <b>„" + esc(dj.last.text) + "“</b>" + esc(fromWhere(dj.last.source)) +
+             (dj.last.reply ? " — DJ: " + esc(dj.last.reply) : "");
+    }
+    if (S.sig.djLine !== line) {
+      S.sig.djLine = line;
+      el.djLine.innerHTML = line;
+      setHidden(el.djLine, !line);
+    }
+  }
+
+  function fromWhere(source) {
+    return source === "panel" ? " (na displeji)" : source === "repl" ? " (z terminálu)" : "";
+  }
+
   var ICO_OK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 12.5l5 5 10-11"/></svg>';
   var ICO_SKIP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 5l14 14M19 5L5 19"/></svg>';
+  var ICO_DOT = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/></svg>';
+
+  // outcome → [label, icon, class]; "started" = never finished (a restart
+  // cut it off), "replaced" = a wish pushed it out of the way
+  var OUTCOMES = {
+    finished: ["dohráno", ICO_OK, "finished"],
+    skipped: ["přeskočeno", ICO_SKIP, "skipped"],
+    replaced: ["nahrazeno přáním", ICO_SKIP, "skipped"],
+    started: ["nedohráno", ICO_DOT, "other"]
+  };
 
   function renderHistory(h) {
-    var sig = JSON.stringify(h);
+    var cur = S.status && S.status.current;
+    var sig = JSON.stringify(h) + "|" + (cur ? cur.title + cur.artist : "");
     if (sig === S.sig.history) return;
     S.sig.history = sig;
 
-    var items = h.slice(0, 12); // the server sends newest first
+    var items = h.slice(0, 13); // the server sends newest first
+    // the track playing right now is logged as "started" — it's not history yet
+    if (items.length && cur && items[0].outcome === "started" &&
+        items[0].title === cur.title && items[0].artist === cur.artist) items = items.slice(1);
+    items = items.slice(0, 12);
     setHidden(el.historyEmpty, items.length > 0);
 
     el.history.innerHTML = items.map(function (t) {
-      var skipped = t.outcome === "skipped";
-      var cls = skipped ? "skipped" : "finished";
-      var label = skipped ? "přeskočeno" : (t.outcome === "finished" ? "dohráno" : String(t.outcome || ""));
+      var o = OUTCOMES[t.outcome] || [String(t.outcome || ""), ICO_DOT, "other"];
+      var skipped = o[2] === "skipped";
       return '<li class="' + (skipped ? "skipped-row" : "") + '">' +
-             '<span class="mark ' + cls + '" title="' + esc(label) + '">' +
-             (skipped ? ICO_SKIP : ICO_OK) + "</span>" +
+             '<span class="mark ' + o[2] + '" title="' + esc(o[0]) + '" aria-label="' + esc(o[0]) + '">' +
+             o[1] + "</span>" +
              '<span class="meta"><span class="t">' + esc(t.title || "Neznámá skladba") + "</span>" +
              (t.artist ? '<span class="a">' + esc(t.artist) + "</span>" : "") +
              "</span></li>";
     }).join("");
   }
 
-  /* smooth position indicator — between updates we extrapolate locally */
+  /* smooth position indicator — between updates we extrapolate locally.
+     Four times a second is plenty for a 4 px bar and a seconds counter; the
+     old per-frame loop kept every open tab busy all day. */
+  var last = { pct: -1, txt: "", aria: "" };
   function tick() {
-    var p = predictPos();
-    var pct = S.duration > 0 ? Math.max(0, Math.min(100, (p / S.duration) * 100)) : 0;
-    el.barFill.style.width = pct.toFixed(2) + "%";
-    el.bar.setAttribute("aria-valuenow", String(Math.round(pct)));
-    el.elapsed.textContent = fmtTime(p);
-    requestAnimationFrame(tick);
+    if (!document.hidden) {
+      var p = predictPos();
+      var pct = S.duration > 0 ? Math.max(0, Math.min(100, (p / S.duration) * 100)) : 0;
+      var rounded = Math.round(pct * 10) / 10;
+      if (rounded !== last.pct) {
+        last.pct = rounded;
+        el.barFill.style.transform = "scaleX(" + (rounded / 100).toFixed(4) + ")";
+      }
+      var aria = String(Math.round(pct));
+      if (aria !== last.aria) { last.aria = aria; el.bar.setAttribute("aria-valuenow", aria); }
+      var txt = fmtTime(p);
+      if (txt !== last.txt) { last.txt = txt; el.elapsed.textContent = txt; }
+    }
+    setTimeout(tick, S.running && !S.loading ? 250 : 1000);
   }
-  requestAnimationFrame(tick);
+  tick();
 
   /* ------------------------------------------------------------------ */
   /* controls                                                            */
@@ -1230,7 +1404,16 @@
     }
   }
 
+  // the same words the panel's "Hrát" uses when nothing plays
+  var START_PROMPT = "Nic nehraje. Pusť hudbu a navaž na to, co jsem poslouchal naposledy.";
+
   el.btnPlay.addEventListener("click", function () {
+    var st = S.status || {};
+    if (!st.current && !(st.queue && st.queue.length)) {
+      // nothing to un-pause: ask the DJ to start, like the panel does
+      send(START_PROMPT, { quiet: true });
+      return;
+    }
     var running = S.running;
     // optimistically flip the icon so the button responds immediately
     setBase(predictPos());
@@ -1241,7 +1424,11 @@
   });
 
   el.btnNext.addEventListener("click", function () { control("next", null); });
-  el.btnStop.addEventListener("click", function () { control("stop", null); });
+  el.btnStop.addEventListener("click", function () {
+    // one tap used to silence the office and throw away everybody's queue
+    if (!confirm("Zastavit hudbu a vyprázdnit frontu? Týká se to všech, kdo tu poslouchají.")) return;
+    control("stop", null);
+  });
 
   // volume: while dragging only the label updates, POST only on release
   el.vol.addEventListener("input", function () {
@@ -1276,70 +1463,137 @@
   /* ------------------------------------------------------------------ */
 
   var busyTimer = null;
+  var TURN = 25;          // s — a typical DJ turn on the Pi (telemetry: 20–21 s)
+  var WAIT_MAX = 180000;  // ms we wait for a busy DJ before giving up
 
   function setBusy(busy) {
     el.composer.classList.toggle("busy", busy);
-    el.prompt.disabled = S.sending;   // someone else's request doesn't block the field, only sending
-    el.btnSend.disabled = busy || !el.prompt.value.trim();
+    el.composer.classList.toggle("sending", S.sending && !S.waiting);
+    el.prompt.disabled = S.sending;   // someone else's wish doesn't block the field, only our own
+    el.btnSend.disabled = S.sending || !el.prompt.value.trim();
+    Array.prototype.forEach.call(el.chips.querySelectorAll(".chip"), function (b) { b.disabled = S.sending; });
+    setHidden(el.btnCancelWait, !(S.sending && S.waiting));
     if (busy && !busyTimer) {
-      busyTimer = setInterval(updateBusyText, 500);
+      busyTimer = setInterval(updateBusyText, 1000);
     } else if (!busy && busyTimer) {
       clearInterval(busyTimer);
       busyTimer = null;
     }
     if (busy) updateBusyText();
+    else el.eta.style.transform = "scaleX(0)";
   }
 
   function updateBusyText() {
-    if (S.sending) {
+    var dj = (S.status && S.status.dj) || {};
+    var what = dj.text ? " „" + dj.text + "“" + fromWhere(dj.source) : "";
+    var text;
+    if (S.sending && S.waiting) {
+      text = "DJ ještě vyřizuje jiné přání" + what + ". To tvoje pošlu hned potom.";
+    } else if (S.sending) {
       var secs = Math.round((nowMs() - S.sendStartedAt) / 1000);
-      el.busyText.textContent = "DJ přemýšlí… " + secs + " s (obvykle 15–25 s)";
+      text = "DJ vybírá… " + secs + " s (obvykle 20–30 s)";
+      el.eta.style.transform = "scaleX(" + Math.min(0.95, secs / TURN).toFixed(3) + ")";
     } else {
-      el.busyText.textContent = "DJ zrovna zpracovává jiný požadavek…";
+      text = "DJ právě vyřizuje přání" + (what || " někoho jiného") + ". Klidně piš — pošlu to hned po něm.";
     }
+    if (el.busyText.textContent !== text) el.busyText.textContent = text;
   }
 
-  function showReply(text, isError) {
-    el.reply.textContent = text;
+  // wish: what was asked, shown above the answer — with a few people
+  // wishing, "Hraju Kabát" alone doesn't say whose wish it answers
+  function showReply(text, isError, wish) {
+    el.reply.innerHTML = (wish ? '<span class="q">„' + esc(wish) + "“</span>" : "") + esc(text);
     el.reply.classList.toggle("error", !!isError);
     el.reply.classList.add("show");
   }
 
-  async function send() {
-    var text = el.prompt.value.trim();
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  // resolves once the DJ is free (per the live status), we gave up, or the user cancelled
+  async function waitForDj(deadline) {
+    while (S.status && S.status.busy && !S.waitCancelled && nowMs() < deadline) await sleep(500);
+  }
+
+  // opts.quiet: not typed in the field (a chip, ▶ with nothing to play)
+  async function send(text, opts) {
+    opts = opts || {};
+    text = String(text == null ? el.prompt.value : text).trim();
     if (!text || S.sending) return;
-    if (S.status && S.status.busy) {
-      showReply("DJ právě zpracovává jiný požadavek. Zkus to za chvíli.", true);
-      return;
-    }
 
     S.sending = true;
+    S.waiting = !!(S.status && S.status.busy);
+    S.waitCancelled = false;
     S.sendStartedAt = nowMs();
+    S.lost = null;
     setBusy(true);
     el.reply.classList.remove("show");
+    var postedAt = Date.now() / 1000;
 
     try {
-      var data = await postJSON("/api/prompt", { text: text });
-      el.prompt.value = "";
-      autosize();
-      showReply((data && data.reply) || "Hotovo.", false);
+      // The DJ takes one wish at a time. Instead of refusing, wait for the
+      // one in progress and go right after it (the request queue will make
+      // this unnecessary).
+      var deadline = nowMs() + WAIT_MAX;
+      var data;
+      for (;;) {
+        if (S.waiting) { await waitForDj(deadline); }
+        if (S.waitCancelled) throw { cancelled: true };
+        S.waiting = false;
+        S.sendStartedAt = nowMs();
+        setBusy(true);
+        postedAt = Date.now() / 1000;
+        try {
+          data = await postJSON("/api/prompt", { text: text, source: "web" });
+          break;
+        } catch (e) {
+          if (e.status === 409 && nowMs() < deadline && !S.waitCancelled) {
+            S.waiting = true;
+            setBusy(true);
+            await sleep(1500);
+            continue;
+          }
+          throw e;
+        }
+      }
+      S.mine.push(text.slice(0, 200));
+      if (S.mine.length > 8) S.mine.shift();
+      if (!opts.quiet) { el.prompt.value = ""; autosize(); }
+      showReply((data && data.reply) || "Hotovo.", false, text === START_PROMPT ? "" : text);
       hideBanner();
     } catch (e) {
-      if (e.status === 409) {
-        showReply("DJ ještě dokončuje předchozí požadavek — zkus to za chvíli znovu. Text ti zůstal v poli.", true);
+      var kept = opts.quiet ? "" : " Text ti zůstal v poli.";
+      var asked = text === START_PROMPT ? "" : text;
+      if (e && e.cancelled) {
+        showReply("Přání jsem neposlal." + kept, true, asked);
+      } else if (e.status === 409) {
+        showReply("DJ má pořád práci s jiným přáním. Zkus to za chvíli." + kept, true, asked);
       } else if (e.status) {
-        showReply("Požadavek selhal (" + e.status + "): " + e.message, true);
+        showReply("DJ narazil na chybu: " + e.message + kept, true, asked);
       } else {
-        showReply("Server neodpověděl. Zkontroluj, jestli ytdj běží.", true);
+        // the request may well have arrived — the answer then shows up here
+        // as soon as the jukebox is back (status "dj.last")
+        S.lost = { text: text, at: postedAt };
+        S.mine.push(text.slice(0, 200));
+        showReply("Spojení se přerušilo dřív, než DJ odpověděl. Jestli přání dorazilo, jeho odpověď se tu objeví, " +
+                  "jakmile se jukebox ozve." + kept, true, asked);
       }
     } finally {
       S.sending = false;
+      S.waiting = false;
       setBusy(!!(S.status && S.status.busy));
       el.prompt.disabled = false;
       el.btnSend.disabled = !el.prompt.value.trim();
       if (!polling) refresh();
     }
   }
+
+  el.btnCancelWait.addEventListener("click", function () { S.waitCancelled = true; });
+
+  el.chips.addEventListener("click", function (ev) {
+    var b = ev.target.closest && ev.target.closest(".chip");
+    if (!b || b.disabled) return;
+    send(b.getAttribute("data-wish"), { quiet: true });
+  });
 
   function autosize() {
     el.prompt.style.height = "auto";
@@ -1348,8 +1602,7 @@
 
   el.prompt.addEventListener("input", function () {
     autosize();
-    el.btnSend.disabled = S.sending || !el.prompt.value.trim() ||
-                          !!(S.status && S.status.busy);
+    el.btnSend.disabled = S.sending || !el.prompt.value.trim();
   });
 
   el.prompt.addEventListener("keydown", function (ev) {
@@ -1359,7 +1612,7 @@
     }
   });
 
-  el.btnSend.addEventListener("click", send);
+  el.btnSend.addEventListener("click", function () { send(); });
 
   /* ------------------------------------------------------------------ */
   /* settings                                                            */

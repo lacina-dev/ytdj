@@ -44,6 +44,14 @@ if ! cmp -s packaging/rpi/51-ytdj-audio-priority.conf "$conf_dir/51-ytdj-audio-p
     echo "wireplumber: priorities installed, restarted"
 fi
 
+# delší takt PipeWire proti lupání (viz 50-ytdj-pipewire.conf)
+pw_dir="$HOME/.config/pipewire/pipewire.conf.d"
+mkdir -p "$pw_dir"
+if ! cmp -s packaging/rpi/50-ytdj-pipewire.conf "$pw_dir/50-ytdj-pipewire.conf"; then
+    install -m 644 packaging/rpi/50-ytdj-pipewire.conf "$pw_dir/"
+    systemctl --user restart pipewire.service pipewire-pulse.service wireplumber.service || true
+    echo "pipewire: takt nastaven, restartováno"
+fi
 if [ -z "${NO_RESTART:-}" ] && systemctl --user is-enabled -q ytdj.service 2>/dev/null; then
     systemctl --user restart ytdj.service
     sleep 3

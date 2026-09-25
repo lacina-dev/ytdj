@@ -350,7 +350,7 @@ class CodexDJ:
         self.pools.remember_tracks(tracks)
         return tracks
 
-    async def _apply(self, d: Decision) -> str:
+    async def _apply(self, d: Decision, interrupt: bool = True) -> str:
         if d.remember.strip():
             self.store.remember(d.remember)
 
@@ -374,8 +374,9 @@ class CodexDJ:
             await self.player.toggle_pause(False)
             # clear_queue lets the currently playing track finish. But when the
             # user changes the mood, they want to hear different music right
-            # away, not in three minutes.
-            if was_playing:
+            # away, not in three minutes. Když náladu mění DJ sám (po sérii
+            # přeskočení), hrající skladbu neutínáme — nová přijde po ní.
+            if was_playing and interrupt:
                 await self.player.skip(by_user=False)
         elif d.action == "play_next":
             requested = await self._requested_tracks(d)
@@ -399,7 +400,7 @@ class CodexDJ:
 
     # ---- public API ----
 
-    async def turn(self, user_input: str) -> str:
+    async def turn(self, user_input: str, interrupt: bool = True) -> str:
         prompt = await self._build_prompt(user_input)
 
         for resume in (True, False):
@@ -416,6 +417,6 @@ class CodexDJ:
                     continue
                 return f"(Codex selhal: {exc}) — hudba hraje dál"
             log.info("rozhodnutí: %s, seedů=%d", decision.action, len(decision.seeds))
-            return await self._apply(decision)
+            return await self._apply(decision, interrupt)
 
         return "(Codex neodpověděl) — hudba hraje dál"

@@ -26,7 +26,7 @@ from .base import EventHandler, Player, PlayerEvent, PlayerStatus
 log = logging.getLogger(__name__)
 
 WATCH_URL = "https://music.youtube.com/watch?v={}"
-PREFETCH_AHEAD = 2  # kolik skladeb z fronty mít vyřešených dopředu
+PREFETCH_AHEAD = 4  # kolik skladeb z fronty mít vyřešených dopředu (~20 s každá na Pi 3)
 
 # mpv nad 130 stejně nepustí a ručně zapsaná hodnota v configu by ho jinak
 # odmítla nastartovat
@@ -104,6 +104,9 @@ class MpvPlayer(Player):
             "--prefetch-playlist=yes",  # pre-resolves the next track's URL -> no gap
             "--gapless-audio=weak",
             "--cache=yes",
+            # Vteřina zvuku v zásobě: na slabém stroji, kde vedle hraje yt-dlp
+            # s node, by 0,2 s (výchozí) občas nestačilo a v repráku by lupnulo.
+            "--audio-buffer=1",
             "--keep-open=no",
             # Když YouTube uprostřed skladby zavře spojení (rotace CDN, síť),
             # ffmpeg to bez tohohle vezme jako konec souboru — mpv ohlásí eof

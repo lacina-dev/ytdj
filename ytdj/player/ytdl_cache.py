@@ -140,7 +140,13 @@ def main(argv: list[str]) -> int:
             sys.stdout.buffer.write(data)
             sys.stdout.flush()
             return 0
-    # cokoli jiného (nebo nic v cache) — skutečné yt-dlp, beze změny
+    # cokoli jiného (nebo nic v cache) — skutečné yt-dlp, beze změny. Jen
+    # s nižší prioritou: yt-dlp a node vytíží jádro na desítky vteřin a na Pi 3
+    # by jinak braly čas zvuku — praskalo by to.
+    try:
+        os.nice(5)
+    except OSError:
+        pass
     os.execv(real, [real, *argv]) if os.path.isabs(real) else os.execvp(real, [real, *argv])
     return 127  # nedosažitelné
 

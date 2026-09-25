@@ -1025,6 +1025,11 @@ class MpvPlayer(Player):
                     self._tracks[track.id] = track
                 await self._append(tracks)
                 ops = len(tracks)
+            else:
+                # Mezitím mohlo Další (bez zámku) pustit první z nich — hrající
+                # skladba se znovu nevkládá (jinak by zazněla dvakrát).
+                cur_vid = self._playlist[self._cur_index()][1]
+                tracks = [t for t in tracks if t.id != cur_vid]
             for i, track in enumerate(tracks if not ops else []):
                 self._tracks[track.id] = track
                 cur = self._cur_index()

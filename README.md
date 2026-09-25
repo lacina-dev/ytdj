@@ -399,9 +399,10 @@ a time; a plain "pusť Kabát" takes the fast path (~3 s) and doesn't wait for
 somebody else's turn.
 
 The order is fair: whoever has waited longest since their last turn goes next
-(a newcomer first), one *block* per turn — a song is one track, an artist wish
-three, a mood wish its first three tracks. Petr's twenty-track "pusť Kabát"
-therefore plays three, then Jana's song, then Karel's, then Petr again; once
+(a newcomer first), one *turn* each — at most two tracks while others are
+waiting, three when nobody else is (a song is one track; a mood wish brings
+its first three tracks). Petr's twenty-track "pusť Kabát" therefore plays two,
+then Jana's song, then two of Karel's mood, then Petr again; once
 nobody else is waiting, the rest of Kabát simply carries on as the background
 radio. "Zařadit hned" puts a wish right after the current track (one per
 person at a time) and never cuts it; saying "hned teď" does. A wish that is

@@ -24,7 +24,7 @@ from .hw import Screen, Touch, TouchEvent
 from .netapp import NetController
 from .netui import NetRenderer, NetView
 from .stats import PanelStats, emit
-from .ui import ART, ART_SIDE, STRINGS, TARGETS, QrRenderer, Renderer, View, merge_boxes, volume_at
+from .ui import ART, ART_SIDE, STRINGS, TARGETS, QrRenderer, Renderer, View, merge_boxes, volume_at, vote_mark
 from .wishapp import WishController
 from .wishui import WishRenderer, WishView
 
@@ -561,6 +561,10 @@ class PanelApp:
                    if r.get("state") in ("queued", "thinking", "waiting") and r.get("id") not in shown)
         outage = st.get("outage")
         track_id = str((cur or {}).get("id") or "")
+        cv = (cur or {}).get("votes")
+        cv = cv if isinstance(cv, dict) else {}
+        arts = cv.get("artists") if isinstance(cv.get("artists"), list) else []
+        nv = nxt.get("votes") if isinstance(nxt.get("votes"), dict) else {}
         urls = self.net.urls()
         online = self.online
         return View(
@@ -598,6 +602,11 @@ class PanelApp:
             qr_url=urls[0] if urls else "",
             rest=self.resting,
             toast=self._toast_view(now) if online and not closed else (),
+            vote_up=_int(cv.get("up")),
+            vote_down=_int(cv.get("down")),
+            vote_status=str(cv.get("status") or ""),
+            artist_banned=any(isinstance(a, dict) and a.get("status") == "banned" for a in arts),
+            next_vote=vote_mark(nv),
             dj_offline=bool(st.get("dj_offline")),
         )
 
@@ -1010,6 +1019,10 @@ class PanelApp:
     def _server_volume(self) -> int | None:
         v = (self.state or {}).get("volume")
         return int(v) if isinstance(v, (int, float)) else None
+
+
+def _int(value: Any) -> int:
+    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
 
 
 def _num(value: Any) -> float:

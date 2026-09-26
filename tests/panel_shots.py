@@ -45,7 +45,9 @@ WISH = WishView(page="home", count=3)
 ROWS = (
     QueueRow("a", "Petr", "písničky od Kabátu", "playing", "hraje · dál: Burlaci", False),
     QueueRow("b", "displej", "Holky z naší školky", "queued", "ve frontě · hned po téhle", True),
-    QueueRow("c", "Karel", "něco klidnějšího na odpoledne", "queued", "ve frontě · za ~1 skladbu", False),
+    QueueRow("c", "Karel", "něco klidnějšího na odpoledne", "queued", "ve frontě · za ~1 skladbu", False,
+             "favourite"),
+    QueueRow("f", "Petr", "Pohoda od Kabátu", "queued", "ve frontě · za ~2 skladby", False, "banned"),
     QueueRow("d", "Jana", "Dancing Queen", "thinking", "DJ vybírá", False),
     QueueRow("e", "Jana", "Jasná zpráva", "done", "hotovo · Zařazuju Jasnou zprávu.", False),
 )
@@ -117,6 +119,16 @@ STATES = {
     "art-toast-queued": replace(WITH_ART, toast=("Jana", "Dancing Queen", "za ~2 skladby"), wishes=2),
     "art-busy": replace(WITH_ART, title="Re", artist="Nils Frahm", track_id="DVvgl0amAMw", busy=True),
     "art-fallback": replace(WITH_ART, art_ready=False),
+    # office votes (current.votes / queue[0].votes)
+    "vote-favourite": replace(WITH_ART, vote_up=3, vote_status="favourite", next_vote="favourite"),
+    "vote-mixed": replace(WITH_ART, title="Zastav mě", artist="Marek Ztracený", track_id="F6ZazYXzfXg",
+                          vote_up=2, vote_down=1, vote_status="neutral",
+                          next_title="Pohoda", next_artist="Kabát", next_vote="banned"),
+    "vote-two-line": replace(WITH_ART, vote_up=1, vote_down=2, vote_status="downweighted"),
+    "vote-banned-wish": replace(WITH_ART, title="Pohoda", artist="Kabát", track_id="", art_ready=False,
+                                vote_down=2, vote_status="banned", now_who="Petr"),
+    "vote-artist-banned": replace(WITH_ART, title="Wonderwall", artist="Oasis", track_id="", art_ready=False,
+                                  vote_status="neutral", artist_banned=True, now_who="Jana"),
     "rest-paused-qr": replace(WITH_ART, running=False, paused=True, rest=True),
     "pressed-wish": replace(PLAYING, pressed="wish"),
     "pressed-next": replace(PLAYING, pressed="next", note="povel selhal"),
@@ -215,6 +227,14 @@ def main() -> None:
     boxes = r.render(replace(WITH_ART, elapsed=90, title="Zastav mě", artist="Marek Ztracený",
                              track_id="F6ZazYXzfXg", next_title="September", next_artist="Earth, Wind & Fire"))
     print(f"track change (cover ready): {sum((b[2] - b[0]) * (b[3] - b[1]) for b in boxes)} px")
+
+    r.render(WITH_ART, full=True)
+    for label, v in (("vote ♥ 1 appears", replace(WITH_ART, vote_up=1, vote_status="favourite")),
+                     ("♥ 1 → ♥ 2", replace(WITH_ART, vote_up=2, vote_status="favourite")),
+                     ("→ vyřazená hlasováním", replace(WITH_ART, vote_down=3, vote_up=2, vote_status="banned",
+                                                       now_who="Petr"))):
+        boxes = r.render(v)
+        print(f"{label}: {sum((b[2] - b[0]) * (b[3] - b[1]) for b in boxes)} px in {boxes}")
 
     # ten minutes of playback, as the glass sees it: the per-second ticks plus
     # the periodic re-send of the glass (old: a full frame every 60 s; now: one

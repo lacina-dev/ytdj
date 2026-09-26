@@ -65,6 +65,7 @@ STRINGS = {
         "queue_btn": "Fronta",
         "queue_title": "Fronta přání",
         "queue_empty": "Nikdo si zrovna nic nepřeje.",
+        "voted_out": "vyřazená",
         "type": "Napsat vlastní přání…",
         "offline": "Napiš interpreta nebo písničku (DJ bez AI)",
         "draft": "Pokračovat: ",
@@ -99,6 +100,7 @@ STRINGS = {
         "queue_btn": "Queue",
         "queue_title": "Wish queue",
         "queue_empty": "Nobody is wishing for anything.",
+        "voted_out": "voted out",
         "type": "Type your own wish…",
         "offline": "Type an artist or a song (DJ without AI)",
         "draft": "Continue: ",
@@ -196,6 +198,7 @@ class QueueRow:
     state: str
     label: str  # "ve frontě · za ~2 skladby"
     mine: bool  # sent from this panel — can be removed here
+    vote: str = ""  # its track's office verdict: "favourite" (♥) | "banned" (vyřazená) | ""
 
 
 @dataclass(frozen=True)
@@ -414,6 +417,12 @@ class WishRenderer(NetRenderer):
             removable = row.mine and live
             self._button(d, size, SURFACE if live else (22, 24, 27), 12)
             room = w - 16 - (RM_W + 4 if removable else 0)
+            if row.vote:
+                # the office's verdict on the track, right on the first line
+                mark = "♥" if row.vote == "favourite" else self.s["voted_out"]
+                mf = self.key_small
+                d.text((room, 19), mark, font=mf, fill=ACCENT_TEXT if row.vote == "favourite" else ERR, anchor="rm")
+                room -= int(mf.getlength(mark)) + 8
             x = 10
             x += self._chip(d, x, 19, row.who) + 8
             d.text((x, 19), ellipsize(row.text, self.value, room - x), font=self.value,

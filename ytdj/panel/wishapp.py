@@ -24,6 +24,7 @@ from typing import Callable
 from .hw import Box, TouchEvent
 from .netui import ROWS
 from .stats import emit
+from .ui import vote_mark
 from .wishui import ACTIVE, CHIPS, STRINGS, QueueRow, WishRenderer, WishView, targets
 
 log = logging.getLogger(__name__)
@@ -48,6 +49,29 @@ STATE_PHASE = {
 }
 # klíče čipů pro DJ bez modelu (agent/offline.py), ve stejném pořadí jako CHIPS
 CHIP_KEYS = ("more", "other", "czech", "calmer", "livelier", "surprise")
+
+
+def wish_votes(state: dict) -> dict[str, str]:
+    """Request id → the vote marker of the track it plays now or plays next."""
+    out: dict[str, str] = {}
+    seen: set[str] = set()
+    cur = state.get("current")
+    if isinstance(cur, dict) and isinstance(cur.get("reason"), dict) and cur["reason"].get("kind") == "wish":
+        rid = str(cur["reason"].get("id") or "")
+        seen.add(rid)
+        mark = vote_mark(cur.get("votes"))
+        if mark:
+            out[rid] = mark
+    for item in state.get("queue") or []:
+        if not isinstance(item, dict) or not isinstance(item.get("req"), dict):
+            continue
+        rid = str(item["req"].get("id") or "")
+        if rid and rid not in seen:  # the wish's first track (playing or next) decides
+            seen.add(rid)
+            mark = vote_mark(item.get("votes"))
+            if mark:
+                out[rid] = mark
+    return out
 
 
 def post_json(api, path: str, body: dict, timeout: float = PROMPT_TIMEOUT) -> tuple[int, dict, str]:
@@ -119,6 +143,7 @@ class WishController:
         self.started = False
         # everybody's wishes (from the status stream) and the panel's own
         self.requests: list[dict] = []
+        self.votes: dict[str, str] = {}  # request id → "favourite" | "banned" (its track's votes)
         self.mine: dict[str, str] = {}  # id → owner token
         self.people: list[str] = []
         self.who = PANEL_WHO
@@ -155,6 +180,7 @@ class WishController:
         if isinstance(reqs, list):
             self.requests = [r for r in reqs if isinstance(r, dict)]
         self.dj_offline = bool(state.get("dj_offline"))
+        self.votes = wish_votes(state)
         people = state.get("people")
         if isinstance(people, list):
             self.people = [str(p) for p in people if isinstance(p, str)][:6]
@@ -202,7 +228,8 @@ class WishController:
                 label += " · obnoveno po restartu"
             rows.append(QueueRow(id=str(r.get("id") or ""), who=str(r.get("who") or "?"),
                                  text=str(r.get("text") or ""), state=st, label=label,
-                                 mine=str(r.get("id") or "") in self.mine))
+                                 mine=str(r.get("id") or "") in self.mine,
+                                 vote=self.votes.get(str(r.get("id") or ""), "") if st in ACTIVE else ""))
         return tuple(rows)
 
     # ---- navigation ----

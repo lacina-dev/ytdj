@@ -51,7 +51,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .. import telemetry
+from .. import telemetry, telemetry_sampler
 from .offline import LIMIT, LOGIN, classify
 
 log = logging.getLogger(__name__)
@@ -85,6 +85,11 @@ WARM_HOURS = (7, 19)  # pracovní doba (Po–Pá): app-server drží teplý
 # vlastníka 26. 9. ("Codex zahřátý vždy po přání").
 WISH_WARM_S = 2 * 3600
 WARM_MIN_FREE_MB = 250  # MemAvailable (s běžícím app-serverem) pod tímhle → ukončit
+# Hystereze: nahřát dopředu (bez přání) jen s tolika volnými MB, ať start
+# hned nespadne pod WARM_MIN_FREE_MB a proces se nezavírá a nestartuje dokola.
+# Pi 26. 9. (sys.sample před startem a 1–2 min po tahu, 14 studených startů):
+# MemAvailable ubyl medián 44 MB, 13 ze 14 ≤ 78 MB, jednou 159 MB. 250 + 80.
+WARM_START_FREE_MB = 330
 MEM_CHECK = 60.0  # s — jak často se mimo tah kontroluje paměť
 START_TIMEOUT = 30.0  # s na initialize + thread/start (Pi pod zátěží)
 
@@ -209,6 +214,8 @@ class AppServer:
         self._pending.clear()
         self._events = asyncio.Queue()
         self.auth_dead = None
+        # sys.sample: rss_codex_mb / anon_codex_mb / cpu_codex (telemetry_sampler)
+        telemetry_sampler.register_pid("codex", lambda: self.proc.pid if self.alive else None)
         self.thread_id = None
         self.thread_turns = 0
         self._reader = asyncio.create_task(self._read_loop(self.proc))
@@ -259,7 +266,8 @@ class AppServer:
                 free = self.mem_free()
             if free is not None and free < WARM_MIN_FREE_MB:
                 log.info("app-server: Pi zbývá %d MB (< %d) — ukončuji", free, WARM_MIN_FREE_MB)
-                telemetry.event("dj.app_server_close", why="memory", free_mb=free)
+                telemetry.event("dj.app_server_close", why="memory", free_mb=free,
+                                rss_mb=self._rss_mb())
                 break
             if time.monotonic() - idle_from < self.idle_ttl:
                 continue
@@ -269,8 +277,23 @@ class AppServer:
                     keep = bool(self.keep_warm())
             if not keep:
                 log.info("app-server %d s bez tahu — ukončuji (uvolní paměť)", int(self.idle_ttl))
+                telemetry.event("dj.app_server_close", why="idle", free_mb=free,
+                                rss_mb=self._rss_mb())
                 break
         await self.close()
+
+    def _rss_mb(self) -> int | None:
+        """RSS app-serveru v MB (z /proc) — pro log rozhodnutí o paměti."""
+        if not self.alive:
+            return None
+        try:
+            with open(f"/proc/{self.proc.pid}/status") as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        return int(line.split()[1]) // 1024
+        except (OSError, ValueError, IndexError):
+            return None
+        return None
 
     # ---- JSON-RPC ----
 
@@ -520,12 +543,15 @@ def office_warm(now: Any = None, free_mb: int | None = -1) -> bool:
 
 
 def warm_policy(last_wish: float = 0.0, now: Any = None, free_mb: int | None = -1,
-                wall: float | None = None) -> bool:
+                wall: float | None = None, starting: bool = False) -> bool:
     """Držet app-server teplý? V pracovní době (office_warm), nebo do WISH_WARM_S
     po posledním přání posluchače (`last_wish` = time.time() přání, 0 = žádné) —
-    vždy jen s dost volnou pamětí. `now`/`wall`/`free_mb` dosadí testy."""
+    vždy jen s dost volnou pamětí: běžící drží nad WARM_MIN_FREE_MB, nový
+    (`starting`, bez přání) startuje až nad WARM_START_FREE_MB (hystereze).
+    `now`/`wall`/`free_mb` dosadí testy."""
     free = mem_available_mb() if free_mb == -1 else free_mb
-    if free is not None and free < WARM_MIN_FREE_MB:
+    floor = WARM_START_FREE_MB if starting else WARM_MIN_FREE_MB
+    if free is not None and free < floor:
         return False
     wall = time.time() if wall is None else wall
     if last_wish and 0 <= wall - last_wish < WISH_WARM_S:

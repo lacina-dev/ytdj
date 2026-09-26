@@ -51,6 +51,7 @@ PREFETCH_AHEAD = PREFETCH_MAX  # starší jméno (testy, okno chytrého Další)
 # přípravy sahá až na prefetch_max skladeb, kolik jich fronta má — na Pi
 # rozhoduje queue_target (config).
 FILL_DEPTH = 6
+KEEP_QUEUED = 50  # kolik skladeb fronty smí resolver držet hotových (jeho CACHE_MAX)
 PREFETCH_SETTLE = 0.2  # s — dávka změn fronty se sejde, než se pošle resolveru
 KEEP_HISTORY = 5  # kolik dohraných položek nechat v playlistu mpv před hrající
 VIDEO_ID = re.compile(r"[?&]v=([\w-]{11})")
@@ -74,6 +75,8 @@ RESOLVER_NICE = 5
 # pomalejší otevření; hlasitost se tím nezpožďuje (mpv ji násobí až při
 # čtení ze zásoby), Další a pauza zásobu zahazují hned.
 AUDIO_BUFFER = 2.0
+TAIL_SLACK = 1.0  # s — latence PipeWire nad zásobu mpv (Pi: konec ~2,5 s po eof)
+TAIL_MIN = 0.2  # s — kratší doznívání se navenek nedrží
 SOCKET_POLL = 0.01  # s — jak často se po spuštění mpv dívat po jeho IPC socketu
 SOCKET_TIMEOUT = 20.0  # s — při bootu Pi 3 startuje všechno naráz
 
@@ -326,6 +329,13 @@ class MpvPlayer(Player):
         self._prefetch_task: asyncio.Task | None = None
         self._prefetch_wake = asyncio.Event()
         self._prefetch_now = False
+        self._prefetch_force = False  # poslat okno znovu, i když se nezměnilo
+        # Konec skladby hraje ještě ze zásoby (AUDIO_BUFFER + latence PipeWire,
+        # Pi: ~2,5 s), ale mpv už ohlásilo konec a načítá další. Do té doby se
+        # navenek (displej, web, historie, Další, 👍/👎) drží dohrávající skladba.
+        self._file_dur: tuple[int | None, float] | None = None  # (položka, délka od mpv)
+        self._tail: dict[str, Any] | None = None
+        self._tail_cut = asyncio.Event()
         self._resolver: asyncio.subprocess.Process | None = None
         self._resolver_task: asyncio.Task | None = None
         # ytdj nastaví: když běží Codex, dopředu se nic neřeší (paměť)
@@ -550,7 +560,7 @@ class MpvPlayer(Player):
     async def _observe(self) -> None:
         for i, prop in enumerate(
             ("playlist-pos", "playlist-count", "pause", "volume", "time-pos", "core-idle",
-             "playlist", "audio-params", "audio-out-params"), 1
+             "playlist", "audio-params", "audio-out-params", "duration"), 1
         ):
             await self._send({"command": ["observe_property", i, prop]}, wait=False)
         await self._sync()
@@ -682,12 +692,22 @@ class MpvPlayer(Player):
             elif name == "playlist-count" and isinstance(data, int):
                 self._count = data
             elif name == "pause" and isinstance(data, bool):
+                was = self._paused
                 self._paused = data
                 self._t_pause(data)
+                if was and not data:
+                    # po pauze (třeba hodiny) okno znovu: resolver hned obnoví,
+                    # co mezitím zestárlo, dřív než na to dojde
+                    self._prefetch_force = True
+                    with suppress(RuntimeError):
+                        self._schedule_prefetch(now=True)
             elif name == "volume" and isinstance(data, (int, float)):
                 self._volume = int(data)
             elif name == "time-pos" and isinstance(data, (int, float)):
                 self._time_pos = float(data)
+            elif name == "duration":
+                if isinstance(data, (int, float)) and data > 0:
+                    self._file_dur = (self._cur_entry, float(data))
             elif name == "audio-params":
                 if isinstance(data, dict) and data:
                     self._audio_params = data
@@ -760,7 +780,8 @@ class MpvPlayer(Player):
             if kind in ("error", "unavailable"):
                 self._drop_resolved(self._entries.get(entry))
             premature = self._note_premature_end(kind, msg.get("playlist_entry_id", -1))
-            self._t_end_file(kind, msg, premature)
+            tail = self._audible_tail(kind, entry, premature)
+            self._t_end_file(kind, msg, premature, tail)
             self._time_pos = 0.0
             self._events.put_nowait((kind, msg.get("playlist_entry_id", -1), detail))
             return
@@ -1124,7 +1145,44 @@ class MpvPlayer(Player):
                     out[f"{prefix}_ch"] = p.get("channel-count")
         return out
 
-    def _t_end_file(self, kind: str, msg: dict, premature: bool) -> None:
+    def _audible_tail(self, kind: str, entry: Any, premature: bool) -> float:
+        """Kolik konce skladby ještě zní, když mpv hlásí její konec (eof).
+
+        time-pos mpv je slyšená pozice (odečítá zpoždění výstupu), délka je od
+        mpv — rozdíl je to, co ještě hraje ze zásoby. Nastaví self._tail, pod
+        kterým se dohrávající skladba drží navenek. Bez IPC."""
+        self._tail = None
+        if kind != "finished" or premature or self._outage is not None:
+            return 0.0
+        fd = self._file_dur
+        if not fd or fd[0] != entry:
+            return 0.0
+        left = min(fd[1] - self._time_pos, AUDIO_BUFFER + TAIL_SLACK)
+        if left < TAIL_MIN:
+            return 0.0
+        now = time.monotonic()
+        self._tail = {"entry": entry, "vid": self._entries.get(entry) or self._current_id,
+                      "until": now + left, "t0": now, "pos": self._time_pos, "dur": fd[1]}
+        self._tail_cut = asyncio.Event()
+        return left
+
+    def _tail_active(self) -> bool:
+        t = self._tail
+        return bool(t) and time.monotonic() < t["until"] and not self._tail_cut.is_set()
+
+    async def _wait_tail(self, entry: Any) -> None:
+        """V dispatch: konec dohrávající skladby (a vše za ním) až když dozní."""
+        t = self._tail
+        if not t or t["entry"] != entry:
+            return
+        left = t["until"] - time.monotonic()
+        if left > 0:
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._tail_cut.wait(), left)
+        if self._tail is t:
+            self._tail = None
+
+    def _t_end_file(self, kind: str, msg: dict, premature: bool, tail: float = 0.0) -> None:
         try:
             load = self._load
             entry = msg.get("playlist_entry_id", -1)
@@ -1149,6 +1207,8 @@ class MpvPlayer(Player):
                 fields["waited_ms"] = _ms(load["t_start"], time.monotonic())
             if self._quality:
                 fields["quality"] = self._quality
+            if tail:
+                fields["tail_ms"] = int(tail * 1000)  # ještě zní ze zásoby
             self._load = None
             telemetry.event("track.end", **fields)
             if kind in ("finished", "error", "unavailable") and self._outage is None:
@@ -1238,6 +1298,8 @@ class MpvPlayer(Player):
                 continue  # handlerům nic: skladba nehrála, ani nechybovala
             if kind == "unavailable":
                 kind, detail = self._reclassify(entry_id, detail)
+            if kind == "finished":
+                await self._wait_tail(entry_id)
 
             track = None
             if kind != "idle":
@@ -1597,6 +1659,19 @@ class MpvPlayer(Player):
             # by kdy přišel zvuk (dřív to v logu dělalo "čekání" 113 s)
             await self._command("playlist-next", "force", wait=False)
             return
+        if self._tail_active():
+            # Zní ještě konec skladby, kterou mpv už dohrálo (zásoba ~2,5 s) a
+            # displej/web ji pořád ukazují: Další (i DJ/hlasování, kteří se
+            # rozhodli podle téhož stavu) patří jí, ne další skladbě, kterou
+            # nikdo neslyšel. Doznívání se utne a další začne hned.
+            prev = self._req
+            self._t_request("skip" if by_user else "replace", tail_cut=True)
+            self._req = prev  # další už se načítá — čekání se měří od konce skladby
+            self._tail_cut.set()
+            if self._load and self._load.get("t_loaded") is not None:
+                with suppress(Exception):  # vyprázdní výstup (zásobu konce)
+                    await self._command("seek", 0, "absolute", wait=False)
+            return
         self._replacing = not by_user
         extra: dict[str, Any] = {}
         if by_user:
@@ -1622,6 +1697,9 @@ class MpvPlayer(Player):
     async def toggle_pause(self, paused: bool | None = None) -> None:
         target = (not self._paused) if paused is None else paused
         await self._command("set_property", "pause", target, wait=False)
+        if self._paused and not target:
+            self._prefetch_force = True  # viz pause v _handle_event
+            self._schedule_prefetch(now=True)
         self._paused = target
 
     async def set_volume(self, volume: int) -> None:
@@ -1818,8 +1896,8 @@ class MpvPlayer(Player):
     def _save_playback(self) -> None:
         """Hrající skladba a pozice do tmpfs. Malý zápis do RAM — neblokuje."""
         path = self.playback_file
-        if path is None:
-            return
+        if path is None or self._tail_active():
+            return  # doznívání: _time_pos už patří další skladbě, _current_id ještě ne
         data = self._playback_state()
         try:
             if data is None:
@@ -1985,9 +2063,17 @@ class MpvPlayer(Player):
             # vyhodil těsně předtím (Pi 25. 9.: "připravená" a přesto 14 s).
             cur = self._playlist[self._cur_index()][1] if self._cur_index() >= 0 else None
             keep = [cur] if cur else []
+            # Zbytek fronty za oknem: připravené skladby, které přání odsunulo
+            # za okno, resolver nezahodí (dřív se po přání řešily znovu,
+            # ~4–7 s CPU každá). Nejvýš tolik, kolik drží cache resolveru.
+            keep += [v for v in self.upcoming_ids()[len(ahead):] if v not in keep
+                     and v not in ahead][:max(0, KEEP_QUEUED - len(ahead) - len(keep))]
             # ids[:near] přednostně, zbytek okna je postupné rozšiřování (resolver
             # ho dělá až bez naléhavé práce a ne hned po začátku skladby)
             near = self._prefetch_limits()[0]
+            if self._prefetch_force:
+                self._prefetch_force = False
+                sent = None  # po pauze znovu: resolver zkontroluje čerstvost
             if (ahead, held, first, keep, near) == sent:
                 continue
             resp = await self._resolver_call(
@@ -2048,13 +2134,25 @@ class MpvPlayer(Player):
         current = self._tracks.get(self._current_id) if self._current_id else None
         # core-idle = mpv právě nic nepřehrává (pauza, nebo čeká na data)
         idle = bool(await self._get("core-idle", False))
+        position = float(await self._get("time-pos", 0) or 0)
+        duration = float(await self._get("duration", 0) or 0)
+        tail = self._tail if self._tail_active() else None
+        if tail is not None:
+            # dohrávající skladba: její čas běží dál, další je první ve frontě
+            idle = False
+            duration = tail["dur"]
+            position = min(duration, tail["pos"] + time.monotonic() - tail["t0"])
+            cur_vid = self._playlist[self._cur_index()][1] if self._cur_index() >= 0 else None
+            nxt = self._tracks.get(cur_vid or "")
+            if nxt is not None and cur_vid != self._current_id:
+                upcoming = [nxt] + upcoming
         return PlayerStatus(
             buffering=idle and not self._paused and current is not None,
             playing=count > 0 and not self._paused and self._outage is None,
             paused=self._paused,
             current=current,
-            position=float(await self._get("time-pos", 0) or 0),
-            duration=float(await self._get("duration", 0) or 0),
+            position=position,
+            duration=duration,
             queue=upcoming,
             volume=self._volume,
             quality=self._quality,

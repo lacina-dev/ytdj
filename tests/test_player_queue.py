@@ -14,6 +14,7 @@ import os
 import random
 import sys
 import tempfile
+import time
 import types
 import unittest
 from contextlib import redirect_stderr
@@ -479,6 +480,159 @@ class ProgressivePrefetch(unittest.TestCase):
                 self.assertTrue(all(r["next_ready"] for r in reqs), reqs)
                 self.assertFalse([r for r in reqs if r.get("smart_skip")])  # nic se nepřeskládalo
                 self.assertEqual(h.fake.current_vid(), vid(10))
+
+        run(go())
+
+
+class PreparedStayFresh(unittest.TestCase):
+    """F-ZVUK-21: připravené skladby zůstanou čerstvé i přes dlouhou pauzu,
+    za "hotové" se počítají jen čerstvé a přání neodsune připravené z paměti."""
+
+    def resolver(self):
+        return ResolverQueue.resolver(self)  # type: ignore[arg-type]
+
+    def test_near_items_refresh_by_themselves_during_a_pause(self) -> None:
+        import threading
+
+        r, res = self.resolver()
+        calls: list[str] = []
+
+        class Ydl:
+            _ytdj_client = None
+
+            def extract_info(self, url, download=False):
+                v = url.rsplit("v=", 1)[-1]
+                calls.append(v)
+                return {"id": v}
+
+            def sanitize_info(self, i):
+                return i
+
+        res.ydl, res.ydl_for = Ydl(), res.template
+        ids = [vid(i) for i in range(1, 6)]
+        with mock.patch.object(r, "MAX_AGE", 1.0), redirect_stderr(io.StringIO()):
+            now = r.time.time()
+            for v in ids:
+                res.ready[v] = (now, "{}")
+            res.set_ahead(ids, near=3)
+            threading.Thread(target=res.worker, daemon=True).start()
+            for _ in range(300):  # fronta se nehýbe, nikdo nic neposílá
+                if set(ids[:3]) <= set(calls):
+                    break
+                r.time.sleep(0.01)
+        self.assertEqual(set(calls) & set(ids[:3]), set(ids[:3]))  # nejbližší obnovené samy
+        self.assertEqual(calls[:3], ids[:3])  # v pořadí fronty
+
+    def test_only_fresh_entries_count_as_ready(self) -> None:
+        r, res = self.resolver()
+        err = io.StringIO()
+        with redirect_stderr(err):
+            res.ready[vid(1)] = (r.time.time(), "{}")
+            res.ready[vid(2)] = (r.time.time() - r.MAX_AGE - 60, "{}")  # 4,5 h pauza
+            res.set_ahead([vid(1), vid(2)], near=3)
+        state = [json.loads(x[6:]) for x in err.getvalue().splitlines()
+                 if x.startswith("EVENT ") and '"_state"' in x][-1]
+        self.assertEqual(state["ready"], [vid(1)])
+        ahead = [json.loads(x[6:]) for x in err.getvalue().splitlines()
+                 if x.startswith("EVENT ") and '"resolver.ahead"' in x][-1]
+        self.assertEqual(ahead["ready"], 1)
+
+    def test_unpause_resends_window(self) -> None:
+        async def go():
+            async with Harness() as h:
+                p = h.player
+                await p.enqueue([T(i) for i in range(5)])
+                await h.settle(0.4)
+                n = len(h.aheads())
+                await p.toggle_pause(True)
+                await h.settle(0.4)
+                self.assertEqual(len(h.aheads()), n)  # pauza nic neposílá
+                await p.toggle_pause(False)
+                await h.settle(0.1)
+                self.assertEqual(len(h.aheads()), n + 1)  # po pauze hned znovu
+                self.assertEqual(h.aheads()[-1], h.aheads()[-2])
+
+        run(go())
+
+    def test_queued_tracks_behind_the_window_are_kept(self) -> None:
+        async def go():
+            async with Harness() as h:
+                p = h.player
+                await p.enqueue([T(i) for i in range(16)])
+                await h.settle(0.4)
+                req = [r for r in h.resolver if r.get("op") == "ahead"][-1]
+                up = h.fake.upcoming()
+                self.assertEqual(req["ids"], up[:10])
+                self.assertEqual(req["keep"], [vid(0)] + up[10:])
+
+        run(go())
+        r, res = self.resolver()  # resolver: přání před oknem nic nezahodí
+        radio = [vid(f"r{i}") for i in range(11)]
+        wish = [vid(f"w{i}") for i in range(3)]
+        with redirect_stderr(io.StringIO()):
+            for v in radio[:10]:
+                res.ready[v] = (r.time.time(), "{}")
+            res.set_ahead(wish + radio[:7], near=3, keep=radio[7:])
+        self.assertTrue(all(v in res.ready for v in radio[:10]))
+
+
+class AudibleTail(unittest.TestCase):
+    """F-ZVUK-22: konec skladby ze zásoby (~2,5 s po eof) patří pořád jí —
+    displej, web, historie i Další/👎 ji drží, dokud nedozní."""
+
+    async def _play_to_tail(self, h, left: float):
+        p = h.player
+        seen: list[tuple[str, str | None, float]] = []
+
+        async def handler(ev):
+            seen.append((ev.kind, ev.track.id if ev.track else None, time.monotonic()))
+
+        p.on_event(handler)
+        await p.enqueue([T(i) for i in range(4)])
+        await h.settle()
+        # mpv hlásí délku a slyšenou pozici dohrávající skladby
+        p._handle_event({"event": "property-change", "name": "duration", "data": 200.0})
+        p._handle_event({"event": "property-change", "name": "time-pos", "data": 200.0 - left})
+        t_eof = time.monotonic()
+        h.fake.finish_current()
+        await h.settle(0.05)
+        return seen, t_eof
+
+    def test_track_stays_shown_until_its_end_is_heard(self) -> None:
+        async def go():
+            async with Harness() as h:
+                p = h.player
+                seen, t_eof = await self._play_to_tail(h, 0.5)
+                st = await p.status()
+                self.assertEqual(st.current.id, vid(0))  # zní ještě konec 0
+                self.assertEqual([t.id for t in st.queue][:2], [vid(1), vid(2)])
+                self.assertFalse(st.buffering)
+                self.assertGreaterEqual(st.position, 199.5)
+                self.assertFalse([k for k, *_ in seen if k in ("finished", "start")][1:])
+                await h.settle(0.7)
+                st = await p.status()
+                self.assertEqual(st.current.id, vid(1))
+                fin = next(t for k, v, t in seen if k == "finished" and v == vid(0))
+                self.assertGreaterEqual(fin - t_eof, 0.45)  # historie až po doznění
+                end = [f for k, f in h.events if k == "track.end"][-1]
+                self.assertGreaterEqual(end["tail_ms"], 450)
+
+        run(go())
+
+    def test_skip_during_tail_skips_the_audible_track(self) -> None:
+        async def go():
+            async with Harness() as h:
+                p = h.player
+                seen, t_eof = await self._play_to_tail(h, 2.5)
+                self.assertEqual(h.fake.current_vid(), vid(1))  # mpv už načítá 1
+                t0 = time.monotonic()
+                await p.skip()
+                await h.settle(0.1)
+                self.assertEqual(h.fake.current_vid(), vid(1))  # 1 se nepřeskočila
+                self.assertLess(next(t for k, v, t in seen if k == "finished") - t0, 0.3)
+                self.assertEqual((await p.status()).current.id, vid(1))
+                req = [f for k, f in h.events if k == "track.request"][-1]
+                self.assertTrue(req.get("tail_cut"))
 
         run(go())
 

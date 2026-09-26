@@ -30,6 +30,25 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 INDEX = Path(__file__).resolve().parents[1] / "ytdj" / "web" / "static" / "index.html"
+SERVER_PY = INDEX.parents[1] / "server.py"
+
+
+def _field_labels() -> dict[str, str]:
+    """Popisky nastavení ze server.py bez importu (systémový python nemá starlette)."""
+    import ast
+    tree = ast.parse(SERVER_PY.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.AnnAssign) and getattr(node.target, "id", "") == "FIELD_META":
+            return {k: v[0] for k, v in ast.literal_eval(node.value).items()}
+    return {}
+
+
+def _manual_pages():
+    """Nápověda a Jak to funguje stejně jako na Pi (ytdj/manual.py, jen stdlib)."""
+    import sys
+    sys.path.insert(0, str(INDEX.parents[3]))
+    from ytdj import manual
+    return manual.Pages(), _field_labels()
 
 TRACKS = [
     {"id": "a1", "title": "Holky z naší školky", "artist": "Olympic", "album": None, "duration": 214},
@@ -608,6 +627,15 @@ def make_server(port: int = 0, fake: FakeYtdj | None = None, sse: bool = True) -
                 self.send_header("Content-Length", str(len(raw)))
                 self.end_headers()
                 self.wfile.write(raw)
+            elif urlparse(self.path).path in ("/napoveda", "/jak-to-funguje", "/manual.css"):
+                if not hasattr(fake, "pages"):
+                    fake.pages, fake.labels = _manual_pages()
+                page = fake.pages.get(urlparse(self.path).path.lstrip("/"), {}, fake.labels)
+                self.send_response(200)
+                self.send_header("Content-Type", page.media)
+                self.send_header("Content-Length", str(len(page.raw)))
+                self.end_headers()
+                self.wfile.write(page.raw)
             elif self.path == "/api/about":
                 self._json(200, {"youtube": {"cookies": "soubor", "library": "přihlášen", "pot": "běží",
                                              "quality": "opus 251 kb/s"},

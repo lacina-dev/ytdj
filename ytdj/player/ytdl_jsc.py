@@ -29,7 +29,11 @@ import threading
 import time
 
 IDLE_S = 600.0  # s bez výzvy → node skončí (paměť zpět)
-TIMEOUT_S = 60.0  # s na jednu odpověď (první přehrávač se překládá ~1–2 s)
+# s na jednu odpověď: řešení ~70 ms, přeložení přehrávače z cache ~2 s na
+# Pi. Dokud se čeká, drží se zámek (i urgentní vlákno) — radši brzy vzdát a
+# vyřešit postaru. Nová verze přehrávače (celé předzpracování) má víc.
+TIMEOUT_S = 10.0
+TIMEOUT_RAW_S = 30.0
 KEEP_PLAYERS = 2  # kolik přeložených přehrávačů node drží (nová verze YouTube)
 
 # Řádek JSON dovnitř → řádek JSON ven. "init" načte knihovnu + jádro
@@ -153,12 +157,12 @@ class NodeServer:
                     self.stop_locked()
                     return
 
-    def _ask(self, msg: dict) -> dict:
+    def _ask(self, msg: dict, timeout: float | None = None) -> dict:
         assert self.proc and self.proc.stdin and self.proc.stdout
         self.proc.stdin.write(json.dumps(msg).encode() + b"\n")
         self.proc.stdin.flush()
         fd = self.proc.stdout.fileno()
-        deadline = time.monotonic() + self.timeout_s
+        deadline = time.monotonic() + (timeout or self.timeout_s)
         out = b""
         while not out.endswith(b"\n"):
             left = deadline - time.monotonic()
@@ -195,7 +199,8 @@ class NodeServer:
         if not preprocessed:
             data = {"type": "player", "player": player, "requests": requests,
                     "output_preprocessed": True}
-            return json.dumps(self._ask({"op": "solve", "data": data}))
+            return json.dumps(self._ask({"op": "solve", "data": data},
+                                        max(self.timeout_s, TIMEOUT_RAW_S)))
         key = hashlib.sha1(player.encode()).hexdigest()
         data = {"type": "preprocessed", "requests": requests}
         if key not in self.known:

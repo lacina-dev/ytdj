@@ -6,7 +6,9 @@ Starts tests/fake_ytdj.py (demo wishes) on a free port, drives Chrome over
 the DevTools protocol (needs `websockets`, which system python3 has) and
 writes PNGs: phone 390×844 and desktop 1280×800, light and dark, for the
 first visit (nick step), the everyday view, a sent wish, the DJ-offline and
-YouTube-outage notices and the empty/idle state. Only for looking at the
+YouTube-outage notices and the empty/idle state, plus the Nápověda and
+Jak to funguje pages (collapsed, a search in action, a link to one rule).
+`--only-manual` shoots just those two pages. Only for looking at the
 page — nothing here is a test.
 """
 
@@ -73,7 +75,7 @@ class Tab:
         print(path)
 
 
-async def run(out: Path, base: str, fake, cdp_port: int) -> None:
+async def run(out: Path, base: str, fake, cdp_port: int, only_manual: bool = False) -> None:
     info = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{cdp_port}/json/version").read())
     target = json.loads(urllib.request.urlopen(
         urllib.request.Request(f"http://127.0.0.1:{cdp_port}/json/new?about:blank", method="PUT")).read())
@@ -108,6 +110,48 @@ async def run(out: Path, base: str, fake, cdp_port: int) -> None:
             with fake.lock:
                 for k, v in kw.items():
                     setattr(fake, k, v)
+
+        async def width(tag: str) -> None:
+            over = await tab.js("[document.documentElement.scrollWidth, innerWidth]")
+            print(f"  {tag}: page width {over[0]} / viewport {over[1]}"
+                  + ("  <-- HORIZONTAL SCROLL" if over[0] > over[1] else ""))
+
+        # Nápověda a Jak to funguje (F-WEB-07, F-WEB-08)
+        for size in ("phone", "desktop"):
+            for scheme in ("light", "dark"):
+                await setup(size, scheme)
+                tag = f"{size}-{scheme}"
+                await tab.call("Page.navigate", url=base + "/napoveda")
+                await asyncio.sleep(0.8)
+                await tab.shot(out / f"{tag}-20-napoveda.png")
+                await tab.shot(out / f"{tag}-20-napoveda-fold.png", full=False)
+                await width(f"{tag} Nápověda")
+                await tab.call("Page.navigate", url=base + "/jak-to-funguje")
+                await asyncio.sleep(0.8)
+                await tab.shot(out / f"{tag}-21-jak-to-funguje.png")
+                await tab.shot(out / f"{tag}-21-jak-to-funguje-fold.png", full=False)
+                await width(f"{tag} Jak to funguje")
+                # hledání bez diakritiky: "noc" najde i "noc (22–7 h)"
+                await tab.js("var q=document.querySelector('#q'); q.value='restart noc';"
+                             "q.dispatchEvent(new Event('input'))")
+                await asyncio.sleep(0.5)
+                await tab.shot(out / f"{tag}-22-hledani.png", full=False)
+                await tab.js("var q=document.querySelector('#q'); q.value='hlasovani';"
+                             "q.dispatchEvent(new Event('input'))")
+                await asyncio.sleep(0.5)
+                await tab.shot(out / f"{tag}-22b-hledani-bez-diakritiky.png", full=False)
+                await width(f"{tag} hledání")
+                # odkaz na jedno pravidlo otevře jeho oblast
+                await tab.call("Page.navigate", url=base + "/jak-to-funguje#F-FRONTA-18")
+                await asyncio.sleep(0.8)
+                await tab.shot(out / f"{tag}-23-pravidlo.png", full=False)
+                await width(f"{tag} pravidlo")
+                await tab.js("document.querySelector('#toggleAll').click()")
+                await asyncio.sleep(0.3)
+                await tab.shot(out / f"{tag}-24-vse-rozbalene.png")
+                await width(f"{tag} vše rozbalené")
+        if only_manual:
+            return
 
         for size in ("phone", "desktop", "small"):
             for scheme in (("light",) if size == "small" else ("light", "dark")):
@@ -216,7 +260,9 @@ async def run(out: Path, base: str, fake, cdp_port: int) -> None:
 
 
 def main() -> None:
-    out = Path(sys.argv[1] if len(sys.argv) > 1 else "/tmp/ytdj-shots/web")
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    only_manual = "--only-manual" in sys.argv
+    out = Path(args[0] if args else "/tmp/ytdj-shots/web")
     out.mkdir(parents=True, exist_ok=True)
     server, fake = make_server(0)
     fake.demo()
@@ -241,7 +287,7 @@ def main() -> None:
                 break
             except OSError:
                 time.sleep(0.2)
-        asyncio.run(run(out, base, fake, cdp))
+        asyncio.run(run(out, base, fake, cdp, only_manual))
     finally:
         chrome.terminate()
         try:

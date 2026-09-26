@@ -361,7 +361,9 @@ class ResumeConsistency(unittest.TestCase):
     def test_shutdown_saves_wishes_after_the_player(self):
         from ytdj.__main__ import App
 
-        src = inspect.getsource(App.run)
+        # úklid je v App._shutdown (běží i při SIGTERM během startu)
+        self.assertIn("await self._shutdown()", inspect.getsource(App.run))
+        src = inspect.getsource(App._shutdown)
         self.assertLess(src.index("await self.player.stop()"), src.index("self.wishes.save()"))
 
 

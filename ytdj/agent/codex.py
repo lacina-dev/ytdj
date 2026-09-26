@@ -39,6 +39,7 @@ from ..state import Store
 from .. import telemetry
 from .appserver import (
     WARM_MIN_FREE_MB,
+    WARM_START_FREE_MB,
     AppServer,
     AppServerFatal,
     app_server_enabled,
@@ -337,6 +338,7 @@ class CodexDJ:
     # vlastníka 26. 9. — app-server: tah v rozjetém vlákně je rychlejší (Pi:
     # model medián 8,4 s proti 11,3 s v novém), měření délky viz FUNKCE F-PROVOZ-05.
     MAX_RESUMED_TURNS = 5
+    WARM_AHEAD_GAP = 60.0  # s mezi pokusy nahřát Codex dopředu (warm_ahead)
 
     def _args(self, resume: bool) -> list[str]:
         args = [self.codex, "exec"]
@@ -959,20 +961,33 @@ class CodexDJ:
             obrazovky přání),
           - "start": po startu služby, když ho drží `warm_policy` (pracovní
             doba, nebo přání posluchače před méně než 2 h — i před restartem).
-        Jen s dost volnou pamětí (WARM_MIN_FREE_MB) a když mozek jede (jistič).
+        Nový proces jen s dost volnou pamětí (WARM_START_FREE_MB, hystereze
+        proti WARM_MIN_FREE_MB, kterým se běžící zavírá) a když mozek jede
+        (jistič). Pokus o start nejvýš jednou za WARM_AHEAD_GAP s, ať ho
+        nemůže honit kdokoli, kdo na webu ťuká do pole přání (/api/dj/warm
+        nemá přihlášení). Odmítnutí kvůli paměti jde do logu (dj.warm).
         Když ho `warm_policy` nedrží, proces zase skončí po IDLE_TTL bez tahu.
         """
         if not app_server_enabled() or not self.breaker.allow():
             return False
-        if source == "start" and not warm_policy(self.last_wish_at()):
-            return False
-        free = mem_available_mb()
-        if free is not None and free < WARM_MIN_FREE_MB:
-            return False
         if self.app is not None and self.app.ready:
             return True
-        telemetry.event("dj.warm", source=source, free_mb=free,
-                        alive=bool(self.app is not None and self.app.alive) or None)
+        alive = bool(self.app is not None and self.app.alive)
+        now = time.monotonic()
+        last = getattr(self, "_warm_ahead_at", None)
+        if last is not None and now - last < self.WARM_AHEAD_GAP:
+            return alive  # před chvílí se zkoušelo — žádný další start
+        self._warm_ahead_at = now
+        free = mem_available_mb()
+        floor = WARM_MIN_FREE_MB if alive else WARM_START_FREE_MB
+        if free is not None and free < floor:
+            telemetry.event("dj.warm", source=source, free_mb=free, skipped="memory",
+                            floor_mb=floor)
+            return False
+        if source == "start" and not warm_policy(self.last_wish_at(), free_mb=free,
+                                                  starting=not alive):
+            return False
+        telemetry.event("dj.warm", source=source, free_mb=free, alive=alive or None)
         self.prewarm()
         return True
 

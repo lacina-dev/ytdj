@@ -38,6 +38,7 @@ from starlette.staticfiles import StaticFiles
 import uvicorn
 
 from .. import config as cfgmod
+from .. import manual
 from .. import telemetry
 from . import votes_api
 
@@ -568,6 +569,7 @@ class WebServer:
         self._task: asyncio.Task | None = None
         self._sock: socket.socket | None = None
         self._closing = asyncio.Event()
+        self._pages = manual.Pages()
         self._starlette = self._build()
 
     # ---- routes ----
@@ -588,6 +590,10 @@ class WebServer:
             Route("/api/config", _safe(self._config_post), methods=["POST"]),
             Route("/api/about", _safe(self._about), methods=["GET"]),
             Route("/api/restart", _safe(self._restart), methods=["POST"]),
+            # Nápověda a Jak to funguje (docs/FUNKCE.md živě) — F-WEB-07, F-WEB-08
+            Route("/napoveda", _safe(self._manual), methods=["GET"]),
+            Route("/jak-to-funguje", _safe(self._manual), methods=["GET"]),
+            Route("/manual.css", _safe(self._manual), methods=["GET"]),
             *votes_api.routes(self),  # hlasování kanceláře (PLAN H)
             Mount(
                 "/static",
@@ -620,6 +626,25 @@ class WebServer:
             headers["Content-Encoding"] = "gzip"
             return Response(packed, media_type="text/html; charset=utf-8", headers=headers)
         return Response(raw, media_type="text/html; charset=utf-8", headers=headers)
+
+    async def _manual(self, request: Request) -> Response:
+        """Nápověda, Jak to funguje a jejich styl: zabalené jako index, ETag
+        z obsahu. Stránka se skládá mimo smyčku (čte FUNKCE.md z karty) a jen
+        když se změnil soubor nebo nastavení (manual.Pages drží hotovou)."""
+        name = request.url.path.lstrip("/")
+        cfg = self.app.cfg
+        values = {k: getattr(cfg, k, cfgmod.DEFAULTS[k]) for k in manual.SHOWN_KEYS}
+        labels = {k: meta[0] for k, meta in FIELD_META.items()}
+        page = await asyncio.to_thread(self._pages.get, name, values, labels)
+        if page is None:
+            return _json_error("Nenalezeno.", 404)
+        headers = {"Cache-Control": "no-cache", "ETag": page.etag, "Vary": "Accept-Encoding"}
+        if page.etag in request.headers.get("if-none-match", ""):
+            return Response(status_code=304, headers=headers)
+        if "gzip" in request.headers.get("accept-encoding", ""):
+            headers["Content-Encoding"] = "gzip"
+            return Response(page.packed, media_type=page.media, headers=headers)
+        return Response(page.raw, media_type=page.media, headers=headers)
 
     async def _static_fallback(self, request: Request) -> Response:
         rel = request.path_params.get("path", "")

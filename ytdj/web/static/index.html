@@ -353,7 +353,12 @@
   .navbtn:hover { background: var(--surface-2); }
   .navbtn[aria-current="page"] { background: var(--btn); color: var(--on-btn); border-color: transparent; }
   @media (pointer: coarse) { .navbtn { min-height: 44px; } }
-  @media (max-width: 380px) { .navbtn .lbl { display: none; } }
+  @media (max-width: 480px) { .navbtn .lbl { display: none; } }
+  @media (max-width: 360px) { .brand .name { display: none; } }
+  .navbtn.help { flex: none; width: 40px; padding: 0; justify-content: center; text-decoration: none; font-size: 1.02rem; font-weight: 750; }
+  @media (pointer: coarse) { .navbtn.help { width: 44px; } }
+  .modal .hlp { display: flex; align-items: center; justify-content: center; min-height: 44px; margin-top: 8px;
+                font-size: .9rem; color: var(--accent-text); }
 
   .vrow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
   .vbtn { min-height: 40px; min-width: 64px; padding: 6px 14px; border-radius: 99px; border: 1px solid var(--line);
@@ -502,6 +507,7 @@
     <button class="navbtn" id="votesBtn" type="button" aria-label="Hlasování kanceláře — oblíbené a vyřazené">
       <span aria-hidden="true">👍👎</span><span class="lbl">Hlasování</span>
     </button>
+    <a class="navbtn help" id="helpBtn" href="/napoveda" aria-label="Nápověda — jak jukebox používat" title="Nápověda">?</a>
     <button class="me" id="meBtn" type="button" hidden>
       <span class="av" id="meAv" aria-hidden="true"></span><span class="nm" id="meName"></span>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>
@@ -680,6 +686,7 @@
       <button class="btn" id="nickCancel" type="button" hidden>Zrušit</button>
       <button class="btn primary" id="nickOk" type="submit">Pokračovat</button>
     </div>
+    <a class="hlp" id="nickHelp" href="/napoveda">Jak to funguje? Návod na 2 minuty</a>
   </form>
 </div>
 

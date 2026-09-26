@@ -13,6 +13,16 @@ web pro kolegy, dotykový displej, repro s kolečkem. Vlastník je náročný:
 - Nová funkce = nové pravidlo ve FUNKCE.md + test.
 - `tests/test_funkce.py` hlídá, že každé pravidlo má existující test.
 
+## Návod a dokumentace na webu
+
+- Změna, kterou uživatel uvidí nebo pozná (nové přání, jiné chování fronty,
+  displeje, hlasování…) = uprav i **Nápovědu** (`ytdj/web/static/napoveda.html`),
+  pokud se jí týká. Příklady přání v ní mají `data-example` a
+  `tests/test_manual.py` ověří, že jim aplikace opravdu rozumí.
+- Stránka **Jak to funguje** (`/jak-to-funguje`) se skládá z FUNKCE.md sama.
+  Nová oblast (`##`) ve FUNKCE.md potřebuje úvod v `docs/JAK-TO-FUNGUJE.md`;
+  automatika, o které kolegové nevědí, patří do jeho výběru „Automatiky…".
+
 ## Požadavky
 
 - `docs/POZADAVKY.md` — všechno, co vlastník chtěl, jeho slovy, se stavem.

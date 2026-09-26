@@ -472,7 +472,7 @@ class WarmAhead(unittest.TestCase):
 
         async def go():
             with mock.patch.object(codex_mod, "mem_available_mb", lambda: free_mb), \
-                    mock.patch.object(codex_mod, "warm_policy", lambda last: office):
+                    mock.patch.object(codex_mod, "warm_policy", lambda last, **kw: office):
                 ok = dj.warm_ahead(source)
             await asyncio.sleep(0.8)
             ready = dj.app.ready
@@ -498,6 +498,54 @@ class WarmAhead(unittest.TestCase):
         dj = self.dj()
         dj.breaker.failure(RuntimeError("unexpected status 429 Too Many Requests"))
         self.assertEqual(self.warm(dj, "web"), (False, False))
+
+    def test_memory_hysteresis_and_one_attempt_a_minute(self):
+        """Revize 26. 9.: s resolverem, JS nodem a mpv zbývá na Pi ~470 MB —
+        Codex se dopředu nastartuje až nad WARM_START_FREE_MB (330), běžící
+        se zavírá pod 250; /api/dj/warm nemá přihlášení → nejvýš 1 pokus/min."""
+        from ytdj.agent.appserver import WARM_MIN_FREE_MB, WARM_START_FREE_MB, warm_policy
+
+        self.assertEqual((WARM_MIN_FREE_MB, WARM_START_FREE_MB), (250, 330))
+        wall = 1_000_000.0
+        self.assertTrue(warm_policy(wall - 60, free_mb=300, wall=wall))  # běžící drží
+        self.assertFalse(warm_policy(wall - 60, free_mb=300, wall=wall, starting=True))
+        self.assertTrue(warm_policy(wall - 60, free_mb=340, wall=wall, starting=True))
+
+        self.assertEqual(self.warm(self.dj(), "web", free_mb=300), (False, False))
+        skipped = [e for e in self.events() if e["kind"] == "dj.warm"][-1]
+        self.assertEqual((skipped["skipped"], skipped["floor_mb"]), ("memory", 330))
+
+        from unittest import mock
+
+        from ytdj.agent import codex as codex_mod
+
+        dj = self.dj()
+        calls = []
+        dj.prewarm = lambda: calls.append(1)
+        with mock.patch.object(codex_mod, "mem_available_mb", lambda: 600):
+            results = [dj.warm_ahead("web") for _ in range(5)]  # pět telefonů naráz
+        self.assertEqual(calls, [1])
+        self.assertEqual(results[0], True)
+        run(dj.close())
+
+    def test_codex_memory_is_in_the_system_sample_and_closes_are_logged(self):
+        from ytdj import telemetry_sampler
+
+        async def go():
+            app = AppServer(str(FAKE), _TMP, idle_ttl=0.2, keep_warm=lambda: False)
+            await app.turn("p", DECISION_SCHEMA, timeout=5)
+            rec = telemetry_sampler.SystemSampler(lambda: {}, lambda: {}).sample(
+                emit=False, reason="test")
+            await asyncio.sleep(0.6)  # nečinnost → zavřít
+            return rec, app.alive
+
+        rec, alive = run(go())
+        self.assertIn("rss_codex_mb", rec)
+        self.assertIn("anon_codex_mb", rec)
+        self.assertFalse(alive)
+        close = [e for e in self.events() if e["kind"] == "dj.app_server_close"][-1]
+        self.assertEqual(close["why"], "idle")
+        self.assertIn("free_mb", close)
 
     def test_web_endpoint_only_warms(self):
         from types import SimpleNamespace

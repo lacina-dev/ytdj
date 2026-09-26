@@ -832,5 +832,36 @@ class TouchReportTest(unittest.TestCase):
         self.assertIn("closest to play 1", text)
 
 
+class DriverRebuildTest(unittest.TestCase):
+    """Pi 26. 9. 23:50: rsync přenesl starší čas zdroje, novější stará .so zůstala
+    a dotyk padal na chybějícím kd_touch_ex. Překládá se podle obsahu, ne času."""
+
+    def test_rebuilds_when_content_changes_even_if_source_is_older(self):
+        import os
+        import shutil
+        from unittest import mock
+
+        from ytdj.panel import kedei
+
+        if not shutil.which("cc"):
+            self.skipTest("cc není k dispozici")
+        d = Path(tempfile.mkdtemp())
+        src = d / "kedei.c"
+        src.write_text("int kd_old(void) { return 1; }\n")
+        with mock.patch.object(kedei, "SOURCE", src), mock.patch.object(kedei, "LIB_DIR", d / "lib"):
+            so = kedei._build_lib()
+            self.assertIn(b"kd_old", so.read_bytes())
+            # nový obsah se starším časem než knihovna (jako po rsync -a)
+            src.write_text("int kd_new(void) { return 2; }\n")
+            past = so.stat().st_mtime - 3600
+            os.utime(src, (past, past))
+            so = kedei._build_lib()
+            self.assertIn(b"kd_new", so.read_bytes())
+            # beze změny obsahu se nic nepřekládá
+            before = so.stat().st_mtime_ns
+            kedei._build_lib()
+            self.assertEqual(so.stat().st_mtime_ns, before)
+
+
 if __name__ == "__main__":
     unittest.main()

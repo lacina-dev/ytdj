@@ -24,6 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from fake_ytdj import make_server  # noqa: E402
 from test_panel import EventLog  # noqa: E402
 
+# no cover art from the internet in tests (fake ids aren't YouTube ids anyway)
+os.environ.setdefault("YTDJ_PANEL_ART_URL", "")
 from ytdj.panel.app import PanelApp  # noqa: E402
 from ytdj.panel.net import (  # noqa: E402
     Connected,
@@ -264,6 +266,7 @@ class NetFlowTest(unittest.TestCase):
         self.app = PanelApp(
             self.screen, self.touch, f"http://127.0.0.1:{self.server.server_address[1]}", net_backend=self.net,
         )
+        self.app.page_guard = 0.0  # the tests tap faster than a finger can (see PageGuardTest)
         self.thread = threading.Thread(target=self.app.run, daemon=True)
         self.thread.start()
         self.assertTrue(wait_for(lambda: self.app.online), "panel se nepřipojil")

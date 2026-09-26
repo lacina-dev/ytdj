@@ -52,6 +52,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import telemetry
+from .nicks import NickError, Nicks, clean_nick, tag_of
 from .agent.intent import local_command, norm
 from .music.catalog import RE_URL, Track
 from .player.base import queue_transaction
@@ -67,6 +68,7 @@ MAX_ACTIVE = 5  # rozpracovaných přání na člověka (ochrana před zahlcení
 KEEP_DONE = 8  # kolik vyřízených přání ještě ukazovat
 DONE_TTL = 15 * 60  # s
 WHO_MAX = 24
+ANON = "Host"  # popisek přání bez jména
 TEXT_MAX = 500
 LEGACY_WAIT = 240.0  # s — staří klienti čekají na odpověď jako dřív
 # Přání, které je první na řadě, utne hrající skladbu podkresu (ničí přání to
@@ -161,9 +163,14 @@ def clean_who(who: Any, source: str, cid: str = "") -> str:
         return "terminál"
     if source == "panel":
         return "displej"
-    # bez jména: krátká značka z id klienta, ať se dva anonymní liší
-    # (dřív poslední oktet IP — za NAT byli všichni jeden "host ·1")
-    return f"host ·{cid[-3:]}" if cid else "host"
+    # bez jména (starý klient, skript): lidské "Host", žádné "host ·8e7" na
+    # displeji. Kdo je kdo, rozliší who_key (barva jmenovky), ne popisek.
+    return ANON
+
+
+def _anon(who: str) -> str:
+    """Starý popisek "host ·8e7" (uložený stav z dřívějška) → "Host"."""
+    return ANON if not who or who.casefold().startswith("host ·") or who == "host" else who
 
 
 def minutes(seconds: float) -> str:
@@ -281,7 +288,12 @@ class Wish:
             out["ahead"] = ahead
             out["eta"] = eta_text(ahead, eta_s)
             if eta_s is not None:
-                out["eta_s"] = int(eta_s)
+                # po 15 s: odhad se jinak mění každou vteřinu a celý stav by se
+                # posílal všem prohlížečům každou vteřinu místo drobné "pos"
+                out["eta_s"] = int(round(eta_s / 15.0) * 15)
+        # kdo to je, stabilně a bez prozrazení id klienta: barva jmenovky na
+        # displeji i webu, "tvoje" na webu (= "tag" z /api/me)
+        out["who_key"] = tag_of(self.key)
         if self.restored:
             out["restored"] = True
         if self.skipped_by:
@@ -308,7 +320,7 @@ class Wish:
     def from_json(cls, d: dict) -> "Wish | None":
         try:
             w = cls(
-                id=str(d["id"]), token=str(d["token"]), who=str(d.get("who") or "host"),
+                id=str(d["id"]), token=str(d["token"]), who=_anon(str(d.get("who") or "")),
                 source=str(d.get("source") or "web"), text=str(d.get("text") or ""),
                 created=float(d.get("created") or time.time()),
                 mono=time.monotonic() - max(0.0, time.time() - float(d.get("created") or 0)),
@@ -566,6 +578,8 @@ class WishQueue:
         self._cur_left: tuple[float, float] | None = None  # (zbývá s, kdy změřeno)
         self._censor_key: tuple | None = None
         self._censor_obj = None
+        # přezdívky (id klienta → jméno) — vedle stavu fronty, přežijí restart
+        self.nicks = Nicks(state_file.parent / "nicks.json" if state_file else None)
 
     @property
     def censor(self):
@@ -608,13 +622,16 @@ class WishQueue:
             w = next((x for x in self.wishes if x.current == vid), None)
         c = self.censor
         if w is not None:
-            return {"kind": "wish", "who": c.clean(w.who), "text": c.clean(w.text[:200]), "id": w.id}
+            return {"kind": "wish", "who": c.clean(w.who), "text": c.clean(w.text[:200]), "id": w.id,
+                    "who_key": tag_of(w.key)}
         out = {k: v for k, v in self.bg_reason.items() if k != "id"}
         out["who"] = c.clean(out.get("who", ""))
         # "nálada z přání X" jen dokud to přání trvá; pak je to prostě výběr DJe
         src = self.by_id(self.bg_reason.get("id", ""))
         if src is None or not src.active:
             out["who"] = ""
+        else:
+            out["who_key"] = tag_of(src.key)
         return out
 
     def queue_tag(self, vid: str) -> dict | None:
@@ -622,7 +639,7 @@ class WishQueue:
         w = self.by_id(wid) if wid else None
         if w is None or not w.active:
             return None
-        return {"id": w.id, "who": self.censor.clean(w.who)}
+        return {"id": w.id, "who": self.censor.clean(w.who), "who_key": tag_of(w.key)}
 
     def eta_seconds(self, ahead: int | None) -> float | None:
         """Odhad, za kolik sekund začne skladba na místě `ahead` fronty."""
@@ -659,13 +676,58 @@ class WishQueue:
         return out
 
     def people(self) -> list[str]:
-        """Jména z posledních přání (výběr jména na displeji)."""
+        """Jména z posledních přání, pak přezdívky lidí, kteří tu dnes byli (výběr
+        jména na displeji)."""
         out: list[str] = []
-        for w in sorted(self.wishes, key=lambda w: w.created, reverse=True):
-            if w.who not in out and w.who not in ("displej", "terminál") \
-                    and not w.who.startswith("host") and not self.censor.clean(w.who) != w.who:
-                out.append(w.who)
+        names = [w.who for w in sorted(self.wishes, key=lambda w: w.created, reverse=True)]
+        for who in names + self.nicks.recent():
+            if who not in out and who not in ("displej", "terminál") \
+                    and not who.casefold().startswith("host") and not self.censor.clean(who) != who:
+                out.append(who)
         return out[:6]
+
+    # ---- přezdívky ----
+
+    def name_for(self, cid: Any, fallback: str = "") -> str:
+        """Zaregistrovaná přezdívka klienta, jinak `fallback` (jméno z požadavku)."""
+        return self.nicks.get(clean_cid(cid)) or fallback
+
+    def me(self, cid: Any) -> dict:
+        cid = clean_cid(cid)
+        if not cid:
+            raise NickError("Chybí id prohlížeče — obnov prosím stránku.")
+        nick = self.nicks.get(cid)
+        if nick:
+            self.nicks.touch(cid)
+        return {"client": cid, "nick": nick, "tag": tag_of(cid)}
+
+    def set_nick(self, cid: Any, raw: Any) -> dict:
+        """Zaregistruje / změní přezdívku klienta; NickError, když neprojde.
+
+        Rozpracovaná i nedávno vyřízená přání toho klienta se přejmenují hned,
+        ať fronta, displej i "přeje si" ukazují nové jméno."""
+        cid = clean_cid(cid)
+        if not cid:
+            raise NickError("Chybí id prohlížeče — obnov prosím stránku.")
+        nick = clean_nick(raw, self.censor)
+        old = self.nicks.get(cid)
+        shared = self.nicks.set(cid, nick)
+        renamed = 0
+        for w in self.wishes:
+            if w.cid == cid and w.who != nick:
+                w.who = nick
+                renamed += 1
+        if self.bg_reason.get("who") and self._key_of(self.bg_reason.get("id")) == cid:
+            self.bg_reason["who"] = nick
+        telemetry.event("web.nick", cid=cid[-6:], nick=nick, was=old or None,
+                        shared=shared or None, renamed=renamed or None)
+        log.info("přezdívka %s: %s%s", cid[-6:], nick, f" (dřív {old})" if old else "")
+        if renamed:
+            self._changed()
+        out = {"client": cid, "nick": nick, "tag": tag_of(cid)}
+        if shared:
+            out["shared"] = True
+        return out
 
     def _changed(self) -> None:
         if self.on_change:
@@ -681,7 +743,12 @@ class WishQueue:
         text = " ".join(str(text or "").split())[:TEXT_MAX]
         source = source if source in ("web", "panel", "repl") else "web"
         cid = clean_cid((client or {}).get("id")) or ("repl" if source == "repl" else "")
-        who = clean_who(who, source, cid)
+        # přezdívka, kterou si klient zaregistroval, má přednost před tím, co
+        # poslal v "who" — jméno je pak všude stejné (fronta, displej, přeskočil)
+        nick = self.nicks.get(cid)
+        if nick:
+            self.nicks.touch(cid)
+        who = nick or clean_who(who, source, cid)
         n = norm(text)
         if cid:
             # Starší přání téhož klienta, na která DJ ještě ani nesáhl, se
@@ -718,7 +785,7 @@ class WishQueue:
             "request.created", id=w.id, who=w.who, source=source, text=telemetry.clip(text, 300),
             len=len(text), play_next=w.play_next or None, cut=cut or None, **w.client,
             waiting=sum(1 for x in self.wishes if x.state in ("waiting", "thinking")),
-            active_people=len({x.who for x in self.wishes if x.active}),
+            active_people=len({x.key for x in self.wishes if x.active}),
         )
         log.info("posluchač: %s (přání %s, %s/%s%s)", text, w.id, who, source,
                  f", {w.client.get('ua')}" if w.client.get("ua") else "")
@@ -806,7 +873,17 @@ class WishQueue:
         telemetry.event("request.play_next", id=w.id, who=w.who, source=w.source, state=w.state)
         self._changed()
         await self.replan()
-        return True, "Hraje hned po téhle skladbě."
+        return True, self._after_current(w)
+
+    def _after_current(self, w: Wish | None = None) -> str:
+        """Poctivé "hned": po skladbě, která hraje — i s tím, jak dlouho ještě
+        hraje, a proč se neutne (cizí přání se neutíná nikdy)."""
+        left = self.eta_seconds(0)
+        when = f", asi za {minutes(left)[1:]}" if left is not None and left >= 45 else ""
+        owner = self._owner_of(self.current_vid)
+        why = f" (teď hraje, co si přeje {self.censor.clean(owner.who)} — to se nepřerušuje)" \
+            if owner is not None and owner.active and (w is None or owner.key != w.key) else ""
+        return f"Hraje hned po téhle skladbě{when}{why}."
 
     async def cancel_all(self, why: str = "stop") -> int:
         n = 0
@@ -1239,7 +1316,7 @@ class WishQueue:
         elif w.state == "playing" or cut:
             when = "Hraje hned."
         elif ahead == 0:
-            when = "Hraje hned po téhle."
+            when = self._after_current(w)
         elif ahead is not None:
             when = f"Na řadě {eta_text(ahead, self.eta_seconds(ahead))}."
         else:
@@ -1256,7 +1333,7 @@ class WishQueue:
             "request.queued", id=w.id, who=w.who, source=w.source, intent_kind=w.kind, n_tracks=len(w.tracks),
             ahead=ahead, play_next=w.play_next or None, cut=cut or None,
             took_ms=int((time.monotonic() - t0) * 1000),
-            people=len({x.who for x in self.wishes if x.state in ("queued", "playing")}),
+            people=len({x.key for x in self.wishes if x.state in ("queued", "playing")}),
         )
         self._changed()
 
@@ -1600,7 +1677,7 @@ class WishQueue:
                 w.play_next = False
                 if new_turn:
                     telemetry.event("request.turn", id=w.id, who=w.who, source=w.source, turn=self.turns.turn_no,
-                                    people=len({x.who for x in self.wishes
+                                    people=len({x.key for x in self.wishes
                                                 if x.state in ("queued", "playing")}))
             else:
                 self.turns.block = None

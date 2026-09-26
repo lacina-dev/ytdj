@@ -497,6 +497,8 @@ class WebServer:
             Route("/api/requests", _safe(self._requests), methods=["GET"]),
             Route("/api/requests/{rid}", _safe(self._request_action), methods=["POST", "DELETE"]),
             Route("/api/control", _safe(self._control), methods=["POST"]),
+            Route("/api/me", _safe(self._me_get), methods=["GET"]),
+            Route("/api/me", _safe(self._me_post), methods=["POST"]),
             Route("/api/config", _safe(self._config_get), methods=["GET"]),
             Route("/api/config", _safe(self._config_post), methods=["POST"]),
             Route("/api/about", _safe(self._about), methods=["GET"]),
@@ -895,7 +897,7 @@ class WebServer:
             return JSONResponse({"reply": "DJ vybírá hudbu podle času a dne." if did == "starting"
                                  else "Hraju dál.", "local": True})
         # povely jako "další" nebo "hlasitěji" hned, bez fronty
-        by = " ".join(str(data.get("who") or "").split())[:24] or (
+        by = wq.name_for(data.get("client"), " ".join(str(data.get("who") or "").split())[:24]) or (
             "displej" if source == "panel" else "někdo")
         local = await wq.try_local(text, by=by)
         if local is not None:
@@ -966,6 +968,32 @@ class WebServer:
             return _json_error(msg, status)
         return JSONResponse({"ok": True, "message": msg})
 
+    # ---- přezdívka (kdo jsem) ----
+
+    async def _me_get(self, request: Request) -> Response:
+        """GET /api/me?client=<id> → {"client", "nick" ("" = ještě nemá), "tag"}."""
+        wq = getattr(self.app, "wishes", None)
+        if wq is None:
+            return _json_error("Přezdívky tu nejsou.", 404)
+        try:
+            return JSONResponse(wq.me(request.query_params.get("client")))
+        except ValueError as exc:  # NickError
+            return _json_error(str(exc), 400)
+
+    async def _me_post(self, request: Request) -> Response:
+        """POST /api/me {"client", "nick"} → 200 {"client", "nick", "tag", "shared"?} | 400 {"error"}."""
+        wq = getattr(self.app, "wishes", None)
+        if wq is None:
+            return _json_error("Přezdívky tu nejsou.", 404)
+        try:
+            data = await self._body(request)
+            out = wq.set_nick(data.get("client"), data.get("nick"))
+        except ValueError as exc:  # BadValue, NickError — věta pro člověka
+            telemetry.event("web.nick_rejected", error=str(exc), **_client(request))
+            return _json_error(str(exc), 400)
+        self.poke()
+        return JSONResponse(out)
+
     async def _control(self, request: Request) -> Response:
         t0 = time.monotonic()
         rec: dict[str, Any] = _client(request)
@@ -1010,7 +1038,8 @@ class WebServer:
             elif action == "next":
                 if wq is not None:
                     # kdo přeskočil — vlastník přeskočeného přání to uvidí
-                    by = " ".join(str(data.get("who") or "").split())[:24]
+                    by = wq.name_for(data.get("client"),
+                                     " ".join(str(data.get("who") or "").split())[:24])
                     wq.note_skip(by or ("displej" if rec.get("ua") == "panel" else "někdo"))
                 await player.skip()
             elif action == "stop":

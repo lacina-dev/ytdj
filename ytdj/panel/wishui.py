@@ -14,7 +14,6 @@ with "Hned po téhle"), "queue" (everybody's wishes, four rows at a time,
 
 from __future__ import annotations
 
-import colorsys
 from dataclasses import dataclass
 from typing import Callable
 
@@ -51,6 +50,7 @@ from .ui import (
     TEXT,
     W,
     ellipsize,
+    who_color,
     wrap,
 )
 
@@ -66,7 +66,7 @@ STRINGS = {
         "queue_title": "Fronta přání",
         "queue_empty": "Nikdo si zrovna nic nepřeje.",
         "type": "Napsat vlastní přání…",
-        "offline": "DJ teď rozumí jen „pusť <interpret>“ a tlačítkům",
+        "offline": "Napiš interpreta nebo písničku (DJ bez AI)",
         "draft": "Pokračovat: ",
         "placeholder": "např. písničky od Olympicu",
         "cancel": "Zpět",
@@ -100,7 +100,7 @@ STRINGS = {
         "queue_title": "Wish queue",
         "queue_empty": "Nobody is wishing for anything.",
         "type": "Type your own wish…",
-        "offline": "The DJ only gets “play <artist>”, a song title and the buttons now",
+        "offline": "Type an artist or a song (DJ without AI)",
         "draft": "Continue: ",
         "placeholder": "e.g. songs by Olympic",
         "cancel": "Back",
@@ -257,16 +257,6 @@ ACTIVE = ("waiting", "thinking", "queued", "playing")
 Region = tuple[str, Box, Callable[[WishView], tuple], Callable, bool]
 
 
-def who_color(name: str) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
-    """A name → (fill, text) colours; the same person looks the same everywhere."""
-    h = 0
-    for ch in name or "?":
-        h = (h * 31 + ord(ch)) % 360
-    fill = colorsys.hls_to_rgb(h / 360, 0.26, 0.45)
-    text = colorsys.hls_to_rgb(h / 360, 0.78, 0.6)
-    return (tuple(int(c * 255) for c in fill), tuple(int(c * 255) for c in text))  # type: ignore[return-value]
-
-
 class WishRenderer(NetRenderer):
     def __init__(self, lang: str = "cs", share: NetRenderer | None = None) -> None:
         super().__init__(lang, share=share)
@@ -369,7 +359,7 @@ class WishRenderer(NetRenderer):
         elif v.offline:
             # mozek DJe nejede — ať je jasné, co teď funguje
             d.text((x, cy), ellipsize(self.s["offline"], self.label, room), font=self.label,
-                   fill=ERR, anchor="lm")
+                   fill=WARN, anchor="lm")
         else:
             d.text((x, cy), self.s["type"], font=self.value, fill=TEXT if not pressed else ACCENT_TEXT, anchor="lm")
 

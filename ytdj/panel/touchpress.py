@@ -88,3 +88,65 @@ class Press:
                 self.inside = False
         # between STICKY and CANCEL: keep the state — no flicker on the border
         return self.inside
+
+
+# ---- the button from the whole press, not from the landing ----
+#
+# Pi, 26. 9. after calibrating: hits on the same button scattered ±30 px
+# vertically (play: dy −31…+28), and the owner: "prst mám přes celé −volume,
+# ale když jsem moc nahoře, aktivuje se Play". The landing position (the first
+# two samples, while the pressure ramps up) is the noisiest part of a press;
+# the finger resting afterwards is where it really is.
+
+RAMP = 0.06  # s — the first part of a press, while the pressure builds up
+DRAG = 70  # px — the resting part of a press spread wider than this is a drag, not a press
+
+
+class Gesture:
+    """Every position of one press, with the time it came."""
+
+    def __init__(self, x: int, y: int, at: float) -> None:
+        self.at = at
+        self.pts: list[tuple[float, int, int]] = [(at, x, y)]
+
+    def add(self, x: int, y: int, at: float) -> None:
+        self.pts.append((at, x, y))
+
+    def _steady(self) -> list[tuple[float, int, int]]:
+        # the last position is the lift-off's (drivers that don't drop it themselves)
+        return self.pts[:-1] if len(self.pts) >= 3 else self.pts
+
+    def robust(self) -> tuple[int, int]:
+        """Where the finger rested: the median after the pressure ramp, without the lift-off."""
+        pts = self._steady()
+        late = [p for p in pts if p[0] - self.at >= RAMP]
+        use = late if len(late) >= 2 else pts
+        xs = sorted(p[1] for p in use)
+        ys = sorted(p[2] for p in use)
+        return xs[len(xs) // 2], ys[len(ys) // 2]
+
+    def settled(self, now: float) -> bool:
+        return now - self.at >= RAMP
+
+    def dragged(self) -> bool:
+        pts = self._steady()
+        xs = [p[1] for p in pts]
+        ys = [p[2] for p in pts]
+        return max(max(xs) - min(xs), max(ys) - min(ys)) > DRAG
+
+
+def decide(targets: dict[str, Box], gesture: Gesture, press: Press | None) -> str | None:
+    """The button a finished press means.
+
+    A still press: the button under where the finger rested (the median),
+    or, if that's in nobody's area, the one it landed on (if it never left
+    it). A drag: only the button it started on, and only if it stayed there.
+    """
+    if press is None:
+        return None
+    if gesture.dragged():
+        return press.name if press.inside else None
+    name, _ = nearest(targets, *gesture.robust())
+    if name is None:
+        return press.name if press.inside else None
+    return name

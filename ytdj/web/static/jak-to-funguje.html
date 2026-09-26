@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0e1013" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#faf7f2" media="(prefers-color-scheme: light)">
+<title>Jak to funguje — ytdj</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%277%27 fill=%27%23d8a656%27/%3E%3Crect x=%279%27 y=%2713%27 width=%273%27 height=%279%27 rx=%271.5%27 fill=%27%23141414%27/%3E%3Crect x=%2714.5%27 y=%278%27 width=%273%27 height=%2714%27 rx=%271.5%27 fill=%27%23141414%27/%3E%3Crect x=%2720%27 y=%2711%27 width=%273%27 height=%2711%27 rx=%271.5%27 fill=%27%23141414%27/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/manual.css">
+</head>
+<body>
+<!--
+  Šablona stránky Jak to funguje (FUNKCE F-WEB-08). Obsah doplní server
+  (ytdj/manual.py) z docs/FUNKCE.md a docs/JAK-TO-FUNGUJE.md do značek
+  YTDJ:… — ruční text sem nepatří, pravidla se píšou do FUNKCE.md.
+-->
+<div class="wrap">
+
+  <header class="top">
+    <a class="back" href="/"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>Jukebox</a>
+    <a class="navlink" href="/napoveda">Nápověda</a>
+  </header>
+
+  <h1>Jak to funguje</h1>
+  <p class="lead">Všechno, co jukebox dělá — i to, co dělá sám od sebe. Každé pravidlo tu hlídá automatický test, a protože se stránka skládá přímo ze závazného popisu funkcí, je vždycky aktuální.</p>
+  <p class="stav"><!--YTDJ:STAV--> · <a href="#zmeny">Změny se souhlasem vlastníka</a></p>
+  <!--YTDJ:CHYBI-->
+
+  <div class="searchbar">
+    <div class="searchrow">
+      <label class="search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+        <input id="q" type="search" placeholder="Hledat, třeba „noc“" autocomplete="off" spellcheck="false" enterkeyhint="search" aria-label="Hledat v pravidlech" aria-describedby="found">
+      </label>
+      <button class="tbtn" id="toggleAll" type="button">Rozbalit vše</button>
+    </div>
+    <p class="found" id="found" aria-live="polite"></p>
+  </div>
+
+  <nav class="tocs" id="tocs" aria-label="Oblasti"><!--YTDJ:OBSAH--></nav>
+
+  <section id="automatiky" aria-labelledby="h-auto">
+    <h2 class="h2" id="h-auto">Automatiky, o kterých možná nevíš</h2>
+    <ul class="autos"><!--YTDJ:AUTO--></ul>
+  </section>
+
+  <section id="oblasti" aria-labelledby="h-obl">
+    <h2 class="h2" id="h-obl">Všechna pravidla podle oblastí</h2>
+    <!--YTDJ:OBLASTI-->
+    <p class="nores card" id="nores" hidden>Nic takového jsem nenašel. Zkus jiné slovo — třeba „přání“, „displej“ nebo „výpadek“.</p>
+  </section>
+
+  <section id="zmeny" aria-labelledby="h-zmeny">
+    <h2 class="h2" id="h-zmeny">Změny se souhlasem vlastníka</h2>
+    <div class="card chwrap">
+      <table class="changes">
+        <thead><tr><th>Kdy</th><th>Pravidlo</th><th>Co se změnilo a proč</th></tr></thead>
+        <tbody><!--YTDJ:ZMENY--></tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer class="foot"><a href="/">Zpět na jukebox</a><a href="/napoveda">Nápověda</a></footer>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (s) { return document.querySelector(s); };
+  var $$ = function (s) { return Array.prototype.slice.call(document.querySelectorAll(s)); };
+  // bez diakritiky, malými písmeny: "noc" najde "Noc", "hlasitost" i "hlasitost"
+  function fold(s) { return s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase(); }
+
+  var q = $("#q"), found = $("#found"), nores = $("#nores"), toggle = $("#toggleAll");
+  var areas = $$("details.area");
+  var hidden = [$("#automatiky"), $("#zmeny"), $("#tocs")];
+  var items = $$(".rule").map(function (li) {
+    var area = li.closest("details");
+    return { li: li, area: area,
+             hay: fold(li.getAttribute("data-id") + " " + (area ? area.getAttribute("data-title") : "") + " " + li.textContent) };
+  });
+
+  function unmark() {
+    $$("mark").forEach(function (m) {
+      var p = m.parentNode;
+      p.replaceChild(document.createTextNode(m.textContent), m);
+      p.normalize();
+    });
+  }
+  function mark(root, terms) {
+    var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null), nodes = [], n;
+    while ((n = walker.nextNode())) nodes.push(n);
+    nodes.forEach(function (node) {
+      var text = node.nodeValue, low = "";
+      for (var i = 0; i < text.length; i++) low += fold(text[i]).charAt(0) || " ";
+      var ranges = [];
+      terms.forEach(function (t) {
+        var at = 0, k;
+        while (t && (k = low.indexOf(t, at)) >= 0) { ranges.push([k, k + t.length]); at = k + t.length; }
+      });
+      if (!ranges.length) return;
+      ranges.sort(function (a, b) { return a[0] - b[0]; });
+      var frag = document.createDocumentFragment(), pos = 0;
+      ranges.forEach(function (r) {
+        if (r[0] < pos) return;
+        frag.appendChild(document.createTextNode(text.slice(pos, r[0])));
+        var m = document.createElement("mark");
+        m.textContent = text.slice(r[0], r[1]);
+        frag.appendChild(m);
+        pos = r[1];
+      });
+      frag.appendChild(document.createTextNode(text.slice(pos)));
+      node.parentNode.replaceChild(frag, node);
+    });
+  }
+  function plural(n) { return n === 1 ? "pravidlo" : (n >= 2 && n <= 4 ? "pravidla" : "pravidel"); }
+
+  var saved = null;  // které oblasti byly otevřené před hledáním
+  function search() {
+    var terms = fold(q.value).split(/\s+/).filter(Boolean);
+    unmark();
+    if (!terms.length) {
+      items.forEach(function (it) { it.li.hidden = false; });
+      areas.forEach(function (a, i) { a.hidden = false; if (saved) a.open = saved[i]; });
+      hidden.forEach(function (el) { if (el) el.hidden = false; });
+      saved = null;
+      found.textContent = "";
+      nores.hidden = true;
+      return;
+    }
+    if (!saved) saved = areas.map(function (a) { return a.open; });
+    var hits = 0, per = new Map();
+    items.forEach(function (it) {
+      var ok = terms.every(function (t) { return it.hay.indexOf(t) >= 0; });
+      it.li.hidden = !ok;
+      if (ok) { hits++; per.set(it.area, (per.get(it.area) || 0) + 1); mark(it.li.querySelector(".rt"), terms); }
+    });
+    areas.forEach(function (a) { var n = per.get(a) || 0; a.hidden = !n; a.open = !!n; });
+    hidden.forEach(function (el) { if (el) el.hidden = true; });
+    found.textContent = hits ? "Nalezeno " + hits + " " + plural(hits) + " v " + per.size +
+                               (per.size === 1 ? " oblasti" : " oblastech") : "";
+    nores.hidden = !!hits;
+  }
+  var timer = 0;
+  q.addEventListener("input", function () { clearTimeout(timer); timer = setTimeout(search, 90); });
+  q.addEventListener("keydown", function (ev) { if (ev.key === "Escape") { q.value = ""; search(); } });
+
+  function syncToggle() {
+    toggle.textContent = areas.every(function (a) { return a.open; }) ? "Sbalit vše" : "Rozbalit vše";
+  }
+  toggle.addEventListener("click", function () {
+    var open = !areas.every(function (a) { return a.open; });
+    areas.forEach(function (a) { a.open = open; });
+    syncToggle();
+  });
+  areas.forEach(function (a) { a.addEventListener("toggle", syncToggle); });
+
+  // odkaz na pravidlo (#F-RESTART-01) nebo oblast otevře její sekci
+  function reveal() {
+    var id = decodeURIComponent(location.hash.slice(1));
+    if (!id) return;
+    var el = document.getElementById(id);
+    if (!el) return;
+    if (q.value) { q.value = ""; search(); }
+    var d = el.tagName === "DETAILS" ? el : el.closest("details");
+    if (d) d.open = true;
+    el.scrollIntoView({ block: el.tagName === "LI" ? "center" : "start" });
+  }
+  window.addEventListener("hashchange", reveal);
+  reveal();
+})();
+</script>
+</body>
+</html>

@@ -16,6 +16,8 @@ import subprocess
 import sys
 import tempfile
 import threading
+import json
+import time
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -213,6 +215,66 @@ class StartOrder(unittest.TestCase):
         Player = asyncio.run(go())
         self.assertEqual(Player.starts, 1)
         self.assertTrue(Player.stopped)
+
+
+class StopDuringStart(unittest.TestCase):
+    """SIGTERM (zrušení App.run) už během startu: přehrávač se řádně zastaví,
+    playback.json i přání se uloží, přezdívky („naposledy viděn") taky."""
+
+    def test_sigterm_while_starting_still_cleans_up_and_saves_nicks(self):
+        saved = []
+
+        async def go():
+            tmp = Path(tempfile.mkdtemp(dir=_TMP))
+            playing, pb = await interrupted_session(tmp)
+            fake = FakeMpv(tmp / "mpv.sock")
+            await fake.start()
+            Player = make_player_class(fake, pb, [])
+            real_import = main.importlib.import_module
+
+            def slow_import(name):
+                if name == main.WEB_MODULE:
+                    time.sleep(1.5)  # import webu na Pi (SD karta) trvá
+                return real_import(name)
+
+            real_save = wishes.WishQueue.save
+
+            def save(self):
+                saved.append(1)
+                return real_save(self)
+
+            with mock.patch.object(main, "MpvPlayer", Player), \
+                    mock.patch("ytdj.music.Catalog", fake_catalog), \
+                    mock.patch("ytdj.web.WebServer", StubWeb), \
+                    mock.patch.object(main, "yt_dlp_warning", mock.AsyncMock(return_value=None)), \
+                    mock.patch.object(wishes, "should_resume", day_resume()), \
+                    mock.patch.object(main.importlib, "import_module", slow_import), \
+                    mock.patch.object(wishes.WishQueue, "save", save):
+                app = await main.start_app(Config(**DEFAULTS), main.StartClock())
+                nicks = app.wishes.nicks
+                nicks.path = tmp / "nicks.json"
+                nicks.data["c1"] = {"nick": "Jana", "at": 1.0}
+                nicks._saved_at = time.monotonic()  # zápis před chvílí
+                nicks.touch("c1")  # "naposledy viděn" — na kartu až za 10 min
+                self.assertFalse(nicks.path.exists())
+                run = asyncio.create_task(app.run(repl=False))
+                await asyncio.sleep(0.8)  # přehrávač běží, web se ještě importuje
+                before = pb.stat().st_mtime_ns if pb.exists() else None
+                app.player.expect_exit()
+                run.cancel()  # to, co dělá obsluha SIGTERM v _amain
+                rc = await run
+                after = pb.stat().st_mtime_ns if pb.exists() else None
+                seen = json.loads(nicks.path.read_text())["c1"]["at"]
+            await fake.close()
+            return rc, Player, before, after, seen
+
+        rc, Player, before, after, seen = asyncio.run(go())
+        self.assertEqual(rc, 0)  # zrušení není chyba
+        self.assertTrue(Player.stopped)
+        self.assertTrue(saved)
+        self.assertIsNotNone(after)
+        self.assertNotEqual(before, after)  # playback.json zapsaný při konci
+        self.assertGreater(seen, 1.0)
 
 
 class LightStart(unittest.TestCase):

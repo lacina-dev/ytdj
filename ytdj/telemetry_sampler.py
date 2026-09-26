@@ -135,6 +135,27 @@ def parse_pwtop_frame(lines: list[str]) -> dict[str, int]:
     return out
 
 
+# Další sledované procesy mimo přehrávač (jméno → funkce vracející pid nebo
+# None): Codex app-server (ytdj/agent/appserver.py). U nich se kromě RSS píše
+# i RssAnon (`anon_<jméno>_mb`) — RSS zahrnuje sdílené stránky binárky, které
+# MemAvailable počítá jako uvolnitelné (Pi 26. 9.: start Codexu ubral
+# MemAvailable medián 44 MB, ač RSS ~165 MB).
+EXTRA_PIDS: dict[str, Callable[[], int | None]] = {}
+
+
+def register_pid(name: str, pid: Callable[[], int | None]) -> None:
+    EXTRA_PIDS[name] = pid
+
+
+def _rss_anon_kb(pid: int) -> int | None:
+    text = _read(f"/proc/{pid}/status")
+    for line in (text or "").splitlines():
+        if line.startswith("RssAnon:"):
+            with contextlib.suppress(ValueError, IndexError):
+                return int(line.split()[1])
+    return None
+
+
 class SystemSampler:
     """`context()` vrací, co se právě děje (skladba, resolver, Codex);
     `pids()` jména → pid procesů, jejichž CPU a paměť se mají sledovat."""
@@ -263,6 +284,12 @@ class SystemSampler:
             pids.update({k: v for k, v in self.pids().items() if v})
         if self._pwtop and self._pwtop.returncode is None:
             pids["pwtop"] = self._pwtop.pid
+        extra = set()
+        for name, fn in list(EXTRA_PIDS.items()):
+            with contextlib.suppress(Exception):
+                if pid := fn():
+                    pids[name] = pid
+                    extra.add(name)
         seen = {}
         with_rss = self._n % THROTTLE_EVERY == 0  # paměť procesů se mění pomalu: jednou za minutu
         for name, pid in pids.items():
@@ -272,6 +299,8 @@ class SystemSampler:
             ticks, rss = st
             if with_rss or reason:
                 rec[f"rss_{name}_mb"] = rss // 1024
+                if name in extra and (anon := _rss_anon_kb(pid)) is not None:
+                    rec[f"anon_{name}_mb"] = anon // 1024
             prev = self._prev_proc.get(name)
             if prev and prev[0] == pid and dt > 0:
                 rec[f"cpu_{name}"] = round(100 * (ticks - prev[1]) / CLK_TCK / dt, 1)

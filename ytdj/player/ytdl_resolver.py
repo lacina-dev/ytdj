@@ -82,6 +82,8 @@ _JSC_LOCAL = threading.local()  # výsledek JS výzvy poslední skladby tohoto v
 # web_music) stál na Pi ~2 s navíc za dva klienty, které se nepoužijí. Když
 # s ním skladba selže, řeší se znovu výchozím výběrem — nic se neztratí.
 FAST_CLIENT = "web_music"
+PREMIUM_FORMATS = ("774", "141")  # Opus 256k / AAC 256k (YouTube Premium)
+REFRESH_POLL = 300.0  # s — nejdéle, co hlavní vlákno spí bez kontroly čerstvosti
 
 WATCH_URL = "https://music.youtube.com/watch?v={}"
 VIDEO_ID = re.compile(r"[?&]v=([\w-]{11})")
@@ -362,9 +364,20 @@ class Resolver:
 
     def _state(self) -> None:
         """Co je nachystané a na čem se dělá — volá se se zamčeným cv."""
-        emit("_state", ready=list(self.ready), busy=self.busy or self.busy_urgent,
+        ready = self._usable_ids()
+        self._last_ready = ready
+        emit("_state", ready=ready, busy=self.busy or self.busy_urgent,
              busy2=self.busy_urgent if self.busy else None, urgent=list(self.urgent),
              ahead=len(self.ahead))
+
+    def _usable_ids(self) -> list[str]:
+        """Hotové, které mpv opravdu dostane z cache (ne zestárlé)."""
+        now = time.time()
+        return [v for v, (t, d) in self.ready.items() if usable(t, d, now)]
+
+    def _state_if_changed(self) -> None:
+        if self._usable_ids() != getattr(self, "_last_ready", None):
+            self._state()
 
     def _in_flight(self) -> set[str]:
         return {v for v in (self.busy, self.busy_urgent) if v}
@@ -525,6 +538,25 @@ class Resolver:
         else:
             if getattr(ydl, "_ytdj_client", None):
                 info["client"] = ydl._ytdj_client
+                got = str(data.get("format_id") or "") if isinstance(data, dict) else ""
+                if self._premium_expected(tmpl) and got not in PREMIUM_FORMATS:
+                    # rychlý klient dal jen běžnou kvalitu (128k) — tiše ji
+                    # nebrat: výchozí výběr yt-dlp Premium třeba dostane
+                    log(f"{vid}: klient {ydl._ytdj_client} dal formát {got or '?'}, "
+                        "ne Premium — zkouším výchozí")
+                    emit("resolver.quality_retry", video_id=vid, client=ydl._ytdj_client,
+                         format=got[:20] or None)
+                    info["quality_retry"] = got[:20] or "?"
+                    plain = self._plain_ydl(tmpl, urgent_only)
+                    _JSC_LOCAL.last = None
+                    try:
+                        data2 = plain.extract_info(WATCH_URL.format(vid), download=False)
+                        out2 = json.dumps(plain.sanitize_info(data2))
+                    except Exception as exc:  # výchozí selhal — zůstane, co bylo
+                        info["quality_retry_error"] = str(exc).splitlines()[0][:120]
+                    else:
+                        data, out = data2, out2
+                        info.pop("client", None)
         if isinstance(data, dict) and data.get("format_id"):
             info["format"] = str(data.get("format_id"))[:20]
         jsc = getattr(_JSC_LOCAL, "last", None)
@@ -533,6 +565,13 @@ class Resolver:
             if jsc[0] != "ok":
                 info["jsc"] = jsc[0]
         return out, info
+
+    @staticmethod
+    def _premium_expected(tmpl: list[str]) -> bool:
+        """Čeká se Premium? Přihlášení (cookies) a formát Premium v preferenci."""
+        cookies = any(a in ("--cookies", "--cookies-from-browser") for a in tmpl)
+        fmt = next((tmpl[i + 1] for i, a in enumerate(tmpl[:-1]) if a in ("--format", "-f")), "")
+        return cookies and any(f in fmt.split("/") for f in PREMIUM_FORMATS)
 
     def _plain_ydl(self, tmpl: list[str], urgent_only: bool):
         """YoutubeDL bez rychlého klienta (záloha), jeden na vlákno, líně."""
@@ -599,6 +638,8 @@ class Resolver:
             while vid is None:
                 wake = None if urgent_only else self._wake_at
                 self.cv.wait(None if wake is None else max(0.05, wake - time.monotonic()))
+                if not urgent_only:
+                    self._state_if_changed()  # zestárlé už nejsou "hotové"
                 vid = self._next(urgent_only)
             if urgent_only:
                 self.busy_urgent = vid
@@ -677,9 +718,15 @@ class Resolver:
         if urgent_only:
             return None
         now = time.time()
-        self._wake_at = None
+        mono = time.monotonic()
+        # Nejbližší (a first) se obnovují samy, i když se fronta nehýbe (pauza):
+        # hlavní vlákno se probudí, až nejstarší z nich přestane být čerstvá
+        # (Pi 26. 9.: po 4,5 h pauzy "připravená" skladba 7,6 s znovu).
         near = [] if self.hold else self.ahead[:len(self.ahead) - len(self._extension())]
-        for vid in self.first + near:
+        watch = self.first + near
+        fresh_until = [self.ready[v][0] + MAX_AGE / 2 - now for v in watch if v in self.ready]
+        self._wake_at = mono + min([REFRESH_POLL] + [max(0.05, d) for d in fresh_until])
+        for vid in watch:
             if self._wanted(vid, now, busy):
                 return vid
         if self.hold:
@@ -687,9 +734,9 @@ class Resolver:
         todo = [v for v in self._extension() if self._wanted(v, now, busy)]
         if not todo:
             return None
-        quiet = self.t_get + EXTEND_QUIET - time.monotonic()
+        quiet = self.t_get + EXTEND_QUIET - mono
         if quiet > 0:
-            self._wake_at = time.monotonic() + quiet  # skladba startuje — rozšiřovat až potom
+            self._wake_at = min(self._wake_at, mono + quiet)  # skladba startuje — rozšiřovat až potom
             return None
         return todo[0]
 
@@ -855,8 +902,9 @@ class Resolver:
                 dropped += 1
             if dropped:
                 self._dirty()
+            fresh = set(self._usable_ids())
             emit("resolver.ahead", n=len(self.ahead), near=self.near, hold=self.hold,
-                 ready=sum(1 for v in self.ahead if v in self.ready), dropped=dropped)
+                 ready=sum(1 for v in self.ahead if v in fresh), dropped=dropped)
             self._state()
             self.cv.notify_all()
 

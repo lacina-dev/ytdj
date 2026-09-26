@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0e1013" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#faf7f2" media="(prefers-color-scheme: light)">
+<title>Nápověda — ytdj</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%277%27 fill=%27%23d8a656%27/%3E%3Crect x=%279%27 y=%2713%27 width=%273%27 height=%279%27 rx=%271.5%27 fill=%27%23141414%27/%3E%3Crect x=%2714.5%27 y=%278%27 width=%273%27 height=%2714%27 rx=%271.5%27 fill=%27%23141414%27/%3E%3Crect x=%2720%27 y=%2711%27 width=%273%27 height=%2711%27 rx=%271.5%27 fill=%27%23141414%27/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/manual.css">
+</head>
+<body>
+<!--
+  Rychlý návod pro kolegy (FUNKCE F-WEB-07). Při změně, kterou uživatel uvidí,
+  uprav i tuhle stránku (CLAUDE.md). Příklady přání mají data-example (druh)
+  a tests/test_manual.py ověří, že jim aplikace opravdu takhle rozumí.
+  Čísla z nastavení: <span data-cfg="klíč" data-forms="1|2–4|5+">výchozí</span>
+  — server je doplní aktuální hodnotou (ytdj/manual.py).
+-->
+<div class="wrap">
+
+  <header class="top">
+    <a class="back" href="/"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>Jukebox</a>
+    <a class="navlink" href="/jak-to-funguje">Jak to funguje</a>
+  </header>
+
+  <h1>Nápověda</h1>
+  <p class="lead">Jak si pustit, co chceš, a jak se o jeden repro dělí celá kancelář. Čtení na dvě minuty.</p>
+
+  <nav class="toc" aria-label="Obsah">
+    <a href="#prani">✍️ Přání</a>
+    <a href="#fronta">🔁 Fronta</a>
+    <a href="#hlasovani">👍 Hlasování</a>
+    <a href="#prezdivka">🙂 Přezdívka</a>
+    <a href="#displej">📟 Displej</a>
+    <a href="#problem">🛟 Když něco nejde</a>
+    <a href="#tipy">💡 Tipy</a>
+  </nav>
+
+  <section class="sec card" id="prani" aria-labelledby="h-prani">
+    <h2 id="h-prani"><span class="ico" aria-hidden="true">✍️</span>Jak si něco přát</h2>
+    <p>Napiš DJovi do pole <b>Co si pustíme?</b> a pošli. Přání se přijme hned a v části <b>Tvoje přání</b> uvidíš, co se s ním děje: čeká → DJ vybírá → ve frontě → hraje.</p>
+    <p class="dim">Piš normálně, jako kolegovi. DJ rozumí třeba tomuhle:</p>
+    <ul class="examples">
+      <li data-example="artist" data-artist="Kabát"><q>pusť Kabát</q><small>Interpret — zahraje víc jeho písniček, ne jen jednu.</small></li>
+      <li data-example="song" data-artist="Olympic" data-title="Holky z naší školky"><q>Holky z naší školky od Olympicu</q><small>Konkrétní písnička, po ní podobné.</small></li>
+      <li data-example="song" data-artist="Oasis" data-title="Wonderwall"><q>Oasis - Wonderwall</q><small>Interpret a název s pomlčkou taky.</small></li>
+      <li data-example="model"><q>něco klidného na odpoledne</q><small>Nálada — tu domýšlí DJ (model), trvá to pár vteřin.</small></li>
+      <li data-example="next"><q>Olympic hned po téhle skladbě</q><small>Zařadí se hned za hrající (nebo zaškrtni <b>Hned po téhle skladbě</b>). Nic nepřeruší.</small></li>
+      <li data-example="then"><q>a pak Olympic</q><small>„a pak…“, „přidej…“ — přidá se za tvá dřívější přání.</small></li>
+      <li data-example="fix"><q>ne, radši Olympic</q><small>Oprava — nahradí tvé předchozí přání.</small></li>
+      <li data-example="command" data-command="volume"><q>hlasitost 40</q><small>Povely („další“, „pauza“, „hlasitěji“) platí hned, bez DJe.</small></li>
+      <li data-example="favourites" data-which="office"><q>pusť oblíbené kanceláře</q><small>Písničky, které kancelář olajkovala. „pusť moje oblíbené“ = tvoje.</small></li>
+      <li data-example="question"><q>kdy bude moje písnička?</q><small>Otázka — DJ odpoví podle skutečné fronty, nic nezařadí.</small></li>
+      <li data-example="link" data-text="https://music.youtube.com/watch?v=dQw4w9WgXcQ"><q>odkaz z YouTube</q><small>Vlož odkaz na video nebo skladbu — zahraje přesně tu.</small></li>
+    </ul>
+    <p class="dim">Tlačítka pod polem (<b>Víc takového</b>, <b>Něco jiného</b>, <b>Jen česky</b>, <b>Klidnější</b>, <b>Živější</b>) jsou rychlá přání na jedno ťuknutí. Co DJ nenajde, nezahraje — a řekne to.</p>
+  </section>
+
+  <section class="sec card" id="fronta" aria-labelledby="h-fronta">
+    <h2 id="h-fronta"><span class="ico" aria-hidden="true">🔁</span>Fronta a férovost</h2>
+    <div class="people" aria-hidden="true">
+      <span class="p" style="--h:210"><i>P</i>Petr <b>♪♪</b></span><span class="arrow">→</span>
+      <span class="p" style="--h:330"><i>J</i>Jana <b>♪♪</b></span><span class="arrow">→</span>
+      <span class="p" style="--h:130"><i>K</i>Karel <b>♪♪</b></span><span class="arrow">→</span>
+      <span class="p" style="--h:210"><i>P</i>Petr <b>♪♪</b></span><span class="arrow">→</span>
+      <span class="radio">rádio podle posledního přání</span>
+    </div>
+    <p>Přání se střídají: na řadě je vždycky ten, kdo nejdéle nic svého neslyšel. Když čekají i jiní, hraje se na střídačku po <b><span data-cfg="wish_shared_block" data-forms="skladbě|skladbách">2</span></b>; dlouhé přání (třeba celý interpret) zahraje nejvýš <b><span data-cfg="wish_budget" data-forms="skladbu|skladby|skladeb">4</span></b> a pak počká, až nikdo jiný nečeká (z displeje <span data-cfg="wish_budget_panel" data-forms="skladbu|skladby|skladeb">3</span>). Když si nikdo nic nepřeje, hraje podkres (rádio), který navazuje na poslední přání.</p>
+    <p class="dim">Své přání odebereš křížkem v <b>Tvoje přání</b>. Cizí přání odebrat ani utnout nejde.</p>
+  </section>
+
+  <section class="sec card" id="hlasovani" aria-labelledby="h-hlasovani">
+    <h2 id="h-hlasovani"><span class="ico" aria-hidden="true">👍</span>Hlasování</h2>
+    <div class="votes" aria-hidden="true"><span>👍 líbí se</span><span>👎 nelíbí se</span></div>
+    <p>Hlasovat jde u hrající písničky, ve frontě i v <b>Odehráno</b> — pro písničku, nebo pro celého interpreta. Hlas jde změnit i stáhnout a je u něj vidět, kdo ho dal.</p>
+    <p>Jeden 👎 písničku jen upozadí. Vyřadí ji až <b><span data-cfg="ban_song_votes" data-forms="člověk|lidé|lidí">2</span></b> s 👎 (a víc 👎 než 👍), interpreta <b><span data-cfg="ban_artist_votes" data-forms="člověk|lidé|lidí">3</span></b>. Vyřazené DJ sám nepustí, oblíbené hraje častěji. Když si ale vyřazenou písničku někdo výslovně přeje, zahraje se.</p>
+    <p class="dim">Přehled oblíbených a vyřazených je na stránce <b>Hlasování</b> (tlačítko nahoře na hlavní stránce).</p>
+  </section>
+
+  <section class="sec card" id="prezdivka" aria-labelledby="h-prezdivka">
+    <h2 id="h-prezdivka"><span class="ico" aria-hidden="true">🙂</span>Přezdívka</h2>
+    <p>Při prvním otevření se web zeptá, jak ti říkat (2–20 znaků). Přezdívka se ukáže u tvých přání a hlasů, aby kolegové věděli, čí písnička hraje. Změníš ji ťuknutím na své jméno vpravo nahoře. Bez přezdívky hlasovat nejde.</p>
+    <p class="dim">Prohlížeč si ji pamatuje — na jiném telefonu nebo počítači jsi pro jukebox jiný člověk.</p>
+  </section>
+
+  <section class="sec card" id="displej" aria-labelledby="h-displej">
+    <h2 id="h-displej"><span class="ico" aria-hidden="true">📟</span>Displej u repráku</h2>
+    <div class="panel">
+      <div class="screen" aria-hidden="true">
+        <div class="bar"><span>📱</span><span class="hl">Přání</span><span>⌁</span></div>
+        <div class="now"><span class="cover"></span><div><div class="t">Holky z naší školky</div><div>Olympic</div><div style="opacity:.7">Pak: Ruty šuty</div></div></div>
+        <div class="ctl"><span class="play">Hrát</span><span>Další</span><span>−</span><span>+</span></div>
+      </div>
+      <ul class="keys">
+        <li><b>Přání</b><span>Klávesnice s háčky a čárkami, rychlé volby a <i>Hned po téhle skladbě</i>. Celý displej je ve frontě jako jeden člověk.</span></li>
+        <li><b>📱</b><span>Velký QR kód na tenhle web — přání z mobilu.</span></li>
+        <li><b>− / +</b><span>Ťuknutí = o 5, podržení mění plynule. Kolečko na repráku mění tutéž hlasitost.</span></li>
+        <li><b>Hrát</b><span>V tichu rozjede DJe — vybere hudbu podle času a dne.</span></li>
+        <li><b>Název</b><span>Ťukni na něj a uvidíš frontu přání.</span></li>
+      </ul>
+    </div>
+    <p class="dim" style="margin-top:12px">Po 5 minutách ticha se displej ztlumí a ukáže QR kód; první dotyk ho jen probudí.</p>
+  </section>
+
+  <section class="sec card" id="problem" aria-labelledby="h-problem">
+    <h2 id="h-problem"><span class="ico" aria-hidden="true">🛟</span>Když něco nejde</h2>
+    <div class="help-off">
+      <div><b>„DJ teď nerozumí volnému textu“</b>Model DJe zrovna nejede. Dál funguje „pusť Kabát“, název písničky, odkaz z YouTube a tlačítka nálad. DJ se vrátí sám.</div>
+      <div><b>„Vypadlo spojení s YouTube“</b>Nic se nemaže — fronta i přání počkají a hudba se rozjede sama, jakmile to půjde.</div>
+      <div><b>Červená tečka vpravo nahoře</b>Web ztratil spojení s jukeboxem a zkouší se znovu připojit. Když to trvá, dej vědět správci.</div>
+      <div><b>Ráno nebo v noci ticho</b>Po restartu v noci (22:00–7:00) nebo po zapnutí jukeboxu se hudba sama nerozehraje, aby nehrála do prázdné kanceláře. Stačí zmáčknout ▶.</div>
+      <div><b>Moje přání pořád nehraje</b>Zeptej se: „kdy bude moje písnička?“ — DJ odpoví podle fronty. Kdo 10 minut nic svého neslyšel a zeptá se, jde na řadu hned po hrající skladbě.</div>
+    </div>
+  </section>
+
+  <section class="sec card" id="tipy" aria-labelledby="h-tipy">
+    <h2 id="h-tipy"><span class="ico" aria-hidden="true">💡</span>Tipy</h2>
+    <ul class="tips">
+      <li>Na diakritice, skloňování a drobných překlepech nezáleží: <q data-example="artist" data-artist="Tata Bojs">pusť tata boys</q> najde Tata Bojs.</li>
+      <li>Jen jednu písničku od interpreta: <q data-example="model">zahraj jednu od Chinaski</q>.</li>
+      <li>Něco vynechat: <q data-example="model">Kabát, ale ne Pohodu</q>. Dva interpreti na střídačku: <q data-example="model">střídej Kabát a Olympic</q>.</li>
+      <li>Chceš live nebo remix? Řekni si o něj — jinak hraje studiová verze.</li>
+      <li><b>Něco jiného</b> a <b>Překvap mě</b> opravdu změní směr, <b>Víc takového</b> naváže na to, co hraje.</li>
+      <li>Další u cizího přání: když ho ostatní přeskočí dvakrát, přání skončí. Přeskakuj ohleduplně — tvoje Další se připíše tobě.</li>
+      <li>V tichu stačí ▶ a DJ vybere hudbu sám podle času, dne a toho, co tu obvykle hraje.</li>
+    </ul>
+  </section>
+
+  <a class="more-card card" href="/jak-to-funguje">
+    <span class="ico" aria-hidden="true">📖</span>
+    <span class="t"><b>Jak to funguje</b><span>Všechno, co jukebox dělá, i to, co dělá sám od sebe — s hledáním.</span></span>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
+  </a>
+
+  <footer class="foot"><a href="/">Zpět na jukebox</a><a href="/jak-to-funguje">Jak to funguje</a></footer>
+</div>
+</body>
+</html>

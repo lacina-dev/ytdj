@@ -515,9 +515,24 @@ class App:
             self.player.is_protected = self.wishes.is_request_track
         from .votes import aload_quietly
 
+        # SIGTERM (zrušení úlohy) může přijít kdykoli, i během startu — úklid
+        # (přehrávač, playback.json, přání, přezdívky) musí proběhnout vždy.
+        rc = 0
+        self.loopwatch = None
+        try:
+            rc = await self._run(repl, aload_quietly)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            await self._shutdown()
+        return rc
+
+    async def _run(self, repl: bool, aload_quietly) -> int:
         await aload_quietly(self.votes)  # state.db ve vlákně, ne v event loopu
         if self._player_start is not None:
-            await self._player_start  # start() běží od _amain, souběžně s importy
+            # shield: SIGTERM během startu nezruší rozjezd mpv napůl — _shutdown ho
+            # nechá dostartovat a pak řádně zastaví
+            await asyncio.shield(self._player_start)  # start() běží od _amain, souběžně s importy
         else:
             await self.player.start()
         self._mark("player")
@@ -527,7 +542,7 @@ class App:
         self.loopwatch.start()
         # Po restartu služby navázat (jen čerstvý stav, ne v noci — viz
         # wishes.should_resume); na pozadí, ať web naběhne hned.
-        resume = asyncio.create_task(self.wishes.resume(), name="ytdj-resume")
+        resume = self._resume_task = asyncio.create_task(self.wishes.resume(), name="ytdj-resume")
         self._mark("resume")
 
         if self.cfg.web_enabled:
@@ -546,7 +561,7 @@ class App:
                         web=self.web is not None, repl=repl)
         # sonda yt-dlp a ytmusicapi až po navázání; kdo katalog potřebuje dřív,
         # vytvoří si YTMusic sám (LazyYT)
-        later = asyncio.create_task(self._after_resume(resume), name="ytdj-after-resume")
+        self._later_task = asyncio.create_task(self._after_resume(resume), name="ytdj-after-resume")
 
         auth = "přihlášen" if self.catalog.authenticated else "anonymně"
         model = self.cfg.codex_model or "výchozí"
@@ -559,75 +574,82 @@ class App:
             print(f"POZOR: {warning}\n")
 
         rc = 0
-        filler = asyncio.create_task(self._filler_after(resume))
-        try:
-            if repl:
-                await asyncio.to_thread(importlib.import_module, REPL_MODULE)
-                from .ui import Repl
+        self._filler_task = asyncio.create_task(self._filler_after(resume))
+        if repl:
+            await asyncio.to_thread(importlib.import_module, REPL_MODULE)
+            from .ui import Repl
 
-                self.repl = Repl(self.player, self._on_prompt)
-                # Restart z webu musí umět ukončit i REPL, jinak by tlačítko
-                # fungovalo jen v režimu --web-only.
-                repl_task = asyncio.create_task(self.repl.run())
-                restart_task = asyncio.create_task(self.restart_requested.wait())
-                await asyncio.wait(
-                    {repl_task, restart_task}, return_when=asyncio.FIRST_COMPLETED
-                )
-                if self.restart_requested.is_set():
-                    print("Restart na vyžádání z webu.")
-                    self.player.expect_exit()
-                repl_task.cancel()
-                restart_task.cancel()
-                await asyncio.gather(repl_task, restart_task, return_exceptions=True)
-            elif self.web:
-                print("Běžím jen s webem. Ukončit: Ctrl+C\n")
-                # Konec přijde buď smrtí mpv, nebo restartem z webu; signál
-                # dorazí jako zrušení úlohy.
-                waits = [
-                    asyncio.create_task(self.player.died.wait()),
-                    asyncio.create_task(self.restart_requested.wait()),
-                ]
-                try:
-                    await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
-                finally:
-                    for task in waits:
-                        task.cancel()
-                if self.restart_requested.is_set():
-                    print("Restart na vyžádání z webu.")
-                    self.player.expect_exit()
-                else:
-                    print("mpv skončil — ukončuji, ať se to nastartuje načisto.")
-                rc = 1
+            self.repl = Repl(self.player, self._on_prompt)
+            # Restart z webu musí umět ukončit i REPL, jinak by tlačítko
+            # fungovalo jen v režimu --web-only.
+            repl_task = asyncio.create_task(self.repl.run())
+            restart_task = asyncio.create_task(self.restart_requested.wait())
+            await asyncio.wait(
+                {repl_task, restart_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if self.restart_requested.is_set():
+                print("Restart na vyžádání z webu.")
+                self.player.expect_exit()
+            repl_task.cancel()
+            restart_task.cancel()
+            await asyncio.gather(repl_task, restart_task, return_exceptions=True)
+        elif self.web:
+            print("Běžím jen s webem. Ukončit: Ctrl+C\n")
+            # Konec přijde buď smrtí mpv, nebo restartem z webu; signál
+            # dorazí jako zrušení úlohy.
+            waits = [
+                asyncio.create_task(self.player.died.wait()),
+                asyncio.create_task(self.restart_requested.wait()),
+            ]
+            try:
+                await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                for task in waits:
+                    task.cancel()
+            if self.restart_requested.is_set():
+                print("Restart na vyžádání z webu.")
+                self.player.expect_exit()
             else:
-                print("Bez REPL i bez webu není co obsluhovat — končím.")
-                rc = 1
-        except asyncio.CancelledError:
-            pass
-        finally:
-            filler.cancel()
-            resume.cancel()
-            later.cancel()
-            await asyncio.gather(filler, resume, later, return_exceptions=True)
-            # co hrálo a kdo na co čeká — pro navázání po restartu
-            if not self.player.died.is_set():
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(self.wishes.refresh_playing(), 2)
-            await self.wishes.stop()
-            await self.loopwatch.stop()
-            # the web must go down before the store — SSE would otherwise touch
-            # a closed SQLite
-            if self.web:
-                await self.web.stop()
-            await self.dj.close()  # [app-server] trvale běžící Codex
-            await self.player.stop()  # playback.json: co hraje a kde (naposledy)
-            # Přání až po přehrávači: session.json pak odpovídá playback.json —
-            # skladba, která mezitím dohrála, je v přání hotová a po restartu
-            # nezazní znovu (dřív se přání ukládala o celé ukončení dřív).
-            self.wishes.save()
-            with contextlib.suppress(Exception):
-                self.wishes.nicks.flush()
-            self.store.close()
+                print("mpv skončil — ukončuji, ať se to nastartuje načisto.")
+            rc = 1
+        else:
+            print("Bez REPL i bez webu není co obsluhovat — končím.")
+            rc = 1
         return rc
+
+    async def _shutdown(self) -> None:
+        """Úklid při každém konci běhu — i když SIGTERM přišel během startu."""
+        tasks = [t for t in (getattr(self, "_filler_task", None), getattr(self, "_resume_task", None),
+                             getattr(self, "_later_task", None)) if t is not None]
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        start = self._player_start
+        if start is not None and not start.done():
+            # přehrávač se ještě spouští — dostartovat (nejvýš 10 s), pak řádně zastavit
+            await asyncio.wait({start}, timeout=10)
+        # co hrálo a kdo na co čeká — pro navázání po restartu
+        if not self.player.died.is_set():
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(self.wishes.refresh_playing(), 2)
+        await self.wishes.stop()
+        if self.loopwatch is not None:
+            await self.loopwatch.stop()
+        # the web must go down before the store — SSE would otherwise touch
+        # a closed SQLite
+        if self.web:
+            await self.web.stop()
+        await self.dj.close()  # [app-server] trvale běžící Codex
+        await self.player.stop()  # playback.json: co hraje a kde (naposledy)
+        # Přání až po přehrávači: session.json pak odpovídá playback.json —
+        # skladba, která mezitím dohrála, je v přání hotová a po restartu
+        # nezazní znovu (dřív se přání ukládala o celé ukončení dřív).
+        self.wishes.save()
+        with contextlib.suppress(Exception):
+            # "naposledy viděn" se píše nejvýš jednou za 10 min — při konci uložit
+            self.wishes.nicks.save()
+            self.wishes.nicks.flush()
+        self.store.close()
 
 
 USAGE = """\

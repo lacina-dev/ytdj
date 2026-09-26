@@ -625,6 +625,38 @@ class FastPreparationTest(unittest.TestCase):
             res._extract(own, vid(2), res.template, False)
         self.assertEqual(plain.calls, [vid(1)])
 
+    def test_non_premium_result_is_retried_with_default_choice(self) -> None:
+        r = load_resolver()
+        res = r.Resolver()
+        tmpl = ["--format", "774/141/251/140/bestaudio", "--cookies", "/c.txt", "-J", "--"]
+
+        class Fmt(FakeYdl):
+            def __init__(self, fmt, client=None):
+                super().__init__()
+                self.fmt, self._ytdj_client = fmt, client
+
+            def extract_info(self, url, download=False):
+                d = super().extract_info(url)
+                d["format_id"] = self.fmt
+                return d
+
+        plain = Fmt("774")
+        res._plain["main"] = (tmpl, plain)
+        err = io.StringIO()
+        with redirect_stderr(err):
+            data, fields = res._extract(Fmt("251", "web_music"), vid(1), tmpl, False)
+            self.assertEqual(json.loads(data)["format_id"], "774")
+            self.assertEqual((fields["format"], fields["quality_retry"]), ("774", "251"))
+            self.assertIn('"resolver.quality_retry"', err.getvalue())
+            # Premium z rychlého klienta → žádné druhé řešení
+            data, fields = res._extract(Fmt("774", "web_music"), vid(2), tmpl, False)
+            self.assertNotIn("quality_retry", fields)
+            # bez cookies se Premium nečeká (běžná kvalita je v pořádku)
+            anon = ["--format", "774/251", "-J", "--"]
+            data, fields = res._extract(Fmt("251", "web_music"), vid(3), anon, False)
+            self.assertNotIn("quality_retry", fields)
+        self.assertEqual(plain.calls, [vid(1)])
+
     def test_build_sets_fast_client_only_when_template_does_not(self) -> None:
         r = load_resolver()
         seen = []
@@ -723,6 +755,17 @@ class FastPreparationTest(unittest.TestCase):
             out = json.loads(srv.solve(node, lib_core, player, True, reqs))
             self.assertEqual(out["responses"][0]["data"], {"ab": "ab!"})
             self.assertEqual(srv.starts, 2)
+            # zaseknutý node: po timeoutu výjimka (zámek se uvolní), pak zase jede
+            self.assertLessEqual(ytdl_jsc.TIMEOUT_S, 10)
+            srv.timeout_s = 0.5
+            t0 = time.monotonic()
+            with self.assertRaises(TimeoutError):
+                srv.solve(node, lib_core, "_result.n = () => { for (;;) {} };", True,
+                          [{"type": "n", "challenges": ["a"]}])
+            self.assertLess(time.monotonic() - t0, 3)
+            srv.timeout_s = 10
+            out = json.loads(srv.solve(node, lib_core, player, True, reqs))
+            self.assertEqual(out["responses"][0]["data"], {"ab": "ab!"})
         finally:
             with srv.lock:
                 srv.stop_locked()

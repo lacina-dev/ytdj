@@ -7,7 +7,7 @@ v [PLAN.md](PLAN.md); tady je jen „na nic nezapomenout".
 Stav: ✅ hotovo a ověřeno na Pi · ☑️ hotovo v kódu, čeká na nasazení ·
 🔄 rozpracováno · 📋 čeká · ⚠️ známý problém
 
-Stav k 26. 9. 2026 22:25 (na Pi běží 4611b3c).
+Stav k 26. 9. 2026 23:05 (na Pi běží ef2664b).
 
 ## Zařízení a systém
 
@@ -49,7 +49,7 @@ Stav k 26. 9. 2026 22:25 (na Pi běží 4611b3c).
 | 24 | „Chci oboje" / střídání dvou interpretů | ✅ nasazeno 11:29 | |
 | 25 | „Ať to není ostuda": sprostá jména a texty se na displeji a webu neukážou | ✅ | `ytdj/display.py` |
 | 46 | Volná přání přes model rychleji („zahraj mi něco veselého k práci" ~10–12 s, po pauze 23–33 s) | ☑️ v kódu, čeká na nasazení | rozbor Pi 26. 9.: studený start 4,8–12,4 s (9 z 18 tahů), nové vlákno +2,3 s, uvažování modelu 1,6–8,4 s, výpis odpovědi ~2,3 s, dohledání semínek ~1,4 s, rádio ~1,5 s, příprava první skladby ~7 s. Nahřátí při psaní přání a po startu (F-PROVOZ-08), náhradní vlákno (F-PROVOZ-09); volba vlastníka 26. 9.: zahřátý 2 h po každém přání, 5 tahů na vlákno, úsilí „low" (A/B na Pi: stejné porozumění, model medián 7,2 → 5,8 s), displej nahřívá při otevření přání |
-| 47 | Na webu stránka s rychlým názorným návodem pro běžného uživatele + dokumentace „jak to funguje" se všemi automatikami (např. v noci 22–7 se po restartu samo nerozehraje), vhodně vyvážená hloubka, dohledatelná, pravidelně aktuální | ☑️ v kódu, čeká na nasazení | `/napoveda` (návod na 2 min, příklady přání ověřené testem) a `/jak-to-funguje` (živě z `docs/FUNKCE.md` + úvody `docs/JAK-TO-FUNGUJE.md`, hledání, „Automatiky, o kterých možná nevíš", hodnoty z nastavení, změny se souhlasem); F-WEB-07, F-WEB-08 |
+| 47 | Na webu stránka s rychlým názorným návodem pro běžného uživatele + dokumentace „jak to funguje" se všemi automatikami, vhodně vyvážená, dohledatelná, pravidelně aktuální | ✅ 23:05 | `/napoveda` (2 min, příklady ověřené testem) a `/jak-to-funguje` (živě z FUNKCE.md: 159 pravidel, hledání, „Automatiky, o kterých možná nevíš"); odkaz „?" v hlavičce webu |
 
 ## Víc lidí v kanceláři
 

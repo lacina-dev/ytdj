@@ -20,6 +20,7 @@ from typing import Any
 
 from .art import ArtCache
 from .calib import CalibController
+from .fingertest import FingerTestController
 from .touchtest import TouchTestController
 from .client import Api, Commander, StatusFeed
 from .hw import Screen, Touch, TouchEvent
@@ -131,6 +132,8 @@ class PanelApp:
         self.calib = CalibController(touch, lang, fonts=self.renderer.fonts, count=self.stats.count)
         # "Test dotyku": where the panel reads the finger, over the player's buttons
         self.touchtest = TouchTestController(lang, fonts=self.renderer.fonts)
+        # "Test prstem": 12 spots, every raw sample to panel.touch_probe
+        self.fingertest = FingerTestController(touch, lang, fonts=self.renderer.fonts)
         self.qr_open = False
         self.qr_at = 0.0
         self._art_is_qr = False  # the art slot shows the QR code (tapping it opens the page)
@@ -268,6 +271,7 @@ class PanelApp:
                 self.qr_renderer.invalidate()
                 self.calib.renderer.invalidate()
                 self.touchtest.renderer.invalidate()
+                self.fingertest.renderer.invalidate()
                 self.stop.wait(1.0)
         # poslední souhrny, ať se neztratí minuta před zastavením
         self._log_gesture()
@@ -387,6 +391,8 @@ class PanelApp:
             return "calib"
         if self.touchtest.page:
             return "touchtest"
+        if self.fingertest.page:
+            return "fingertest"
         if self.net.page:
             return self.net.page
         if self.wish.page:
@@ -421,6 +427,8 @@ class PanelApp:
             self.calib.touch_event(ev, at)
         elif page == "touchtest":
             self.touchtest.touch_event(ev, at)
+        elif page == "fingertest":
+            self.fingertest.touch_event(ev, at)
         elif overlay is not None:
             overlay.touch(ev, at)
             if self.net.want_calib:
@@ -429,6 +437,9 @@ class PanelApp:
             if self.net.want_touchtest:
                 self.net.want_touchtest = False
                 self.touchtest.open(at)
+            if self.net.want_fingertest:
+                self.net.want_fingertest = False
+                self.fingertest.open(at)
         elif page == "qr":
             self.qr_at = at
             if ev.kind == "up":  # a tap anywhere goes back
@@ -667,6 +678,9 @@ class PanelApp:
         elif page == "touchtest":
             view = self.touchtest.view()  # type: ignore[assignment]
             renderer, pressed = self.touchtest.renderer, self.touchtest.pressed  # type: ignore[assignment]
+        elif page == "fingertest":
+            view = self.fingertest.view()  # type: ignore[assignment]
+            renderer, pressed = self.fingertest.renderer, self.fingertest.pressed  # type: ignore[assignment]
         else:
             note = ""
             if now - self.key_vol_at < NOTE_TIME and self.online:
@@ -741,6 +755,7 @@ class PanelApp:
             self.qr_renderer.invalidate()
             self.calib.renderer.invalidate()
             self.touchtest.renderer.invalidate()
+            self.fingertest.renderer.invalidate()
             self.stop.wait(1.0)
             return
         t2 = time.perf_counter()
@@ -757,7 +772,8 @@ class PanelApp:
     def _next_deadline(self) -> float:
         now = time.monotonic()
         deadlines = [now + 60.0, self._band_at, self.net.deadline(now), self.wish.deadline(now),
-                     self.calib.deadline(now), self.touchtest.deadline(now)]
+                     self.calib.deadline(now), self.touchtest.deadline(now),
+                     self.fingertest.deadline(now)]
         if not self.resting:
             deadlines.append(self._active_at + self.rest_after + 0.01)
         if self.toast is not None:
@@ -800,6 +816,7 @@ class PanelApp:
         self.net.timers(now)
         self.calib.timers(now)
         self.touchtest.timers(now)
+        self.fingertest.timers(now)
         self.wish.timers(now)
         if self.key_burst is not None and now - self.key_burst[3] >= KEY_BURST_GAP:
             self._flush_key_burst()

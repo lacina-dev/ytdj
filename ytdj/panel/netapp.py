@@ -88,6 +88,7 @@ class NetController:
         self.gesture: Gesture | None = None  # its positions
         self.want_calib = False  # "Kalibrace dotyku" was tapped — the app opens the calibration
         self.want_touchtest = False  # "Test dotyku" was tapped — the app opens the touch test
+        self.want_fingertest = False  # "Test prstem" was tapped — the app opens the finger test
         self.press_at = 0.0
         self.last_xy = (0, 0)
         self.inside = False
@@ -406,6 +407,9 @@ class NetController:
             elif name == "touchtest":
                 self.close()
                 self.want_touchtest = True
+            elif name == "fingertest":
+                self.close()
+                self.want_fingertest = True
         elif page == "list":
             if name == "back":
                 self._go("overview")

@@ -63,6 +63,7 @@ STRINGS = {
         "wifi_btn": "Wi-Fi sítě",
         "cal_btn": "Kalibrace\ndotyku",
         "test_btn": "Test\ndotyku",
+        "probe_btn": "Test\nprstem",
         "list_title": "Wi-Fi sítě",
         "rescan": "Hledat",
         "scanning": "hledám…",
@@ -112,6 +113,7 @@ STRINGS = {
         "wifi_btn": "Wi-Fi networks",
         "cal_btn": "Touch\ncalibration",
         "test_btn": "Touch\ntest",
+        "probe_btn": "Finger\ntest",
         "list_title": "Wi-Fi networks",
         "rescan": "Scan",
         "scanning": "scanning…",
@@ -162,9 +164,10 @@ ROW_ETH = (0, 76, 324, 104)
 ROW_WIFI = (0, 104, 324, 156)
 URLS = (0, 158, 324, 254)
 QR = (324, 48, W, 254)
-WIFI_BTN = (8, 262, 236, 314)
-CAL_BTN = (244, 262, 356, 314)  # "Kalibrace dotyku" — when taps land off
-TEST_BTN = (364, 262, 472, 314)  # "Test dotyku" — see where the panel reads the finger
+WIFI_BTN = (8, 262, 176, 314)
+CAL_BTN = (184, 262, 280, 314)  # "Kalibrace dotyku" — when taps land off
+TEST_BTN = (288, 262, 376, 314)  # "Test dotyku" — see where the panel reads the finger
+PROBE_BTN = (384, 262, 472, 314)  # "Test prstem" — 12 spots, every sample to the log
 
 # list
 LIST_TITLE = (118, 0, W - 124, 44)
@@ -295,7 +298,8 @@ class NetView:
 def targets(v: NetView, lang: str = "cs") -> dict[str, Box]:
     """What can be touched on the current page."""
     if v.page == "overview":
-        return {"back": BACK_TARGET, "wifi_list": WIFI_BTN, "calib": CAL_BTN, "touchtest": TEST_BTN}
+        return {"back": BACK_TARGET, "wifi_list": WIFI_BTN, "calib": CAL_BTN, "touchtest": TEST_BTN,
+                "fingertest": PROBE_BTN}
     if v.page == "list":
         t = {"back": BACK_TARGET, "rescan": (RESCAN[0], 0, W, HEADER_REACH), "up": UP, "down": DOWN}
         for i in range(ROWS):
@@ -439,6 +443,8 @@ class NetRenderer:
                 ("cal_btn", CAL_BTN, lambda v: (v.pressed == "calib",), self._small_btn("calib", "cal_btn"), False),
                 ("test_btn", TEST_BTN, lambda v: (v.pressed == "touchtest",), self._small_btn("touchtest", "test_btn"),
                  False),
+                ("probe_btn", PROBE_BTN, lambda v: (v.pressed == "fingertest",),
+                 self._small_btn("fingertest", "probe_btn"), False),
             ]
         if v.page == "list":
             regs: list[Region] = [

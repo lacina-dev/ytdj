@@ -88,6 +88,8 @@ class _Device:
         lib.kd_madctl.argtypes = [ctypes.c_int]
         lib.kd_blit_rgb.argtypes = [ctypes.c_int] * 4 + [ctypes.c_char_p, ctypes.c_int]
         lib.kd_touch.argtypes = [ctypes.POINTER(ctypes.c_int)] * 3
+        if hasattr(lib, "kd_touch_ex"):  # diagnostics: why a sample was refused, raw Z1/Z2
+            lib.kd_touch_ex.argtypes = [ctypes.POINTER(ctypes.c_int)]
         lib.kd_pen_down.argtypes = []
         rc = lib.kd_open(0)
         if rc != 0:
@@ -122,6 +124,13 @@ class _Device:
         with self.lock:
             ok = self.lib.kd_touch(ctypes.byref(x), ctypes.byref(y), ctypes.byref(z))
         return (x.value, y.value, z.value) if ok else None
+
+    def touch_ex(self) -> tuple[int, tuple[int, ...]]:
+        """(kód, (x, y, z1, z2, rozptyl x, rozptyl y)) — viz kd_touch_ex v kedei.c."""
+        v = (ctypes.c_int * 6)()
+        with self.lock:
+            code = self.lib.kd_touch_ex(v)
+        return code, tuple(v)
 
     def pen_down(self) -> bool:
         """Jen úroveň PENIRQ (jedno čtení GPIO) — pro statistiku anomálií."""
@@ -392,6 +401,37 @@ def recalibrate(old: Calibration, pairs: list[tuple[tuple[int, int], tuple[int, 
     return new, info
 
 
+INVALID_REASONS = {-1: "invalid_lifted", -2: "invalid_rest", -3: "invalid_spread"}
+
+
+def touch_resistance(v: tuple) -> float | None:
+    """Odpor dotyku v poměrných jednotkách (XPT2046: Rx·x/4096·(z2/z1 − 1), bez Rx).
+
+    Jeden prst a dva dotyky naráz (prst + rámeček) by se tu měly lišit —
+    ověří se to z dat „Testu prstem"."""
+    if len(v) < 4 or v[2] <= 0:
+        return None
+    return v[0] / 4096 * (v[3] / v[2] - 1)
+
+
+def contact_filter_from_env(value: str | None = None):
+    """YTDJ_PANEL_CONTACT_R="0.05:0.9" → vzorky s odporem mimo rozsah se zahodí. Bez proměnné nic."""
+    value = os.environ.get("YTDJ_PANEL_CONTACT_R", "") if value is None else value
+    if not value:
+        return None
+    try:
+        lo, hi = (float(p) for p in value.split(":"))
+    except ValueError:
+        log.warning("YTDJ_PANEL_CONTACT_R=%r nerozumím (čekám od:do) — filtr dvojího dotyku vypnutý", value)
+        return None
+
+    def ok(v: tuple) -> bool:
+        r = touch_resistance(v)
+        return r is None or lo <= r <= hi
+    log.info("filtr dvojího dotyku zapnutý: odpor %s–%s", lo, hi)
+    return ok
+
+
 class KedeiTouch:
     """Vzorkuje převodník, filtruje šum a skládá z něj down/move/up."""
 
@@ -434,6 +474,13 @@ class KedeiTouch:
         # přičítání v tomhle vlákně; `take_stats()` z hlavního vlákna vymění
         # celý slovník — případná ztráta jednoho přičtení nevadí.
         self._stats: dict[str, int] = {}
+        # „Test prstem": všechny vzorky stisku (None = nenahrává se)
+        self.recording: list[dict] | None = None
+        self._rec_t0 = 0.0
+        # Připravený, VYPNUTÝ filtr dvojího dotyku (prst + rámeček na horním
+        # okraji): funkce (x, y, z1, z2, sx, sy) → vzorek platí? Zapne se jen
+        # podle dat z panel.touch_probe — YTDJ_PANEL_CONTACT_R="od:do".
+        self.contact_filter = contact_filter_from_env()
 
     def apply_correction(self, pairs: list[tuple[tuple[int, int], tuple[int, int]]],
                          path: Path | None = None) -> float:
@@ -465,23 +512,72 @@ class KedeiTouch:
         st, self._stats = self._stats, {}
         return st
 
+    def _raw(self) -> tuple[tuple[int, int, int] | None, int, tuple[int, ...]]:
+        """(x, y, z) nebo None; kód převodníku a surové hodnoty (když je ovladač umí dát)."""
+        ex = getattr(self._dev, "touch_ex", None)
+        if ex is None:
+            raw = self._dev.touch_raw()
+            return raw, (1 if raw else 0), ()
+        code, v = ex()
+        if code == 1:
+            return (v[0], v[1], v[2] + 4095 - v[3]), code, v
+        return None, code, v
+
     def _sample(self) -> tuple[int, int] | str:
         """Poloha (x, y), nebo "noisy" (prst tam je, vzorek ale nepoužitelný), nebo "up"."""
-        raw = self._dev.touch_raw()
+        raw, code, v = self._raw()
         if raw is None:
             # PENIRQ hlásí prst, ale převodník nedal použitelné vzorky
             # (zvedl se uprostřed měření, klidové hodnoty, rozptyl)
             if self._dev.pen_down():
                 self._bump("invalid_samples")
+                if code in INVALID_REASONS:
+                    self._bump(INVALID_REASONS[code])  # proč: invalid_lifted / _rest / _spread
+                self._note(code, v, None)
                 return "noisy"
+            if code == -1:
+                self._note(code, v, None)
             return "up"
         if raw[2] < MIN_PRESSURE:
             self._bump("low_pressure")
+            self._note(-4, v, None)
             return "noisy"
         x, y = self._cal.map(raw[0], raw[1])
         if self._rotate == 180:
             x, y = WIDTH - 1 - x, HEIGHT - 1 - y
+        if self.contact_filter is not None and v and not self.contact_filter(v):
+            # (připraveno, vypnuté) vzorek s podpisem dvou dotyků / rámečku
+            self._bump("dual_rejected")
+            self._note(-5, v, (x, y))
+            return "noisy"
+        self._note(1, v or (raw[0], raw[1]), (x, y))
         return x, y
+
+    def _note(self, code: int, v: tuple, pos: tuple[int, int] | None) -> None:
+        """Záznam vzorků pro „Test prstem" (panel.touch_probe) — jen když běží."""
+        rec = self.recording
+        if rec is None or len(rec) >= 400:
+            return
+        now = time.monotonic()
+        if not rec:
+            self._rec_t0 = now
+        item = {"t": int((now - self._rec_t0) * 1000), "c": code}
+        if v:
+            item["raw"] = list(v)
+        if pos is not None:
+            item["x"], item["y"] = pos
+        rec.append(item)
+
+    def start_recording(self) -> None:
+        self.recording = []
+
+    def take_recording(self) -> list[dict]:
+        """Vzorky od posledního vybrání (a nahrávání běží dál)."""
+        rec, self.recording = self.recording or [], ([] if self.recording is not None else None)
+        return rec
+
+    def stop_recording(self) -> None:
+        self.recording = None
 
     @staticmethod
     def _median(points: list[tuple[int, int]]) -> tuple[int, int]:

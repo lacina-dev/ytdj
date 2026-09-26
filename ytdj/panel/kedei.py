@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import hashlib
 import json
 import logging
 import math
@@ -49,9 +50,22 @@ MADCTL = {0: 0x6A, 180: 0xAA}
 MIN_PRESSURE = 120
 
 
+def _source_digest() -> str:
+    return hashlib.sha256(SOURCE.read_bytes()).hexdigest()
+
+
 def _build_lib() -> Path:
+    """Přeloží kedei.c, když se změnil jeho obsah (ne čas: rsync -a přenáší
+    čas z notebooku, a starší zdroj s novějším .so na Pi — 26. 9. 23:50 —
+    nechal běžet starou knihovnu bez kd_touch_ex; dotyk minutu nešel)."""
     so = LIB_DIR / "libkedei.so"
-    if so.exists() and so.stat().st_mtime >= SOURCE.stat().st_mtime:
+    stamp = LIB_DIR / "libkedei.so.sha256"
+    digest = _source_digest()
+    try:
+        current = stamp.read_text().strip() if so.exists() else ""
+    except OSError:
+        current = ""
+    if current == digest:
         return so
     LIB_DIR.mkdir(parents=True, exist_ok=True)
     tmp = so.with_suffix(".so.tmp")
@@ -61,6 +75,7 @@ def _build_lib() -> Path:
         check=True,
     )
     tmp.replace(so)
+    stamp.write_text(digest + "\n")
     return so
 
 

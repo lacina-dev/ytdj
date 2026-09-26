@@ -8,7 +8,8 @@ writes PNGs: phone 390×844 and desktop 1280×800, light and dark, for the
 first visit (nick step), the everyday view, a sent wish, the DJ-offline and
 YouTube-outage notices and the empty/idle state, plus the Nápověda and
 Jak to funguje pages (collapsed, a search in action, a link to one rule).
-`--only-manual` shoots just those two pages. Only for looking at the
+`--only-manual` shoots just those two pages, `--only-import` just the playlist
+import on the Hlasování page. Only for looking at the
 page — nothing here is a test.
 """
 
@@ -75,7 +76,8 @@ class Tab:
         print(path)
 
 
-async def run(out: Path, base: str, fake, cdp_port: int, only_manual: bool = False) -> None:
+async def run(out: Path, base: str, fake, cdp_port: int, only_manual: bool = False,
+              only_import: bool = False) -> None:
     info = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{cdp_port}/json/version").read())
     target = json.loads(urllib.request.urlopen(
         urllib.request.Request(f"http://127.0.0.1:{cdp_port}/json/new?about:blank", method="PUT")).read())
@@ -115,6 +117,42 @@ async def run(out: Path, base: str, fake, cdp_port: int, only_manual: bool = Fal
             over = await tab.js("[document.documentElement.scrollWidth, innerWidth]")
             print(f"  {tag}: page width {over[0]} / viewport {over[1]}"
                   + ("  <-- HORIZONTAL SCROLL" if over[0] > over[1] else ""))
+
+        # Import playlistu do oblíbených na stránce Hlasování (F-HLASY-12…)
+        seeded = list(fake.imports)
+        for size in (() if only_manual else ("phone", "desktop")):
+            for scheme in ("light", "dark"):
+                await setup(size, scheme)
+                tag = f"{size}-{scheme}"
+                with fake.lock:
+                    fake.imports = list(seeded)
+                await goto("Petr")
+                await tab.js("location.hash='#hlasovani'")
+                await asyncio.sleep(1.2)
+                await tab.shot(out / f"{tag}-30-import-form.png", full=False)
+                await width(f"{tag} import")
+                await tab.js("var i=document.querySelector('#impUrl');"
+                             "i.value='https://music.youtube.com/playlist?list=PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf';"
+                             "document.querySelector('#impGo').click()")
+                await asyncio.sleep(0.4)
+                await tab.shot(out / f"{tag}-31-import-loading.png", full=False)
+                await asyncio.sleep(fake.import_delay + 1.2)
+                await tab.shot(out / f"{tag}-32-import-done.png", full=False)
+                await tab.js("document.querySelector('[data-imp^=\"remove:\"]').click()")
+                await asyncio.sleep(0.3)
+                await tab.shot(out / f"{tag}-33-import-remove-confirm.png", full=False)
+                await tab.js("var i=document.querySelector('#impUrl');"
+                             "i.value='https://music.youtube.com/playlist?list=PLsoukromy000000000000000000';"
+                             "document.querySelector('#impGo').click()")
+                await asyncio.sleep(fake.import_delay + 0.8)
+                await tab.shot(out / f"{tag}-34-import-private.png", full=False)
+                await tab.shot(out / f"{tag}-35-votes-page-with-imports.png")
+                await width(f"{tag} import hotovo")
+                await tab.js("location.hash=''")
+        with fake.lock:
+            fake.imports = list(seeded)
+        if only_import:
+            return
 
         # Nápověda a Jak to funguje (F-WEB-07, F-WEB-08)
         for size in ("phone", "desktop"):
@@ -262,6 +300,7 @@ async def run(out: Path, base: str, fake, cdp_port: int, only_manual: bool = Fal
 def main() -> None:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     only_manual = "--only-manual" in sys.argv
+    only_import = "--only-import" in sys.argv
     out = Path(args[0] if args else "/tmp/ytdj-shots/web")
     out.mkdir(parents=True, exist_ok=True)
     server, fake = make_server(0)
@@ -287,7 +326,7 @@ def main() -> None:
                 break
             except OSError:
                 time.sleep(0.2)
-        asyncio.run(run(out, base, fake, cdp, only_manual))
+        asyncio.run(run(out, base, fake, cdp, only_manual, only_import))
     finally:
         chrome.terminate()
         try:

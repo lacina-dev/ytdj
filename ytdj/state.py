@@ -16,6 +16,8 @@ from .config import STATE_DB, TASTE_FILE
 
 log = logging.getLogger(__name__)
 
+_TX = object()  # značka transakce ve frontě zápisů
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS plays (
     video_id TEXT NOT NULL,
@@ -73,6 +75,33 @@ CREATE TABLE IF NOT EXISTS votes (
     title    TEXT,
     ts       REAL NOT NULL,
     PRIMARY KEY (target, key, voter)
+);
+
+-- Import playlistu do oblíbených (ytdj/imports.py, FUNKCE F-HLASY-12…):
+-- playlist člověka = jeho 👍 každé písničce v něm. 👍 z importu se do `votes`
+-- nezapisují — počítají se z `import_items` (vlastní hlas člověka má
+-- přednost, Odebrat = smazat import a jeho 👍 zmizí).
+CREATE TABLE IF NOT EXISTS imports (
+    id          TEXT PRIMARY KEY,
+    client      TEXT NOT NULL,                 -- id klienta toho, kdo importoval
+    who         TEXT,                          -- přezdívka v době importu
+    playlist_id TEXT NOT NULL,
+    title       TEXT,
+    created     REAL NOT NULL,
+    fetched     REAL NOT NULL,                 -- poslední načtení (Obnovit)
+    total       INTEGER,                       -- skladeb v playlistu podle YouTube
+    skipped     INTEGER,                       -- nepísničky a nedostupné
+    cut         INTEGER                        -- nad limit playlist_import_max
+);
+CREATE TABLE IF NOT EXISTS import_items (
+    import_id TEXT NOT NULL,
+    key       TEXT NOT NULL,                   -- klíč skladby (votes.song_key_for)
+    video_id  TEXT,
+    artist    TEXT,
+    title     TEXT,
+    added     REAL NOT NULL,                   -- kdy se písnička v importu objevila
+    pos       INTEGER,
+    PRIMARY KEY (import_id, key)
 );
 """
 
@@ -163,6 +192,8 @@ class Store:
                     return
                 if callable(item):
                     item()
+                elif item[0] is _TX:
+                    self._run_tx(db, item[1])
                 else:
                     sql, params = item
                     db.execute(sql, params)
@@ -177,6 +208,30 @@ class Store:
             return
         with self._lock:
             self.db.execute(sql, params)
+
+    def _write_tx(self, statements: list[tuple[str, Any]]) -> None:
+        """Víc zápisů jako jedna transakce ve vlákně zápisů — jeden commit
+        (na SD kartě jeden zápis WAL místo stovek). Parametry jako seznam
+        n-tic = executemany."""
+        if self._writes is not None:
+            self._writes.put((_TX, list(statements)))
+            return
+        with self._lock:
+            self._run_tx(self.db, statements)
+
+    @staticmethod
+    def _run_tx(db: sqlite3.Connection, statements: list[tuple[str, Any]]) -> None:
+        db.execute("BEGIN")
+        try:
+            for sql, params in statements:
+                if isinstance(params, list):
+                    db.executemany(sql, params)
+                else:
+                    db.execute(sql, params)
+        except BaseException:
+            db.execute("ROLLBACK")
+            raise
+        db.execute("COMMIT")
 
     def _later(self, fn: Callable[[], Any]) -> None:
         """Souborová práce (taste.md) mimo event loop, když běží vlákno zápisů."""
@@ -251,6 +306,25 @@ class Store:
                VALUES(?,?,?,?,?,?,?,?,?)""",
             (target, key, voter, int(vote), who, video_id, artist, title, ts),
         )
+
+    def save_import(self, meta: tuple, items: list[tuple]) -> None:
+        """Import playlistu (nový i obnovený) celý najednou: `meta` = řádek
+        `imports`, `items` = (key, video_id, artist, title, added, pos)."""
+        iid = meta[0]
+        self._write_tx([
+            ("""INSERT OR REPLACE INTO imports(id,client,who,playlist_id,title,created,fetched,
+                                                total,skipped,cut) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+             tuple(meta)),
+            ("DELETE FROM import_items WHERE import_id=?", (iid,)),
+            ("""INSERT INTO import_items(import_id,key,video_id,artist,title,added,pos)
+                VALUES(?,?,?,?,?,?,?)""", [(iid, *it) for it in items]),
+        ])
+
+    def delete_import(self, import_id: str) -> None:
+        self._write_tx([
+            ("DELETE FROM import_items WHERE import_id=?", (import_id,)),
+            ("DELETE FROM imports WHERE id=?", (import_id,)),
+        ])
 
     def _migrate_blacklist(self) -> None:
         """Sloupec `until` (platnost záznamu). Staré záznamy bez něj vznikaly
@@ -366,6 +440,20 @@ class Store:
                       COALESCE(artist,''), COALESCE(title,''), ts
                  FROM votes ORDER BY ts"""
         )
+
+    def all_imports(self) -> tuple[list[tuple], list[tuple]]:
+        """(importy, jejich písničky) — pár tisíc řádků, čte se při startu."""
+        meta = self._read(
+            """SELECT id, client, COALESCE(who,''), playlist_id, COALESCE(title,''), created,
+                      fetched, COALESCE(total,0), COALESCE(skipped,0), COALESCE(cut,0)
+                 FROM imports ORDER BY created"""
+        )
+        items = self._read(
+            """SELECT import_id, key, COALESCE(video_id,''), COALESCE(artist,''),
+                      COALESCE(title,''), added, COALESCE(pos,0)
+                 FROM import_items ORDER BY import_id, pos"""
+        )
+        return meta, items
 
     def ratings(self) -> dict[str, str]:
         """Latest like/dislike per track (the feedback table is small)."""

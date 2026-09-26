@@ -417,6 +417,27 @@
   .vlist .who2 { display: block; font-size: .8rem; color: var(--text-dim); overflow-wrap: anywhere; margin-top: 2px; }
   .vlist .acts { display: flex; gap: 6px; flex: none; }
   .vlist .kind { font-size: .72rem; color: var(--text-faint); text-transform: uppercase; letter-spacing: .08em; }
+  .vlist .src { color: var(--text-faint); }
+  /* import playlistu do oblíbených (POZADAVKY #48) */
+  .imp { margin-bottom: 22px; }
+  .impform { display: flex; gap: 8px; }
+  .impform input { flex: 1; min-width: 0; min-height: 48px; padding: 10px 14px; border-radius: 12px;
+                   border: 1px solid var(--line); background: var(--surface); font-size: 1rem; }
+  .impform input:focus { outline: none; border-color: var(--accent); }
+  .impform .btn { flex: none; }
+  @media (max-width: 480px) { .impform { flex-direction: column; } }
+  .impmsg { margin: 8px 2px 0; font-size: .88rem; color: var(--text-dim); min-height: 0; }
+  .impmsg:empty { display: none; }
+  .impmsg.err { color: var(--err); }
+  .impmsg.ok { color: var(--ok); }
+  #vImp { margin-top: 8px; }
+  #vImp a { color: inherit; text-decoration-color: var(--line); text-underline-offset: 3px; }
+  .ibtn { min-height: 44px; padding: 8px 14px; border-radius: 11px; border: 1px solid var(--line);
+          background: var(--surface); font-size: .88rem; font-weight: 600; white-space: nowrap; }
+  .ibtn:hover { background: var(--surface-2); }
+  .ibtn.warn { border-color: color-mix(in srgb, var(--err) 55%, transparent); color: var(--err); }
+  .ibtn[disabled] { opacity: .5; cursor: progress; }
+  @media (max-width: 480px) { #vImp li { flex-wrap: wrap; } #vImp .acts { width: 100%; } #vImp .ibtn { flex: 1; } }
   .quick { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
   .quick .btn { flex: 0 1 auto; }
   .linkbtn { border: 0; background: none; padding: 10px 12px; min-height: 44px; color: var(--text-faint);
@@ -639,6 +660,17 @@
       <button class="btn primary" type="button" data-fav="pusť oblíbené kanceláře">▶ Pusť oblíbené kanceláře</button>
       <button class="btn" type="button" data-fav="pusť moje oblíbené">▶ Pusť moje oblíbené</button>
     </div>
+    <section class="card vsec imp" aria-labelledby="vImpH">
+      <h2 class="sec-h" id="vImpH">Playlisty v oblíbených <span class="count" id="vImpN"></span></h2>
+      <p class="hint2" id="impHint">Vlož odkaz na svůj playlist z YouTube Music nebo YouTube — každá písnička z něj dostane tvůj 👍 a patří k oblíbeným kanceláře. Playlist musí být veřejný nebo neveřejný (s odkazem).</p>
+      <form class="impform" id="impForm" novalidate>
+        <input id="impUrl" type="url" inputmode="url" autocomplete="off" spellcheck="false"
+               placeholder="https://music.youtube.com/playlist?list=…" aria-label="Odkaz na playlist" aria-describedby="impHint">
+        <button class="btn primary" id="impGo" type="submit">Importovat</button>
+      </form>
+      <p class="impmsg" id="impMsg" role="status" aria-live="polite"></p>
+      <ul class="list vlist" id="vImp"></ul>
+    </section>
     <div class="vgrid">
       <div class="stack">
         <section class="card vsec" aria-labelledby="vFavH">
@@ -753,8 +785,8 @@
     if (on) node.setAttribute("hidden", ""); else node.removeAttribute("hidden");
   }
 
-  async function postJSON(path, body) {
-    var res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" },
+  async function postJSON(path, body, method) {
+    var res = await fetch(path, { method: method || "POST", headers: { "Content-Type": "application/json" },
                                   body: JSON.stringify(body) });
     var data = null;
     try { data = await res.json(); } catch (e) { /* empty/invalid response */ }
@@ -1830,7 +1862,9 @@
     who: $("#vWho"), toast: $("#toast"),
     sheet: $("#voteSheet"), sH: $("#vsH"), sSub: $("#vsSub"), sWho: $("#vsWho"), sOpts: $("#vsOpts"), sClose: $("#vsClose"),
     fav: $("#vFav"), favN: $("#vFavN"), pend: $("#vPend"), pendN: $("#vPendN"), ban: $("#vBan"), banN: $("#vBanN"),
-    mine: $("#vMine"), mineN: $("#vMineN"), rule: $("#votesRule")
+    mine: $("#vMine"), mineN: $("#vMineN"), rule: $("#votesRule"),
+    imp: $("#vImp"), impN: $("#vImpN"), impForm: $("#impForm"), impUrl: $("#impUrl"), impGo: $("#impGo"),
+    impMsg: $("#impMsg")
   };
   el.voteSheet = vel.sheet;
 
@@ -1881,7 +1915,10 @@
 
   function names(voters, vote) {
     return (voters || []).filter(function (v) { return v.vote === vote; })
-      .map(function (v) { return v.tag && v.tag === S.tag ? "ty" : v.nick; }).join(", ");
+      .map(function (v) {
+        return (v.tag && v.tag === S.tag ? "ty" : v.nick) +
+               (v.playlist ? " (z playlistu ‚" + v.playlist + "‘)" : "");
+      }).join(", ");
   }
   function votersLine(voters) {
     var up = names(voters, 1), down = names(voters, -1);
@@ -2101,6 +2138,7 @@
   });
 
   async function loadLists() {
+    loadImports();
     try {
       var res = await fetch("/api/votes?client=" + encodeURIComponent(S.client), { cache: "no-store" });
       if (!res.ok) throw new Error();
@@ -2112,6 +2150,87 @@
       });
     }
   }
+
+  /* ---- playlisty v oblíbených: import = můj 👍 každé písničce z playlistu ---- */
+  async function loadImports() {
+    try {
+      var res = await fetch("/api/votes/imports?client=" + encodeURIComponent(S.client), { cache: "no-store" });
+      if (!res.ok) throw new Error();
+      V.imports = await res.json();
+      renderImports();
+      if (V.lists) renderLists();  // "Moje hlasy" zmíní playlisty
+    } catch (e) {
+      if (!vel.imp.children.length) vel.imp.innerHTML = '<li class="empty">Playlisty teď nejde načíst.</li>';
+    }
+  }
+  function renderImports() {
+    var D = V.imports || {}, list = D.imports || [];
+    var mine = list.filter(function (i) { return i.mine; }).length;
+    vel.impN.textContent = list.length ? "· " + list.length : "";
+    if (D.max) {
+      $("#impHint").textContent = "Vlož odkaz na svůj playlist z YouTube Music nebo YouTube — každá písnička z něj dostane tvůj 👍 " +
+        "a patří k oblíbeným kanceláře. Nejvýš " + D.max + " písniček na člověka" +
+        (mine ? " (máš " + (D.mine_songs || 0) + ")" : "") + "; playlist musí být veřejný nebo neveřejný (s odkazem).";
+    }
+    vel.imp.innerHTML = list.length ? list.map(function (it) {
+      var n = it.songs + " " + plural(it.songs, "písnička", "písničky", "písniček");
+      var sub = (it.mine ? "tvůj" : esc(it.who)) + " · " + n + " · " + esc(when(it.created)) +
+                (it.fetched - it.created > 60 ? " · obnoveno " + esc(when(it.fetched)) : "");
+      var acts = it.mine ? '<button class="ibtn" type="button" data-imp="refresh:' + esc(it.id) + '">Obnovit</button>' +
+                           '<button class="ibtn" type="button" data-imp="remove:' + esc(it.id) + '">Odebrat</button>' : "";
+      return '<li><span class="meta"><a class="t" href="' + esc(it.url) + '" target="_blank" rel="noopener">' + esc(it.title) + "</a>" +
+             '<span class="a">' + sub + "</span></span>" + (acts ? '<span class="acts">' + acts + "</span>" : "") + "</li>";
+    }).join("") : '<li class="empty">Zatím nikdo nepřidal playlist.</li>';
+  }
+  function impSay(text, cls) {
+    vel.impMsg.textContent = text || "";
+    vel.impMsg.className = "impmsg" + (cls ? " " + cls : "");
+  }
+  vel.impForm.addEventListener("submit", async function (ev) {
+    ev.preventDefault();
+    var url = vel.impUrl.value.trim();
+    if (!url) { impSay("Vlož odkaz na playlist.", "err"); vel.impUrl.focus(); return; }
+    if (!S.nick) { openNick(false, ""); return; }
+    if (V.impBusy) return;
+    V.impBusy = true;
+    vel.impGo.disabled = true;
+    vel.impGo.textContent = "Načítám…";
+    impSay("Načítám playlist z YouTube — u velkého to chvíli trvá.");
+    try {
+      var d = await postJSON("/api/votes/imports", { client: S.client, who: S.nick, url: url });
+      impSay(d.message || "Hotovo.", "ok");
+      vel.impUrl.value = "";
+      loadLists();
+    } catch (e) {
+      impSay(e.status ? e.message : "Jukebox teď neodpovídá — playlist se nenačetl.", "err");
+    } finally {
+      V.impBusy = false;
+      vel.impGo.disabled = false;
+      vel.impGo.textContent = "Importovat";
+    }
+  });
+  vel.imp.addEventListener("click", async function (ev) {
+    var b = ev.target.closest && ev.target.closest("[data-imp]");
+    if (!b || b.disabled) return;
+    var p = b.getAttribute("data-imp").split(":"), act = p[0], id = p[1];
+    if (act === "remove" && !b.classList.contains("warn")) {  // odebrat až na druhé ťuknutí
+      b.classList.add("warn");
+      b.textContent = "Opravdu odebrat?";
+      setTimeout(function () { if (b.isConnected) { b.classList.remove("warn"); b.textContent = "Odebrat"; } }, 4000);
+      return;
+    }
+    b.disabled = true;
+    if (act === "refresh") b.textContent = "Načítám…";
+    try {
+      var d = act === "refresh"
+        ? await postJSON("/api/votes/imports/" + encodeURIComponent(id) + "/refresh", { client: S.client })
+        : await postJSON("/api/votes/imports/" + encodeURIComponent(id), { client: S.client }, "DELETE");
+      impSay(d.message || "Hotovo.", "ok");
+    } catch (e) {
+      impSay(e.status ? e.message : "Jukebox teď neodpovídá.", "err");
+    }
+    loadLists();
+  });
 
   function itemRow(it, idx, list) {
     var song = it.target === "song";
@@ -2151,10 +2270,13 @@
     var sets = [["favourites", vel.fav, vel.favN, "Zatím nic — dej 👍 písničce nebo interpretovi, který se ti líbí."],
                 ["pending", vel.pend, vel.pendN, "Nic nečeká na rozhodnutí."],
                 ["banned", vel.ban, vel.banN, "Nic není vyřazené."],
-                ["mine", vel.mine, vel.mineN, "Ještě jsi nehlasoval(a). 👍/👎 najdeš u skladby, která hraje."]];
+                ["mine", vel.mine, vel.mineN, "Ještě jsi nehlasoval(a). 👍/👎 najdeš u skladby, která hraje." +
+                 (V.imports && (V.imports.mine_songs || 0) ? " Písničky z tvých playlistů jsou v Playlistech výš." : "")]];
+    var counts = L.counts || {};
     sets.forEach(function (x) {
       var items = L[x[0]] || [];
-      x[2].textContent = items.length ? "· " + items.length : "";
+      var total = counts[x[0]] || items.length;
+      x[2].textContent = total ? "· " + total + (total > items.length ? " (ukazuji " + items.length + ")" : "") : "";
       x[1].innerHTML = items.length ? items.map(function (it, i) { return itemRow(it, i, x[0]); }).join("")
                                     : '<li class="empty">' + esc(x[3]) + "</li>";
     });

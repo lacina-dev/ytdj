@@ -32,6 +32,19 @@ se posunou dopředu (boost_pools). "Pusť oblíbené" hraje oblíbené skladby
 i známé skladby oblíbených interpretů (favourite_mix). Výslovné přání vyřazené skladby / interpreta se
 splní — s poznámkou, kdo ji vyřadil. Při vyřazení zmizí z fronty jen
 podkres; hraje-li zrovna podkres, přeskočí se.
+
+Import playlistu (ytdj/imports.py): playlist člověka = jeho 👍 každé
+písničce v něm (Ballot.src = id importu). Takové 👍 se neukládají do `votes`,
+počítají se z importu (`_resync`): vlastní 👍/👎 člověka má vždycky přednost,
+vlastní stažení jen když je novější než písnička v importu. Import dává 👍
+jen skladbám, nikdy celému interpretovi.
+
+Férovost oblíbených kanceláře (`fair_order`): "pusť oblíbené" i výběr pro DJ
+berou oblíbené po lidech na střídačku — každý, kdo dal 👍, přispěje zhruba
+stejným dílem, ať má 5 oblíbených, nebo playlist o 300 písničkách; u každého
+napřed nejvíc 👍 kanceláře a jeho vlastní 👍 před písničkami z playlistu.
+V poolech podkresu se písničky, které drží jen playlisty, posunou dopředu
+nejvýš IMPORT_LIFT za člověka na jedno doplnění.
 """
 
 from __future__ import annotations
@@ -43,7 +56,7 @@ import random
 import re
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Callable, Iterable
 
@@ -58,6 +71,7 @@ RATE_MAX = 30  # hlasů na člověka…
 RATE_WINDOW = 600.0  # …za tolik sekund
 DOWNWEIGHT_PASS = 0.5  # pravděpodobnost, že upozaděná skladba projde do podkresu
 BOOST_LIFT = 8  # o kolik míst v poolu se posune oblíbená (jednou za skladbu)
+IMPORT_LIFT = 2  # …z toho skladeb, které drží jen playlisty, nejvýš tolik za člověka na doplnění
 ARTIST_MIX = 3  # "pusť oblíbené": kolik známých skladeb od každého oblíbeného interpreta
 MIX_TIMEOUT = 6.0  # s — katalog pro oblíbené interprety; pak jen oblíbené skladby
 LIST_MAX = 100  # nejvýš tolik položek v jednom seznamu API
@@ -181,6 +195,41 @@ class Ballot:
     video_id: str = ""
     artist: str = ""
     title: str = ""
+    src: str = ""  # "" = vlastní hlas; jinak id importu playlistu (👍 z něj)
+
+
+@dataclass(slots=True)
+class ImportItem:
+    key: str
+    video_id: str
+    artist: str
+    title: str
+    added: float  # kdy se písnička v importu objevila (novější vlastní stažení má přednost)
+    pos: int = 0
+
+
+@dataclass(slots=True)
+class PlaylistImport:
+    """Import playlistu jednoho člověka: jeho 👍 každé písničce v `items`."""
+    id: str
+    client: str
+    who: str
+    playlist_id: str
+    title: str
+    created: float
+    fetched: float
+    total: int = 0
+    skipped: int = 0
+    cut: int = 0
+    items: dict = field(default_factory=dict)  # klíč → ImportItem, v pořadí playlistu
+
+    def meta(self) -> tuple:
+        return (self.id, self.client, self.who, self.playlist_id, self.title, self.created,
+                self.fetched, self.total, self.skipped, self.cut)
+
+    def rows(self) -> list[tuple]:
+        return [(it.key, it.video_id, it.artist, it.title, it.added, it.pos)
+                for it in self.items.values()]
 
 
 @dataclass(slots=True)
@@ -250,6 +299,10 @@ class VoteBook:
         self._index: _Index | None = None
         self._rate: dict[str, deque[float]] = {}
         self._lifted: set[str] = set()  # videoId, které boost_pools už posunul
+        # importy playlistů (ytdj/imports.py): id → import; klient → jeho importy
+        self.imports: dict[str, PlaylistImport] = {}
+        self._imports_by: dict[str, list[PlaylistImport]] = {}
+        self.prng = random.Random()  # pořadí oblíbených (testy si ho osadí)
         self._pool_sig: tuple = ()
         # RadioPools (zapojí wire): pool_reject, který plnič volá u každé
         # skladby, přitom posune oblíbené v poolech dopředu — radio.py nic
@@ -276,10 +329,110 @@ class VoteBook:
         return self
 
     async def aload(self) -> "VoteBook":
-        """Načtení mimo event loop (SD karta)."""
+        """Načtení mimo event loop (SD karta) — hlasy i importy playlistů."""
         aread = getattr(self.store, "aread", None)
         rows = await aread("all_votes") if aread is not None else None
-        return self.load(rows)
+        self.load(rows)
+        if aread is not None and hasattr(self.store, "all_imports"):
+            try:
+                meta, items = await aread("all_imports")
+            except Exception:
+                log.exception("importy playlistů se nenačetly")
+            else:
+                self.load_imports(meta, items)
+        return self
+
+    def load_imports(self, meta: Iterable[tuple], items: Iterable[tuple]) -> "VoteBook":
+        """Řádky `Store.all_imports()` → importy a jejich 👍 (po `load`)."""
+        by_id: dict[str, PlaylistImport] = {}
+        for iid, client, who, pid, title, created, fetched, total, skipped, cut in meta:
+            if iid in self.imports or not client:
+                continue  # import z doby načítání je novější
+            by_id[iid] = PlaylistImport(iid, client, who or "", pid, title or "", float(created),
+                                        float(fetched), int(total or 0), int(skipped or 0),
+                                        int(cut or 0))
+        for iid, key, vid, artist, title, added, pos in items:
+            imp = by_id.get(iid)
+            if imp is not None and key and key not in imp.items:
+                imp.items[key] = ImportItem(key, vid or "", artist or "", title or "",
+                                            float(added), int(pos or 0))
+        for imp in by_id.values():
+            self.put_import(imp)
+        return self
+
+    # ---- importy playlistů: 👍 člověka každé písničce z jeho playlistu ----
+
+    def imports_of(self, voter: str) -> list[PlaylistImport]:
+        return list(self._imports_by.get(voter, ()))
+
+    def put_import(self, imp: PlaylistImport) -> set[str]:
+        """Přidá nebo nahradí import (stejné id) a přepočítá 👍 toho člověka.
+        Vrací klíče, kterých se to týkalo."""
+        old = self.imports.get(imp.id)
+        keys = set(imp.items) | (set(old.items) if old is not None else set())
+        self.imports[imp.id] = imp
+        lst = [i for i in self._imports_by.get(imp.client, []) if i.id != imp.id] + [imp]
+        lst.sort(key=lambda i: (i.created, i.id))
+        self._imports_by[imp.client] = lst
+        self._resync(imp.client, keys)
+        return keys
+
+    def drop_import(self, import_id: str) -> PlaylistImport | None:
+        imp = self.imports.pop(import_id, None)
+        if imp is None:
+            return None
+        lst = [i for i in self._imports_by.get(imp.client, []) if i.id != import_id]
+        if lst:
+            self._imports_by[imp.client] = lst
+        else:
+            self._imports_by.pop(imp.client, None)
+        self._resync(imp.client, set(imp.items))
+        return imp
+
+    def _import_ballot(self, voter: str, key: str) -> Ballot | None:
+        """👍 z prvního (nejstaršího) importu člověka, který písničku má."""
+        for imp in self._imports_by.get(voter, ()):
+            it = imp.items.get(key)
+            if it is not None:
+                return Ballot(voter, 1, imp.who, it.added, it.video_id, it.artist, it.title,
+                              src=imp.id)
+        return None
+
+    def _resync(self, voter: str, keys: Iterable[str]) -> None:
+        """👍 z importů pro tyhle klíče znovu: vlastní 👍/👎 vyhrává vždy,
+        vlastní stažení jen když je novější než písnička v importu."""
+        for key in keys:
+            ballots = self.items.get((SONG, key))
+            cur = ballots.get(voter) if ballots else None
+            imp_b = self._import_ballot(voter, key)
+            if cur is not None and not cur.src and (cur.vote != 0 or imp_b is None
+                                                    or cur.ts >= imp_b.ts):
+                continue  # vlastní hlas platí
+            if imp_b is not None:
+                self.items.setdefault((SONG, key), {})[voter] = imp_b
+            elif cur is not None and ballots is not None:
+                del ballots[voter]
+                if not ballots:
+                    del self.items[(SONG, key)]
+        self._version += 1
+
+    def import_keys(self, voter: str, exclude: str = "") -> set[str]:
+        """Klíče písniček ze všech importů člověka (bez importu `exclude`)."""
+        keys: set[str] = set()
+        for imp in self._imports_by.get(voter, ()):
+            if imp.id != exclude:
+                keys |= set(imp.items)
+        return keys
+
+    def import_active(self, imp: PlaylistImport) -> int:
+        """Kolik 👍 z importu opravdu platí (ne přebité vlastním hlasem ani
+        starším importem téhož člověka)."""
+        n = 0
+        for key in imp.items:
+            b = self.items.get((SONG, key), {}).get(imp.client)
+            if b is not None and b.src == imp.id:
+                n += 1
+        return n
 
     # ---- prahy a stav ----
 
@@ -427,6 +580,25 @@ class VoteBook:
             return bool(artist_keys(artist) & idx.fav_artists) and self.blocked(track) is None
         return False
 
+    def import_backers(self, track: Any) -> set[str]:
+        """Lidé, jejichž 👍 z playlistu drží oblíbenou skladbu — prázdné, když
+        ji drží vlastní 👍 někoho nebo oblíbený interpret (pak platí vše jako dřív)."""
+        if not self.imports:
+            return set()
+        idx = self._idx()
+        if idx.fav_artists:
+            _, artist, _ = _tat(track)
+            if artist_keys(artist) & idx.fav_artists:
+                return set()
+        backers: set[str] = set()
+        for key in self._song_hits(track) & idx.fav_songs:
+            for b in self.items.get((SONG, key), {}).values():
+                if b.vote > 0:
+                    if not b.src:
+                        return set()
+                    backers.add(b.voter)
+        return backers
+
     def _maybe_boost(self) -> None:
         """boost_pools, jen když se pooly od minula doplnily (nové seedy, doplnění
         rádiem) nebo se změnily hlasy — ne po každé vydané skladbě.
@@ -455,6 +627,7 @@ class VoteBook:
         if not (idx.fav_songs or idx.fav_artists):
             return 0
         moved = 0
+        quota: dict[str, int] = {}  # 👍 jen z playlistů: posunutí za člověka v tomhle kole
         for pool in pools:
             q = getattr(pool, "tracks", None)
             if not q:
@@ -464,6 +637,12 @@ class VoteBook:
             for t in list(items):
                 if t.id in self._lifted or not self.is_favourite(t):
                     continue
+                backers = self.import_backers(t)
+                if backers:
+                    who = min(backers, key=lambda v: (quota.get(v, 0), v))
+                    if quota.get(who, 0) >= IMPORT_LIFT:
+                        continue  # tenhle člověk už své má; při dalším doplnění třeba
+                    quota[who] = quota.get(who, 0) + 1
                 self._lifted.add(t.id)
                 j = items.index(t)
                 k = max(0, j - BOOST_LIFT)
@@ -538,8 +717,10 @@ class VoteBook:
         who = " ".join(str(who or "").split())[:WHO_MAX]
         if old is None and vote == 0:
             return CastResult(target, key, 0, 0, before, before, self.item(target, key, voter))
-        if old is not None and old.vote == vote:
-            old.who = who or old.who  # stejný hlas znovu: nic se nemění
+        if old is not None and old.vote == vote and not old.src:
+            # stejný hlas znovu: nic se nemění (👍 u písničky z playlistu se
+            # ale zapíše jako vlastní — přežije pak i odebrání playlistu)
+            old.who = who or old.who
             return CastResult(target, key, vote, prev, before, before,
                               self.item(target, key, voter))
         now = self.clock()
@@ -610,6 +791,14 @@ class VoteBook:
             return last.artist or key
         return f"{last.artist} — {last.title}" if last.artist else last.title or key
 
+    def _voter(self, b: Ballot, tag_of: Callable[[str], str]) -> dict:
+        v = {"nick": self._label(b.voter, b.who), "vote": b.vote, "at": round(b.ts, 1),
+             "tag": tag_of(b.voter)}
+        if b.src:  # 👍 z importu: "z playlistu ‚Název'"
+            imp = self.imports.get(b.src)
+            v["playlist"] = imp.title if imp is not None and imp.title else "playlist"
+        return v
+
     def item(self, target: str, key: str, viewer: str = "") -> dict:
         """Veřejný popis cíle: kdo jak hlasoval a kdy, stav."""
         from .nicks import tag_of
@@ -626,9 +815,7 @@ class VoteBook:
             "down": t.down,
             "status": t.status,
             "need": t.need,
-            "voters": [{"nick": self._label(b.voter, b.who), "vote": b.vote,
-                        "at": round(b.ts, 1), "tag": tag_of(b.voter)}
-                       for b in self._ballots(target, key)],
+            "voters": [self._voter(b, tag_of) for b in self._ballots(target, key)],
             "updated": round(last.ts, 1) if last else None,
         }
         if target == SONG:
@@ -640,32 +827,61 @@ class VoteBook:
         return out
 
     def lists(self, viewer: str = "") -> dict:
-        """GET /api/votes: oblíbené, vyřazené, rozhodující se (+ moje)."""
+        """GET /api/votes: oblíbené, vyřazené, rozhodující se (+ moje).
+
+        Stav se spočítá pro všechno, slovník položky (jména, značky) jen pro
+        to, co se ukáže (LIST_MAX) — s importy playlistů jsou to tisíce
+        položek a event loop na Pi by to cítil. `counts` = celé počty.
+        "Moje hlasy" jsou jen vlastní hlasy; 👍 z playlistů ukazuje seznam
+        importů (/api/votes/imports)."""
         favourites, banned, pending, mine = [], [], [], []
         for (target, key), ballots in self.items.items():
-            if not any(b.vote for b in ballots.values()):
+            up = down = 0
+            updated = 0.0
+            explicit = False
+            for b in ballots.values():
+                if b.vote > 0:
+                    up += 1
+                elif b.vote < 0:
+                    down += 1
+                if b.ts > updated:
+                    updated = b.ts
+                if b.vote and not b.src:
+                    explicit = True
+            if not (up or down):
                 continue  # vše stažené
-            it = self.item(target, key, viewer)
-            if it["status"] == FAVOURITE:
-                favourites.append(it)
-            elif it["status"] == BANNED:
-                banned.append(it)
+            t = self._status(target, up, down)
+            row = (target, key, up - down, updated, explicit, t.need)
+            if t.status == FAVOURITE:
+                favourites.append(row)
+            elif t.status == BANNED:
+                banned.append(row)
             else:
-                pending.append(it)
-            if viewer and it.get("mine"):
-                mine.append(it)
-        favourites.sort(key=lambda i: (-(i["up"] - i["down"]), -(i["updated"] or 0)))
-        banned.sort(key=lambda i: -(i["updated"] or 0))
-        pending.sort(key=lambda i: (i["need"], -(i["updated"] or 0)))
-        mine.sort(key=lambda i: -(i["updated"] or 0))
+                pending.append(row)
+            if viewer:
+                mb = ballots.get(viewer)
+                if mb is not None and mb.vote and not mb.src:
+                    mine.append(row)
+        # oblíbené: nejvíc 👍, pak s vlastním hlasem (ne jen z playlistu), pak nejnovější
+        favourites.sort(key=lambda r: (-r[2], not r[4], -r[3]))
+        banned.sort(key=lambda r: -r[3])
+        pending.sort(key=lambda r: (r[5], -r[3]))
+        mine.sort(key=lambda r: -r[3])
+
+        def shown(rows: list) -> list[dict]:
+            return [self.item(r[0], r[1], viewer) for r in rows[:LIST_MAX]]
+
         out = {
-            "favourites": favourites[:LIST_MAX],
-            "banned": banned[:LIST_MAX],
-            "pending": pending[:LIST_MAX],
+            "favourites": shown(favourites),
+            "banned": shown(banned),
+            "pending": shown(pending),
             "rules": self.rules(),
+            "counts": {"favourites": len(favourites), "banned": len(banned),
+                       "pending": len(pending)},
         }
         if viewer:
-            out["mine"] = mine[:LIST_MAX]
+            out["mine"] = shown(mine)
+            out["counts"]["mine"] = len(mine)
         return out
 
     def brief(self, track: Any, full: bool = False) -> dict | None:
@@ -736,11 +952,16 @@ class VoteBook:
     # ---- oblíbené jako zdroj hudby ----
 
     def favourite_tracks(self, voter: str = "", shuffle: bool = True) -> list:
-        """Oblíbené kanceláře, nebo (s `voter`) moje 👍 — bez vyřazených."""
+        """Oblíbené kanceláře, nebo (s `voter`) moje 👍 — bez vyřazených.
+
+        Kancelář: po lidech na střídačku (`fair_order`), ať playlist o 300
+        písničkách nepřehluší kolegu s dvaceti 👍. Moje: náhodně."""
         from .music.catalog import Track
 
         idx = self._idx()
-        rows: list[tuple[float, Ballot]] = []
+        src_of: dict[str, Ballot] = {}
+        mine: list[str] = []
+        per: dict[str, list[tuple]] = {}
         for (target, key), ballots in self.items.items():
             if target != SONG or key in idx.banned_songs:
                 continue
@@ -748,22 +969,31 @@ class VoteBook:
                 b = ballots.get(voter)
                 if b is None or b.vote <= 0:
                     continue
-                score = 1.0
+                mine.append(key)
             else:
                 if key not in idx.fav_songs:
                     continue
                 t = self.tally(SONG, key)
-                score = float(t.up - t.down)
+                for b in ballots.values():
+                    if b.vote > 0:
+                        # u každého napřed nejvíc 👍 kanceláře, vlastní 👍 před playlistem
+                        per.setdefault(b.voter, []).append(
+                            (t.down - t.up, 1 if b.src else 0, b.ts, key))
             src = max((b for b in ballots.values() if b.video_id), key=lambda b: b.ts, default=None)
-            if src is None:
-                continue
-            rows.append((score, src))
-        if shuffle:
-            random.shuffle(rows)  # pořadí ne vždycky stejné…
-        rows.sort(key=lambda r: -r[0])  # …ale nejoblíbenější první
+            if src is not None:
+                src_of[key] = src
+        if voter:
+            order = sorted(mine)
+            if shuffle:
+                self.prng.shuffle(order)
+        else:
+            order = fair_order(per, self.prng if shuffle else None)
         out, seen = [], set()
-        for _, b in rows:
-            if b.video_id not in seen and not self.banned_artists_of(Track(b.video_id, b.title, b.artist)):
+        for key in order:
+            b = src_of.get(key)
+            if b is None or b.video_id in seen:
+                continue
+            if not self.banned_artists_of(Track(b.video_id, b.title, b.artist)):
                 seen.add(b.video_id)
                 out.append(Track(b.video_id, b.title, b.artist))
         return out
@@ -825,7 +1055,15 @@ class VoteBook:
         """(oblíbené — skladby prostřídané s "interpret X", vyřazení interpreti,
         vyřazené skladby) jako popisky."""
         idx = self._idx()
-        favs = sorted(idx.fav_songs, key=lambda k: -(self.tally(SONG, k).up - self.tally(SONG, k).down))
+        # po lidech na střídačku jako "pusť oblíbené", ale pevně (DJ nemá
+        # dostávat pokaždé jiný text): kdo hlasoval dřív, je v kole první
+        per: dict[str, list[tuple]] = {}
+        for key in idx.fav_songs:
+            t = self.tally(SONG, key)
+            for b in self.items.get((SONG, key), {}).values():
+                if b.vote > 0:
+                    per.setdefault(b.voter, []).append((t.down - t.up, 1 if b.src else 0, b.ts, key))
+        favs = fair_order(per, None, n=n_fav)
         songs = [self._display_name(SONG, k) for k in favs]
         arts = [f"interpret {a}" for a in self.favourite_artists()]
         mixed: list[str] = []
@@ -860,6 +1098,57 @@ class VoteBook:
 # --------------------------------------------------------------------------
 # účinek vyřazení na to, co hraje
 # --------------------------------------------------------------------------
+
+
+def fair_order(per: dict[str, list[tuple]], rng: random.Random | None,
+               n: int | None = None) -> list[str]:
+    """Klíče skladeb po lidech na střídačku.
+
+    `per` = člověk → [(pořadí podle 👍, 1 = z playlistu / 0 = vlastní, čas, klíč)].
+    V každém kole dá každý jednu skladbu: u sebe tu s nejvíc 👍 kanceláře,
+    vlastní 👍 před playlistem. V kole jde první ten, kdo nese oblíbenější
+    skladbu (nejoblíbenější tak hrají první); shody jsou s `rng` náhodné,
+    bez něj pevné (skladby podle času, lidé podle prvního hlasu). Skladbu,
+    kterou už přinesl někdo jiný, člověk přeskočí a dá další — o kolo
+    nepřijde. Každý tak přispěje stejně, ať má oblíbených 5, nebo 300."""
+    queues: dict[str, deque] = {}
+    first: dict[str, float] = {}
+    for voter, rows in per.items():
+        rows = list(rows)
+        if rng is not None:
+            rng.shuffle(rows)
+            rows.sort(key=lambda r: (r[0], r[1]))  # stabilní: shody zůstanou zamíchané
+        else:
+            rows.sort()
+        queues[voter] = deque(rows)
+        first[voter] = min((r[2] for r in rows), default=0.0)
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def head(v: str) -> tuple | None:
+        q = queues[v]
+        while q and q[0][3] in seen:
+            q.popleft()
+        return q[0] if q else None
+
+    voters = [v for v in queues if queues[v]]
+    while voters and (n is None or len(out) < n):
+        noms = {v: head(v) for v in voters}
+        voters = [v for v in voters if noms[v] is not None]
+        tie = {v: rng.random() for v in voters} if rng is not None else {}
+        # jen podle 👍 kanceláře: kdo má jen playlist, nesmí být v kole vždycky poslední
+        order = sorted(voters, key=lambda v: (noms[v][0], tie.get(v, 0.0), first[v], v))
+        for v in order:
+            row = head(v)
+            if row is None:
+                continue
+            queues[v].popleft()
+            seen.add(row[3])
+            out.append(row[3])
+            if n is not None and len(out) >= n:
+                break
+        voters = [v for v in voters if head(v) is not None]
+    return out
 
 
 def focus_artists(pools: Any) -> list[str]:
@@ -911,6 +1200,9 @@ def wire(app: Any) -> VoteBook:
     book = VoteBook(app.store, app.cfg, label=label)
     book.pools = getattr(app, "pools", None)
     app.votes = book
+    from .imports import Importer  # import playlistů do oblíbených (POZADAVKY #48)
+
+    app.imports = Importer(book, app.store, getattr(app, "catalog", None), app.cfg)
     for part in (getattr(app, "pools", None), getattr(app, "dj", None)):
         if part is not None:
             part.votes = book

@@ -26,9 +26,14 @@ from .ui import ACCENT, ACCENT_TEXT, BG, DIM, ERR, FAINT, ON_ACCENT, SURFACE, SU
 log = logging.getLogger(__name__)
 
 MARGIN = 40
-# 3×3 mřížka: afinní oprava + mřížka zbytků (kedei.recalibrate). Po 5 bodech
-# na Pi (26. 9.) zůstalo 12 px, vlevo dole se četlo výš, vpravo dole níž.
-_XS, _YS = (MARGIN, W // 2, W - MARGIN), (MARGIN, H // 2, H - MARGIN)
+# Mřížka 3×4: afinní oprava + mřížka zbytků (kedei.recalibrate). Po 5 bodech
+# na Pi (26. 9.) zůstalo 12 px (vlevo dole se četlo výš, vpravo dole níž);
+# Test prstem (27. 9.) ukázal, že u samého horního a dolního okraje prst tlačí
+# slabě a displej ho čte k středu (nahoře o 23–54 px níž) — proto řádky křížků
+# přímo u okrajů (y 14 a 306), ne jen 40 px od nich.
+EDGE = 14
+_XS = (MARGIN, W // 2, W - MARGIN)
+_YS = (EDGE, 110, 210, H - EDGE)
 POINTS = tuple((x, y) for j, y in enumerate(_YS) for x in (_XS if j % 2 == 0 else _XS[::-1]))
 IDLE_CANCEL = 45.0  # s without a touch in the middle of it: give up, change nothing
 DONE_CLOSE = 20.0  # s the result stays up
@@ -222,7 +227,8 @@ class CalibRenderer:
         if v.phase == "points":
             step = min(v.step, n - 1)
             hint = self.s["hint"].format(i=step + 1, n=n)
-            ty = 70 if POINTS[step][1] == H // 2 else 116  # never over the current cross
+            # the text never over the current cross (nor the next ones in its row)
+            ty = {EDGE: 150, 110: 196, 210: 60}.get(POINTS[step][1], 130)
             d.text((W // 2, ty), self.s["title"], font=fs.status_b, fill=TEXT, anchor="mm")
             for i, line in enumerate(wrap(hint, fs.status, W - 120, 2)):
                 d.text((W // 2, ty + 26 + i * 20), line, font=fs.status, fill=DIM, anchor="mm")

@@ -408,6 +408,13 @@ class CalibrationTest(unittest.TestCase):
         self.assertEqual(t._cal.coef, (1, 0, 0, 0, 1, 0))
 
 
+def edge_pull(x, y):
+    """The finger at the very top/bottom edge reads towards the centre (Test prstem 27. 9.)
+    on top of the bent glass: +45 px at the top edge, −25 px at the bottom, fading in 40 px."""
+    bx, by = bent_glass(x, y)
+    return bx, by + 45 * max(0.0, 1 - y / 40) - 25 * max(0.0, 1 - (320 - y) / 40)
+
+
 def bent_glass(x, y):
     """A position-dependent error like the Pi's after the 5-point calibration (26. 9.):
     bottom-left reads high and right, bottom-right reads low and left."""
@@ -426,18 +433,63 @@ class GridCalibrationTest(unittest.TestCase):
     def _worst(self, cal):
         return max(max(abs(a - b) for a, b in zip(cal.map_float(*bent_glass(x, y)), (x, y))) for x, y in self.CHECK)
 
+    NINE = [(x, y) for y in (40, 160, 280) for x in (40, 240, 440)]  # the 26. 9. layout (old files)
+
     def test_nine_points_fix_what_five_cannot(self):
         ident = kedei.Calibration(1, 0, 0, 0, 1, 0)
         five = [(40, 40), (440, 40), (440, 280), (40, 280), (240, 160)]
         cal5, info5 = kedei.recalibrate(ident, self._pairs(five))
-        cal9, info9 = kedei.recalibrate(ident, self._pairs(POINTS))
-        self.assertEqual(len(POINTS), 9)
+        cal9, info9 = kedei.recalibrate(ident, self._pairs(self.NINE))
         self.assertIsNone(cal5.grid)
         self.assertIsNotNone(cal9.grid)
         self.assertGreater(self._worst(cal5), 5)  # an affine fit can't follow the bend
         self.assertLess(self._worst(cal9), 3.5)
         self.assertLess(info9["error"], 1.0)
         self.assertGreater(info9["affine_error"], 3)  # the bend is reported
+
+    def test_twelve_points_catch_the_edge_pull_in(self):
+        """Test prstem 27. 9.: at the top edge the finger read 23–54 px lower, at the bottom higher."""
+        self.assertEqual(len(POINTS), 12)
+        ident = kedei.Calibration(1, 0, 0, 0, 1, 0)
+
+        def pairs(points):
+            return [((round(edge_pull(x, y)[0]), round(edge_pull(x, y)[1])), (x, y)) for x, y in points]
+
+        cal9, _ = kedei.recalibrate(ident, pairs(self.NINE))
+        cal12, info = kedei.recalibrate(ident, pairs(POINTS))
+        self.assertEqual(len(cal12.grid["ys"]), 4)
+        probe_spots = [(40, 10), (282, 10), (366, 10), (451, 10), (30, 300), (240, 300), (450, 300)]
+
+        def worst(cal):
+            return max(abs(cal.map_float(*edge_pull(x, y))[1] - y) for x, y in probe_spots)
+
+        self.assertGreater(worst(cal9), 15)  # 40 px in from the edge doesn't see the pull-in
+        self.assertLess(worst(cal12), 8)
+        self.assertLess(info["error"], 1.0)
+        # inside, the 12-point grid is as good as the 9-point one
+        inner = [(122, 230), (358, 230), (240, 160)]
+        self.assertLess(max(abs(cal12.map_float(*edge_pull(x, y))[1] - y) for x, y in inner), 5)
+
+    def test_beyond_the_grid_the_edge_correction_holds(self):
+        cal, _ = kedei.recalibrate(kedei.Calibration(1, 0, 0, 0, 1, 0), self._pairs(POINTS))
+        # clamped, not extrapolated: far outside the grid = the edge nodes' correction
+        self.assertEqual(cal.offset(-500, -500), cal.offset(POINTS[0][0], POINTS[0][1]))
+
+    def test_nine_point_files_still_load(self):
+        cal, _ = kedei.recalibrate(kedei.Calibration(1, 0, 0, 0, 1, 0), self._pairs(self.NINE))
+        self.assertEqual(len(cal.grid["d"]), 9)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cal.json"
+            cal.save(path)
+            back = kedei.Calibration.load(path)
+        self.assertEqual(back.grid, cal.grid)
+
+    def test_a_slipped_edge_point_is_still_refused(self):
+        pairs = self._pairs(POINTS)
+        (mx, my), t = pairs[1]  # (240, 14)
+        pairs[1] = ((mx + 90, my + 110), t)
+        with self.assertRaises(ValueError):
+            kedei.recalibrate(kedei.Calibration(1, 0, 0, 0, 1, 0), pairs)
 
     def test_grid_survives_save_and_load(self):
         cal, _ = kedei.recalibrate(kedei.Calibration(1, 0, 0, 0, 1, 0), self._pairs(POINTS))
@@ -615,7 +667,7 @@ class CalibrationFlowTest(unittest.TestCase):
             self.assertTrue(wait_for(lambda: self.app.calib.step == i + 1 or self.app.calib.phase != "points"))
         self.assertTrue(wait_for(lambda: self.app.calib.phase == "done"), self.app.calib.detail)
         saved = self.log.wait("panel.calibration", phase="saved")
-        self.assertEqual(saved[0]["n"], 9)
+        self.assertEqual(saved[0]["n"], 12)
         self.assertIsNotNone(saved[0]["grid_max"])
         # the owner's case: aiming at the top of −volume (y 270) reads there, not in Hrát
         got = []
@@ -794,21 +846,21 @@ class ProbeReportTest(unittest.TestCase):
         self.assertIn("no panel.touch_probe", probe_report([]))
 
 
-class TallStripProposalTest(unittest.TestCase):
-    def test_off_by_default_and_renders_when_on(self):
+class TallStripTest(unittest.TestCase):
+    def test_tall_by_default_and_the_old_strip_on_request(self):
         import subprocess
 
         from ytdj.panel import ui
 
-        self.assertEqual(ui.STRIP_H, 32)  # the look the owner has now
+        self.assertEqual(ui.STRIP_H, 46)  # the taller strip is the default since 27. 9. (owner's consent)
         code = ("import sys; sys.path.insert(0, %r); from ytdj.panel import ui; "
                 "r = ui.Renderer(); r.render(ui.View(online=True, connecting=False, has_track=True, title='X', "
                 "artist='Y', running=True, duration=100, can_next=True), full=True); "
                 "print(ui.STRIP_H, ui.NET_BTN, ui.ART[1], ui.Renderer.LINE_Y)") % str(Path(__file__).resolve().parents[1])
-        out = subprocess.run([sys.executable, "-c", code], env={"YTDJ_PANEL_TALL_STRIP": "1", "PATH": "/usr/bin"},
+        out = subprocess.run([sys.executable, "-c", code], env={"YTDJ_PANEL_TALL_STRIP": "0", "PATH": "/usr/bin"},
                              capture_output=True, text=True, check=True).stdout.split()
-        self.assertEqual(out[0], "46")
-        self.assertEqual(out[-2], "48")
+        self.assertEqual(out[0], "32")  # the switch back to the old 32 px strip still works
+        self.assertEqual(out[-2], "34")
 
 
 class TouchReportTest(unittest.TestCase):

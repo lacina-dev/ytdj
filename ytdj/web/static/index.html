@@ -1509,7 +1509,15 @@
     setHidden(el.icoPause, !S.running);
     control(running ? "pause" : "play", null);
   });
-  el.btnNext.addEventListener("click", function () { control("next", null); });
+  // dvojí ťuknutí = jedno Další (jinak by přeskočilo dvě skladby a u cizího
+  // přání se počítalo dvakrát)
+  var lastNext = 0;
+  el.btnNext.addEventListener("click", function () {
+    var now = Date.now();
+    if (now - lastNext < 1000) return;
+    lastNext = now;
+    control("next", null);
+  });
   // No ■ any more: in the office a stop wiped everybody's wishes (25. 9. from a
   // stale tab). Pause is enough; each person removes their own wishes with ×.
 
@@ -1981,11 +1989,13 @@
                 down ? down + "× 👎" + (song && song.status === "banned" ? " — vyřazená" : song && song.need ? ", k vyřazení chybí " + song.need + "×" : "") : "vypadne, když ji 👎 aspoň 2 lidi",
                 mine === -1);
     var banA = (V.lists && V.lists.rules && V.lists.rules.ban_artist_votes) || 3;
+    var favA = (V.lists && V.lists.rules && V.lists.rules.favourite_artist_votes) || 2;
     arts.forEach(function (a, i) {
       if (!sh.downOnly) {
         html += opt("artist:" + i + ":" + (a.mine === 1 ? 0 : 1), "👍",
                     a.mine === 1 ? "Stáhnout můj 👍 pro " + a.name : "Celý interpret " + a.name,
-                    a.status === "favourite" ? "♥ oblíbený" + (a.up ? " — " + a.up + "× 👍" : "") : (a.up ? a.up + "× 👍" : "oblíbený kanceláře, DJ ho hraje rád"),
+                    a.status === "favourite" ? "♥ oblíbený" + (a.up ? " — " + a.up + "× 👍" : "") :
+                      (a.up ? a.up + "× 👍, oblíbený bude od " + favA + "×" : "oblíbený, když 👍 dají aspoň " + favA + " " + plural(favA, "člověk", "lidi", "lidí")),
                     a.mine === 1);
       }
       var need = a.need != null ? a.need : banA - (a.down || 0);
@@ -2110,7 +2120,8 @@
     if (rules.ban_song_votes) {
       vel.rule.textContent = "Písnička vypadne, když ji 👎 aspoň " + rules.ban_song_votes + " " +
         plural(rules.ban_song_votes, "člověk", "lidi", "lidí") + " (a víc než 👍). Interpret při " + rules.ban_artist_votes +
-        ". 👍 jde dát i celému interpretovi. Vyřazené DJ sám nepustí, oblíbené hraje rád.";
+        ". Písnička je oblíbená od jednoho 👍, celý interpret až od " + (rules.favourite_artist_votes || 2) + " " +
+        plural(rules.favourite_artist_votes || 2, "člověka", "lidí", "lidí") + " (a víc než 👎). Vyřazené DJ sám nepustí, oblíbené hraje rád.";
     }
     var sets = [["favourites", vel.fav, vel.favN, "Zatím nic — dej 👍 písničce nebo interpretovi, který se ti líbí."],
                 ["pending", vel.pend, vel.pendN, "Nic nečeká na rozhodnutí."],

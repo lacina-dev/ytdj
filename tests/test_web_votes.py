@@ -106,13 +106,15 @@ class Page(unittest.TestCase):
                                        "video_id": "pohoda00001", "artist": "Kabát",
                                        "title": "Pohoda"}))
             out = json.loads(resp.body)
-            self.assertEqual((out["item"]["key"], out["item"]["status"]), ("kabat", "favourite"))
+            # jeden 👍 celého interpreta z něj oblíbeného neudělá (PLAN H3)
+            self.assertEqual((out["item"]["key"], out["item"]["status"]), ("kabat", "neutral"))
+            app.votes.cast("artist", PETR, 1, "Petr", artist="Kabát")  # druhý člověk
             snap = await srv._snapshot()
             hv = snap["history"][0]["votes"]
             self.assertEqual(hv["artist_status"], "favourite")
-            self.assertEqual(hv["artists"][0]["up_by"], [tag_of(JANA)])
+            self.assertEqual(set(hv["artists"][0]["up_by"]), {tag_of(JANA), tag_of(PETR)})
             cur = snap["current"]["votes"]["artists"][0]  # hrající je taky od Kabátu
-            self.assertEqual((cur["name"], cur["up"], cur["status"]), ("Kabát", 1, "favourite"))
+            self.assertEqual((cur["name"], cur["up"], cur["status"]), ("Kabát", 2, "favourite"))
 
         tw.run(go())
 

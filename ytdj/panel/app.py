@@ -24,7 +24,8 @@ from .hw import Screen, Touch, TouchEvent
 from .netapp import NetController
 from .netui import NetRenderer, NetView
 from .stats import PanelStats, emit
-from .ui import ART, ART_SIDE, STRINGS, TARGETS, QrRenderer, Renderer, View, merge_boxes, volume_at, vote_mark
+from .touchpress import Press, centre_offset, closest, nearest
+from .ui import VOL, ART, ART_SIDE, STRINGS, TARGETS, QrRenderer, Renderer, View, merge_boxes, volume_at, vote_mark
 from .wishapp import WishController
 from .wishui import WishRenderer, WishView
 
@@ -54,8 +55,6 @@ QR_CLOSE = 90.0  # s — the full-screen QR goes back to the player by itself
 HOLD = 4.0  # how long an optimistic state wins over a server that disagrees
 SKIP_HOLD = 6.0
 NOTE_TIME = 3.0
-TOUCH_SLOP = 14  # px a finger may wander off a button and still press it
-TOUCH_GRAB = 4  # px of grace around a button for the initial touch
 MIN_PRESS = 0.02  # s; shorter down→up is contact bounce, not a tap
 REPEAT_GUARD = 0.35  # s between two play/next taps — bounce must not double-fire
 # Držené −/+ hlasitosti opakuje krok: první opakování po REPEAT_DELAY (kratší
@@ -149,6 +148,7 @@ class PanelApp:
 
         # touch gesture
         self.pressed: str | None = None
+        self.press: Press | None = None  # the press in progress (touchpress rules)
         self.press_at = 0.0
         self.last_xy = (0, 0)
         self.inside = False
@@ -770,18 +770,31 @@ class PanelApp:
             extra.setdefault("x", self.down_xy[0])
             extra.setdefault("y", self.down_xy[1])
             extra.setdefault("press_ms", int((now - self.press_at) * 1000))
+            if self.press is not None:
+                # where the finger landed relative to the button's centre (calibration bias)
+                extra.setdefault("off", list(centre_offset(self.press.box, *self.down_xy)))
+                if self.press.max_out:
+                    extra.setdefault("wander", self.press.max_out)
         emit("panel.action", button=button, source=source, **extra)
 
     # ---- touch ----
 
-    def _hit(self, x: int, y: int, slop: int) -> str | None:
-        for name, (l, t, r, b) in TARGETS.items():
-            if l - slop <= x < r + slop and t - slop <= y < b + slop:
-                return name
-        l, t, r, b = ART
-        if self._art_is_qr and l <= x < r and t <= y < b:
-            return "phone"  # the QR code in the art slot opens the big one
-        return None
+    def _targets(self) -> dict:
+        if not self._art_is_qr:
+            return TARGETS
+        # the QR code in the art slot opens the big one
+        return {**TARGETS, "phone_qr": ART}
+
+    def _hit(self, x: int, y: int) -> str | None:
+        name, _ = nearest(self._targets(), x, y)
+        return "phone" if name == "phone_qr" else name
+
+    def _miss(self, page: str, targets: dict, x: int, y: int, count) -> None:
+        """A touch that selected nothing: counted, and logged with where it was
+        relative to the closest button — a systematic offset shows up here."""
+        count("miss" if page == "player" else f"{page.split(':')[0]}_miss")
+        name, dist, dx, dy = closest(targets, x, y)
+        emit("panel.touch_miss", page=page, x=x, y=y, near=name, dist=dist, dx=dx, dy=dy)
 
     def _vol_gesture(self) -> bool:
         """A finger is setting the volume right now (drag or held −/+)."""
@@ -839,20 +852,23 @@ class PanelApp:
             if self.pressed:  # lost an "up" somewhere — start over
                 self.stats.count("lost_up")
                 self._end_gesture()
-            name = self._hit(ev.x, ev.y, TOUCH_GRAB)
+            name = self._hit(ev.x, ev.y)
             # the network button works with ytdj down too — that's when it's needed most
             if name is None:
-                self.stats.count("miss")
+                self._miss("player", self._targets(), ev.x, ev.y, self.stats.count)
                 return
             if not self.online and name not in ("net", "phone"):
                 self.stats.count("offline")
                 return
-            if name == "vol" and ev.x < TARGETS["vol"][0] + 50:
+            if name == "vol" and ev.x < VOL[0] + 50:
                 # the number, not the bar: a touch there would mean "mute",
                 # which is never what a finger resting next to the bar wants
                 self.stats.count("vol_number")
                 return
             self.pressed, self.press_at, self.inside = name, now, True
+            box = self._targets()["phone_qr" if name == "phone" and self._art_is_qr
+                                  and not _inside(TARGETS["phone"], ev.x, ev.y) else name]
+            self.press = Press(name, box)
             self.last_xy = self.down_xy = (ev.x, ev.y)
             self.gesture_vol0 = self._view().volume
             self.gesture_moves = 0
@@ -881,7 +897,7 @@ class PanelApp:
             if self.pressed == "vol":
                 self._drag_volume(ev.x)
             else:
-                self.inside = self._hit(ev.x, ev.y, TOUCH_SLOP) == self.pressed
+                self.inside = self.press.move(ev.x, ev.y) if self.press else False
                 if not self.inside and self.repeat_at is not None:
                     self.repeat_at = None  # slid off −/+: stop stepping for good
                     if self.repeat_steps:
@@ -900,10 +916,10 @@ class PanelApp:
                 self._end_gesture()
                 return
             self.repeat_at = None
-            # resistive controllers often report garbage coordinates on
-            # release; the last down/move position is the trustworthy one
-            x, y = self.last_xy
-            inside = self._hit(x, y, TOUCH_SLOP) == name
+            # the press counts unless the finger clearly went away (touchpress):
+            # where exactly it was at the end doesn't matter — on resistive
+            # glass the last samples before a lift drift
+            inside = self.inside
             long_enough = now - self.press_at >= MIN_PRESS
             self.pressed, self.inside = None, False
             if not inside:
@@ -1019,6 +1035,10 @@ class PanelApp:
     def _server_volume(self) -> int | None:
         v = (self.state or {}).get("volume")
         return int(v) if isinstance(v, (int, float)) else None
+
+
+def _inside(box, x: int, y: int) -> bool:
+    return box[0] <= x < box[2] and box[1] <= y < box[3]
 
 
 def _int(value: Any) -> int:

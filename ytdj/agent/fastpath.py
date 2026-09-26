@@ -709,3 +709,65 @@ async def enforce_requested(
         else:
             wrong.append(f"„{title}“ od {who}")
     return good, wrong, notes
+
+
+# ---- přání schované v otázce: "proč nehraješ Kabát?", "kdy bude Bohemian Rhapsody" ----
+#
+# Otázku / stížnost na frontu (intent.meta_kind) fronta zodpoví sama. Když
+# se v ní ale někdo o hudbu hlásí (intent.meta_wants_music), zkusí se zbytek
+# textu jako jméno interpreta nebo skladby — přijme se jen to, co potvrdí
+# katalog (rychlá cesta), jinak zůstává otázkou. Pi review 26. 9.: 14 přání
+# typu "proč nehraješ Kabát?" dostalo jen odpověď o stavu fronty.
+
+_META_WORDS = set("""
+proc kdy kde kdo co jak kolik uz bude budou prijde prijdou zahrajes zahraje hraje hrajes
+hrat hral hrala hrali nehraje nehrajes nehraj nehrajete nehral nehrala nepustil nepustila
+nepustis nepoustis nepousti nezahral nezahrajes nedal nedala jsi jste je jsou se sem
+nic vubec zase porad furt dokola same samy sama stejne stejny ted tady
+moje muj moji mych me mi mne mne sebou mnou prede pred
+chtel chtela pustil pustila vybral vybrala preje prani
+ignoruj ignoruju ignorovat predchozi predtim vsechno
+nefer fer neni demokracie spravedlive nespravedlive nestrida zadne stridani stridat strida
+nenastavil nenastavila musi musis mel mela by bys dlouho cekat cekam cekame
+mam rad rada ne ano no tak takze proste fakt displej displeje displeji fronta fronte frontu
+poradi rade dojde pustis
+""".split())
+
+# celé slovo, které nikdy není jméno ani název (nálada, žánr, obecné)
+_SPLIT_CLAUSE = re.compile(r"[,.;:!?()\[\]]+|\s[-–—]\s")
+
+
+def _content(words: list[str]) -> list[str]:
+    return [w for w in words if (n := norm(w)) and n not in _META_WORDS
+            and n not in _FILLER and n not in _JOIN]
+
+
+def meta_candidates(text: str) -> list[str]:
+    """Kandidáti na jméno / název z otázky, v pořadí zkoušení; [] = čistá otázka.
+
+    Jen když se otázka o hudbu hlásí (intent.meta_wants_music). "Píseň
+    (Interpret)" → nejdřív "Píseň od Interpret" (rychlá cesta skladby), pak
+    interpret sám.
+    """
+    from .intent import meta_wants_music
+
+    if not text or not meta_wants_music(text):
+        return []
+    out: list[str] = []
+    paren = re.search(r"^(.*?)\(([^()]{2,40})\)\s*[?!.]*$", text.strip())
+    if paren:
+        title = " ".join(paren.group(1).split())
+        who = " ".join(paren.group(2).split())
+        if title and _is_title(title.split()):
+            out.append(f"{title} od {who}")
+        out.append(who)
+    for clause in _SPLIT_CLAUSE.split(text):
+        words = _content(clause.split())
+        if not words or len(words) > MAX_NAME_TOKENS + 3:
+            continue
+        if all(_NOT_NAME.match(norm(w)) for w in words):
+            continue
+        cand = " ".join(w.strip("\"'„“”‚‘’") for w in words).strip()
+        if cand and cand not in out:
+            out.append(cand)
+    return out[:3]

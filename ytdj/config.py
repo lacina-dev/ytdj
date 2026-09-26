@@ -68,6 +68,9 @@ DEFAULTS: dict = {
     # než se skladba (a zároveň víc 👎 než 👍) / interpret vyřadí z nabídky.
     "ban_song_votes": 2,
     "ban_artist_votes": 3,
+    # …a kolik různých lidí musí dát 👍 celému interpretovi (a víc 👍 než 👎),
+    # aby byl oblíbený (písničce stačí jeden 👍).
+    "favourite_artist_votes": 2,
     # Last set volume. mpv starts at it, so a restarted service picks up where
     # it left off instead of coming back at full blast.
     "volume": 100,
@@ -178,6 +181,7 @@ class Config:
     display_blocklist: list[str] = field(default_factory=list)
     ban_song_votes: int = 2
     ban_artist_votes: int = 3
+    favourite_artist_votes: int = 2
 
     yt_dlp_path: str = ""
     node_bin: str | None = None

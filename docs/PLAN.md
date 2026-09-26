@@ -4,6 +4,8 @@ Jediný zdroj pravdy pro vývoj kancelářského jukeboxu ytdj na Raspberry Pi.
 Sestaveno ze zadání vlastníka (25. 9. 2026). Každý agent i každá změna se
 měří podle tohohle dokumentu.
 
+Úplný seznam všeho, co vlastník chtěl, se stavem: [POZADAVKY.md](POZADAVKY.md).
+
 ## Vize
 
 > „Komplexní a promyšlená aplikace. Skvělý DJ, který se zavděčí úplně každému
@@ -88,9 +90,23 @@ přání, podkres se k Parni Valjak vracel i po restartu.
    přání hned končí (další hraje někdo jiný). Druhé cizí přeskočení přání
    ukončí („přeskočeno ostatními") a s ním i jeho podkres. Autorovo
    přeskočení = „další z mých". Tlačítko Další na displeji u přání
-   z displeje = autor.
+   z displeje = autor. Jedna skladba se počítá jednou: dvojí ťuknutí
+   (tentýž člověk, tatáž skladba do 1,5 s) je jedno přeskočení; přeskočení
+   rozhodnuté DJem („DJ") ani Další při výpadku se nepočítají.
 5. **Moje přání.** Nové jde před moje starší (to zůstává za ním); „a pak …"
    / „přidej …" za ně. Nahrazuje jen oprava, změna směru nebo skoro stejný text.
+6. **Otázka, nebo přání.** Otázku / stížnost na frontu („proč nehraje moje
+   písničky?") DJ zodpoví podle skutečného stavu (u displeje jsou „moje"
+   všechna přání z displeje). Je-li v ní jméno, které potvrdí katalog
+   („proč nehraješ Kabát?", „kdy bude Bohemian Rhapsody", „nefér, chci
+   Olympic"), je to přání: zařadí se (u stížnosti s „Beru to jako přání.");
+   je-li to už ve frontě, řekne kdy.
+7. **Podkres po přáních.** Když už žádné přání nemá co hrát (jakkoli
+   skončilo i poslední — splněné, nenalezené, chyba, otázka), jde podkres za
+   naposledy splněným přáním, pokud se od té doby nezměnil jinak.
+8. **Restart.** Přání se ukládají až po přehrávači (playback.json); co podle
+   historie nebo playback.json mezitím dohrálo, je po obnově hotové —
+   nezazní dvakrát. Starý klíč displeje v pořadí („panel-…") = místo „panel".
 
 ### E. Ovládání
 | ID | Požadavek | Stav |
@@ -105,7 +121,7 @@ přání, podkres se k Parni Valjak vracel i po restartu.
 | F1 | Logování všeho podstatného (přání, rozhodnutí, skladby, latence, zvuk, systém, panel) | 🔄 agenti A, B + DJ/katalog |
 | F2 | Report pro ladění podle provozu | 🔄 agent A |
 | F3 | Diagnostika jen podle dat | ✅ zásada |
-| F4 | Mozek DJ bez studeného startu v práci: app-server Po–Pá 7–19 běží dál (když Pi zbývá ≥ 250 MB); jinak studený start dostane +15 s k 25 s rozpočtu. Vypršený rozpočet = „DJ nestihl odpovědět", ne „síť" | ✅ (26. 9. 9:23 chyba „síť" po studeném startu) |
+| F4 | Mozek DJ bez studeného startu v práci: app-server Po–Pá 7–19 běží dál (když Pi zbývá ≥ 250 MB MemAvailable, měřeno s běžícím app-serverem, kontrola každou minutu mimo tah — pod tím se hned ukončí); jinak studený start dostane +15 s k 25 s rozpočtu. Vypršený rozpočet = „DJ nestihl odpovědět", ne „síť" | ✅ (26. 9. 9:23 chyba „síť" po studeném startu) |
 
 ### G. Bezpečnost a přihlášení (na konec)
 | ID | Požadavek | Stav |
@@ -124,7 +140,7 @@ Hlasy bez stavu navíc — stav se počítá z hlasů (`ytdj/votes.py`, tabulka 
 |---|---|---|
 | H1 | 👍/👎 skladbě, 👎 interpretovi; jeden hlas na člověka (id klienta, jméno = přezdívka přes kancelářský filtr), změna i stažení kdykoli; u každého hlasu kdo a kdy | ✅ backend (`/api/votes`), 📋 UI webu |
 | H2 | Jiné nahrání / verze téže písně = tatáž píseň; interpret sedí na každého uvedeného („A, B & C", „feat.") | ✅ |
-| H3 | Skladba vyřazená: ≥ `ban_song_votes` (2) lidí 👎 a víc 👎 než 👍; jeden 👎 = upozaděná; 👍 a víc 👍 než 👎 = oblíbená. Interpret vyřazený: ≥ `ban_artist_votes` (3) lidí 👎. Hlasy nestárnou, změnou hlasů se položka sama vrátí | ✅ |
+| H3 | Skladba vyřazená: ≥ `ban_song_votes` (2) lidí 👎 a víc 👎 než 👍; jeden 👎 = upozaděná; 👍 a víc 👍 než 👎 = oblíbená. Interpret vyřazený: ≥ `ban_artist_votes` (3) lidí 👎; oblíbený: ≥ `favourite_artist_votes` (2) různých lidí 👍 a víc 👍 než 👎 — jeden 👍 celého interpreta z něj oblíbeného neudělá (rozhodnutí vlastníka 26. 9.). Hlasy nestárnou, změnou hlasů se položka sama vrátí | ✅ |
 | H4 | Podkres a DJ vyřazené nenabízí, upozaděné méně, oblíbené i dřív než po `repeat_days`; při vyřazení zmizí z fronty podkres (přání nikdy) a hrající podkres se přeskočí | ✅ |
 | H5 | Výslovné přání vyřazené skladby / interpreta se splní — s poctivou poznámkou „(pozn.: vyřazená hlasováním — Petr, Jana)"; ze sady (interpret, oblíbené) vyřazené skladby vypadnou | ✅ |
 | H6 | „Pusť oblíbené" / „oblíbené kanceláře" / „pusť moje oblíbené" bez modelu; DJ a rozjezd (C7) znají oblíbené a vyřazené kanceláře | ✅ backend, 📋 čip na webu |

@@ -7,7 +7,7 @@ v [PLAN.md](PLAN.md); tady je jen „na nic nezapomenout".
 Stav: ✅ hotovo a ověřeno na Pi · ☑️ hotovo v kódu, čeká na nasazení ·
 🔄 rozpracováno · 📋 čeká · ⚠️ známý problém
 
-Stav k 26. 9. 2026 15:45 (na Pi běží e713074).
+Stav k 26. 9. 2026 17:00 (na Pi běží 5d7e1ca).
 
 ## Zařízení a systém
 
@@ -31,9 +31,9 @@ Stav k 26. 9. 2026 15:45 (na Pi běží e713074).
 | 11 | Podržené −/+ na displeji mění hlasitost plynule | ✅ | |
 | 12 | Bez zpoždění a „přepínání", začátek skladby bez divností, čas od nuly | ✅ | |
 | 13 | Teploměr hlasitosti se kreslí správně | ✅ | |
-| 14 | Rychle přeskakovat, i víc skladeb (10×) po sobě | 🔄 | připravená skladba medián 0,6 s; víc než ~6 skoků za sebou 6–10 s (resolver zvládá ~1 skladbu / 7 s) |
-| 15 | Žádné lupání | 🔄 | do 11:29: 466 výpadků (xrun) v 35 okamžicích; od 11:30 (mpv přednost nice −11): 6 ve 3 okamžicích, z toho 2 při startu po restartu; měří se dál. ⚠️ Pi hlásí podpětí při startu (throttled 0x50000) — zdroj/konektor |
-| 16 | (nález) Restart bez dlouhého ticha | 🔄 | rozehraná skladba pokračuje od místa; slyšitelné ticho ~26 s → ~8 s (15:42); zbytek je start Pythonu, cíl ≤ 5 s |
+| 14 | Rychle přeskakovat, i víc skladeb (10×) po sobě | ✅ nasazeno 16:58, měří se | připravená skladba ~0,6 s; postupná příprava 3 hned + po jedné až 10 (hloubka fronty 11); nepřipravená už nečeká na rozdělanou (druhé vlákno) |
+| 15 | Žádné lupání | 🔄 nasazeno 16:58, měří se | výpadky vznikaly v tichu mezi skladbami, když se další otevírala > 1 s (doloženo: počet výpadků = (čekání − 1 s) / 42,7 ms); zásobník 2 s. ⚠️ Pi hlásí podpětí při startu (0x50000) |
+| 16 | (nález) Restart bez dlouhého ticha | ✅ 5,8 s (ráno ~26 s) | skladba pokračuje od místa; přehrávač startuje první; zbývá zrychlit start mpv (3,6 s při souběhu) |
 
 ## DJ — přání
 
@@ -81,8 +81,8 @@ Stav k 26. 9. 2026 15:45 (na Pi běží e713074).
 | 41 | Bezpečnost a přihlášení vyřešit na konec a připomenout | 📋 | viz níž |
 | 42 | „Aby to, co aplikace už umí, zůstávalo" — jasné funkce, žádný další požadavek je potichu nezmění | ✅ | `docs/FUNKCE.md`: 139 pravidel v 16 oblastech, každé s testem; `tests/test_funkce.py` hlídá, že žádné nezůstane bez testu; `CLAUDE.md`: změna jen se souhlasem vlastníka |
 | 43 | Nápověda v poli přání ne „Olympic", ale např. „Zahraj mi něco veselého k práci" | ✅ | web i displej (15:42) |
-| 44 | „Proč jen tři skladby? Jde to nastavit v nastavení?" | 🔄 v kódu, nenasazeno | tři kvůli férovosti: kolo 3 skladby (2 když čekají jiní), rozpočet přání 4 (displej 3); teď v nastavení jukeboxu (`wish_block`, `wish_shared_block`, `wish_budget`, `wish_budget_panel`, `wish_artist_max`), výchozí hodnoty stejné — F-FRONTA-18 |
-| 45 | „Co hraje dál a nemá to u sebe moje jméno?" | 🔄 v kódu, nenasazeno | je to podkres (rádio) podle naposledy splněného přání; web „Rádio podle přání X · nálada", displej „rádio podle přání X" ve stavovém řádku — F-FRONTA-19 |
+| 44 | „Proč jen tři skladby? Jde to nastavit v nastavení?" | ✅ nasazeno 16:58 | nastavení jukeboxu: kolo 3 (2 když čekají jiní), rozpočet 4 (displej 3), interpret 12 — kvůli férovosti; výchozí hodnoty beze změny |
+| 45 | „Co hraje dál a nemá to u sebe moje jméno?" | 🔄 web ✅ 16:58, displej s další verzí | „Rádio podle přání X · nálada" — podkres jde podle naposledy splněného přání |
 
 ## Na konec: bezpečnost a přihlášení (připomenout)
 

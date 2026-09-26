@@ -343,6 +343,75 @@
   .hist li.skipped-row .t { color: var(--text-dim); }
 
   footer.foot { margin-top: 28px; display: flex; justify-content: center; }
+
+  /* ---------- hlasování (PLAN H) ---------- */
+  .navbtn { min-height: 40px; padding: 6px 12px; border-radius: 99px; border: 1px solid var(--line);
+            background: var(--surface); color: var(--text); font-size: .88rem; font-weight: 600;
+            display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .navbtn:hover { background: var(--surface-2); }
+  .navbtn[aria-current="page"] { background: var(--btn); color: var(--on-btn); border-color: transparent; }
+  @media (pointer: coarse) { .navbtn { min-height: 44px; } }
+  @media (max-width: 380px) { .navbtn .lbl { display: none; } }
+
+  .vrow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
+  .vbtn { min-height: 40px; min-width: 64px; padding: 6px 14px; border-radius: 99px; border: 1px solid var(--line);
+          background: var(--surface); display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+          font-size: .95rem; font-variant-numeric: tabular-nums; }
+  .vbtn:hover { background: var(--surface-2); }
+  .vbtn .n { font-weight: 650; color: var(--text-dim); }
+  .vbtn.on.up { background: color-mix(in srgb, var(--ok) 20%, transparent); border-color: color-mix(in srgb, var(--ok) 55%, transparent); }
+  .vbtn.on.down { background: color-mix(in srgb, var(--err) 16%, transparent); border-color: color-mix(in srgb, var(--err) 50%, transparent); }
+  .vbtn.on .n { color: var(--text); }
+  .vbtn[disabled] { opacity: .5; cursor: not-allowed; }
+  @media (pointer: coarse) { .vbtn { min-height: 44px; } }
+  .vwho { margin: 8px 0 0; font-size: .84rem; color: var(--text-dim); overflow-wrap: anywhere; }
+
+  .vs { display: inline-block; padding: 0 8px; border-radius: 99px; font-size: .72rem; font-weight: 650;
+        line-height: 1.7; white-space: nowrap; border: 1px solid transparent; vertical-align: middle; }
+  .vs.fav { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
+  .vs.low { color: var(--text-dim); background: var(--surface-2); }
+  .vs.ban { color: var(--err); background: color-mix(in srgb, var(--err) 13%, transparent); }
+  .vs.pend { color: var(--warn); background: color-mix(in srgb, var(--warn) 13%, transparent); }
+  .list .vss { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 3px; }
+  .rv { flex: none; width: 40px; height: 40px; border-radius: 10px; border: 1px solid var(--line-soft);
+        background: transparent; color: var(--text-dim); display: grid; place-items: center; padding: 0; font-size: .8rem;
+        letter-spacing: -.1em; }
+  .rv:hover { background: var(--surface-2); border-color: var(--line); }
+  @media (pointer: coarse) { .rv { width: 44px; height: 44px; } }
+  .list li.banned-row .t { text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--err) 60%, transparent); }
+
+  .sheet h2 { font-size: 1.15rem; margin: 0 0 4px; }
+  .sheet .sub { margin: 0 0 6px; color: var(--text-dim); font-size: .9rem; }
+  .opts-v { display: flex; flex-direction: column; gap: 8px; margin: 14px 0 12px; }
+  .opt { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px; padding: 8px 14px; text-align: left;
+         border-radius: 12px; border: 1px solid var(--line); background: var(--surface); font-size: .98rem; }
+  .opt:hover { background: var(--surface-2); }
+  .opt .e { font-size: 1.2rem; flex: none; }
+  .opt .l { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .opt .l small { display: block; color: var(--text-faint); font-size: .8rem; }
+  .opt.on { border-color: var(--accent); background: var(--accent-soft); }
+
+  .toast { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom)); z-index: 70;
+           transform: translate(-50%, 20px); opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s;
+           width: max-content; max-width: calc(100vw - 32px); padding: 11px 16px; border-radius: 12px;
+           background: var(--text); color: var(--bg); font-size: .92rem; box-shadow: var(--shadow); }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+  .toast.err { background: var(--err); color: #fff; }
+
+  #votesView .vhead { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  #votesView h1 { margin: 0; font-size: 1.4rem; }
+  #votesView .rule { margin: 4px 0 14px; color: var(--text-dim); font-size: .92rem; }
+  .vgrid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 22px; align-items: start; }
+  @media (max-width: 900px) { .vgrid { grid-template-columns: minmax(0, 1fr); } }
+  .vsec { padding: 16px; }
+  @media (min-width: 700px) { .vsec { padding: 20px 22px; } }
+  .vsec .hint2 { margin: -4px 0 8px; font-size: .82rem; color: var(--text-faint); }
+  .vlist li { align-items: flex-start; }
+  .vlist .who2 { display: block; font-size: .8rem; color: var(--text-dim); overflow-wrap: anywhere; margin-top: 2px; }
+  .vlist .acts { display: flex; gap: 6px; flex: none; }
+  .vlist .kind { font-size: .72rem; color: var(--text-faint); text-transform: uppercase; letter-spacing: .08em; }
+  .quick { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+  .quick .btn { flex: 0 1 auto; }
   .linkbtn { border: 0; background: none; padding: 10px 12px; min-height: 44px; color: var(--text-faint);
              font-size: .85rem; display: inline-flex; align-items: center; gap: 8px; border-radius: 10px; }
   .linkbtn:hover { color: var(--text); background: var(--surface); }
@@ -428,6 +497,9 @@
       <span class="sub">DJ pro celou kancelář</span>
     </div>
     <span class="conn" id="conn" title="Spojení s jukeboxem"><span class="dot"></span><span id="connText">připojuji…</span></span>
+    <button class="navbtn" id="votesBtn" type="button" aria-label="Hlasování kanceláře — oblíbené a vyřazené">
+      <span aria-hidden="true">👍👎</span><span class="lbl">Hlasování</span>
+    </button>
     <button class="me" id="meBtn" type="button" hidden>
       <span class="av" id="meAv" aria-hidden="true"></span><span class="nm" id="meName"></span>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>
@@ -460,6 +532,12 @@
           </div>
         </div>
         <p class="reason" id="reason" hidden></p>
+        <div class="vrow" id="vrow" hidden>
+          <button class="vbtn up" id="vUp" type="button" aria-pressed="false"><span aria-hidden="true">👍</span><span class="n" id="vUpN">0</span></button>
+          <button class="vbtn down" id="vDown" type="button" aria-haspopup="dialog"><span aria-hidden="true">👎</span><span class="n" id="vDownN">0</span></button>
+          <span id="vInfo"></span>
+        </div>
+        <p class="vwho" id="vWho" hidden></p>
         <p class="idle-hint" id="idleHint" hidden>Stiskni ▶ a DJ vybere hudbu podle času a dne — nebo mu níž napiš, co chceš slyšet.</p>
 
         <div class="progress" id="progress" hidden>
@@ -540,6 +618,45 @@
     </div>
   </div>
 
+  <!-- Hlasování kanceláře: oblíbené, vyřazené, rozhoduje se, moje hlasy -->
+  <section id="votesView" aria-labelledby="votesH" hidden>
+    <div class="vhead">
+      <button class="icon-btn" id="votesBack" type="button" aria-label="Zpět na hlavní stránku">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+      </button>
+      <h1 id="votesH">Hlasování kanceláře</h1>
+    </div>
+    <p class="rule" id="votesRule">Písnička vypadne, když ji 👎 aspoň 2 lidi (a víc než 👍). Interpret při 3. Vyřazené DJ sám nepustí, oblíbené hraje rád.</p>
+    <div class="quick">
+      <button class="btn primary" type="button" data-fav="pusť oblíbené kanceláře">▶ Pusť oblíbené kanceláře</button>
+      <button class="btn" type="button" data-fav="pusť moje oblíbené">▶ Pusť moje oblíbené</button>
+    </div>
+    <div class="vgrid">
+      <div class="stack">
+        <section class="card vsec" aria-labelledby="vFavH">
+          <h2 class="sec-h" id="vFavH">Oblíbené <span class="count" id="vFavN"></span></h2>
+          <ul class="list vlist" id="vFav"></ul>
+        </section>
+        <section class="card vsec" aria-labelledby="vPendH">
+          <h2 class="sec-h" id="vPendH">Čeká na hlasy <span class="count" id="vPendN"></span></h2>
+          <p class="hint2">Přidej se 👎, nebo to zachraň 👍.</p>
+          <ul class="list vlist" id="vPend"></ul>
+        </section>
+      </div>
+      <div class="stack">
+        <section class="card vsec" aria-labelledby="vBanH">
+          <h2 class="sec-h" id="vBanH">Vyřazené <span class="count" id="vBanN"></span></h2>
+          <p class="hint2">Vrátíš je stažením svého 👎 — nebo 👍 u písničky.</p>
+          <ul class="list vlist" id="vBan"></ul>
+        </section>
+        <section class="card vsec" aria-labelledby="vMineH">
+          <h2 class="sec-h" id="vMineH">Moje hlasy <span class="count" id="vMineN"></span></h2>
+          <ul class="list vlist" id="vMine"></ul>
+        </section>
+      </div>
+    </div>
+  </section>
+
   <footer class="foot">
     <button class="linkbtn" id="openSettings" type="button">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h10M18 18h2"/><circle cx="16" cy="6" r="2.1"/><circle cx="10" cy="12" r="2.1"/><circle cx="16" cy="18" r="2.1"/></svg>
@@ -563,6 +680,19 @@
     </div>
   </form>
 </div>
+
+<!-- hlas o jedné skladbě: 👍, 👎 jen písničce, 👎 celému interpretovi -->
+<div class="modal" id="voteSheet" role="dialog" aria-modal="true" aria-labelledby="vsH" hidden>
+  <div class="box sheet">
+    <h2 id="vsH"></h2>
+    <p class="sub" id="vsSub"></p>
+    <p class="vwho" id="vsWho" hidden></p>
+    <div class="opts-v" id="vsOpts"></div>
+    <div class="row"><button class="btn" id="vsClose" type="button">Zavřít</button></div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <div class="backdrop" id="backdrop"></div>
 
@@ -1095,6 +1225,7 @@
     renderWishes(reqs);
     renderQueue(s.queue || [], reqs);
     renderHistory(s.history || []);
+    renderNowVotes(cur);
   }
 
   function renderArt(cur) {
@@ -1245,21 +1376,23 @@
   function renderQueue(q, reqs) {
     var mineIds = {};
     reqs.forEach(function (r) { if (isMine(r)) mineIds[r.id] = 1; });
-    var sig = JSON.stringify(q) + "|" + Object.keys(mineIds).join(",") + "|" + S.connected;
+    var sig = JSON.stringify(q) + "|" + Object.keys(mineIds).join(",") + "|" + S.connected + "|" + S.tag;
     if (sig === S.sig.queue) return;
+    S.queueItems = q.slice(0, 12);
     S.sig.queue = sig;
     el.queueCount.textContent = q.length ? "· " + q.length : "";
     setHidden(el.queueEmpty, q.length > 0);
     el.queueEmpty.textContent = S.connected ? "Zatím nic — napiš DJovi, co pustit." : "Fronta teď není vidět — jukebox neodpovídá.";
-    el.queue.innerHTML = q.slice(0, 12).map(function (t) {
+    el.queue.innerHTML = q.slice(0, 12).map(function (t, i) {
       var mine = t.req && mineIds[t.req.id];
+      var marks = voteMarks(t.votes);
       return '<li class="' + (mine ? "mine" : "") + '">' + thumb(t) +
              '<span class="meta"><span class="t">' + esc(t.title || "Neznámá skladba") + "</span>" +
              '<span class="a">' + esc(t.artist || "") + "</span>" +
-             (t.req ? '<span class="req">' + whoChip(t.req.who, mine, t.req.who_key) + "</span>" : "") +
+             (t.req || marks ? '<span class="req">' + (t.req ? whoChip(t.req.who, mine, t.req.who_key) : "") + marks + "</span>" : "") +
              "</span>" +
              (t.duration ? '<span class="dur">' + fmtTime(t.duration) + "</span>" : "") +
-             "</li>";
+             rowVoteBtn("q", i, t) + "</li>";
     }).join("");
   }
 
@@ -1305,7 +1438,7 @@
 
   function renderHistory(h) {
     var cur = S.status && S.status.current;
-    var sig = JSON.stringify(h) + "|" + (cur ? cur.title + cur.artist : "");
+    var sig = JSON.stringify(h) + "|" + (cur ? cur.title + cur.artist : "") + "|" + S.tag;
     if (sig === S.sig.history) return;
     S.sig.history = sig;
     var items = h.slice(0, 11);
@@ -1313,13 +1446,17 @@
     if (items.length && cur && items[0].outcome === "started" &&
         items[0].title === cur.title && items[0].artist === cur.artist) items = items.slice(1);
     items = items.slice(0, 10);
+    S.histItems = items;
     setHidden(el.historyEmpty, items.length > 0);
-    el.history.innerHTML = items.map(function (t) {
+    el.history.innerHTML = items.map(function (t, i) {
       var o = OUTCOMES[t.outcome] || [String(t.outcome || ""), ICO_DOT, "other"];
+      var marks = voteMarks(t.votes);
       return '<li class="' + (o[2] === "skipped" ? "skipped-row" : "") + '">' +
              '<span class="mark ' + o[2] + '" role="img" title="' + esc(o[0]) + '" aria-label="' + esc(o[0]) + '">' + o[1] + "</span>" +
              '<span class="meta"><span class="t">' + esc(t.title || "Neznámá skladba") + "</span>" +
-             (t.artist ? '<span class="a">' + esc(t.artist) + "</span>" : "") + "</span></li>";
+             (t.artist ? '<span class="a">' + esc(t.artist) + "</span>" : "") +
+             (marks ? '<span class="vss">' + marks + "</span>" : "") + "</span>" +
+             (t.title ? rowVoteBtn("h", i, t) : "") + "</li>";
     }).join("");
   }
 
@@ -1390,6 +1527,8 @@
 
   document.addEventListener("keydown", function (ev) {
     if (ev.key === "Escape" && el.settings.classList.contains("show")) { closeSettings(); return; }
+    if (ev.key === "Escape" && !el.voteSheet.hasAttribute("hidden")) { closeSheet(); return; }
+    if (!el.voteSheet.hasAttribute("hidden")) return;
     if (!el.nickModal.hasAttribute("hidden")) return;
     var t = ev.target;
     var typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
@@ -1644,6 +1783,348 @@
   /* ------------------------------------------------------------------ */
   /* start                                                               */
   /* ------------------------------------------------------------------ */
+
+
+  /* ------------------------------------------------------------------ */
+  /* hlasování kanceláře (PLAN H): 👍 / 👎 skladbě, 👎 interpretovi        */
+  /* ------------------------------------------------------------------ */
+
+  var V = { detail: null, detailSig: "", detailFor: "", lists: null, listsTimer: null, sheet: null, busy: false };
+  var vel = {
+    votesBtn: $("#votesBtn"), view: $("#votesView"), back: $("#votesBack"), cols: $(".cols"), foot: $("footer.foot"),
+    vrow: $("#vrow"), up: $("#vUp"), upN: $("#vUpN"), down: $("#vDown"), downN: $("#vDownN"), info: $("#vInfo"),
+    who: $("#vWho"), toast: $("#toast"),
+    sheet: $("#voteSheet"), sH: $("#vsH"), sSub: $("#vsSub"), sWho: $("#vsWho"), sOpts: $("#vsOpts"), sClose: $("#vsClose"),
+    fav: $("#vFav"), favN: $("#vFavN"), pend: $("#vPend"), pendN: $("#vPendN"), ban: $("#vBan"), banN: $("#vBanN"),
+    mine: $("#vMine"), mineN: $("#vMineN"), rule: $("#votesRule")
+  };
+  el.voteSheet = vel.sheet;
+
+  function myVote(b) {
+    if (!b || !S.tag) return 0;
+    if ((b.up_by || []).indexOf(S.tag) >= 0) return 1;
+    if ((b.down_by || []).indexOf(S.tag) >= 0) return -1;
+    return 0;
+  }
+  function myArtistVote(a) { return a && S.tag && (a.by || []).indexOf(S.tag) >= 0 ? -1 : 0; }
+
+  var SONG_STATUS = { favourite: ["oblíbená", "fav"], downweighted: ["upozaděná", "low"], banned: ["vyřazená", "ban"] };
+  function voteMarks(b) {
+    if (!b) return "";
+    var out = "";
+    var st = SONG_STATUS[b.status];
+    if (st) out += '<span class="vs ' + st[1] + '">' + (b.status === "favourite" ? "♥ " : "") + st[0] + "</span>";
+    if (b.artist_status === "banned") out += '<span class="vs ban">interpret vyřazen</span>';
+    else if (b.artist_status === "pending") out += '<span class="vs pend">interpret: 👎</span>';
+    return out;
+  }
+  function rowVoteBtn(where, i, t) {
+    return '<button class="rv" type="button" data-vote="' + where + ":" + i + '" aria-haspopup="dialog" ' +
+           'aria-label="Hlasovat: ' + esc((t.artist ? t.artist + " — " : "") + (t.title || "")) + '" title="Líbí / nelíbí">👍👎</button>';
+  }
+
+  function toast(text, isErr) {
+    vel.toast.textContent = text;
+    vel.toast.classList.toggle("err", !!isErr);
+    vel.toast.classList.add("show");
+    clearTimeout(V.toastT);
+    V.toastT = setTimeout(function () { vel.toast.classList.remove("show"); }, isErr ? 6000 : 4200);
+  }
+
+  function names(voters, vote) {
+    return (voters || []).filter(function (v) { return v.vote === vote; })
+      .map(function (v) { return v.tag && v.tag === S.tag ? "ty" : v.nick; }).join(", ");
+  }
+  function votersLine(voters) {
+    var up = names(voters, 1), down = names(voters, -1);
+    return (up ? "👍 " + up : "") + (up && down ? " · " : "") + (down ? "👎 " + down : "");
+  }
+  function when(ts) {
+    if (!ts) return "";
+    var d = new Date(ts * 1000), now = new Date();
+    var hm = d.getHours() + ":" + ("0" + d.getMinutes()).slice(-2);
+    var day = function (x) { return new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime(); };
+    var diff = Math.round((day(now) - day(d)) / 86400000);
+    if (diff === 0) return "dnes " + hm;
+    if (diff === 1) return "včera " + hm;
+    return d.getDate() + ". " + (d.getMonth() + 1) + ".";
+  }
+
+  async function castVote(body) {
+    if (!S.nick) { openNick(false, ""); return null; }
+    if (V.busy) return null;
+    V.busy = true;
+    try {
+      body.client = S.client;
+      body.who = S.nick;
+      var d = await postJSON("/api/votes", body);
+      toast(d.message || "Hlas zapsán.");
+      V.detailSig = "";  // names under the card again
+      if (!polling) setTimeout(refresh, 150);
+      if (!vel.view.hasAttribute("hidden")) loadLists();
+      return d;
+    } catch (e) {
+      toast(e.status ? e.message : "Jukebox teď neodpovídá — hlas se nezapsal.", true);
+      return null;
+    } finally {
+      V.busy = false;
+    }
+  }
+
+  /* ---- now playing: 👍 toggles, 👎 asks "písničku, nebo interpreta?" ---- */
+  function renderNowVotes(cur) {
+    var b = cur && cur.votes;
+    setHidden(vel.vrow, !b);
+    if (!b) { setHidden(vel.who, true); return; }
+    var mine = myVote(b);
+    vel.upN.textContent = b.up || 0;
+    vel.downN.textContent = b.down || 0;
+    vel.up.classList.toggle("on", mine === 1);
+    vel.down.classList.toggle("on", mine === -1 || (b.artists || []).some(function (a) { return myArtistVote(a); }));
+    vel.up.setAttribute("aria-pressed", mine === 1 ? "true" : "false");
+    vel.up.setAttribute("aria-label", mine === 1 ? "Líbí se ti — klepnutím hlas stáhneš" : "Líbí se mi (" + (b.up || 0) + " 👍)");
+    vel.down.setAttribute("aria-label", "Nelíbí se mi — písnička, nebo interpret? (" + (b.down || 0) + " 👎)");
+    var info = voteMarks({ status: b.status });
+    (b.artists || []).forEach(function (a) {
+      if (a.status === "banned") info += ' <span class="vs ban">' + esc(a.name) + " vyřazen</span>";
+      else if (a.status === "pending") info += ' <span class="vs pend">' + esc(a.name) + ": " + a.down + "× 👎</span>";
+    });
+    if (vel.info.innerHTML !== info) vel.info.innerHTML = info;
+    // who voted: names come from /api/votes/track, only when the counts change
+    var sig = (cur.id || "") + "|" + JSON.stringify(b);
+    if (sig !== V.detailSig) {
+      V.detailSig = sig;
+      if ((b.up || b.down || (b.artists || []).some(function (a) { return a.down; })) && S.nick) loadDetail(cur.id);
+      else { V.detail = null; setHidden(vel.who, true); }
+    }
+  }
+
+  async function loadDetail(vid) {
+    try {
+      var res = await fetch("/api/votes/track?client=" + encodeURIComponent(S.client) +
+                            (vid ? "&video_id=" + encodeURIComponent(vid) : ""), { cache: "no-store" });
+      if (!res.ok) throw new Error();
+      var d = await res.json();
+      V.detail = d;
+      var line = votersLine(d.song && d.song.voters);
+      (d.artists || []).forEach(function (a) {
+        var n = names(a.voters, -1);
+        if (n) line += (line ? " · " : "") + "👎 " + a.name + ": " + n;
+      });
+      vel.who.textContent = line;
+      setHidden(vel.who, !line);
+    } catch (e) { setHidden(vel.who, true); }
+  }
+
+  vel.up.addEventListener("click", function () {
+    var cur = S.status && S.status.current;
+    if (!cur) return;
+    castVote({ target: "song", vote: myVote(cur.votes) === 1 ? 0 : 1, video_id: cur.id || "" });
+  });
+  vel.down.addEventListener("click", function () {
+    var cur = S.status && S.status.current;
+    if (cur) openSheet({ id: cur.id, artist: cur.artist, title: cur.title, votes: cur.votes }, true);
+  });
+
+  /* ---- one sheet for the playing track, the queue and Odehráno ---- */
+  function splitArtists(artist) {
+    return String(artist || "").split(/\s*(?:,|&|\bfeat\.?|\bft\.?)\s*/i).filter(Boolean);
+  }
+
+  function openSheet(t, downOnly) {
+    V.sheet = { t: t, downOnly: !!downOnly };
+    vel.sH.textContent = downOnly ? "Co se ti nelíbí?" : (t.title || "Skladba");
+    vel.sSub.textContent = downOnly ? (t.artist ? t.artist + " — " : "") + (t.title || "") : (t.artist || "");
+    setHidden(vel.sWho, true);
+    renderSheet();
+    setHidden(vel.sheet, false);
+    el.page.setAttribute("inert", "");
+    el.page.setAttribute("aria-hidden", "true");
+    setTimeout(function () { var f = vel.sOpts.querySelector("button"); if (f) f.focus(); }, 30);
+    // names and exact states from the server, when it knows the track
+    if (t.id) {
+      fetch("/api/votes/track?client=" + encodeURIComponent(S.client) + "&video_id=" + encodeURIComponent(t.id),
+            { cache: "no-store" })
+        .then(function (r) { if (!r.ok) throw new Error(); return r.json(); })
+        .then(function (d) { if (V.sheet && V.sheet.t === t) { V.sheet.detail = d; renderSheet(); } })
+        .catch(function () {});
+    }
+  }
+
+  function renderSheet() {
+    var sh = V.sheet, t = sh.t, d = sh.detail, b = t.votes || {};
+    var song = d ? d.song : null;
+    var mine = song ? (song.mine || 0) : myVote(b);
+    var arts = d ? d.artists.map(function (a) { return { name: a.name, down: a.down, status: a.status, mine: a.mine || 0, voters: a.voters }; })
+                 : (b.artists && b.artists.length ? b.artists : splitArtists(t.artist).map(function (n) { return { name: n, down: 0, status: "neutral" }; }))
+                   .map(function (a) { return { name: a.name, down: a.down || 0, status: a.status, mine: a.mine != null ? a.mine : myArtistVote(a) }; });
+    var html = "";
+    var up = song ? song.up : (b.up || 0), down = song ? song.down : (b.down || 0);
+    if (!sh.downOnly) {
+      html += opt("song:" + (mine === 1 ? 0 : 1), "👍", mine === 1 ? "Líbí se ti — stáhnout hlas" : "Líbí se mi",
+                  up ? up + "× 👍" : "", mine === 1);
+    }
+    html += opt("song:" + (mine === -1 ? 0 : -1), "👎", mine === -1 ? "Stáhnout můj 👎 u písničky" : "Jen tuhle písničku",
+                down ? down + "× 👎" + (song && song.status === "banned" ? " — vyřazená" : song && song.need ? ", k vyřazení chybí " + song.need + "×" : "") : "vypadne, když ji 👎 aspoň 2 lidi",
+                mine === -1);
+    arts.forEach(function (a, i) {
+      var need = 3 - (a.down || 0);
+      html += opt("artist:" + i + ":" + (a.mine === -1 ? 0 : -1), "👎",
+                  a.mine === -1 ? "Stáhnout můj 👎 pro " + a.name : "Celého interpreta " + a.name,
+                  a.status === "banned" ? "vyřazený" : (a.down ? a.down + "× 👎, chybí ještě " + Math.max(1, need) + "×" : "vypadne při 3× 👎"),
+                  a.mine === -1);
+    });
+    sh.arts = arts;
+    vel.sOpts.innerHTML = html;
+    if (d) {
+      var line = votersLine(song && song.voters);
+      d.artists.forEach(function (a) { var n = names(a.voters, -1); if (n) line += (line ? " · " : "") + "👎 " + a.name + ": " + n; });
+      vel.sWho.textContent = line;
+      setHidden(vel.sWho, !line);
+    }
+  }
+  function opt(act, emoji, label, sub, on) {
+    return '<button class="opt' + (on ? " on" : "") + '" type="button" data-act="' + esc(act) + '"' +
+           (on ? ' aria-pressed="true"' : "") + '><span class="e" aria-hidden="true">' + emoji + '</span>' +
+           '<span class="l">' + esc(label) + (sub ? "<small>" + esc(sub) + "</small>" : "") + "</span></button>";
+  }
+
+  function closeSheet() {
+    V.sheet = null;
+    setHidden(vel.sheet, true);
+    el.page.removeAttribute("inert");
+    el.page.removeAttribute("aria-hidden");
+  }
+  vel.sClose.addEventListener("click", closeSheet);
+  vel.sheet.addEventListener("click", function (ev) { if (ev.target === vel.sheet) closeSheet(); });
+  vel.sOpts.addEventListener("click", async function (ev) {
+    var btn = ev.target.closest && ev.target.closest("[data-act]");
+    if (!btn || !V.sheet) return;
+    var sh = V.sheet, t = sh.t, p = btn.getAttribute("data-act").split(":");
+    var body = { video_id: t.id || "", artist: t.artist || "", title: t.title || "" };
+    if (p[0] === "song") { body.target = "song"; body.vote = Number(p[1]); }
+    else { body.target = "artist"; body.vote = Number(p[2]); body.artist = sh.arts[Number(p[1])].name; }
+    btn.disabled = true;
+    var d = await castVote(body);
+    if (d) closeSheet(); else btn.disabled = false;
+  });
+
+  function rowClick(list) {
+    return function (ev) {
+      var b = ev.target.closest && ev.target.closest("[data-vote]");
+      if (!b) return;
+      var i = Number(b.getAttribute("data-vote").split(":")[1]);
+      var t = (list === "q" ? S.queueItems : S.histItems || [])[i];
+      if (t) openSheet({ id: t.id, artist: t.artist, title: t.title, votes: t.votes }, false);
+    };
+  }
+  el.queue.addEventListener("click", rowClick("q"));
+  el.history.addEventListener("click", rowClick("h"));
+
+  /* ---- the Hlasování page ---- */
+  function showVotes(on) {
+    setHidden(vel.view, !on);
+    setHidden(vel.cols, on);
+    setHidden(vel.foot, on);
+    if (on) vel.votesBtn.setAttribute("aria-current", "page"); else vel.votesBtn.removeAttribute("aria-current");
+    clearInterval(V.listsTimer);
+    if (on) {
+      loadLists();
+      // others vote too; a light refresh while the page is open
+      V.listsTimer = setInterval(function () { if (!document.hidden) loadLists(); }, 30000);
+      window.scrollTo(0, 0);
+      setTimeout(function () { vel.back.focus(); }, 30);
+    }
+  }
+  function route() { showVotes(location.hash === "#hlasovani"); }
+  window.addEventListener("hashchange", route);
+  vel.votesBtn.addEventListener("click", function () {
+    if (location.hash === "#hlasovani") history.back(); else location.hash = "#hlasovani";
+  });
+  vel.back.addEventListener("click", function () {
+    if (history.length > 1 && location.hash === "#hlasovani") history.back(); else { location.hash = ""; route(); }
+  });
+
+  async function loadLists() {
+    try {
+      var res = await fetch("/api/votes?client=" + encodeURIComponent(S.client), { cache: "no-store" });
+      if (!res.ok) throw new Error();
+      V.lists = await res.json();
+      renderLists();
+    } catch (e) {
+      [vel.fav, vel.pend, vel.ban, vel.mine].forEach(function (u) {
+        if (!u.children.length) u.innerHTML = '<li class="empty">Seznam teď nejde načíst — jukebox neodpovídá.</li>';
+      });
+    }
+  }
+
+  function itemRow(it, idx, list) {
+    var song = it.target === "song";
+    var label = song ? (it.title || it.label) : it.label;
+    var sub = song ? it.artist : "";
+    var first = (it.voters || [])[0];
+    var st = it.status === "banned" ? '<span class="vs ban">' + (song ? "vyřazená" : "vyřazený") + "</span>"
+           : it.status === "favourite" ? '<span class="vs fav">♥ oblíbená</span>'
+           : it.need ? '<span class="vs pend">chybí ještě ' + it.need + "× 👎</span>" : "";
+    var acts = "";
+    if (song) acts += voteBtn(list, idx, 1, it.mine === 1, it.up);
+    acts += voteBtn(list, idx, -1, it.mine === -1, it.down);
+    return '<li class="' + (it.status === "banned" ? "banned-row" : "") + '"><span class="meta">' +
+           (song ? "" : '<span class="kind">interpret</span>') +
+           '<span class="t">' + esc(label) + "</span>" + (sub ? '<span class="a">' + esc(sub) + "</span>" : "") +
+           '<span class="vss">' + st + "</span>" +
+           '<span class="who2">' + esc(votersLine(it.voters)) + "</span>" +
+           (first ? '<span class="a">první hlas: ' + esc(first.tag === S.tag ? "ty" : first.nick) + ", " + esc(when(first.at)) +
+                    (it.updated && it.updated !== first.at ? " · naposledy " + esc(when(it.updated)) : "") + "</span>" : "") +
+           '</span><span class="acts">' + acts + "</span></li>";
+  }
+  function voteBtn(list, idx, v, on, n) {
+    var lbl = v > 0 ? (on ? "Stáhnout můj 👍" : "👍 Líbí se mi") : (on ? "Stáhnout můj 👎" : "👎 Nelíbí se mi");
+    return '<button class="vbtn ' + (v > 0 ? "up" : "down") + (on ? " on" : "") + '" type="button" data-li="' + list + ":" + idx + ":" + v + '"' +
+           ' aria-pressed="' + (on ? "true" : "false") + '" aria-label="' + lbl + '"><span aria-hidden="true">' + (v > 0 ? "👍" : "👎") +
+           '</span><span class="n">' + (n || 0) + "</span></button>";
+  }
+
+  function renderLists() {
+    var L = V.lists || {};
+    var rules = L.rules || {};
+    if (rules.ban_song_votes) {
+      vel.rule.textContent = "Písnička vypadne, když ji 👎 aspoň " + rules.ban_song_votes + " " +
+        plural(rules.ban_song_votes, "člověk", "lidi", "lidí") + " (a víc než 👍). Interpret při " + rules.ban_artist_votes +
+        ". Vyřazené DJ sám nepustí, oblíbené hraje rád.";
+    }
+    var sets = [["favourites", vel.fav, vel.favN, "Zatím nic — dej 👍 písničce, která se ti líbí."],
+                ["pending", vel.pend, vel.pendN, "Nic nečeká na rozhodnutí."],
+                ["banned", vel.ban, vel.banN, "Nic není vyřazené."],
+                ["mine", vel.mine, vel.mineN, "Ještě jsi nehlasoval(a). 👍/👎 najdeš u skladby, která hraje."]];
+    sets.forEach(function (x) {
+      var items = L[x[0]] || [];
+      x[2].textContent = items.length ? "· " + items.length : "";
+      x[1].innerHTML = items.length ? items.map(function (it, i) { return itemRow(it, i, x[0]); }).join("")
+                                    : '<li class="empty">' + esc(x[3]) + "</li>";
+    });
+  }
+
+  vel.view.addEventListener("click", async function (ev) {
+    var fav = ev.target.closest && ev.target.closest("[data-fav]");
+    if (fav) {
+      location.hash = "";
+      route();
+      send(fav.getAttribute("data-fav"), { quiet: true });
+      return;
+    }
+    var b = ev.target.closest && ev.target.closest("[data-li]");
+    if (!b) return;
+    var p = b.getAttribute("data-li").split(":");
+    var it = ((V.lists || {})[p[0]] || [])[Number(p[1])];
+    if (!it) return;
+    var v = Number(p[2]);
+    b.disabled = true;
+    await castVote({ target: it.target, key: it.key, vote: it.mine === v ? 0 : v });
+    b.disabled = false;
+  });
+
+  route();
 
   el.btnSend.disabled = !el.prompt.value.trim();
   autosize();

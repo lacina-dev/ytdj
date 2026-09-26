@@ -21,11 +21,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import secrets
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 INDEX = Path(__file__).resolve().parents[1] / "ytdj" / "web" / "static" / "index.html"
 
@@ -80,6 +82,8 @@ class FakeYtdj:
         self.dj_offline = False  # the DJ's brain is down (Codex circuit breaker)
         self.outage = None  # {"reason": …} while YouTube / the network is down
         self.nicks: dict[str, str] = {"web-jana0001": "Jana", "web-karel001": "Karel"}
+        # office votes (the real thing: ytdj/votes.py): (target, key) → {cid: ballot}
+        self.votes: dict[tuple[str, str], dict[str, dict]] = {}
 
     def _position(self) -> float:
         if self.paused:
@@ -167,7 +171,20 @@ class FakeYtdj:
             queue = []
             for r in self._queued():
                 queue.append({**r["track"], "req": {"id": r["id"], "who": r["who"], "who_key": self._key(r)}})
-            queue += [TRACKS[(self.index + i) % len(TRACKS)] for i in (1, 2)]
+            queue += [dict(TRACKS[(self.index + i) % len(TRACKS)]) for i in (1, 2)]
+            cur["votes"] = self.brief(cur, full=True)
+            for q in queue:
+                b = self.brief(q)
+                if b:
+                    q["votes"] = b
+            history = [
+                {"id": "l1", "artist": "Lucie", "title": "Amerika", "outcome": "finished"},
+                {"id": "k2", "artist": "Kabát", "title": "Pohoda", "outcome": "skipped"},
+            ]
+            for h in history:
+                b = self.brief(h)
+                if b:
+                    h["votes"] = b
             return {
                 **base,
                 "playing": not self.paused,
@@ -182,10 +199,7 @@ class FakeYtdj:
                 "quality": "opus 251 kb/s",
                 "mood": self.mood,
                 "busy": busy,
-                "history": [
-                    {"artist": "Lucie", "title": "Amerika", "outcome": "finished"},
-                    {"artist": "Kabát", "title": "Pohoda", "outcome": "skipped"},
-                ],
+                "history": history,
                 "dj": self._dj(busy),
             }
 
@@ -222,6 +236,191 @@ class FakeYtdj:
         if shared:
             out["shared"] = True
         return 200, out
+
+    # ---- office votes (simplified ytdj/votes.py; same JSON shapes) ----
+
+    @staticmethod
+    def _tag(cid: str) -> str:
+        return "t-" + cid[-8:] if cid else ""
+
+    @staticmethod
+    def credits(artist: str) -> list[str]:
+        parts = re.split(r"\s*(?:,|&|\bfeat\.?|\bft\.?)\s*", artist or "")
+        return [p for p in (x.strip() for x in parts) if p] or ([artist] if artist else [])
+
+    @staticmethod
+    def song_key(artist: str, title: str) -> str:
+        return f"{(artist or '').lower()}|{(title or '').lower()}"
+
+    def _tally(self, target: str, key: str) -> dict:
+        ballots = self.votes.get((target, key), {})
+        up = sum(1 for b in ballots.values() if b["vote"] > 0)
+        down = sum(1 for b in ballots.values() if b["vote"] < 0)
+        if target == "artist":
+            status = "banned" if down >= 3 else "pending" if down else "neutral"
+            need = max(0, 3 - down)
+        else:
+            banned = down >= 2 and down > up
+            status = ("banned" if banned else "favourite" if up > down
+                      else "downweighted" if down else "neutral")
+            need = 0 if banned else max(2 - down, up - down + 1, 1)
+        return {"up": up, "down": down, "status": status, "need": need}
+
+    def _item(self, target: str, key: str, viewer: str = "") -> dict:
+        ballots = self.votes.get((target, key), {})
+        last = max(ballots.values(), key=lambda b: b["at"], default={})
+        out = {"target": target, "key": key, "artist": last.get("artist", ""),
+               "label": (f"{last.get('artist')} — {last.get('title')}" if target == "song"
+                         else last.get("artist", key)),
+               **self._tally(target, key),
+               "voters": [{"nick": b["who"], "vote": b["vote"], "at": b["at"], "tag": self._tag(c)}
+                          for c, b in sorted(ballots.items(), key=lambda kv: kv[1]["at"]) if b["vote"]],
+               "updated": last.get("at")}
+        if target == "song":
+            out["title"], out["video_id"] = last.get("title", ""), last.get("video_id", "")
+        if viewer:
+            out["mine"] = ballots.get(viewer, {}).get("vote", 0)
+        return out
+
+    def brief(self, track: dict, full: bool = False) -> dict | None:
+        key = self.song_key(track.get("artist", ""), track.get("title", ""))
+        t = self._tally("song", key)
+        out: dict = {}
+        if t["up"] or t["down"] or full:
+            out = {"up": t["up"], "down": t["down"], "status": t["status"]}
+            b = self.votes.get(("song", key), {})
+            if t["up"]:
+                out["up_by"] = [self._tag(c) for c, x in b.items() if x["vote"] > 0]
+            if t["down"]:
+                out["down_by"] = [self._tag(c) for c, x in b.items() if x["vote"] < 0]
+        arts = []
+        for name in self.credits(track.get("artist", "")):
+            k = name.lower()
+            a = self._tally("artist", k)
+            if a["down"] or full:
+                arts.append({"name": name, "down": a["down"], "status": a["status"],
+                             "by": [self._tag(c) for c, x in self.votes.get(("artist", k), {}).items()
+                                    if x["vote"] < 0]})
+        if arts:
+            out["artists"] = arts
+            if not full:
+                out.setdefault("status", "neutral")
+                if any(a["status"] == "banned" for a in arts):
+                    out["artist_status"] = "banned"
+                elif any(a["status"] == "pending" for a in arts):
+                    out["artist_status"] = "pending"
+        return out or None
+
+    def _find(self, vid: str) -> dict | None:
+        for t in [self._current(), *[r["track"] for r in self.requests], *TRACKS]:
+            if t["id"] == vid:
+                return t
+        return None
+
+    def cast_vote(self, data: dict) -> tuple[int, dict]:
+        cid = str(data.get("client") or "")
+        target, vote = data.get("target"), data.get("vote")
+        if not cid:
+            return 400, {"error": "Chybí id prohlížeče — obnov prosím stránku."}
+        with self.lock:
+            who = self.nicks.get(cid)
+            if not who:
+                return 403, {"error": "Hlasovat jde s přezdívkou — nastav si ji nahoře vpravo."}
+            if target not in ("song", "artist") or vote not in (1, -1, 0) or isinstance(vote, bool):
+                return 400, {"error": "Hlas je 1 (👍), -1 (👎), nebo 0 (stáhnout)."}
+            if target == "artist" and vote > 0:
+                return 400, {"error": "Interpretům se dává jen 👎 — 👍 patří konkrétním skladbám."}
+            key = str(data.get("key") or "")
+            vid = str(data.get("video_id") or "")
+            track = None
+            if not key:
+                track = self._find(vid) if vid else (None if data.get("title") else self._current())
+                if track is None:
+                    track = {"id": vid, "artist": str(data.get("artist") or ""),
+                             "title": str(data.get("title") or "")}
+                if target == "song":
+                    key = self.song_key(track["artist"], track["title"])
+                else:
+                    name = str(data.get("artist") or "") or self.credits(track["artist"])[0]
+                    key = name.lower()
+                    track = {"id": "", "artist": name, "title": ""}
+            elif (target, key) not in self.votes:
+                return 404, {"error": "Tahle položka v hlasování není."}
+            before = self._tally(target, key)["status"]
+            ballots = self.votes.setdefault((target, key), {})
+            old = ballots.get(cid) or next(iter(ballots.values()), {})
+            src = track or old
+            ballots[cid] = {"vote": vote, "who": who, "at": time.time(),
+                            "artist": src.get("artist", ""), "title": src.get("title", ""),
+                            "video_id": (track or {}).get("id") or old.get("video_id", "")}
+            item = self._item(target, key, cid)
+            after = item["status"]
+            changed = ("ban" if after == "banned" and before != "banned"
+                       else "unban" if before == "banned" and after != "banned" else None)
+            name = item["label"]
+            if changed == "ban":
+                msg = f"{name} je vyřazen{'ý' if target == 'artist' else 'á'} hlasováním — podkres ho už nepustí."
+            elif changed == "unban":
+                msg = f"{name} je zpátky v nabídce."
+            elif vote == 0:
+                msg = "Hlas stažen."
+            elif vote < 0 and item["need"] and after != "banned":
+                msg = f"Hlas zapsán — k vyřazení chybí ještě {item['need']}× 👎 od dalších."
+            else:
+                msg = "Hlas zapsán."
+        return 200, {"ok": True, "item": item, "changed": changed, "message": msg}
+
+    def vote_lists(self, viewer: str) -> dict:
+        with self.lock:
+            fav, ban, pend, mine = [], [], [], []
+            for (target, key), ballots in self.votes.items():
+                if not any(b["vote"] for b in ballots.values()):
+                    continue
+                it = self._item(target, key, viewer)
+                (fav if it["status"] == "favourite" else ban if it["status"] == "banned" else pend).append(it)
+                if viewer and it.get("mine"):
+                    mine.append(it)
+        fav.sort(key=lambda i: -(i["up"] - i["down"]))
+        out = {"favourites": fav, "banned": ban, "pending": sorted(pend, key=lambda i: i["need"]),
+               "rules": {"ban_song_votes": 2, "ban_artist_votes": 3}}
+        if viewer:
+            out["mine"] = mine
+        return out
+
+    def vote_detail(self, vid: str, viewer: str) -> tuple[int, dict]:
+        with self.lock:
+            t = self._find(vid) if vid else self._current()
+            if t is None:
+                return 404, {"error": "Tuhle skladbu neznám."}
+            song = self._item("song", self.song_key(t["artist"], t["title"]), viewer)
+            song.update(label=f"{t['artist']} — {t['title']}", artist=t["artist"], title=t["title"],
+                        video_id=t["id"])
+            arts = []
+            for name in self.credits(t["artist"]):
+                it = self._item("artist", name.lower(), viewer)
+                it.update(label=name, artist=name, name=name)
+                arts.append(it)
+        return 200, {"video_id": t["id"], "artist": t["artist"], "title": t["title"], "song": song,
+                     "artists": arts, "rules": {"ban_song_votes": 2, "ban_artist_votes": 3}}
+
+    def seed_votes(self) -> None:
+        """A few office votes: a favourite, a banned song, a pending artist, a lone 👎."""
+        now = time.time()
+
+        def put(target, key, cid, who, vote, artist, title="", vid="", ago=0.0):
+            self.votes.setdefault((target, key), {})[cid] = {
+                "vote": vote, "who": who, "at": now - ago, "artist": artist, "title": title,
+                "video_id": vid}
+
+        holky = self.song_key("Olympic", "Holky z naší školky")
+        put("song", holky, "web-jana0001", "Jana", 1, "Olympic", "Holky z naší školky", "o1", 3600)
+        put("song", holky, "web-karel001", "Karel", 1, "Olympic", "Holky z naší školky", "o1", 1800)
+        pohoda = self.song_key("Kabát", "Pohoda")
+        put("song", pohoda, "web-jana0001", "Jana", -1, "Kabát", "Pohoda", "k2", 90000)
+        put("song", pohoda, "web-karel001", "Karel", -1, "Kabát", "Pohoda", "k2", 7200)
+        put("artist", "calm trio", "web-karel001", "Karel", -1, "Calm Trio", ago=600)
+        put("song", self.song_key("Lucie", "Amerika"), "web-jana0001", "Jana", -1, "Lucie", "Amerika",
+            "l1", 300)
 
     # ---- the request queue ----
 
@@ -368,6 +567,7 @@ class FakeYtdj:
                                  reply="Zařazuju Jasnou zprávu.")
             d["done_at"] = time.time() - 60
             self.pos, self.pos_at = 47.0, time.monotonic()
+            self.seed_votes()
 
 
 def make_server(port: int = 0, fake: FakeYtdj | None = None, sse: bool = True) -> tuple[ThreadingHTTPServer, FakeYtdj]:
@@ -405,8 +605,14 @@ def make_server(port: int = 0, fake: FakeYtdj | None = None, sse: bool = True) -
                                  "backend": {"engine": "codex CLI", "model": "výchozí"}, "restartable": False})
             elif self.path == "/api/config":
                 self._json(200, {"values": {}, "fields": []})
+            elif self.path.startswith("/api/votes"):
+                u = urlparse(self.path)
+                q = {k: v[0] for k, v in parse_qs(u.query).items()}
+                if u.path == "/api/votes/track":
+                    self._json(*fake.vote_detail(q.get("video_id", ""), q.get("client", "")))
+                else:
+                    self._json(200, fake.vote_lists(q.get("client", "")))
             elif self.path.startswith("/api/me"):
-                from urllib.parse import parse_qs, urlparse
                 cid = (parse_qs(urlparse(self.path).query).get("client") or [""])[0]
                 self._json(200, fake.me(cid))
             elif self.path == "/api/requests":
@@ -474,10 +680,12 @@ def make_server(port: int = 0, fake: FakeYtdj | None = None, sse: bool = True) -
             data = self._body()  # read it always: an unread body breaks keep-alive
             if data is None:
                 return
-            if self.path not in ("/api/control", "/api/prompt", "/fake/state", "/api/me"):
+            if self.path not in ("/api/control", "/api/prompt", "/fake/state", "/api/me", "/api/votes"):
                 self._json(404, {"error": "Nenalezeno."})
                 return
-            if self.path == "/api/me":
+            if self.path == "/api/votes":
+                self._json(*fake.cast_vote(data))
+            elif self.path == "/api/me":
                 self._json(*fake.set_nick(data))
             elif self.path == "/api/prompt":
                 self._json(*fake.prompt(data))

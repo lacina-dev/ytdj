@@ -122,7 +122,9 @@ def routes(srv: "WebServer") -> list[Route]:
             return _err("Hlasovat jde o skladbu (\"song\"), nebo o interpreta (\"artist\").", 400)
         track = None
         if not key:
-            track = await _track(app, video_id)
+            # skladba mimo frontu (Odehráno) bez videoId: podle jména, ne "co hraje"
+            by_name = not video_id and target == SONG and bool(data.get("title"))
+            track = None if by_name else await _track(app, video_id)
             if track is None and target == SONG and data.get("title"):
                 from ..music.catalog import Track
 
@@ -170,6 +172,17 @@ def routes(srv: "WebServer") -> list[Route]:
         Route("/api/votes", _safe(lists), methods=["GET"]),
         Route("/api/votes/track", _safe(detail), methods=["GET"]),
     ]
+
+
+def annotate_list(app: Any, items: list[dict]) -> None:
+    """Jako queue[i].votes u annotate — pro seznam Odehráno."""
+    votes = getattr(app, "votes", None)
+    if votes is None or not getattr(votes, "items", None):
+        return
+    for item in items:
+        b = votes.brief(item)
+        if b:
+            item["votes"] = b
 
 
 def annotate(app: Any, current: dict | None, queue: list[dict]) -> None:

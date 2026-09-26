@@ -123,6 +123,44 @@ async def run(out: Path, base: str, fake, cdp_port: int) -> None:
                 over = await tab.js("[document.documentElement.scrollWidth, innerWidth]")
                 print(f"  {tag}: page width {over[0]} / viewport {over[1]}"
                       + ("  <-- HORIZONTAL SCROLL" if over[0] > over[1] else ""))
+                # office voting: 👎 choice, a queue row, the Hlasování page, a banned track
+                await tab.js("window.scrollTo(0,0); document.querySelector('#vDown').click()")
+                await asyncio.sleep(0.6)
+                await tab.shot(out / f"{tag}-10-vote-down.png", full=False)
+                if scheme == "light":
+                    # really vote: 👎 just the song → toast, counts, own vote highlighted
+                    await tab.js("document.querySelector('#vsOpts .opt').click()")
+                    await asyncio.sleep(1.2)
+                    await tab.shot(out / f"{tag}-10b-voted.png", full=False)
+                    await tab.js("document.querySelector('#vDown').click()")
+                    await asyncio.sleep(0.6)
+                    await tab.shot(out / f"{tag}-10c-own-vote-in-sheet.png", full=False)
+                await tab.js("document.querySelector('#vsClose').click();"
+                             "document.querySelector('#queue .rv').scrollIntoView({block:'center'});"
+                             "document.querySelector('#queue .rv').click()")
+                await asyncio.sleep(0.6)
+                await tab.shot(out / f"{tag}-11-vote-row.png", full=False)
+                await tab.js("document.querySelector('#vsClose').click(); location.hash='#hlasovani'")
+                await asyncio.sleep(1.0)
+                await tab.shot(out / f"{tag}-12-votes-page.png")
+                over = await tab.js("[document.documentElement.scrollWidth, innerWidth]")
+                print(f"  {tag} Hlasování: page width {over[0]} / viewport {over[1]}"
+                      + ("  <-- HORIZONTAL SCROLL" if over[0] > over[1] else ""))
+                await tab.js("location.hash=''")
+                with fake.lock:
+                    cur = fake._current()
+                    key = fake.song_key(cur["artist"], cur["title"])
+                    saved_votes = dict(fake.votes)
+                    fake.votes[("song", key)] = {
+                        c: {"vote": -1, "who": n, "at": time.time() - 120, "artist": cur["artist"],
+                            "title": cur["title"], "video_id": cur["id"]}
+                        for c, n in (("web-jana0001", "Jana"), ("web-karel001", "Karel"))}
+                await asyncio.sleep(1.6)
+                await tab.js("window.scrollTo(0,0)")
+                await tab.shot(out / f"{tag}-13-banned-now.png", full=False)
+                with fake.lock:
+                    fake.votes = saved_votes
+                await asyncio.sleep(1.0)
                 if scheme == "light" and size != "small":
                     # a wish on its way
                     await tab.js("document.querySelector('#prompt').value='Beatles, něco veselého';"

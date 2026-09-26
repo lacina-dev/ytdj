@@ -79,6 +79,7 @@ class FakeYtdj:
         self.build = "fake-1"  # the page reloads itself when this changes
         self.dj_offline = False  # the DJ's brain is down (Codex circuit breaker)
         self.outage = None  # {"reason": …} while YouTube / the network is down
+        self.nicks: dict[str, str] = {"web-jana0001": "Jana", "web-karel001": "Karel"}
 
     def _position(self) -> float:
         if self.paused:
@@ -121,7 +122,14 @@ class FakeYtdj:
         if r["state"] == "queued":
             ahead = self._queued().index(r)
             out["ahead"], out["eta"] = ahead, eta(ahead)
+            left = max(0.0, self._current()["duration"] - self._position())
+            out["eta_s"] = int(round((left + 200 * ahead) / 15) * 15)
+        out["who_key"] = self._key(r)
         return out
+
+    @staticmethod
+    def _key(r: dict) -> str:
+        return "t-" + r["cid"][-8:] if r.get("cid") else "w-" + r["id"]
 
     def _requests(self) -> list[dict]:
         live = [r for r in self.requests if r["state"] in ACTIVE]
@@ -152,12 +160,13 @@ class FakeYtdj:
             cur = dict(self._current())
             if self.playing_req is not None:
                 r = self.playing_req
-                cur["reason"] = {"kind": "wish", "who": r["who"], "text": r["text"], "id": r["id"]}
+                cur["reason"] = {"kind": "wish", "who": r["who"], "text": r["text"], "id": r["id"],
+                                 "who_key": self._key(r)}
             else:
                 cur["reason"] = {"kind": "radio", "who": "", "text": self.mood}
             queue = []
             for r in self._queued():
-                queue.append({**r["track"], "req": {"id": r["id"], "who": r["who"]}})
+                queue.append({**r["track"], "req": {"id": r["id"], "who": r["who"], "who_key": self._key(r)}})
             queue += [TRACKS[(self.index + i) % len(TRACKS)] for i in (1, 2)]
             return {
                 **base,
@@ -186,6 +195,33 @@ class FakeYtdj:
         source = thinking["source"] if thinking else self.dj_source
         return {"busy": busy, "text": text if busy else "", "source": source if busy else "",
                 "last": self.last}
+
+    # ---- nicknames (the real thing: ytdj/nicks.py) ----
+
+    def me(self, cid: str) -> dict:
+        with self.lock:
+            nick = self.nicks.get(cid, "")
+        return {"client": cid, "nick": nick, "tag": "t-" + cid[-8:] if cid else ""}
+
+    def set_nick(self, data: dict) -> tuple[int, dict]:
+        cid = str(data.get("client") or "")
+        nick = " ".join(str(data.get("nick") or "").split())
+        if not cid:
+            return 400, {"error": "Chybí id prohlížeče."}
+        if len(nick) < 2 or len(nick) > 20:
+            return 400, {"error": "Přezdívka musí mít 2 až 20 znaků."}
+        if nick.lower() in ("kurva", "debil"):
+            return 400, {"error": "Tahle přezdívka se do kanceláře nehodí — zkus prosím jinou."}
+        with self.lock:
+            shared = any(n.lower() == nick.lower() and c != cid for c, n in self.nicks.items())
+            self.nicks[cid] = nick
+            for r in self.requests:
+                if r.get("cid") == cid:
+                    r["who"] = nick
+        out = {"client": cid, "nick": nick, "tag": "t-" + cid[-8:]}
+        if shared:
+            out["shared"] = True
+        return 200, out
 
     # ---- the request queue ----
 
@@ -230,8 +266,10 @@ class FakeYtdj:
             if legacy and self.busy:
                 return 409, {"error": "Codex právě pracuje"}
             self.prompts.append(dict(data))
-            who = str(data.get("who") or "").strip() or {"panel": "displej"}.get(source, "host")
+            cid = str(data.get("client") or "")
+            who = self.nicks.get(cid) or str(data.get("who") or "").strip() or {"panel": "displej"}.get(source, "host")
             r = self.add_request(text, who, source, play_next=data.get("play_next") is True)
+            r["cid"] = cid
         if not legacy and data.get("wait") is not True:
             threading.Thread(target=self._decide, args=(r,), daemon=True).start()
             with self.lock:
@@ -316,6 +354,7 @@ class FakeYtdj:
             p["track"] = {"id": "k1", "title": "Malá dáma", "artist": "Kabát", "album": None,
                           "duration": 231}
             self.playing_req = p
+            p["cid"] = "web-shots0001"
             j = self.add_request("Holky z naší školky", "Jana", state="queued",
                                  reply="Zařazuju Holky z naší školky. Na řadě hned po téhle.")
             j["track"] = {"id": "o1", "title": "Holky z naší školky", "artist": "Olympic",
@@ -366,6 +405,10 @@ def make_server(port: int = 0, fake: FakeYtdj | None = None, sse: bool = True) -
                                  "backend": {"engine": "codex CLI", "model": "výchozí"}, "restartable": False})
             elif self.path == "/api/config":
                 self._json(200, {"values": {}, "fields": []})
+            elif self.path.startswith("/api/me"):
+                from urllib.parse import parse_qs, urlparse
+                cid = (parse_qs(urlparse(self.path).query).get("client") or [""])[0]
+                self._json(200, fake.me(cid))
             elif self.path == "/api/requests":
                 self._json(200, {"requests": fake.snapshot().get("requests", [])})
             else:
@@ -428,13 +471,15 @@ def make_server(port: int = 0, fake: FakeYtdj | None = None, sse: bool = True) -
                 if data is not None:
                     self._json(*fake.request_action(self.path.rsplit("/", 1)[-1], data))
                 return
-            if self.path not in ("/api/control", "/api/prompt", "/fake/state"):
-                self._json(404, {"error": "Nenalezeno."})
-                return
-            data = self._body()
+            data = self._body()  # read it always: an unread body breaks keep-alive
             if data is None:
                 return
-            if self.path == "/api/prompt":
+            if self.path not in ("/api/control", "/api/prompt", "/fake/state", "/api/me"):
+                self._json(404, {"error": "Nenalezeno."})
+                return
+            if self.path == "/api/me":
+                self._json(*fake.set_nick(data))
+            elif self.path == "/api/prompt":
                 self._json(*fake.prompt(data))
             elif self.path == "/fake/state":
                 with fake.lock:

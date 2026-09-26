@@ -4,57 +4,60 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
-<meta name="theme-color" content="#0e1013">
-<title>ytdj — AI DJ</title>
+<meta name="theme-color" content="#0e1013" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#faf7f2" media="(prefers-color-scheme: light)">
+<title>ytdj — DJ pro kancelář</title>
 <style>
   :root {
     --bg: #0e1013;
     --bg-glow: rgba(216, 166, 87, 0.10);
-    --surface: rgba(255, 255, 255, 0.035);
-    --surface-2: rgba(255, 255, 255, 0.06);
-    --line: rgba(255, 255, 255, 0.09);
-    --line-soft: rgba(255, 255, 255, 0.05);
+    --card: rgba(255, 255, 255, 0.04);
+    --surface: rgba(255, 255, 255, 0.045);
+    --surface-2: rgba(255, 255, 255, 0.08);
+    --line: rgba(255, 255, 255, 0.10);
+    --line-soft: rgba(255, 255, 255, 0.06);
     --text: #ece9e4;
-    --text-dim: #a3a099;
+    --text-dim: #b0ada6;
     --text-faint: #8e8b84;
     --accent: #d8a657;
-    --accent-soft: rgba(216, 166, 87, 0.16);
+    --accent-soft: rgba(216, 166, 87, 0.15);
     --accent-text: #e8b76a;
-    --ok: #7fb069;
-    --warn: #d98c5f;
-    --err: #d96f6f;
-    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 30px rgba(0,0,0,.35);
-    --radius: 14px;
+    --btn: #d8a657;
+    --on-btn: #14110b;
+    --ok: #86b870;
+    --warn: #e0925f;
+    --err: #e07777;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 34px rgba(0,0,0,.38);
+    --radius: 16px;
   }
-
   @media (prefers-color-scheme: light) {
     :root {
       --bg: #faf7f2;
       --bg-glow: rgba(176, 124, 32, 0.10);
-      --surface: rgba(30, 24, 12, 0.035);
-      --surface-2: rgba(30, 24, 12, 0.065);
-      --line: rgba(30, 24, 12, 0.12);
-      --line-soft: rgba(30, 24, 12, 0.07);
+      --card: #fffdf9;
+      --surface: rgba(30, 24, 12, 0.04);
+      --surface-2: rgba(30, 24, 12, 0.075);
+      --line: rgba(30, 24, 12, 0.13);
+      --line-soft: rgba(30, 24, 12, 0.075);
       --text: #1d1b17;
-      --text-dim: #5f5b53;
-      --text-faint: #6e695f;
+      --text-dim: #555149;
+      --text-faint: #6b665c;
       --accent: #9a6f1c;
-      --accent-soft: rgba(154, 111, 28, 0.14);
-      --accent-text: #8a6216;
-      --ok: #4d7c3a;
-      --warn: #a85d28;
-      --err: #b04141;
-      --shadow: 0 1px 2px rgba(60,45,20,.08), 0 8px 28px rgba(60,45,20,.08);
+      --accent-soft: rgba(154, 111, 28, 0.12);
+      --accent-text: #83590f;
+      --btn: #8a6216;
+      --on-btn: #ffffff;
+      --ok: #3f7030;
+      --warn: #a0541f;
+      --err: #b03a3a;
+      --shadow: 0 1px 2px rgba(60,45,20,.07), 0 10px 30px rgba(60,45,20,.08);
     }
   }
 
   * { box-sizing: border-box; }
-
-  /* the hidden attribute must also apply to <svg> — Chrome's UA style doesn't hide it by itself */
   [hidden] { display: none !important; }
-
-  html, body { height: 100%; }
-
+  html { -webkit-text-size-adjust: 100%; }
+  html, body { min-height: 100%; }
   body {
     margin: 0;
     background: var(--bg);
@@ -69,124 +72,109 @@
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
     -webkit-tap-highlight-color: transparent;
-    padding-bottom: env(safe-area-inset-bottom);
   }
-
   button, input, select, textarea { font: inherit; color: inherit; }
   button { cursor: pointer; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
 
-  :focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-    border-radius: 6px;
-  }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 16px 16px calc(40px + env(safe-area-inset-bottom)); }
+  @media (min-width: 700px) { .wrap { padding: 22px 24px 56px; } }
 
-  .wrap {
-    max-width: 1120px;
-    margin: 0 auto;
-    padding: 22px 20px 64px;
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
   }
+  .sec-h {
+    margin: 0 0 10px;
+    font-size: .72rem;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    font-weight: 650;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .sec-h .count { letter-spacing: 0; text-transform: none; font-weight: 500; }
 
   /* ---------- header ---------- */
+  header.top { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; min-height: 44px; }
+  .brand { display: flex; align-items: center; gap: 9px; font-weight: 700; min-width: 0; }
+  .logo {
+    width: 30px; height: 30px; flex: none; border-radius: 9px;
+    background: var(--btn); color: var(--on-btn);
+    display: grid; place-items: center;
+  }
+  .logo svg { width: 18px; height: 18px; }
+  .brand .name { font-size: 1.05rem; letter-spacing: .01em; }
+  .brand .sub { font-size: .8rem; color: var(--text-faint); font-weight: 500; white-space: nowrap; }
+  @media (max-width: 480px) { .brand .sub { display: none; } }
 
-  header.top {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    margin-bottom: 28px;
-  }
-
-  .brand {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-    font-weight: 620;
-    letter-spacing: .015em;
-  }
-  .brand .name { font-size: 1.02rem; }
-  .brand .sub {
-    font-size: .74rem;
-    color: var(--text-faint);
-    letter-spacing: .09em;
-    text-transform: uppercase;
-  }
-  @media (max-width: 420px) { .brand .sub { display: none; } }
-
-  .conn {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    margin-left: auto;
-    font-size: .76rem;
-    color: var(--text-faint);
-    letter-spacing: .02em;
-    white-space: nowrap;
-  }
-  .dot {
-    width: 7px; height: 7px;
-    border-radius: 50%;
-    background: var(--text-faint);
-    flex: none;
-    transition: background .3s;
-  }
+  .conn { display: inline-flex; align-items: center; gap: 7px; margin-left: auto;
+          font-size: .78rem; color: var(--text-faint); white-space: nowrap; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); flex: none; }
   .conn.online .dot { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent); }
   .conn.offline .dot { background: var(--err); box-shadow: 0 0 0 3px color-mix(in srgb, var(--err) 22%, transparent); }
+  @media (max-width: 480px) { .conn #connText { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); } }
 
-  .icon-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 42px; height: 42px;
-    flex: none;
-    border: 1px solid var(--line);
-    border-radius: 11px;
-    background: var(--surface);
-    color: var(--text-dim);
-    transition: background .18s, color .18s, border-color .18s;
+  .me {
+    display: inline-flex; align-items: center; gap: 8px;
+    min-height: 40px; max-width: 46vw; padding: 4px 12px 4px 5px;
+    border-radius: 99px; border: 1px solid var(--line);
+    background: var(--surface); color: var(--text); font-size: .9rem; font-weight: 550;
   }
-  .icon-btn:hover { background: var(--surface-2); color: var(--text); }
-  .icon-btn svg { width: 19px; height: 19px; }
+  .me:hover { background: var(--surface-2); }
+  .me .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .me svg { width: 14px; height: 14px; flex: none; color: var(--text-faint); }
+  .av {
+    --h: 38;
+    width: 30px; height: 30px; flex: none; border-radius: 50%;
+    display: grid; place-items: center; font-size: .82rem; font-weight: 700;
+    background: hsl(var(--h) 55% 50% / .22); color: hsl(var(--h) 60% 76%);
+  }
+  @media (prefers-color-scheme: light) { .av { color: hsl(var(--h) 60% 28%); background: hsl(var(--h) 55% 50% / .18); } }
+  @media (pointer: coarse) { .me { min-height: 44px; } }
+
+  /* ---------- banners ---------- */
+  .banner {
+    display: none; align-items: flex-start; gap: 10px;
+    margin-bottom: 14px; padding: 12px 14px; border-radius: 12px;
+    background: color-mix(in srgb, var(--err) 13%, var(--bg));
+    border: 1px solid color-mix(in srgb, var(--err) 35%, transparent);
+    font-size: .9rem; color: var(--text);
+  }
+  .banner.show { display: flex; }
+  .banner svg { width: 18px; height: 18px; flex: none; margin-top: 2px; color: var(--err); }
+  .banner.notice { background: color-mix(in srgb, var(--warn) 13%, var(--bg));
+                   border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+  .banner.notice svg { color: var(--warn); }
 
   /* ---------- layout ---------- */
-
-  .cols {
-    display: grid;
-    grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
-    gap: 34px;
-    align-items: start;
-  }
-  @media (max-width: 900px) {
-    .cols { grid-template-columns: minmax(0, 1fr); gap: 30px; }
-  }
-
-  .stack { display: flex; flex-direction: column; gap: 30px; min-width: 0; }
+  .cols { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 28px; align-items: start; }
+  @media (max-width: 900px) { .cols { grid-template-columns: minmax(0, 1fr); gap: 22px; } }
+  .stack { display: flex; flex-direction: column; gap: 22px; min-width: 0; }
 
   /* ---------- now playing ---------- */
-
-  .now { min-width: 0; }
-
-  .eyebrow {
-    font-size: .7rem;
-    letter-spacing: .16em;
-    text-transform: uppercase;
-    color: var(--text-faint);
-    margin: 0 0 14px;
-    display: flex;
-    align-items: center;
-    gap: 9px;
+  .now { padding: 18px; min-width: 0; }
+  @media (min-width: 700px) { .now { padding: 24px; } }
+  .np { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 16px; align-items: center; }
+  .art {
+    --h: 38;
+    position: relative; width: clamp(112px, 31vw, 200px); aspect-ratio: 1; border-radius: 12px; overflow: hidden;
+    background: linear-gradient(135deg, hsl(var(--h) 45% 42%), hsl(calc(var(--h) + 40) 45% 22%));
+    box-shadow: 0 6px 22px rgba(0,0,0,.28);
+    display: grid; place-items: center; color: rgba(255,255,255,.75);
   }
+  .art svg { width: 38%; height: 38%; }
+  /* hqdefault is 4:3 with black bars around 16:9 video: scale past them */
+  .art img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scale(1.34); }
+  .now.idle .art { background: var(--surface-2); color: var(--text-faint); box-shadow: none; }
 
+  .eyebrow { font-size: .72rem; letter-spacing: .14em; text-transform: uppercase; color: var(--text-faint);
+             margin: 0 0 6px; display: flex; align-items: center; gap: 8px; font-weight: 600; }
   .bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 11px; }
-  .bars i {
-    display: block;
-    width: 2px;
-    height: 100%;
-    background: var(--accent);
-    border-radius: 1px;
-    transform-origin: 50% 100%;
-    transform: scaleY(.3);
-    animation: eq 1.15s ease-in-out infinite;
-  }
+  .bars i { display: block; width: 2px; height: 100%; background: var(--accent); border-radius: 1px;
+            transform-origin: 50% 100%; transform: scaleY(.3); animation: eq 1.15s ease-in-out infinite; }
   .bars i:nth-child(2) { animation-delay: .22s; }
   .bars i:nth-child(3) { animation-delay: .45s; }
   .bars i:nth-child(4) { animation-delay: .1s; }
@@ -194,682 +182,283 @@
   .bars.still i { animation: none; transform: scaleY(.26); opacity: .5; }
   @media (prefers-reduced-motion: reduce) { .bars i { animation: none; transform: scaleY(.55); } }
 
-  .track-title {
-    margin: 0;
-    font-size: clamp(1.6rem, 4.6vw, 2.6rem);
-    line-height: 1.14;
-    font-weight: 600;
-    letter-spacing: -.018em;
-    overflow-wrap: anywhere;
-  }
-  .track-artist {
-    margin: 8px 0 0;
-    font-size: clamp(1rem, 2.4vw, 1.2rem);
-    color: var(--accent-text);
-    font-weight: 500;
-    overflow-wrap: anywhere;
-  }
-  .track-album {
-    margin: 5px 0 0;
-    font-size: .84rem;
-    color: var(--text-faint);
-    overflow-wrap: anywhere;
-  }
-  .idle .track-title { color: var(--text-dim); font-weight: 500; }
-  .idle-hint {
-    margin: 8px 0 0;
-    font-size: .95rem;
-    color: var(--text-dim);
-    max-width: 36em;
-  }
+  .track-title { margin: 0; font-size: clamp(1.3rem, 4.8vw, 2.3rem); line-height: 1.15; font-weight: 700;
+                 letter-spacing: -.015em; overflow-wrap: anywhere;
+                 display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .track-artist { margin: 4px 0 0; font-size: clamp(1rem, 2.6vw, 1.2rem); color: var(--accent-text);
+                  font-weight: 550; overflow-wrap: anywhere; }
+  .now.idle .track-title { color: var(--text-dim); font-weight: 600; }
+  .reason { margin: 14px 0 0; font-size: .9rem; color: var(--text-dim); overflow-wrap: anywhere;
+            display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+  .reason b { color: var(--text); font-weight: 600; }
+  .idle-hint { margin: 14px 0 0; font-size: .95rem; color: var(--text-dim); }
 
-  /* ---------- position ---------- */
+  .progress { margin-top: 16px; }
+  .track-bar { position: relative; height: 5px; border-radius: 99px; background: var(--surface-2); overflow: hidden; }
+  .track-bar > span { position: absolute; inset: 0; background: var(--accent); border-radius: 99px;
+                      transform-origin: 0 50%; transform: scaleX(0); }
+  .times { display: flex; justify-content: space-between; margin-top: 6px; font-size: .78rem;
+           color: var(--text-faint); font-variant-numeric: tabular-nums; }
 
-  .progress { margin-top: 22px; }
-  .track-bar {
-    position: relative;
-    height: 4px;
-    border-radius: 99px;
-    background: var(--surface-2);
-    overflow: hidden;
-  }
-  .track-bar > span {
-    position: absolute;
-    inset: 0;
-    background: var(--accent);
-    border-radius: 99px;
-    transform-origin: 0 50%;
-    transform: scaleX(0);
-  }
-  .times {
-    display: flex;
-    justify-content: space-between;
-    margin-top: 9px;
-    font-size: .78rem;
-    color: var(--text-faint);
-    font-variant-numeric: tabular-nums;
-    letter-spacing: .02em;
-  }
-
-  /* ---------- controls ---------- */
-
-  .controls {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin-top: 26px;
-    flex-wrap: wrap;
-  }
-
+  .controls { display: flex; align-items: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
   .ctl {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 50px; height: 50px;
-    border-radius: 50%;
-    border: 1px solid var(--line);
-    background: var(--surface);
-    color: var(--text);
-    transition: background .18s, transform .12s, border-color .18s, opacity .18s;
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 50px; height: 50px; border-radius: 50%; flex: none;
+    border: 1px solid var(--line); background: var(--surface); color: var(--text);
+    transition: background .18s, transform .12s, opacity .18s;
   }
   .ctl:hover { background: var(--surface-2); }
   .ctl:active { transform: scale(.94); }
   .ctl svg { width: 20px; height: 20px; }
-  .ctl.primary {
-    width: 62px; height: 62px;
-    background: var(--accent);
-    border-color: transparent;
-    color: #14110b;
-  }
+  .ctl.primary { width: 60px; height: 60px; background: var(--btn); border-color: transparent; color: var(--on-btn); }
   .ctl.primary svg { width: 24px; height: 24px; }
-  .ctl.primary:hover { background: color-mix(in srgb, var(--accent) 88%, white); }
   .ctl[disabled] { opacity: .38; cursor: not-allowed; }
-  .ctl[disabled]:active { transform: none; }
-
-  .vol {
-    display: flex;
-    align-items: center;
-    gap: 11px;
-    margin-left: auto;
-    min-width: 170px;
-    flex: 1 1 170px;
-    max-width: 260px;
-    color: var(--text-faint);
-  }
-  @media (max-width: 560px) {
-    .vol { margin-left: 0; max-width: none; flex-basis: 100%; padding-top: 6px; }
-  }
+  .vol { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: 1 1 150px; min-width: 0;
+         max-width: 280px; color: var(--text-faint); }
   .vol svg { width: 18px; height: 18px; flex: none; }
-  .vol output {
-    font-size: .76rem;
-    font-variant-numeric: tabular-nums;
-    min-width: 2.4em;
-    text-align: right;
-  }
+  .vol output { font-size: .8rem; font-variant-numeric: tabular-nums; min-width: 2.2em; text-align: right; }
+  @media (max-width: 330px) { .vol { flex-basis: 100%; max-width: none; margin-left: 0; } }
 
-  input[type=range] {
-    -webkit-appearance: none;
-    appearance: none;
-    flex: 1;
-    min-width: 0;
-    height: 26px;
-    background: transparent;
-    margin: 0;
-  }
-  input[type=range]::-webkit-slider-runnable-track {
-    height: 4px; border-radius: 99px; background: var(--surface-2);
-  }
-  input[type=range]::-moz-range-track {
-    height: 4px; border-radius: 99px; background: var(--surface-2);
-  }
-  input[type=range]::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    width: 15px; height: 15px; margin-top: -5.5px;
-    border-radius: 50%; background: var(--text-dim); border: none;
-    transition: background .15s;
-  }
-  input[type=range]::-moz-range-thumb {
-    width: 15px; height: 15px;
-    border-radius: 50%; background: var(--text-dim); border: none;
-  }
+  input[type=range] { -webkit-appearance: none; appearance: none; flex: 1; min-width: 0; height: 30px;
+                      background: transparent; margin: 0; }
+  input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 99px; background: var(--surface-2); }
+  input[type=range]::-moz-range-track { height: 4px; border-radius: 99px; background: var(--surface-2); }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; margin-top: -6px;
+                                            border-radius: 50%; background: var(--text-dim); border: none; }
+  input[type=range]::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: var(--text-dim); border: none; }
   input[type=range]:hover::-webkit-slider-thumb { background: var(--accent); }
-  input[type=range]:hover::-moz-range-thumb { background: var(--accent); }
   @media (pointer: coarse) {
     input[type=range] { height: 44px; }
     input[type=range]::-webkit-slider-thumb { width: 24px; height: 24px; margin-top: -10px; }
     input[type=range]::-moz-range-thumb { width: 24px; height: 24px; }
   }
 
-  /* ---------- prompt for the DJ ---------- */
-
-  .composer {
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    background: var(--surface);
-    transition: border-color .2s, background .2s;
-  }
-  .composer:focus-within { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
-  .composer.busy { border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
-
-  .composer .row { display: flex; align-items: flex-end; gap: 10px; padding: 12px 12px 12px 16px; }
-
-  #prompt {
-    flex: 1;
-    min-width: 0;
-    border: 0;
-    background: transparent;
-    resize: none;
-    padding: 8px 0;
-    max-height: 160px;
-    line-height: 1.45;
-    font-size: 1.02rem;
-  }
+  /* ---------- composer ---------- */
+  .ask { padding: 16px; }
+  @media (min-width: 700px) { .ask { padding: 20px 22px; } }
+  .ask h2 { margin: 0 0 10px; font-size: 1.05rem; font-weight: 650; }
+  .composer { display: flex; align-items: flex-end; gap: 8px; padding: 6px 6px 6px 14px;
+              border: 1px solid var(--line); border-radius: 14px; background: var(--surface);
+              transition: border-color .2s; }
+  .composer:focus-within { border-color: color-mix(in srgb, var(--accent) 65%, transparent); }
+  #prompt { flex: 1; min-width: 0; border: 0; background: transparent; resize: none; padding: 9px 0;
+            max-height: 160px; line-height: 1.45; font-size: 1.02rem; }
   #prompt:focus { outline: none; }
   #prompt::placeholder { color: var(--text-faint); }
-  #prompt:disabled { color: var(--text-faint); }
-
-  .send {
-    flex: none;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 44px; height: 44px;
-    border-radius: 11px;
-    border: none;
-    background: var(--accent);
-    color: #14110b;
-    transition: opacity .18s, background .18s;
-  }
-  .send svg { width: 19px; height: 19px; }
+  .send { flex: none; display: inline-flex; align-items: center; justify-content: center;
+          width: 44px; height: 44px; border-radius: 11px; border: none; background: var(--btn); color: var(--on-btn); }
+  .send svg { width: 20px; height: 20px; }
   .send[disabled] { opacity: .35; cursor: not-allowed; }
 
-  .composer { position: relative; overflow: hidden; }
-  .composer .note {
-    display: none;
-    align-items: center;
-    gap: 9px;
-    padding: 0 16px 13px;
-    font-size: .84rem;
-    color: var(--text-dim);
-  }
-  .composer.busy .note { display: flex; }
-  .composer .note .txt { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-  .linkbtn {
-    flex: none;
-    border: 0;
-    background: none;
-    padding: 6px 4px;
-    min-height: 32px;
-    color: var(--accent-text);
-    text-decoration: underline;
-    text-underline-offset: 3px;
-    font-size: .84rem;
-  }
-  /* creeps toward the usual length of a DJ turn; never claims "done" early */
-  .eta {
-    position: absolute;
-    left: 0; right: 0; bottom: 0;
-    height: 3px;
-    background: var(--accent);
-    transform-origin: 0 50%;
-    transform: scaleX(0);
-    transition: transform 1s linear;
-    opacity: 0;
-  }
-  .composer.sending .eta { opacity: .85; }
+  .opts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-top: 8px; }
+  .toggle { display: inline-flex; align-items: center; gap: 8px; font-size: .88rem; color: var(--text-dim);
+            cursor: pointer; min-height: 36px; user-select: none; }
+  .toggle input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
+  .toggle small { color: var(--text-faint); font-size: .8rem; }
+  @media (pointer: coarse) { .toggle { min-height: 44px; } }
 
-  .spinner {
-    width: 14px; height: 14px; flex: none;
-    border-radius: 50%;
-    border: 2px solid var(--accent-soft);
-    border-top-color: var(--accent);
-    animation: spin .8s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-
-  .reply {
-    display: none;
-    margin-top: 14px;
-    padding: 14px 16px;
-    border-radius: var(--radius);
-    background: var(--accent-soft);
-    border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
-    font-size: .95rem;
-    line-height: 1.55;
-    overflow-wrap: anywhere;
-    white-space: pre-wrap;
-  }
-  .reply.show { display: block; }
-  .reply .q { display: block; margin-bottom: 4px; font-size: .82rem; color: var(--text-dim); white-space: normal; }
-  .reply.error {
-    background: color-mix(in srgb, var(--err) 12%, transparent);
-    border-color: color-mix(in srgb, var(--err) 30%, transparent);
-    color: var(--text);
-  }
-
-  .hint {
-    margin-top: 10px;
-    font-size: .78rem;
-    color: var(--text-faint);
-  }
-  @media (pointer: coarse) { .kbd-only { display: none; } }
-
-  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-  .chip {
-    min-height: 38px;
-    padding: 7px 14px;
-    border-radius: 99px;
-    border: 1px solid var(--line);
-    background: var(--surface);
-    color: var(--text-dim);
-    font-size: .88rem;
-    transition: background .15s, color .15s, border-color .15s;
-  }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  .chip { min-height: 38px; padding: 7px 14px; border-radius: 99px; border: 1px solid var(--line);
+          background: transparent; color: var(--text-dim); font-size: .88rem; }
   .chip:hover { background: var(--surface-2); color: var(--text); }
   .chip:active { border-color: var(--accent); color: var(--accent-text); }
   .chip[disabled] { opacity: .45; cursor: not-allowed; }
   @media (pointer: coarse) { .chip { min-height: 44px; } }
+  .hint { margin: 12px 0 0; font-size: .8rem; color: var(--text-faint); }
+  @media (pointer: coarse) { .kbd-only { display: none; } }
 
-  .djline {
-    margin: 12px 0 0;
-    font-size: .84rem;
-    color: var(--text-dim);
-    overflow-wrap: anywhere;
-  }
-  .djline b { color: var(--text); font-weight: 500; }
+  .reply { display: none; margin-top: 12px; padding: 11px 14px; border-radius: 12px; background: var(--accent-soft);
+           border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); font-size: .92rem;
+           overflow-wrap: anywhere; }
+  .reply.show { display: block; }
+  .reply .q { display: block; margin-bottom: 2px; font-size: .8rem; color: var(--text-dim); }
+  .reply.error { background: color-mix(in srgb, var(--err) 12%, transparent);
+                 border-color: color-mix(in srgb, var(--err) 32%, transparent); }
 
-  /* ---------- context: mood + seeds ---------- */
+  /* ---------- my wishes ---------- */
+  .mine-list { display: flex; flex-direction: column; gap: 10px; }
+  .mw { padding: 14px 14px 12px; border-radius: 14px; background: var(--accent-soft);
+        border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); }
+  .mw.fin { background: var(--surface); border-color: var(--line-soft); }
+  .mw.bad { background: color-mix(in srgb, var(--err) 10%, transparent); border-color: color-mix(in srgb, var(--err) 30%, transparent); }
+  .mw-head { display: flex; align-items: flex-start; gap: 10px; }
+  .mw-text { flex: 1; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+  .mw-eta { margin: 8px 0 0; font-size: 1.02rem; }
+  .mw-eta b { font-weight: 700; }
+  .mw-eta .sub { color: var(--text-dim); font-size: .92rem; }
+  .mw-reply { margin: 6px 0 0; font-size: .86rem; color: var(--text-dim); overflow-wrap: anywhere; }
+  .steps { display: flex; gap: 4px; list-style: none; margin: 12px 0 0; padding: 0; }
+  .steps li { flex: 1; min-width: 0; font-size: .72rem; color: var(--text-faint); text-align: center; }
+  .steps li::before { content: ""; display: block; height: 4px; border-radius: 99px; background: var(--surface-2); margin-bottom: 5px; }
+  .steps li.done::before { background: color-mix(in srgb, var(--accent) 55%, transparent); }
+  .steps li.cur { color: var(--text); font-weight: 650; }
+  .steps li.cur::before { background: var(--accent); }
+  .steps li.cur.pulse::before { animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .45; } }
+  @media (prefers-reduced-motion: reduce) { .steps li.cur.pulse::before { animation: none; } }
 
-  .context { display: flex; flex-direction: column; gap: 12px; }
-  .mood {
-    font-size: .88rem;
-    color: var(--text-dim);
-  }
-  .mood b { color: var(--text); font-weight: 500; }
-  .mood .lbl {
-    font-size: .7rem; letter-spacing: .14em; text-transform: uppercase;
-    color: var(--text-faint); margin-right: 8px;
-  }
-
-  .pools { display: flex; flex-wrap: wrap; gap: 7px; }
-  .pool {
-    display: inline-flex;
-    align-items: baseline;
-    gap: 7px;
-    padding: 5px 11px;
-    border-radius: 99px;
-    background: var(--surface);
-    border: 1px solid var(--line-soft);
-    font-size: .78rem;
-    color: var(--text-dim);
-    max-width: 100%;
-    overflow-wrap: anywhere;
-  }
-  .pool .n {
-    font-size: .7rem;
-    color: var(--text-faint);
-    font-variant-numeric: tabular-nums;
-  }
-
-  /* ---------- panels (queue, history) ---------- */
-
-  section.panel { min-width: 0; }
-
-  .panel h2 {
-    margin: 0 0 12px;
-    font-size: .7rem;
-    letter-spacing: .16em;
-    text-transform: uppercase;
-    color: var(--text-faint);
-    font-weight: 600;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .panel h2 .count {
-    letter-spacing: 0;
-    text-transform: none;
-    font-weight: 500;
-    color: var(--text-faint);
-    opacity: .8;
-  }
-
+  /* ---------- lists ---------- */
+  .lists { padding: 16px; }
+  @media (min-width: 700px) { .lists { padding: 20px 22px; } }
+  .lists > section + section { margin-top: 22px; }
   ol.list, ul.list { list-style: none; margin: 0; padding: 0; }
-
-  .list li {
-    display: flex;
-    align-items: baseline;
-    gap: 11px;
-    padding: 9px 0;
-    border-bottom: 1px solid var(--line-soft);
-    min-width: 0;
-  }
+  .list li { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line-soft); min-width: 0; }
   .list li:last-child { border-bottom: 0; }
-
-  .list .idx {
-    flex: none;
-    width: 1.3em;
-    font-size: .74rem;
-    color: var(--text-faint);
-    font-variant-numeric: tabular-nums;
-  }
   .list .meta { min-width: 0; flex: 1; }
-  .list .t {
-    display: block;
-    font-size: .92rem;
-    overflow-wrap: anywhere;
-  }
-  .list .a {
-    display: block;
-    font-size: .78rem;
-    color: var(--text-faint);
-    overflow-wrap: anywhere;
-  }
-  .list .dur {
-    flex: none;
-    font-size: .76rem;
-    color: var(--text-faint);
-    font-variant-numeric: tabular-nums;
-  }
+  .list .t { display: block; font-size: .93rem; overflow-wrap: anywhere; }
+  .list .a { display: block; font-size: .8rem; color: var(--text-faint); overflow-wrap: anywhere; }
+  .list .dur { flex: none; font-size: .78rem; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+  .list li.mine { background: linear-gradient(90deg, var(--accent-soft), transparent 80%); border-radius: 10px;
+                  padding-left: 8px; margin-left: -8px; }
+  .thumb { --h: 38; flex: none; width: 40px; height: 40px; border-radius: 8px; overflow: hidden; position: relative;
+           background: linear-gradient(135deg, hsl(var(--h) 40% 45% / .55), hsl(calc(var(--h) + 40) 40% 30% / .55)); }
+  .thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .empty { font-size: .88rem; color: var(--text-faint); padding: 4px 0 2px; margin: 0; }
 
-  .hist .mark { flex: none; width: 14px; height: 14px; align-self: center; }
-  .hist .mark svg { width: 14px; height: 14px; display: block; }
+  .who { --h: 38; display: inline-block; max-width: 11em; overflow: hidden; text-overflow: ellipsis; vertical-align: middle;
+         flex: none; padding: 0 8px; border-radius: 99px; font-size: .75rem; font-weight: 650; line-height: 1.65;
+         white-space: nowrap; background: hsl(var(--h) 50% 50% / .17); border: 1px solid hsl(var(--h) 50% 55% / .32);
+         color: hsl(var(--h) 60% 76%); }
+  @media (prefers-color-scheme: light) { .who { color: hsl(var(--h) 60% 28%); } }
+  .who.you { background: var(--btn); border-color: transparent; color: var(--on-btn); }
+  .list .req { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 3px; }
+
+  .wishes .t { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .wishes .t .txt { min-width: 0; overflow-wrap: anywhere; }
+  .wishes .st { flex: none; font-size: .78rem; color: var(--text-faint); text-align: right; max-width: 42%; }
+  .wishes .st.playing { color: var(--ok); font-weight: 600; }
+  .wishes .st.thinking, .wishes .st.waiting { color: var(--accent-text); }
+  .wishes .st.notfound, .wishes .st.error { color: var(--err); }
+  .wishes li.fin .txt { color: var(--text-dim); }
+  .rm { flex: none; width: 36px; height: 36px; border-radius: 10px; border: 1px solid var(--line);
+        background: var(--surface); color: var(--text-dim); display: grid; place-items: center; padding: 0; }
+  .rm:hover { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, transparent); }
+  .rm svg { width: 14px; height: 14px; }
+  @media (pointer: coarse) { .rm { width: 44px; height: 44px; } }
+
+  .hist .mark { flex: none; width: 16px; height: 16px; }
+  .hist .mark svg { width: 16px; height: 16px; display: block; }
   .hist .finished { color: var(--ok); }
-  .hist .skipped { color: var(--text-faint); }
-  .hist .other { color: var(--text-faint); }
-  .hist li.skipped-row .t {
-    color: var(--text-dim);
-    text-decoration: line-through;
-    text-decoration-color: var(--line);
-  }
+  .hist .skipped, .hist .other { color: var(--text-faint); }
+  .hist li.skipped-row .t { color: var(--text-dim); }
 
-  .empty {
-    font-size: .85rem;
-    color: var(--text-faint);
-    padding: 6px 0 2px;
-  }
+  footer.foot { margin-top: 28px; display: flex; justify-content: center; }
+  .linkbtn { border: 0; background: none; padding: 10px 12px; min-height: 44px; color: var(--text-faint);
+             font-size: .85rem; display: inline-flex; align-items: center; gap: 8px; border-radius: 10px; }
+  .linkbtn:hover { color: var(--text); background: var(--surface); }
+  .linkbtn svg { width: 16px; height: 16px; }
 
-  /* ---------- banner ---------- */
+  /* ---------- welcome / nick ---------- */
+  .modal { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; padding: 16px;
+           background: color-mix(in srgb, var(--bg) 55%, transparent);
+           -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+  .modal .box { width: min(420px, 100%); padding: 24px 22px 20px; background: var(--card);
+                border: 1px solid var(--line); border-radius: 20px; box-shadow: var(--shadow); }
+  @media (prefers-color-scheme: dark) { .modal .box { background: #181b20; } }
+  .modal .logo { width: 44px; height: 44px; border-radius: 13px; margin-bottom: 14px; }
+  .modal .logo svg { width: 26px; height: 26px; }
+  .modal h2 { margin: 0 0 6px; font-size: 1.35rem; line-height: 1.25; }
+  .modal p { margin: 0 0 16px; color: var(--text-dim); font-size: .95rem; }
+  .modal input { width: 100%; min-height: 50px; padding: 10px 14px; border-radius: 12px; border: 1px solid var(--line);
+                 background: var(--surface); font-size: 1.1rem; }
+  .modal input:focus { outline: none; border-color: var(--accent); }
+  .modal .msg { min-height: 1.5em; margin: 8px 2px 10px; font-size: .88rem; color: var(--text-faint); }
+  .modal .msg.err { color: var(--err); }
+  .modal .msg.warn { color: var(--warn); }
+  .modal .row { display: flex; gap: 10px; }
+  .btn { flex: 1; min-height: 48px; padding: 10px 18px; border-radius: 12px; border: 1px solid var(--line);
+         background: var(--surface); font-size: .98rem; font-weight: 600; }
+  .btn.primary { background: var(--btn); color: var(--on-btn); border-color: transparent; }
+  .btn[disabled] { opacity: .5; cursor: not-allowed; }
 
-  .banner {
-    display: none;
-    align-items: center;
-    gap: 10px;
-    margin-bottom: 20px;
-    padding: 11px 15px;
-    border-radius: 11px;
-    background: color-mix(in srgb, var(--err) 13%, transparent);
-    border: 1px solid color-mix(in srgb, var(--err) 30%, transparent);
-    font-size: .86rem;
-    color: var(--text);
-  }
-  .banner.show { display: flex; }
-  .banner.notice {
-    background: color-mix(in srgb, var(--warn) 13%, transparent);
-    border-color: color-mix(in srgb, var(--warn) 32%, transparent);
-  }
-  .banner.notice svg { color: var(--warn); }
-  .banner svg { width: 17px; height: 17px; flex: none; color: var(--err); }
-
-  /* ---------- settings ---------- */
-
-  .backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,.5);
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity .22s;
-    z-index: 40;
-  }
+  /* ---------- settings (správce) ---------- */
+  .icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; flex: none;
+              border: 1px solid var(--line); border-radius: 11px; background: var(--surface); color: var(--text-dim); }
+  .icon-btn svg { width: 19px; height: 19px; }
+  .backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.5); opacity: 0; pointer-events: none;
+              transition: opacity .22s; z-index: 40; }
   .backdrop.show { opacity: 1; pointer-events: auto; }
-
-  aside.settings {
-    position: fixed;
-    top: 0; right: 0; bottom: 0;
-    width: min(440px, 100%);
-    background: var(--bg);
-    border-left: 1px solid var(--line);
-    box-shadow: var(--shadow);
-    transform: translateX(101%);
-    transition: transform .26s cubic-bezier(.4,0,.2,1);
-    z-index: 50;
-    display: flex;
-    flex-direction: column;
-    padding-bottom: env(safe-area-inset-bottom);
-  }
-  aside.settings.show { transform: none; }
-  @media (prefers-reduced-motion: reduce) {
-    aside.settings, .backdrop { transition: none; }
-  }
-
-  .settings .head {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 16px 18px;
-    border-bottom: 1px solid var(--line);
-    flex: none;
-  }
-  .settings .head h2 { margin: 0; font-size: 1rem; font-weight: 600; }
-
-  .settings .body {
-    flex: 1;
-    overflow-y: auto;
-    padding: 18px;
-    -webkit-overflow-scrolling: touch;
-  }
-
-  /* na co je to připojené a čím to myslí — nad samotným nastavením */
-  .about {
-    padding: 14px 18px;
-    border-bottom: 1px solid var(--line);
-    background: var(--surface);
-    font-size: .82rem;
-  }
-  .about h3 {
-    margin: 0 0 8px;
-    font-size: .72rem;
-    font-weight: 600;
-    letter-spacing: .09em;
-    text-transform: uppercase;
-    color: var(--text-faint);
-  }
-  .about h3 + .row { margin-top: 0; }
+  aside.settings { position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 100%); background: var(--bg);
+                   border-left: 1px solid var(--line); box-shadow: var(--shadow); transform: translateX(101%);
+                   visibility: hidden; transition: transform .26s cubic-bezier(.4,0,.2,1), visibility 0s .26s;
+                   z-index: 50; display: flex; flex-direction: column; padding-bottom: env(safe-area-inset-bottom); }
+  aside.settings.show { transform: none; visibility: visible; transition: transform .26s cubic-bezier(.4,0,.2,1); }
+  @media (prefers-reduced-motion: reduce) { aside.settings, .backdrop { transition: none; } }
+  .settings .head { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); flex: none; }
+  .settings .head h2 { margin: 0; font-size: 1rem; font-weight: 650; }
+  .settings .head p { margin: 0; font-size: .78rem; color: var(--text-faint); }
+  .settings .body { flex: 1; overflow-y: auto; padding: 18px; -webkit-overflow-scrolling: touch; }
+  .about { padding: 14px 18px; border-bottom: 1px solid var(--line); background: var(--surface); font-size: .82rem; }
+  .about h3 { margin: 0 0 8px; font-size: .72rem; font-weight: 650; letter-spacing: .09em; text-transform: uppercase; color: var(--text-faint); }
   .about .grp + h3 { margin-top: 14px; }
-  .about .row {
-    display: flex;
-    gap: 12px;
-    justify-content: space-between;
-    align-items: baseline;
-    padding: 2px 0;
-  }
+  .about .row { display: flex; gap: 12px; justify-content: space-between; align-items: baseline; padding: 2px 0; }
   .about .k { color: var(--text-dim); flex: none; }
   .about .v { text-align: right; word-break: break-word; }
   .about .v.good { color: var(--ok); }
   .about .v.bad { color: var(--warn); }
-
   .field { margin-bottom: 20px; }
-  .field > label.top {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-    font-size: .9rem;
-    font-weight: 500;
-    margin-bottom: 5px;
-  }
-  .field .help {
-    font-size: .78rem;
-    color: var(--text-faint);
-    margin: 0 0 8px;
-    line-height: 1.45;
-  }
-  .field input[type=text],
-  .field input[type=number],
-  .field select {
-    width: 100%;
-    padding: 9px 11px;
-    border-radius: 9px;
-    border: 1px solid var(--line);
-    background: var(--surface);
-    min-height: 42px;
-  }
+  .field > label.top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: .9rem; font-weight: 550; margin-bottom: 5px; }
+  .field .help { font-size: .8rem; color: var(--text-faint); margin: 0 0 8px; line-height: 1.45; }
+  .field input[type=text], .field input[type=number], .field select {
+    width: 100%; padding: 9px 11px; border-radius: 9px; border: 1px solid var(--line); background: var(--surface); min-height: 44px; }
   .field select { appearance: none; padding-right: 30px;
-    background-image: linear-gradient(45deg, transparent 50%, var(--text-faint) 50%),
-                      linear-gradient(135deg, var(--text-faint) 50%, transparent 50%);
-    background-position: calc(100% - 16px) 19px, calc(100% - 11px) 19px;
-    background-size: 5px 5px, 5px 5px;
-    background-repeat: no-repeat;
-  }
+    background-image: linear-gradient(45deg, transparent 50%, var(--text-faint) 50%), linear-gradient(135deg, var(--text-faint) 50%, transparent 50%);
+    background-position: calc(100% - 16px) 19px, calc(100% - 11px) 19px; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; }
   .field input:focus, .field select:focus { outline: none; border-color: var(--accent); }
-
-  .check { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+  .check { display: flex; align-items: center; gap: 10px; cursor: pointer; min-height: 36px; }
   .check input { width: 20px; height: 20px; accent-color: var(--accent); flex: none; }
-
-  .tag {
-    font-size: .64rem;
-    letter-spacing: .07em;
-    text-transform: uppercase;
-    padding: 2px 7px;
-    border-radius: 5px;
-    background: color-mix(in srgb, var(--warn) 16%, transparent);
-    color: var(--warn);
-    border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
-    font-weight: 600;
-    white-space: nowrap;
-  }
-
-  .settings .foot {
-    flex: none;
-    padding: 14px 18px;
-    border-top: 1px solid var(--line);
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex-wrap: wrap;
-  }
-  .btn {
-    padding: 10px 18px;
-    min-height: 44px;
-    border-radius: 10px;
-    border: 1px solid var(--line);
-    background: var(--surface);
-    font-size: .92rem;
-  }
-  .btn.primary { background: var(--accent); color: #14110b; border-color: transparent; font-weight: 550; }
-  .btn[disabled] { opacity: .45; cursor: not-allowed; }
-  .settings .msg { font-size: .8rem; color: var(--text-dim); flex: 1 1 100%; margin: 0; }
+  .tag { font-size: .64rem; letter-spacing: .07em; text-transform: uppercase; padding: 2px 7px; border-radius: 5px;
+         background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn);
+         border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); font-weight: 650; white-space: nowrap; }
+  .settings .foot { flex: none; padding: 14px 18px; border-top: 1px solid var(--line); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .settings .foot .btn { flex: 0 1 auto; min-height: 44px; font-size: .92rem; }
+  .settings .msg { font-size: .82rem; color: var(--text-dim); flex: 1 1 100%; margin: 0; }
   .settings .msg.warn { color: var(--warn); }
   .settings .msg.err { color: var(--err); }
-
-  /* ---------- přání: fronta pro víc lidí ---------- */
-
-  .reason { margin: 10px 0 0; font-size: .88rem; color: var(--text-dim); overflow-wrap: anywhere;
-            display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
-  .reason b { color: var(--text); font-weight: 550; }
-  .who {
-    --h: 38;
-    display: inline-block;
-    max-width: 11em;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    vertical-align: middle;
-    flex: none;
-    padding: 0 8px;
-    border-radius: 99px;
-    font-size: .74rem;
-    font-weight: 600;
-    line-height: 1.6;
-    white-space: nowrap;
-    background: hsl(var(--h) 50% 50% / .17);
-    border: 1px solid hsl(var(--h) 50% 55% / .32);
-    color: hsl(var(--h) 60% 74%);
-  }
-  @media (prefers-color-scheme: light) { .who { color: hsl(var(--h) 60% 30%); } }
-  .composer .opts {
-    display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
-    padding: 0 12px 10px 16px; margin-top: -4px;
-  }
-  .who-input {
-    width: 10.5em; max-width: 48%;
-    min-height: 34px; padding: 4px 10px;
-    border-radius: 9px; border: 1px solid var(--line);
-    background: var(--surface); font-size: .86rem;
-  }
-  .who-input:focus { outline: none; border-color: var(--accent); }
-  .toggle { display: inline-flex; align-items: center; gap: 7px; font-size: .86rem; color: var(--text-dim);
-            cursor: pointer; min-height: 34px; user-select: none; }
-  .toggle input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
-  @media (pointer: coarse) { .who-input, .toggle { min-height: 44px; } }
-
-  .wishes li { align-items: center; }
-  .wishes .st { flex: none; font-size: .76rem; color: var(--text-faint); text-align: right; white-space: nowrap; }
-  .wishes .st.playing { color: var(--ok); }
-  .wishes .st.thinking, .wishes .st.waiting { color: var(--accent-text); }
-  .wishes .st.notfound, .wishes .st.error { color: var(--err); }
-  .wishes .t { display: flex; align-items: center; gap: 8px; min-width: 0; }
-  .wishes .t .txt { min-width: 0; overflow-wrap: anywhere; }
-  .wishes .r { display: block; font-size: .78rem; color: var(--text-dim); overflow-wrap: anywhere; }
-  .wishes li.fin .t { color: var(--text-dim); }
-  .wishes li.mine { background: linear-gradient(90deg, var(--accent-soft), transparent 70%); border-radius: 8px;
-                    padding-left: 8px; margin-left: -8px; }
-  .rm {
-    flex: none; width: 34px; height: 34px; border-radius: 9px;
-    border: 1px solid var(--line); background: var(--surface); color: var(--text-dim);
-    display: grid; place-items: center; padding: 0;
-  }
-  .rm:hover { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, transparent); }
-  .rm svg { width: 14px; height: 14px; }
-  @media (pointer: coarse) { .rm { width: 44px; height: 44px; } }
-  .list .req { display: block; margin-top: 2px; }
 </style>
 </head>
 <body>
 
-<div class="wrap">
+<div class="wrap" id="page">
 
   <header class="top">
     <div class="brand">
+      <span class="logo" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="10" width="3" height="9" rx="1.5"/><rect x="10.5" y="5" width="3" height="14" rx="1.5"/><rect x="17" y="8" width="3" height="11" rx="1.5"/></svg></span>
       <span class="name">ytdj</span>
-      <span class="sub">AI DJ</span>
+      <span class="sub">DJ pro celou kancelář</span>
     </div>
-    <span class="conn" id="conn"><span class="dot"></span><span id="connText">připojuji…</span></span>
-    <button class="icon-btn" id="openSettings" aria-label="Nastavení" title="Nastavení">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true">
-        <path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h10M18 18h2"/>
-        <circle cx="16" cy="6" r="2.1"/><circle cx="10" cy="12" r="2.1"/><circle cx="16" cy="18" r="2.1"/>
-      </svg>
+    <span class="conn" id="conn" title="Spojení s jukeboxem"><span class="dot"></span><span id="connText">připojuji…</span></span>
+    <button class="me" id="meBtn" type="button" hidden>
+      <span class="av" id="meAv" aria-hidden="true"></span><span class="nm" id="meName"></span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>
     </button>
   </header>
 
   <div class="banner" id="banner" role="status">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
-      <path d="M12 8v5"/><path d="M12 16.5v.01"/><circle cx="12" cy="12" r="9"/>
-    </svg>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 8v5"/><path d="M12 16.5v.01"/><circle cx="12" cy="12" r="9"/></svg>
     <span id="bannerText"></span>
   </div>
   <!-- DJ bez mozku / výpadek YouTube: co teď funguje (ne chyba spojení s jukeboxem) -->
   <div class="banner notice" id="notice" role="status">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
-      <path d="M12 8v5"/><path d="M12 16.5v.01"/><circle cx="12" cy="12" r="9"/>
-    </svg>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 8v5"/><path d="M12 16.5v.01"/><circle cx="12" cy="12" r="9"/></svg>
     <span id="noticeText"></span>
   </div>
 
   <div class="cols">
-
-    <!-- ======== left column ======== -->
     <div class="stack">
 
-      <section class="now idle" id="now" aria-label="Právě hraje">
-        <p class="eyebrow">
-          <span class="bars still" id="bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-          <span id="nowLabel">nic nehraje</span>
-        </p>
-        <h1 class="track-title" id="title">Ticho</h1>
-        <p class="track-artist" id="artist" hidden></p>
-        <p class="track-album" id="album" hidden></p>
+      <section class="now card idle" id="now" aria-label="Právě hraje">
+        <div class="np">
+          <div class="art" id="art" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 17.5a2.5 2.5 0 1 1-2-2.45V6.2c0-.5.36-.92.85-1l9-1.5A1 1 0 0 1 18 4.7v10.8a2.5 2.5 0 1 1-2-2.45V8.2l-7 1.17z"/></svg>
+            <img id="artImg" alt="" hidden>
+          </div>
+          <div style="min-width:0">
+            <p class="eyebrow"><span class="bars still" id="bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span id="nowLabel">nic nehraje</span></p>
+            <h1 class="track-title" id="title">Je ticho</h1>
+            <p class="track-artist" id="artist" hidden></p>
+          </div>
+        </div>
         <p class="reason" id="reason" hidden></p>
         <p class="idle-hint" id="idleHint" hidden>Stiskni ▶ a DJ vybere hudbu podle času a dne — nebo mu níž napiš, co chceš slyšet.</p>
 
@@ -880,18 +469,16 @@
         </div>
 
         <div class="controls">
-          <button class="ctl primary" id="btnPlay" aria-label="Přehrát">
+          <button class="ctl primary" id="btnPlay" type="button" aria-label="Přehrát">
             <svg id="icoPlay" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.2v13.6c0 .8.9 1.3 1.6.9l10.4-6.8c.6-.4.6-1.4 0-1.8L9.6 4.3c-.7-.4-1.6.1-1.6.9z"/></svg>
             <svg id="icoPause" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" hidden><rect x="6.5" y="5" width="4" height="14" rx="1.3"/><rect x="13.5" y="5" width="4" height="14" rx="1.3"/></svg>
           </button>
-          <button class="ctl" id="btnNext" aria-label="Další skladba" title="Další">
+          <button class="ctl" id="btnNext" type="button" aria-label="Další skladba" title="Další skladba">
             <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 5.4v13.2c0 .8.9 1.2 1.5.8l9.3-6.6c.5-.4.5-1.2 0-1.6L7.5 4.6C6.9 4.2 6 4.6 6 5.4z"/><rect x="17.6" y="4.6" width="2.6" height="14.8" rx="1.3"/></svg>
           </button>
-
           <div class="vol">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M4 9.5h3.2L12 5.6v12.8L7.2 14.5H4z" fill="currentColor" stroke="none"/>
-              <path d="M15.6 9.4a3.6 3.6 0 0 1 0 5.2"/><path d="M18.2 7a7 7 0 0 1 0 10"/>
+              <path d="M4 9.5h3.2L12 5.6v12.8L7.2 14.5H4z" fill="currentColor" stroke="none"/><path d="M15.6 9.4a3.6 3.6 0 0 1 0 5.2"/><path d="M18.2 7a7 7 0 0 1 0 10"/>
             </svg>
             <input type="range" id="vol" min="0" max="100" step="1" value="100" aria-label="Hlasitost">
             <output id="volOut" for="vol">100</output>
@@ -899,26 +486,20 @@
         </div>
       </section>
 
-      <section aria-label="Zadání pro DJe">
+      <section class="ask card" aria-labelledby="askH">
+        <h2 id="askH">Co si pustíme?</h2>
         <div class="composer" id="composer">
-          <div class="row">
-            <textarea id="prompt" rows="1" enterkeyhint="send" autocomplete="off" maxlength="500"
-                      aria-label="Přání pro DJe"
-                      placeholder="Co chceš slyšet? Třeba „písničky od Olympicu“"></textarea>
-            <button class="send" id="btnSend" aria-label="Odeslat DJovi">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M12 19V5"/><path d="M5.5 11.5 12 5l6.5 6.5"/>
-              </svg>
-            </button>
-          </div>
-          <div class="opts">
-            <input class="who-input" id="who" type="text" maxlength="24" autocomplete="nickname"
-                   placeholder="Tvoje jméno" aria-label="Tvoje jméno (uvidí ho ostatní u přání)">
-            <label class="toggle" title="Hned po skladbě, která hraje — nic se neutne. Jedno na člověka.">
-              <input type="checkbox" id="playNext"> Zařadit hned
-            </label>
-          </div>
-          <p class="note"><span class="spinner"></span><span class="txt" id="busyText">DJ přemýšlí…</span></p>
+          <textarea id="prompt" rows="1" enterkeyhint="send" autocomplete="off" maxlength="500"
+                    aria-labelledby="askH"
+                    placeholder="Interpret, písnička nebo nálada — třeba „Olympic“"></textarea>
+          <button class="send" id="btnSend" type="button" aria-label="Poslat přání DJovi">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="M5.5 11.5 12 5l6.5 6.5"/></svg>
+          </button>
+        </div>
+        <div class="opts">
+          <label class="toggle" title="Tvoje přání přijde na řadu po skladbě, která právě hraje — nic se neutne. Jedno na člověka.">
+            <input type="checkbox" id="playNext"> Hned po téhle skladbě
+          </label>
         </div>
         <div class="chips" id="chips" role="group" aria-label="Rychlá přání">
           <button class="chip" type="button" data-chip="more" data-wish="víc takového">Víc takového</button>
@@ -928,63 +509,76 @@
           <button class="chip" type="button" data-chip="livelier" data-wish="něco živějšího">Živější</button>
         </div>
         <div class="reply" id="reply" role="status" aria-live="polite"></div>
-        <p class="hint"><span class="kbd-only">Enter odešle, Shift+Enter udělá nový řádek. </span>Přání se přijme hned;
-          DJ je vyřizuje po jednom a střídá lidi, ať se dostane na každého.</p>
+        <p class="hint"><span class="kbd-only">Enter odešle. </span>DJ střídá lidi, ať se dostane na každého.</p>
       </section>
 
-      <section class="panel" aria-label="Přání">
-        <h2>Přání <span class="count" id="wishCount"></span></h2>
-        <ul class="list wishes" id="wishes"></ul>
-        <p class="empty" id="wishesEmpty">Nikdo si zrovna nic nepřeje — hraje podkres od DJe.</p>
-      </section>
-
-      <section class="context" id="context" aria-label="Kontext DJe" hidden>
-        <div class="mood" id="moodWrap" hidden><span class="lbl">nálada</span><b id="mood"></b></div>
-        <div id="poolsWrap" hidden>
-          <div class="pools" id="pools"></div>
-        </div>
+      <section id="mineSec" aria-label="Tvoje přání" hidden>
+        <h2 class="sec-h">Tvoje přání</h2>
+        <div class="mine-list" id="mine" aria-live="polite"></div>
       </section>
 
     </div>
 
-    <!-- ======== right column ======== -->
     <div class="stack">
-
-      <section class="panel" aria-label="Fronta">
-        <h2>Fronta <span class="count" id="queueCount"></span></h2>
-        <ol class="list" id="queue"></ol>
-        <p class="empty" id="queueEmpty">Fronta je prázdná.</p>
-      </section>
-
-      <section class="panel" aria-label="Historie">
-        <h2>Odehráno</h2>
-        <ul class="list hist" id="history"></ul>
-        <p class="empty" id="historyEmpty">Zatím nic neodehrálo.</p>
-      </section>
-
+      <div class="lists card">
+        <section aria-labelledby="wishesH">
+          <h2 class="sec-h" id="wishesH">Přání všech <span class="count" id="wishCount"></span></h2>
+          <ul class="list wishes" id="wishes"></ul>
+          <p class="empty" id="wishesEmpty">Nikdo si zrovna nic nepřeje — hraje výběr DJe.</p>
+        </section>
+        <section aria-labelledby="queueH">
+          <h2 class="sec-h" id="queueH">Hraje dál <span class="count" id="queueCount"></span></h2>
+          <ol class="list" id="queue"></ol>
+          <p class="empty" id="queueEmpty">Zatím nic — napiš DJovi, co pustit.</p>
+        </section>
+        <section aria-labelledby="histH">
+          <h2 class="sec-h" id="histH">Odehráno</h2>
+          <ul class="list hist" id="history"></ul>
+          <p class="empty" id="historyEmpty">Zatím nic neodehrálo.</p>
+        </section>
+      </div>
     </div>
   </div>
+
+  <footer class="foot">
+    <button class="linkbtn" id="openSettings" type="button">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h10M18 18h2"/><circle cx="16" cy="6" r="2.1"/><circle cx="10" cy="12" r="2.1"/><circle cx="16" cy="18" r="2.1"/></svg>
+      Nastavení jukeboxu
+    </button>
+  </footer>
+</div>
+
+<!-- první návštěva: přezdívka; později změna přes "Jsi: …" -->
+<div class="modal" id="nickModal" role="dialog" aria-modal="true" aria-labelledby="nickH" hidden>
+  <form class="box" id="nickForm" novalidate>
+    <div class="logo" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="10" width="3" height="9" rx="1.5"/><rect x="10.5" y="5" width="3" height="14" rx="1.5"/><rect x="17" y="8" width="3" height="11" rx="1.5"/></svg></div>
+    <h2 id="nickH">Ahoj! Jak ti máme říkat?</h2>
+    <p id="nickP">Přezdívka se ukáže u tvých přání, ať kolegové vědí, čí písnička hraje. Zadáš ji jen jednou — prohlížeč si ji zapamatuje.</p>
+    <input id="nickIn" type="text" maxlength="20" autocomplete="nickname" autocapitalize="words" enterkeyhint="done"
+           spellcheck="false" placeholder="Třeba Petr nebo Jana K." aria-label="Tvoje přezdívka" aria-describedby="nickMsg">
+    <div class="msg" id="nickMsg" aria-live="polite"></div>
+    <div class="row">
+      <button class="btn" id="nickCancel" type="button" hidden>Zrušit</button>
+      <button class="btn primary" id="nickOk" type="submit">Pokračovat</button>
+    </div>
+  </form>
 </div>
 
 <div class="backdrop" id="backdrop"></div>
 
-<aside class="settings" id="settings" aria-label="Nastavení" aria-hidden="true">
+<aside class="settings" id="settings" aria-label="Nastavení jukeboxu" aria-hidden="true">
   <div class="head">
-    <h2>Nastavení</h2>
-    <button class="icon-btn" id="closeSettings" style="margin-left:auto" aria-label="Zavřít nastavení">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true">
-        <path d="M6 6l12 12M18 6L6 18"/>
-      </svg>
+    <div><h2>Nastavení jukeboxu</h2><p>Pro správce — běžně tu není co měnit.</p></div>
+    <button class="icon-btn" id="closeSettings" type="button" style="margin-left:auto" aria-label="Zavřít nastavení">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
     </button>
   </div>
   <div class="about" id="about"></div>
-  <div class="body" id="settingsBody">
-    <p class="empty">Načítám…</p>
-  </div>
+  <div class="body" id="settingsBody"><p class="empty">Načítám…</p></div>
   <div class="foot">
-    <button class="btn primary" id="btnSave">Uložit</button>
-    <button class="btn" id="btnReload">Načíst znovu</button>
-    <button class="btn" id="btnRestart" title="Ukončí aplikaci; službu nastartuje systemd znovu">Restartovat</button>
+    <button class="btn primary" id="btnSave" type="button">Uložit</button>
+    <button class="btn" id="btnReload" type="button">Načíst znovu</button>
+    <button class="btn" id="btnRestart" type="button" title="Ukončí aplikaci; službu nastartuje systemd znovu">Restartovat</button>
     <p class="msg" id="settingsMsg"></p>
   </div>
 </aside>
@@ -1008,40 +602,57 @@
   function fmtTime(sec) {
     if (sec == null || isNaN(sec) || sec < 0) return "–:––";
     sec = Math.floor(sec);
-    var h = Math.floor(sec / 3600);
-    var m = Math.floor((sec % 3600) / 60);
-    var s = sec % 60;
+    var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
     var mm = (h > 0 && m < 10) ? "0" + m : String(m);
     return (h > 0 ? h + ":" : "") + mm + ":" + (s < 10 ? "0" + s : s);
   }
 
-  function nowMs() {
-    return (window.performance && performance.now) ? performance.now() : Date.now();
-  }
+  function nowMs() { return (window.performance && performance.now) ? performance.now() : Date.now(); }
 
-  // Beware: `hidden` is an HTMLElement property — assigning it on <svg> does
-  // nothing. Going through the attribute works on both.
+  // `hidden` as a property does nothing on <svg>; the attribute works on both
   function setHidden(node, on) {
-    if (on) node.setAttribute("hidden", "");
-    else node.removeAttribute("hidden");
+    if (on) node.setAttribute("hidden", ""); else node.removeAttribute("hidden");
   }
 
   async function postJSON(path, body) {
-    var res = await fetch(path, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    });
+    var res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify(body) });
     var data = null;
     try { data = await res.json(); } catch (e) { /* empty/invalid response */ }
     if (!res.ok) {
-      var msg = (data && (data.error || data.detail || data.message)) || ("HTTP " + res.status);
-      var err = new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+      var msg = (data && (data.error || data.message));
+      // never a raw exception or an HTTP code — a sentence for people
+      if (typeof msg !== "string" || !msg) msg = "Jukebox to teď nevzal — zkus to prosím znovu.";
+      var err = new Error(msg);
       err.status = res.status;
       throw err;
     }
     return data || {};
   }
+
+  function plural(n, one, few, many) { return n === 1 ? one : (n >= 2 && n <= 4 ? few : many); }
+  function mins(sec) { return Math.max(1, Math.round(sec / 60)) + " min"; }
+
+  // A name → a stable hue, so the same person has the same colour everywhere.
+  function hue(name) {
+    var h = 0, str = String(name || "");
+    for (var i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) % 360;
+    return h;
+  }
+  // colour by who_key (the same person everywhere, two "Host"s differ), label by name
+  function whoChip(name, you, key) {
+    if (you) return '<span class="who you" title="' + esc(name) + '">tvoje</span>';
+    return '<span class="who" style="--h:' + hue(key || name) + '">' + esc(name || "?") + "</span>";
+  }
+
+  // Cover from YouTube's thumbnail server (the Pi streams from YouTube anyway).
+  // Offline or unknown id: the gradient with a note stays.
+  function coverUrl(id, big) {
+    return /^[A-Za-z0-9_-]{11}$/.test(String(id || ""))
+      ? "https://i.ytimg.com/vi/" + id + (big ? "/hqdefault.jpg" : "/mqdefault.jpg") : "";
+  }
+  // "no such video" comes back as a 120×90 grey picture, not as an error
+  window.ytdjThumb = function (img) { if (img.naturalWidth && img.naturalWidth < 200) img.remove(); };
 
   /* ------------------------------------------------------------------ */
   /* client state                                                        */
@@ -1050,48 +661,203 @@
   var S = {
     status: null,
     trackId: undefined,
-    posBase: 0,          // position in seconds as of the posBaseAt instant
-    posBaseAt: nowMs(),
+    posBase: 0, posBaseAt: nowMs(),
     duration: 0,
     running: false,      // playing and not paused -> position is advancing
     loading: false,      // running, but the stream hasn't started yet
-    sending: false,      // the POST /api/prompt is on its way (a split second — the queue accepts at once)
+    sending: false,
     tokens: {},          // id → owner token of wishes sent from this browser ("×" on them)
-    watch: null,         // {id, text}: our latest wish — its answer goes to the reply box
-    shownReply: "",
+    finSeen: {},         // id → when this page first saw our wish finished (card lingers a bit)
     title: "",
-    volDragging: false,
-    volHoldUntil: 0,     // after sending the volume, don't overwrite the slider for a while
+    volDragging: false, volHoldUntil: 0,
     lastUpdate: 0,
     connected: false,
-    sig: {}              // signatures, so the lists don't re-render needlessly
+    nick: "", tag: "",
+    sig: {}
   };
 
   var el = {
+    page: $("#page"),
     conn: $("#conn"), connText: $("#connText"),
+    meBtn: $("#meBtn"), meAv: $("#meAv"), meName: $("#meName"),
     banner: $("#banner"), bannerText: $("#bannerText"),
     notice: $("#notice"), noticeText: $("#noticeText"),
     now: $("#now"), nowLabel: $("#nowLabel"), bars: $("#bars"),
-    title: $("#title"), artist: $("#artist"), album: $("#album"), idleHint: $("#idleHint"),
+    art: $("#art"), artImg: $("#artImg"),
+    title: $("#title"), artist: $("#artist"), idleHint: $("#idleHint"), reason: $("#reason"),
     progress: $("#progress"), bar: $("#bar"), barFill: $("#barFill"),
     elapsed: $("#elapsed"), total: $("#total"),
-    btnPlay: $("#btnPlay"), icoPlay: $("#icoPlay"), icoPause: $("#icoPause"),
-    btnNext: $("#btnNext"),
+    btnPlay: $("#btnPlay"), icoPlay: $("#icoPlay"), icoPause: $("#icoPause"), btnNext: $("#btnNext"),
     vol: $("#vol"), volOut: $("#volOut"),
-    composer: $("#composer"), prompt: $("#prompt"), btnSend: $("#btnSend"), busyText: $("#busyText"),
-    chips: $("#chips"), reply: $("#reply"), reason: $("#reason"),
-    who: $("#who"), playNext: $("#playNext"),
+    prompt: $("#prompt"), btnSend: $("#btnSend"), playNext: $("#playNext"),
+    chips: $("#chips"), reply: $("#reply"),
+    mineSec: $("#mineSec"), mine: $("#mine"),
     wishes: $("#wishes"), wishesEmpty: $("#wishesEmpty"), wishCount: $("#wishCount"),
-    context: $("#context"), moodWrap: $("#moodWrap"), mood: $("#mood"),
-    poolsWrap: $("#poolsWrap"), pools: $("#pools"),
     queue: $("#queue"), queueEmpty: $("#queueEmpty"), queueCount: $("#queueCount"),
     history: $("#history"), historyEmpty: $("#historyEmpty"),
+    nickModal: $("#nickModal"), nickForm: $("#nickForm"), nickIn: $("#nickIn"), nickMsg: $("#nickMsg"),
+    nickOk: $("#nickOk"), nickCancel: $("#nickCancel"), nickH: $("#nickH"), nickP: $("#nickP"),
     settings: $("#settings"), backdrop: $("#backdrop"),
-    settingsBody: $("#settingsBody"), settingsMsg: $("#settingsMsg"),
-    about: $("#about"),
+    settingsBody: $("#settingsBody"), settingsMsg: $("#settingsMsg"), about: $("#about"),
     btnSave: $("#btnSave"), btnReload: $("#btnReload"), btnRestart: $("#btnRestart"),
     openSettings: $("#openSettings"), closeSettings: $("#closeSettings")
   };
+
+  /* the browser remembers its id, nick and the tokens of its own wishes */
+  function store(key, value) {
+    try { localStorage.setItem(key, typeof value === "string" ? value : JSON.stringify(value)); } catch (e) {}
+  }
+  function load(key) {
+    try { return localStorage.getItem(key); } catch (e) { return null; }
+  }
+  try { S.tokens = JSON.parse(load("ytdj.tokens") || "{}") || {}; } catch (e) { S.tokens = {}; }
+  // Kdo je kdo (spravedlnost, nahrazení vlastního přání) určuje tohle id, ne
+  // jméno: dva lidé za jednou IP nebo se stejným jménem jsou dva lidé.
+  S.client = load("ytdj.client") || "";
+  if (!/^[A-Za-z0-9_-]{6,40}$/.test(S.client)) {
+    var rnd = "";
+    try {
+      var a = new Uint8Array(9); crypto.getRandomValues(a);
+      for (var i = 0; i < a.length; i++) rnd += ("0" + a[i].toString(16)).slice(-2);
+    } catch (e) { rnd = Math.random().toString(36).slice(2) + Date.now().toString(36); }
+    S.client = "web-" + rnd;
+    store("ytdj.client", S.client);
+  }
+  S.nick = load("ytdj.nick") || "";
+  S.tag = load("ytdj.tag") || "";
+  try {
+    var draft = sessionStorage.getItem("ytdj.draft");
+    if (draft) { el.prompt.value = draft; sessionStorage.removeItem("ytdj.draft"); }
+  } catch (e) {}
+
+  /* ------------------------------------------------------------------ */
+  /* who am I: the nick                                                  */
+  /* ------------------------------------------------------------------ */
+
+  var NICK_MIN = 2, NICK_MAX = 20;
+  var nickState = { editing: false, sharedFor: "" };
+
+  function renderMe() {
+    setHidden(el.meBtn, !S.nick);
+    if (!S.nick) return;
+    el.meName.textContent = S.nick;
+    el.meAv.textContent = S.nick.charAt(0).toUpperCase();
+    el.meAv.style.setProperty("--h", hue(S.tag || S.nick));
+    el.meBtn.setAttribute("aria-label", "Jsi " + S.nick + " — změnit přezdívku");
+    el.meBtn.title = "Jsi " + S.nick + " — klepnutím změníš přezdívku";
+  }
+
+  function setNick(nick, tag) {
+    S.nick = nick;
+    store("ytdj.nick", nick);
+    store("ytdj.who", nick);  // older pages read this one
+    if (tag) { S.tag = tag; store("ytdj.tag", tag); }
+    renderMe();
+    S.sig.wishes = S.sig.queue = S.sig.mine = null;  // "tvoje" may have changed
+    if (S.status) applyStatus(S.status);
+  }
+
+  function nickMsg(text, kind) {
+    el.nickMsg.textContent = text || "";
+    el.nickMsg.className = "msg" + (kind ? " " + kind : "");
+  }
+
+  function openNick(editing, prefill) {
+    nickState.editing = !!editing;
+    nickState.sharedFor = "";
+    el.nickH.textContent = editing ? "Změnit přezdívku" : "Ahoj! Jak ti máme říkat?";
+    el.nickP.textContent = editing
+      ? "Nové jméno se hned ukáže u všech tvých přání, i na displeji."
+      : "Přezdívka se ukáže u tvých přání, ať kolegové vědí, čí písnička hraje. Zadáš ji jen jednou — prohlížeč si ji zapamatuje.";
+    setHidden(el.nickCancel, !editing);
+    el.nickOk.textContent = editing ? "Uložit" : "Pokračovat";
+    el.nickIn.value = prefill || "";
+    nickMsg("");
+    setHidden(el.nickModal, false);
+    el.page.setAttribute("inert", "");
+    el.page.setAttribute("aria-hidden", "true");
+    setTimeout(function () { el.nickIn.focus(); el.nickIn.select(); }, 30);
+  }
+
+  function closeNick() {
+    setHidden(el.nickModal, true);
+    el.page.removeAttribute("inert");
+    el.page.removeAttribute("aria-hidden");
+  }
+
+  el.nickIn.addEventListener("input", function () {
+    if (nickState.sharedFor) {
+      nickState.sharedFor = "";
+      el.nickOk.textContent = nickState.editing ? "Uložit" : "Pokračovat";
+    }
+    nickMsg("");
+  });
+
+  el.nickForm.addEventListener("submit", async function (ev) {
+    ev.preventDefault();
+    var nick = el.nickIn.value.replace(/\s+/g, " ").trim();
+    if (nickState.sharedFor && nickState.sharedFor === nick) { closeNick(); return; }  // "Nechat tak"
+    if (nick.length < NICK_MIN) { nickMsg("Přezdívka potřebuje aspoň " + NICK_MIN + " znaky.", "err"); return; }
+    if (nick.length > NICK_MAX) { nickMsg("Přezdívka může mít nejvýš " + NICK_MAX + " znaků.", "err"); return; }
+    el.nickOk.disabled = true;
+    try {
+      var d = await postJSON("/api/me", { client: S.client, nick: nick });
+      setNick(d.nick || nick, d.tag);
+      if (d.shared) {
+        nickState.sharedFor = d.nick || nick;
+        el.nickIn.value = d.nick || nick;
+        nickMsg("Přezdívku „" + (d.nick || nick) + "“ už tu používá někdo jiný. Klidně ji nech, " +
+                "nebo přidej iniciálu, ať vás kolegové rozliší.", "warn");
+        el.nickOk.textContent = "Nechat tak";
+        return;
+      }
+      closeNick();
+    } catch (e) {
+      if (e.status === 404) { setNick(nick); closeNick(); return; }  // starší server bez přezdívek
+      nickMsg(e.status ? e.message : "Jukebox teď neodpovídá — zkus to prosím za chvíli.", "err");
+    } finally {
+      el.nickOk.disabled = false;
+    }
+  });
+
+  el.nickCancel.addEventListener("click", closeNick);
+  el.nickModal.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape" && nickState.editing) closeNick();
+  });
+  el.meBtn.addEventListener("click", function () { openNick(true, S.nick); });
+
+  // The server is the source of truth: the same nick everywhere (queue,
+  // display, "přeskočil"). Existing users (a name from before nicks) are
+  // registered silently; only a brand-new browser is asked.
+  async function initMe() {
+    try {
+      var res = await fetch("/api/me?client=" + encodeURIComponent(S.client), { cache: "no-store" });
+      if (res.status === 404) { if (!S.nick) openNick(false, load("ytdj.who") || ""); return; }
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      var d = await res.json();
+      if (d.tag) { S.tag = d.tag; store("ytdj.tag", d.tag); }
+      if (d.nick) { if (d.nick !== S.nick) setNick(d.nick); else renderMe(); closeNickIfFirst(); return; }
+      var want = S.nick || load("ytdj.who") || "";
+      if (want) {
+        try {
+          var x = await postJSON("/api/me", { client: S.client, nick: want });
+          setNick(x.nick || want, x.tag);
+          closeNickIfFirst();
+          return;
+        } catch (e) { /* the old name doesn't pass: ask */ }
+      }
+      if (el.nickModal.hasAttribute("hidden")) openNick(false, want);
+    } catch (e) {
+      // offline: keep what we know; a new browser still gets the question
+      if (S.nick) renderMe();
+      else if (el.nickModal.hasAttribute("hidden")) openNick(false, "");
+      setTimeout(initMe, 8000);
+    }
+  }
+  function closeNickIfFirst() { if (!nickState.editing && !el.nickModal.hasAttribute("hidden")) closeNick(); }
+
+  renderMe();
+  if (!S.nick) openNick(false, load("ytdj.who") || "");
 
   /* ------------------------------------------------------------------ */
   /* connection: SSE, falling back to polling on trouble                 */
@@ -1102,12 +868,12 @@
   function setConnected(ok, label) {
     S.connected = ok;
     el.conn.className = "conn " + (ok ? "online" : "offline");
-    el.connText.textContent = label || (ok ? (polling ? "spojeno (dotazování)" : "spojeno") : "odpojeno");
+    el.connText.textContent = label || (ok ? "spojeno" : "odpojeno");
+    el.conn.title = ok ? "Spojeno s jukeboxem" : "Jukebox neodpovídá";
     if (ok) {
       hideBanner();
     } else if (S.status) {
-      // what plays is unknown now (ytdj restarting stops the music):
-      // don't let the clock and the equalizer pretend otherwise
+      // what plays is unknown now: the clock and the equalizer must not pretend
       setBase(predictPos());
       S.running = false;
       el.bars.classList.add("still");
@@ -1115,10 +881,7 @@
     }
   }
 
-  function showBanner(text) {
-    el.bannerText.textContent = text;
-    el.banner.classList.add("show");
-  }
+  function showBanner(text) { el.bannerText.textContent = text; el.banner.classList.add("show"); }
   function hideBanner() { el.banner.classList.remove("show"); }
 
   var OFFLINE_TEXT = "Jukebox teď neodpovídá — možná se právě restartuje. Zkouším se připojit znovu…";
@@ -1132,20 +895,11 @@
   function startSSE() {
     if (es) return;
     if (!("EventSource" in window)) { startPolling(); return; }
-    try {
-      es = new EventSource("/api/events");
-    } catch (e) {
-      es = null; startPolling(); return;
-    }
-    es.onopen = function () {
-      sseFails = 0;
-      stopPolling();
-      setConnected(true);
-    };
+    try { es = new EventSource("/api/events"); } catch (e) { es = null; startPolling(); return; }
+    es.onopen = function () { sseFails = 0; stopPolling(); setConnected(true); };
     var handle = function (ev) {
       var data;
       try { data = JSON.parse(ev.data); } catch (e) { return; }
-      // the stream works again: the stop-gap polling can go
       if (pollTimer) { stopPolling(); setConnected(true); }
       if (data && typeof data === "object") onStatus(data);
     };
@@ -1172,8 +926,6 @@
     es.onerror = function () {
       sseFails++;
       setConnected(false);
-      // EventSource retries the connection by itself; after a few futile
-      // attempts we switch to polling and retry SSE only after a while.
       if (sseFails >= 3) {
         closeSSE();
         startPolling();
@@ -1183,39 +935,23 @@
     };
   }
 
-  function closeSSE() {
-    if (es) { try { es.close(); } catch (e) {} }
-    es = null;
-  }
-
-  function startPolling() {
-    if (pollTimer) return;
-    polling = true;
-    pollTimer = setInterval(refresh, 1500);
-    refresh();
-  }
-
-  function stopPolling() {
-    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-    polling = false;
-  }
+  function closeSSE() { if (es) { try { es.close(); } catch (e) {} } es = null; }
+  function startPolling() { if (pollTimer) return; polling = true; pollTimer = setInterval(refresh, 1500); refresh(); }
+  function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } polling = false; }
 
   async function refresh() {
     try {
       var res = await fetch("/api/status", { cache: "no-store" });
       if (!res.ok) throw new Error("HTTP " + res.status);
-      var data = await res.json();
-      onStatus(data);
+      onStatus(await res.json());
     } catch (e) {
       setConnected(false);
       showBanner(OFFLINE_TEXT);
     }
   }
 
-  // Watchdog. While a track plays the server sends every second, so ~6 s of
-  // silence is suspicious; paused or idle, nothing changes and only a
-  // keepalive comes every 15 s. Before crying wolf, ask once: only when that
-  // fails is the connection really gone.
+  // Watchdog: while a track plays the server sends every second; paused or
+  // idle only a keepalive every 15 s. Ask once before crying wolf.
   var probing = false;
   setInterval(function () {
     if (!S.lastUpdate || probing || pollTimer) return;
@@ -1225,17 +961,11 @@
     fetch("/api/status", { cache: "no-store" })
       .then(function (res) { if (!res.ok) throw new Error("HTTP " + res.status); return res.json(); })
       .then(function (data) { onStatus(data); })
-      .catch(function () {
-        setConnected(false);
-        showBanner(OFFLINE_TEXT);
-        startPolling();
-      })
+      .catch(function () { setConnected(false); showBanner(OFFLINE_TEXT); startPolling(); })
       .then(function () { probing = false; });
   }, 2000);
 
-  document.addEventListener("visibilitychange", function () {
-    if (!document.hidden) refresh();
-  });
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) refresh(); });
 
   /* ------------------------------------------------------------------ */
   /* rendering the state                                                 */
@@ -1247,7 +977,6 @@
     if (S.duration > 0) p = Math.min(p, S.duration);
     return Math.max(0, p);
   }
-
   function setBase(p) { S.posBase = Math.max(0, p); S.posBaseAt = nowMs(); }
 
   // A page from before a deploy (cached tab) must not keep talking to the new
@@ -1265,19 +994,18 @@
   function renderNotice(s) {
     var text = "";
     if (s.outage) {
-      text = "Vypadlo spojení s YouTube — čekám, fronta i přání zůstávají.";
+      text = "Vypadlo spojení s YouTube. Hudba se vrátí sama, jakmile to půjde — fronta i přání zůstávají.";
     } else if (s.dj_offline) {
       var b = s.dj_brain || {};
-      text = "DJ teď nerozumí volnému textu — funguje „pusť <interpret>“, název písničky, " +
-             "odkaz a tlačítka nálad.";
-      if (b.retry_in_s > 0) text += " Zkusím ho znovu za " + Math.max(1, Math.round(b.retry_in_s / 60)) + " min.";
+      text = "DJ teď nerozumí volnému textu — funguje „pusť Kabát“, název písničky, odkaz a tlačítka nálad.";
+      if (b.retry_in_s > 0) text += " Zkusí to znovu za " + mins(b.retry_in_s) + ".";
     }
     if (S.sig.notice !== text) {
       S.sig.notice = text;
       el.noticeText.textContent = text;
       el.notice.classList.toggle("show", !!text);
     }
-    // výsledek rozjezdu (▶ v tichu) vidí všichni — dřív jen v logu
+    // výsledek rozjezdu (▶ v tichu) vidí všichni
     var last = s.dj && s.dj.last;
     if (last && last.source === "start" && last.at && last.at !== S.startSeen) {
       if (S.startSeen !== undefined) showReply(last.reply || "", !last.ok, "");
@@ -1287,30 +1015,29 @@
     }
   }
 
+  function isMine(r) { return !!(r && ((S.tag && r.who_key === S.tag) || S.tokens[r.id])); }
+
   function applyStatus(s) {
     checkBuild(s);
     S.status = s;
     renderNotice(s);
 
     var cur = s.current || null;
-    var playing = !!s.playing;
-    var paused = !!s.paused;
+    var playing = !!s.playing, paused = !!s.paused;
     var dur = Number((cur && cur.duration != null) ? cur.duration : s.duration) || 0;
     var serverPos = Number(s.position) || 0;
     var id = cur ? (cur.id || (cur.title + "|" + cur.artist)) : null;
 
     S.duration = dur;
     S.running = playing && !paused && !s.outage;
-    // na řadě, ale proud ještě neteče — čas stojí, dokud se neozve zvuk
     var wasLoading = S.loading;
     S.loading = S.running && !!s.buffering;
 
     if (id !== S.trackId || S.loading || wasLoading) {
+      if (id !== S.trackId) renderArt(cur);
       S.trackId = id;
       setBase(serverPos);
     } else {
-      // smooth catch-up: a big difference with a jump, a small one with a
-      // gentle nudge, so the time doesn't hop back and forth between updates
       var predicted = predictPos();
       var diff = serverPos - predicted;
       if (Math.abs(diff) > 1.5) setBase(serverPos);
@@ -1321,30 +1048,26 @@
     setHidden(el.idleHint, !!cur || !!s.busy || !!s.starting || S.sending);
     renderReason(cur && cur.reason);
     var docTitle = cur ? (cur.title || "Neznámá skladba") + (cur.artist ? " — " + cur.artist : "") + " · ytdj"
-                       : "ytdj — AI DJ";
+                       : "ytdj — DJ pro kancelář";
     if (docTitle !== S.title) { S.title = docTitle; document.title = docTitle; }
     if (cur) {
       el.now.classList.remove("idle");
       el.title.textContent = cur.title || "Neznámá skladba";
       setHidden(el.artist, !cur.artist);
       el.artist.textContent = cur.artist || "";
-      setHidden(el.album, !cur.album);
-      el.album.textContent = cur.album || "";
-      var state = s.outage ? "výpadek spojení" :
+      var state = s.outage ? "čeká na YouTube" :
                   (paused ? "pozastaveno" : (S.loading ? "načítám…" : (playing ? "hraje" : "připraveno")));
-      // kvalita se změří až z pár vteřin proudu, do té doby tam nic není
-      el.nowLabel.textContent = s.quality ? state + " · " + s.quality : state;
+      el.nowLabel.textContent = state;
+      el.nowLabel.parentNode.title = s.quality ? "Kvalita: " + s.quality : "";
       el.bars.classList.toggle("still", !S.running || S.loading);
     } else {
       el.now.classList.add("idle");
-      el.title.textContent = "Ticho";
+      el.title.textContent = s.starting || s.busy ? "Chvilku…" : "Je ticho";
       setHidden(el.artist, true);
-      setHidden(el.album, true);
       el.nowLabel.textContent = s.starting ? "DJ vybírá hudbu podle času a dne…"
                               : (s.busy ? "DJ vybírá hudbu…" : "nic nehraje");
       el.bars.classList.add("still");
     }
-
     setHidden(el.progress, !(cur && dur > 0));
     el.total.textContent = dur > 0 ? fmtTime(dur) : "–:––";
 
@@ -1357,7 +1080,7 @@
     el.btnPlay.title = playLabel;
     el.btnNext.disabled = !cur && !(s.queue && s.queue.length);
 
-    // --- volume ---
+    // --- volume (never above 100) ---
     if (!S.volDragging && nowMs() > S.volHoldUntil && s.volume != null) {
       var v = Math.max(0, Math.min(100, Math.round(Number(s.volume))));
       if (!isNaN(v)) {
@@ -1366,97 +1089,41 @@
       }
     }
 
-    // --- busy DJ, the wishes of everybody ---
-    setBusy(!!s.busy || S.sending);
-    renderWishes(s.requests || []);
-
-    // --- mood and seeds ---
-    renderContext(s);
-
-    // --- queue and history ---
-    renderQueue(s.queue || []);
+    el.btnSend.disabled = S.sending || !el.prompt.value.trim();
+    var reqs = s.requests || [];
+    renderMine(reqs);
+    renderWishes(reqs);
+    renderQueue(s.queue || [], reqs);
     renderHistory(s.history || []);
   }
 
-  function renderContext(s) {
-    var mood = (s.mood || "").trim();
-    var pools = (s.pools || "").trim();
-
-    if (S.sig.mood !== mood) {
-      S.sig.mood = mood;
-      setHidden(el.moodWrap, !mood);
-      el.mood.textContent = mood;
-    }
-    if (S.sig.pools !== pools) {
-      S.sig.pools = pools;
-      var items = parsePools(pools);
-      setHidden(el.poolsWrap, items.length === 0);
-      el.pools.innerHTML = items.map(function (it) {
-        return '<span class="pool">' + esc(it.label) +
-               (it.count ? '<span class="n">' + esc(it.count) + "</span>" : "") + "</span>";
-      }).join("");
-    }
-    setHidden(el.context, el.moodWrap.hasAttribute("hidden") && el.poolsWrap.hasAttribute("hidden"));
+  function renderArt(cur) {
+    var name = cur ? (cur.artist || cur.title || "") : "";
+    el.art.style.setProperty("--h", hue(name));
+    var url = cur ? coverUrl(cur.id, true) : "";
+    var old = el.art.querySelector("img");
+    if (old) old.remove();
+    if (!url) return;
+    var img = new Image();
+    img.alt = "";
+    img.decoding = "async";
+    img.onload = function () { window.ytdjThumb(img); };
+    img.onerror = function () { img.remove(); };
+    img.src = url;
+    el.art.appendChild(img);
   }
 
-  // "A — B (49), C — D (12)" -> [{label:"A — B", count:"49"}, …]
-  // Splits only after the parenthesized count, so a comma in a name ("Earth, Wind & Fire") doesn't matter.
-  function parsePools(str) {
-    if (!str) return [];
-    var raw = str.split(/\)\s*,\s+/);
-    var out = [];
-    for (var i = 0; i < raw.length; i++) {
-      var part = raw[i].trim();
-      if (i < raw.length - 1) part += ")";
-      if (!part) continue;
-      var m = part.match(/^(.*?)\s*\((\d+)\)$/);
-      if (m) out.push({ label: m[1], count: m[2] });
-      else out.push({ label: part, count: "" });
-    }
-    return out;
-  }
-
-  function renderQueue(q) {
-    var sig = JSON.stringify(q) + "|" + S.connected;
-    if (sig === S.sig.queue) return;
-    S.sig.queue = sig;
-
-    el.queueCount.textContent = q.length ? "· " + q.length : "";
-    setHidden(el.queueEmpty, q.length > 0);
-    el.queueEmpty.textContent = S.connected
-      ? "Fronta je prázdná — řekni DJovi, co pustit."
-      : "Fronta neznámá — server neodpovídá.";
-
-    el.queue.innerHTML = q.map(function (t, i) {
-      return '<li><span class="idx">' + (i + 1) + "</span>" +
-             '<span class="meta"><span class="t">' + esc(t.title || "Neznámá skladba") + "</span>" +
-             (t.artist ? '<span class="a">' + esc(t.artist) + "</span>" : "") +
-             (t.req ? '<span class="req">' + whoChip(t.req.who) + "</span>" : "") +
-             "</span>" +
-             (t.duration ? '<span class="dur">' + fmtTime(t.duration) + "</span>" : "") +
-             "</li>";
-    }).join("");
-  }
-
-  // A name → a stable hue, so the same person has the same colour everywhere.
-  function hue(name) {
-    var h = 0, str = String(name || "");
-    for (var i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) % 360;
-    return h;
-  }
-  function whoChip(name) {
-    return '<span class="who" style="--h:' + hue(name) + '">' + esc(name || "?") + "</span>";
-  }
-
-  // "přání od Jany" / "vybral DJ: klidné ráno" under the artist
+  // "přeje si Jana" / "vybral DJ: klidné ráno" under the artist
   function renderReason(r) {
     var html = "";
     if (r && r.kind === "wish") {
-      html = "Přeje si " + whoChip(r.who) + (r.text ? " „" + esc(r.text) + "“" : "");
+      var you = !!(S.tag && r.who_key === S.tag) ||
+                !!(S.status && (S.status.requests || []).some(function (x) { return x.id === r.id && isMine(x); }));
+      html = (you ? "Tvoje přání" : "Přeje si " + whoChip(r.who, false, r.who_key)) + (r.text ? " „" + esc(r.text) + "“" : "");
     } else if (r && (r.kind === "radio" || r.kind === "start")) {
       html = "Vybral DJ" + (r.text ? ": <b>" + esc(r.text) + "</b>" : "") +
              (r.kind === "start" ? " (podle času a dne)" : "") +
-             (r.who ? " · nálada z přání: " + whoChip(r.who) : "");
+             (r.who ? " · nálada podle " + whoChip(r.who, false, r.who_key) : "");
     }
     if (S.sig.reason !== html) {
       S.sig.reason = html;
@@ -1467,92 +1134,150 @@
 
   var ACTIVE = { waiting: 1, thinking: 1, queued: 1, playing: 1 };
   var ICO_X = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+  var STEPS = ["Přijato", "DJ vybírá", "Ve frontě", "Hraje"];
+  var STEP_OF = { waiting: 0, thinking: 1, queued: 2, playing: 3 };
+
+  // when the wish plays — the honest, big line on the person's own card
+  function etaLine(r) {
+    if (r.state === "playing") {
+      return "<b>Hraje teď</b>" + (r.next ? ' <span class="sub">· dál ' + esc((r.next.artist ? r.next.artist + " — " : "") + r.next.title) + "</span>" : "");
+    }
+    if (r.state === "queued") {
+      var t = r.eta_s != null && r.eta_s >= 45 ? ' <span class="sub">· asi za ' + mins(r.eta_s) + "</span>" : "";
+      if (r.ahead === 0) return "<b>Hned po téhle skladbě</b>" + t;
+      if (r.ahead > 0) return "<b>Na řadě za " + r.ahead + " " + plural(r.ahead, "skladbu", "skladby", "skladeb") + "</b>" + t;
+      return "<b>Ve frontě</b>" + (r.eta ? ' <span class="sub">· ' + esc(r.eta) + "</span>" : "");
+    }
+    if (r.state === "thinking") return "<b>DJ vybírá skladby…</b>";
+    if (r.state === "waiting") return "<b>Přijato</b> <span class=\"sub\">· DJ se k němu dostane za chvilku</span>";
+    if (r.state === "done") return "<b>Dohráno</b>";
+    if (r.state === "removed") return "<b>Odebráno</b>";
+    if (r.state === "replaced") return "<b>Nahrazeno tvým novějším přáním</b>";
+    if (r.state === "skipped") return "<b>Přeskočil " + esc(r.skipped_by || "někdo") + "</b>";
+    if (r.state === "notfound") return "<b>DJ nic nenašel</b>";
+    if (r.state === "error") return "<b>Nepovedlo se</b>";
+    return "<b>" + esc(r.state_cs || r.state) + "</b>";
+  }
+
+  function renderMine(list) {
+    var t = Date.now();
+    var mine = list.filter(function (r) {
+      if (!isMine(r)) return false;
+      if (ACTIVE[r.state]) { S.finSeen[r.id] = 0; return true; }
+      // one we watched finish stays on the card for a minute, so its answer is seen
+      if (S.finSeen[r.id] === undefined) return false;
+      if (!S.finSeen[r.id]) S.finSeen[r.id] = t;
+      return t - S.finSeen[r.id] < 60000;
+    }).sort(function (a, b) { return (b.created || 0) - (a.created || 0); }).slice(0, 4);  // newest first
+    var html = mine.map(function (r) {
+      var live = !!ACTIVE[r.state];
+      var bad = r.state === "notfound" || r.state === "error";
+      var step = STEP_OF[r.state];
+      var steps = live ? '<ol class="steps" aria-label="Stav přání">' + STEPS.map(function (name, i) {
+        var cls = i < step ? "done" : (i === step ? "cur" + (r.state === "thinking" || r.state === "waiting" ? " pulse" : "") : "");
+        return '<li class="' + cls + '"' + (i === step ? ' aria-current="step"' : "") + ">" + name + "</li>";
+      }).join("") + "</ol>" : "";
+      var reply = r.reply && r.state !== "waiting" && r.state !== "thinking" ? r.reply : "";
+      var canRm = live && S.tokens[r.id];
+      return '<article class="mw' + (live ? "" : bad ? " fin bad" : " fin") + '" data-id="' + esc(r.id) + '">' +
+             '<div class="mw-head"><span class="mw-text">„' + esc(r.text) + "“</span>" +
+             (canRm ? '<button class="rm" type="button" data-rm="' + esc(r.id) + '" aria-label="Odebrat přání „' +
+                      esc(r.text) + '“" title="Odebrat přání">' + ICO_X + "</button>" : "") + "</div>" +
+             steps +
+             '<p class="mw-eta">' + etaLine(r) + "</p>" +
+             (reply ? '<p class="mw-reply">DJ: ' + esc(reply) + "</p>" : "") +
+             "</article>";
+    }).join("");
+    if (S.sig.mine === html) return;
+    S.sig.mine = html;
+    el.mine.innerHTML = html;
+    setHidden(el.mineSec, !html);
+    // right after sending: bring the new card into view (on a phone it sits below the fold)
+    var card = S.scrollTo && el.mine.querySelector('[data-id="' + S.scrollTo + '"]');
+    if (card) {
+      S.scrollTo = "";
+      // instant, not smooth: the next state re-renders the card and would stop a smooth scroll
+      try { card.scrollIntoView({ block: "nearest" }); } catch (e) { card.scrollIntoView(false); }
+    }
+  }
 
   function stateText(r) {
     var t;
-    if (r.state === "queued" && r.eta) t = "ve frontě · " + r.eta;
+    if (r.state === "queued") t = r.ahead === 0 ? "po téhle" : (r.ahead > 0 ? "za " + r.ahead + " " + plural(r.ahead, "skladbu", "skladby", "skladeb") : "ve frontě");
     else if (r.state === "thinking") t = "DJ vybírá…";
     else if (r.state === "skipped" && r.skipped_by) t = "přeskočil " + r.skipped_by;
     else t = r.state_cs || r.state;
-    if (r.restored && ACTIVE[r.state]) t += " · obnoveno po restartu";
+    if (r.restored && ACTIVE[r.state]) t += " · po restartu";
     return t;
   }
 
   function renderWishes(list) {
-    var sig = JSON.stringify(list) + "|" + Object.keys(S.tokens).join(",");
+    var sig = JSON.stringify(list) + "|" + S.tag + "|" + Object.keys(S.tokens).join(",");
     if (sig === S.sig.wishes) return;
     S.sig.wishes = sig;
     var active = list.filter(function (r) { return ACTIVE[r.state]; });
     el.wishCount.textContent = active.length ? "· " + active.length : "";
     setHidden(el.wishesEmpty, list.length > 0);
     el.wishes.innerHTML = list.map(function (r) {
-      var mine = !!S.tokens[r.id];
+      var mine = isMine(r);
       var live = !!ACTIVE[r.state];
       var sub = "";
       if (r.state === "playing" && r.next) sub = "dál: " + (r.next.artist ? r.next.artist + " — " : "") + r.next.title;
-      else if (r.reply && (!live || mine)) sub = r.reply;
       else if (r.summary) sub = r.summary;
       return '<li class="' + (live ? "" : "fin ") + (mine ? "mine" : "") + '">' +
-             '<span class="meta"><span class="t">' + whoChip(r.who) + '<span class="txt">' + esc(r.text) + "</span></span>" +
-             (sub ? '<span class="r">' + esc(sub) + "</span>" : "") + "</span>" +
-             '<span class="st ' + esc(r.state) + '">' + esc(stateText(r)) +
-             (r.play_next && live && r.eta !== "hned po téhle" ? " · hned" : "") + "</span>" +
-             (mine && live ? '<button class="rm" type="button" data-rm="' + esc(r.id) +
+             '<span class="meta"><span class="t">' + whoChip(r.who, mine, r.who_key) + '<span class="txt">' + esc(r.text) + "</span></span>" +
+             (sub ? '<span class="a">' + esc(sub) + "</span>" : "") + "</span>" +
+             '<span class="st ' + esc(r.state) + '">' + esc(stateText(r)) + "</span>" +
+             (mine && live && S.tokens[r.id] ? '<button class="rm" type="button" data-rm="' + esc(r.id) +
                              '" aria-label="Odebrat moje přání" title="Odebrat moje přání">' + ICO_X + "</button>" : "") +
              "</li>";
     }).join("");
-    // the answer to our latest wish goes to the reply box as soon as there is one
-    if (S.watch) {
-      var w = list.filter(function (r) { return r.id === S.watch.id; })[0];
-      if (w && w.reply && w.reply !== S.shownReply && w.state !== "waiting" && w.state !== "thinking") {
-        S.shownReply = w.reply;
-        showReply(w.reply, w.state === "notfound" || w.state === "error", S.watch.text);
-      }
-    }
     pruneTokens(list);
   }
 
-  el.wishes.addEventListener("click", async function (ev) {
+  function thumb(t) {
+    var url = coverUrl(t.id);
+    return '<span class="thumb" style="--h:' + hue(t.artist || t.title) + '" aria-hidden="true">' +
+           (url ? '<img src="' + esc(url) + '" alt="" loading="lazy" decoding="async" onload="ytdjThumb(this)" onerror="this.remove()">' : "") +
+           "</span>";
+  }
+
+  function renderQueue(q, reqs) {
+    var mineIds = {};
+    reqs.forEach(function (r) { if (isMine(r)) mineIds[r.id] = 1; });
+    var sig = JSON.stringify(q) + "|" + Object.keys(mineIds).join(",") + "|" + S.connected;
+    if (sig === S.sig.queue) return;
+    S.sig.queue = sig;
+    el.queueCount.textContent = q.length ? "· " + q.length : "";
+    setHidden(el.queueEmpty, q.length > 0);
+    el.queueEmpty.textContent = S.connected ? "Zatím nic — napiš DJovi, co pustit." : "Fronta teď není vidět — jukebox neodpovídá.";
+    el.queue.innerHTML = q.slice(0, 12).map(function (t) {
+      var mine = t.req && mineIds[t.req.id];
+      return '<li class="' + (mine ? "mine" : "") + '">' + thumb(t) +
+             '<span class="meta"><span class="t">' + esc(t.title || "Neznámá skladba") + "</span>" +
+             '<span class="a">' + esc(t.artist || "") + "</span>" +
+             (t.req ? '<span class="req">' + whoChip(t.req.who, mine, t.req.who_key) + "</span>" : "") +
+             "</span>" +
+             (t.duration ? '<span class="dur">' + fmtTime(t.duration) + "</span>" : "") +
+             "</li>";
+    }).join("");
+  }
+
+  el.wishes.addEventListener("click", removeClick);
+  el.mine.addEventListener("click", removeClick);
+  async function removeClick(ev) {
     var b = ev.target.closest && ev.target.closest("[data-rm]");
     if (!b) return;
     var id = b.getAttribute("data-rm");
     b.disabled = true;
     try {
-      await postJSON("/api/requests/" + encodeURIComponent(id),
-                     { action: "remove", token: (S.tokens[id] || {}).token });
+      await postJSON("/api/requests/" + encodeURIComponent(id), { action: "remove", token: (S.tokens[id] || {}).token });
       if (!polling) setTimeout(refresh, 100);
     } catch (e) {
       b.disabled = false;
-      showBanner("Přání se nepodařilo odebrat: " + e.message);
+      showReply("Přání se nepodařilo odebrat: " + e.message, true, "");
     }
-  });
-
-  /* the browser remembers the name and the tokens of its own wishes */
-  function store(key, value) {
-    try { localStorage.setItem(key, typeof value === "string" ? value : JSON.stringify(value)); } catch (e) {}
   }
-  function load(key) {
-    try { return localStorage.getItem(key); } catch (e) { return null; }
-  }
-  try { S.tokens = JSON.parse(load("ytdj.tokens") || "{}") || {}; } catch (e) { S.tokens = {}; }
-  el.who.value = load("ytdj.who") || "";
-  // Kdo je kdo (spravedlnost, nahrazení vlastního přání) určuje tohle id, ne
-  // jméno: dva lidé za jednou IP nebo se stejným jménem jsou dva lidé.
-  S.client = load("ytdj.client") || "";
-  if (!/^[A-Za-z0-9_-]{6,40}$/.test(S.client)) {
-    var rnd = "";
-    try {
-      var a = new Uint8Array(9); crypto.getRandomValues(a);
-      for (var i = 0; i < a.length; i++) rnd += ("0" + a[i].toString(16)).slice(-2);
-    } catch (e) { rnd = Math.random().toString(36).slice(2) + Date.now().toString(36); }
-    S.client = "web-" + rnd;
-    store("ytdj.client", S.client);
-  }
-  try {
-    var draft = sessionStorage.getItem("ytdj.draft");
-    if (draft) { el.prompt.value = draft; sessionStorage.removeItem("ytdj.draft"); }
-  } catch (e) {}
-  el.who.addEventListener("change", function () { store("ytdj.who", el.who.value.trim()); });
 
   function pruneTokens(list) {
     // forget tokens of wishes the server no longer lists (a day later, after a restart…)
@@ -1564,24 +1289,13 @@
       var t = S.tokens[id];
       if (!known[id] && (!t.at || Date.now() - t.at > 60000)) { delete S.tokens[id]; changed = true; }
     });
-    if (changed) store("ytdj.tokens", tokensForStore());
-  }
-  function tokensForStore() {
-    var out = {};
-    Object.keys(S.tokens).forEach(function (id) { out[id] = S.tokens[id]; });
-    return out;
-  }
-
-  function fromWhere(source) {
-    return source === "panel" ? " (na displeji)" : source === "repl" ? " (z terminálu)" : "";
+    if (changed) store("ytdj.tokens", S.tokens);
   }
 
   var ICO_OK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 12.5l5 5 10-11"/></svg>';
-  var ICO_SKIP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 5l14 14M19 5L5 19"/></svg>';
+  var ICO_SKIP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>';
   var ICO_DOT = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/></svg>';
-
-  // outcome → [label, icon, class]; "started" = never finished (a restart
-  // cut it off), "replaced" = a wish pushed it out of the way
+  // outcome → [label, icon, class]
   var OUTCOMES = {
     finished: ["dohráno", ICO_OK, "finished"],
     skipped: ["přeskočeno", ICO_SKIP, "skipped"],
@@ -1594,39 +1308,29 @@
     var sig = JSON.stringify(h) + "|" + (cur ? cur.title + cur.artist : "");
     if (sig === S.sig.history) return;
     S.sig.history = sig;
-
-    var items = h.slice(0, 13); // the server sends newest first
+    var items = h.slice(0, 11);
     // the track playing right now is logged as "started" — it's not history yet
     if (items.length && cur && items[0].outcome === "started" &&
         items[0].title === cur.title && items[0].artist === cur.artist) items = items.slice(1);
-    items = items.slice(0, 12);
+    items = items.slice(0, 10);
     setHidden(el.historyEmpty, items.length > 0);
-
     el.history.innerHTML = items.map(function (t) {
       var o = OUTCOMES[t.outcome] || [String(t.outcome || ""), ICO_DOT, "other"];
-      var skipped = o[2] === "skipped";
-      return '<li class="' + (skipped ? "skipped-row" : "") + '">' +
-             '<span class="mark ' + o[2] + '" title="' + esc(o[0]) + '" aria-label="' + esc(o[0]) + '">' +
-             o[1] + "</span>" +
+      return '<li class="' + (o[2] === "skipped" ? "skipped-row" : "") + '">' +
+             '<span class="mark ' + o[2] + '" role="img" title="' + esc(o[0]) + '" aria-label="' + esc(o[0]) + '">' + o[1] + "</span>" +
              '<span class="meta"><span class="t">' + esc(t.title || "Neznámá skladba") + "</span>" +
-             (t.artist ? '<span class="a">' + esc(t.artist) + "</span>" : "") +
-             "</span></li>";
+             (t.artist ? '<span class="a">' + esc(t.artist) + "</span>" : "") + "</span></li>";
     }).join("");
   }
 
-  /* smooth position indicator — between updates we extrapolate locally.
-     Four times a second is plenty for a 4 px bar and a seconds counter; the
-     old per-frame loop kept every open tab busy all day. */
+  /* smooth position — 4× a second is plenty; the page may stay open all day */
   var last = { pct: -1, txt: "", aria: "" };
   function tick() {
     if (!document.hidden) {
       var p = predictPos();
       var pct = S.duration > 0 ? Math.max(0, Math.min(100, (p / S.duration) * 100)) : 0;
       var rounded = Math.round(pct * 10) / 10;
-      if (rounded !== last.pct) {
-        last.pct = rounded;
-        el.barFill.style.transform = "scaleX(" + (rounded / 100).toFixed(4) + ")";
-      }
+      if (rounded !== last.pct) { last.pct = rounded; el.barFill.style.transform = "scaleX(" + (rounded / 100).toFixed(4) + ")"; }
       var aria = String(Math.round(pct));
       if (aria !== last.aria) { last.aria = aria; el.bar.setAttribute("aria-valuenow", aria); }
       var txt = fmtTime(p);
@@ -1644,58 +1348,51 @@
     try {
       // kdo přeskočil — vlastník přeskočeného přání to uvidí
       await postJSON("/api/control", { action: action, value: (value == null ? null : value),
-                                       who: el.who.value.trim(), client: S.client });
+                                       who: S.nick, client: S.client });
       hideBanner();
       if (!polling) setTimeout(refresh, 120);
     } catch (e) {
-      showBanner("Povel se nepovedl: " + e.message);
+      showReply("Povel se nepovedl: " + e.message, true, "");
     }
   }
 
   el.btnPlay.addEventListener("click", function () {
     var st = S.status || {};
     if (!st.current && !(st.queue && st.queue.length)) {
-      // nothing to un-pause: the server starts the DJ by the time of day,
-      // the day and what plays well here (not a listener's wish)
+      // nothing to un-pause: the server starts the DJ by the time of day
       el.nowLabel.textContent = "DJ vybírá hudbu podle času a dne…";
       control("play", null);
       return;
     }
     var running = S.running;
-    // optimistically flip the icon so the button responds immediately
     setBase(predictPos());
     S.running = !running;
     setHidden(el.icoPlay, S.running);
     setHidden(el.icoPause, !S.running);
     control(running ? "pause" : "play", null);
   });
-
   el.btnNext.addEventListener("click", function () { control("next", null); });
   // No ■ any more: in the office a stop wiped everybody's wishes (25. 9. from a
   // stale tab). Pause is enough; each person removes their own wishes with ×.
 
   // volume: while dragging only the label updates, POST only on release
-  el.vol.addEventListener("input", function () {
-    S.volDragging = true;
-    el.volOut.textContent = el.vol.value;
-  });
+  el.vol.addEventListener("input", function () { S.volDragging = true; el.volOut.textContent = el.vol.value; });
   function commitVolume() {
     if (!S.volDragging) return;
     S.volDragging = false;
     S.volHoldUntil = nowMs() + 2000;
-    control("volume", parseInt(el.vol.value, 10));
+    control("volume", Math.min(100, parseInt(el.vol.value, 10)));
   }
   el.vol.addEventListener("change", commitVolume);
   el.vol.addEventListener("pointerup", commitVolume);
   el.vol.addEventListener("touchend", commitVolume);
   el.vol.addEventListener("blur", commitVolume);
 
-  // keyboard shortcuts outside text fields
   document.addEventListener("keydown", function (ev) {
     if (ev.key === "Escape" && el.settings.classList.contains("show")) { closeSettings(); return; }
+    if (!el.nickModal.hasAttribute("hidden")) return;
     var t = ev.target;
-    var typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" ||
-                       t.tagName === "SELECT" || t.isContentEditable);
+    var typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
     if (typing || ev.metaKey || ev.ctrlKey || ev.altKey) return;
     if (ev.key === " ") { ev.preventDefault(); el.btnPlay.click(); }
     else if (ev.key === "n") el.btnNext.click();
@@ -1703,67 +1400,52 @@
   });
 
   /* ------------------------------------------------------------------ */
-  /* prompt for the DJ                                                   */
+  /* wishes                                                              */
   /* ------------------------------------------------------------------ */
 
-  function setBusy(busy) {
-    el.composer.classList.toggle("busy", busy);
-    el.btnSend.disabled = S.sending || !el.prompt.value.trim();
-    if (busy) updateBusyText();
-  }
-
-  function updateBusyText() {
-    var st = S.status || {};
-    var dj = st.dj || {};
-    var text;
-    if (st.starting) text = "DJ vybírá hudbu podle času, dne a toho, co se tu hraje…";
-    else if (dj.text) text = "DJ vybírá: „" + dj.text + "“" + fromWhere(dj.source) + ". Klidně piš dál — přání se řadí.";
-    else text = "DJ pracuje na přání. Klidně piš dál — přání se řadí.";
-    if (el.busyText.textContent !== text) el.busyText.textContent = text;
-  }
-
-  // wish: what was asked, shown above the answer — with a few people
-  // wishing, "Hraju Kabát" alone doesn't say whose wish it answers
   function showReply(text, isError, wish) {
     el.reply.innerHTML = (wish ? '<span class="q">„' + esc(wish) + "“</span>" : "") + esc(text);
     el.reply.classList.toggle("error", !!isError);
     el.reply.classList.add("show");
   }
+  function hideReply() { el.reply.classList.remove("show"); }
 
   // opts.quiet: not typed in the field (a chip)
   async function send(text, opts) {
     opts = opts || {};
     text = String(text == null ? el.prompt.value : text).trim();
     if (!text || S.sending) return;
-    var who = el.who.value.trim();
-    store("ytdj.who", who);
+    if (!S.nick) { openNick(false, ""); return; }
     S.sending = true;
-    setBusy(true);
+    el.btnSend.disabled = true;
     try {
       var data = await postJSON("/api/prompt", {
-        text: text, who: who, source: "web", play_next: !!el.playNext.checked, wait: false,
+        text: text, who: S.nick, source: "web", play_next: !!el.playNext.checked, wait: false,
         client: S.client, chip: opts.chip || undefined
       });
       if (!opts.quiet) { el.prompt.value = ""; autosize(); }
       el.playNext.checked = false;
       if (data && data.id) {
         S.tokens[data.id] = { token: data.token, at: Date.now() };
-        store("ytdj.tokens", tokensForStore());
-        S.watch = { id: data.id, text: text };
-        S.shownReply = "";
-        showReply("Přání přijato — DJ vybírá. Průběh vidíš níž v Přáních.", false, text);
+        store("ytdj.tokens", S.tokens);
+        S.scrollTo = /^[A-Za-z0-9_-]+$/.test(String(data.id)) ? String(data.id) : "";
+        hideReply();
+        // show the card at once, before the next state arrives
+        if (S.status && data.request) {
+          var reqs = (S.status.requests || []).filter(function (r) { return r.id !== data.id; });
+          reqs.unshift(data.request);
+          renderMine(reqs);
+        }
       } else {
         showReply((data && data.reply) || "Hotovo.", false, text);  // "další", "hlasitěji"…
       }
       hideBanner();
     } catch (e) {
       var kept = opts.quiet ? "" : " Text ti zůstal v poli.";
-      if (e.status === 429) showReply(e.message + kept, true, text);
-      else if (e.status) showReply("DJ narazil na chybu: " + e.message + kept, true, text);
-      else showReply("Spojení se přerušilo — přání možná nedorazilo. Zkontroluj seznam Přání." + kept, true, text);
+      if (e.status) showReply(e.message + kept, true, text);
+      else showReply("Spojení se přerušilo — přání možná nedorazilo. Mrkni do Tvých přání." + kept, true, text);
     } finally {
       S.sending = false;
-      setBusy(!!(S.status && S.status.busy));
       el.btnSend.disabled = !el.prompt.value.trim();
       if (!polling) refresh();
     }
@@ -1779,23 +1461,14 @@
     el.prompt.style.height = "auto";
     el.prompt.style.height = Math.min(el.prompt.scrollHeight, 160) + "px";
   }
-
-  el.prompt.addEventListener("input", function () {
-    autosize();
-    el.btnSend.disabled = S.sending || !el.prompt.value.trim();
-  });
-
+  el.prompt.addEventListener("input", function () { autosize(); el.btnSend.disabled = S.sending || !el.prompt.value.trim(); });
   el.prompt.addEventListener("keydown", function (ev) {
-    if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
-      ev.preventDefault();
-      send();
-    }
+    if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); send(); }
   });
-
   el.btnSend.addEventListener("click", function () { send(); });
 
   /* ------------------------------------------------------------------ */
-  /* settings                                                            */
+  /* settings (správce)                                                  */
   /* ------------------------------------------------------------------ */
 
   var cfg = { values: {}, fields: [] };
@@ -1805,6 +1478,7 @@
     el.settings.setAttribute("aria-hidden", "false");
     el.backdrop.classList.add("show");
     loadConfig();
+    setTimeout(function () { el.closeSettings.focus(); }, 50);
   }
   function closeSettings() {
     el.settings.classList.remove("show");
@@ -1812,7 +1486,6 @@
     el.backdrop.classList.remove("show");
     el.openSettings.focus();
   }
-
   el.openSettings.addEventListener("click", openSettings);
   el.closeSettings.addEventListener("click", closeSettings);
   el.backdrop.addEventListener("click", closeSettings);
@@ -1823,8 +1496,6 @@
     el.settingsMsg.textContent = text || "";
     el.settingsMsg.className = "msg" + (kind ? " " + kind : "");
   }
-
-  /* ---- na co je to připojené a čím to myslí ---- */
 
   function aboutRow(key, value, tone) {
     return '<div class="row"><span class="k">' + esc(key) + '</span>' +
@@ -1837,24 +1508,18 @@
       if (!res.ok) throw new Error("HTTP " + res.status);
       var d = await res.json();
       var yt = d.youtube || {}, be = d.backend || {};
-
       var html = "<h3>YouTube</h3><div class=grp>";
       if (yt.account) html += aboutRow("účet", yt.account);
       html += aboutRow("cookies", yt.cookies || "—");
       html += aboutRow("katalog", yt.library || "—");
       html += aboutRow("klient", yt.client || "—");
-      html += aboutRow("PO token", yt.pot === "běží" ? "provider běží" : "provider neběží",
-                       yt.pot === "běží" ? "good" : "bad");
-      if (yt.quality) {
-        html += aboutRow("teď hraje", yt.quality,
-                         yt.quality.indexOf("Premium") >= 0 ? "good" : null);
-      }
+      html += aboutRow("PO token", yt.pot === "běží" ? "provider běží" : "provider neběží", yt.pot === "běží" ? "good" : "bad");
+      if (yt.quality) html += aboutRow("teď hraje", yt.quality, yt.quality.indexOf("Premium") >= 0 ? "good" : null);
       html += "</div><h3>Mozek</h3><div class=grp>";
       html += aboutRow("backend", be.engine || "—");
       html += aboutRow("model", be.model || "—");
       html += aboutRow("přihlášení", be.auth || "—");
       html += "</div>";
-
       el.about.innerHTML = html;
       el.btnRestart.hidden = !d.restartable;
     } catch (e) {
@@ -1870,14 +1535,11 @@
       var res = await fetch("/api/restart", { method: "POST" });
       if (!res.ok) {
         var err = await res.json().catch(function () { return {}; });
-        setMsg(err.error || ("Restart selhal (HTTP " + res.status + ")"), "err");
+        setMsg(err.error || "Restart se nepovedl.", "err");
         return;
       }
-    } catch (e) {
-      /* spojení spadne tím, jak se aplikace ukončuje — to je v pořádku */
-    }
+    } catch (e) { /* spojení spadne tím, jak se aplikace ukončuje — to je v pořádku */ }
     setMsg("Restartuji, za chvíli se to vrátí…", "ok");
-    // systemd startuje po pěti vteřinách; zkoušet dřív nemá cenu
     setTimeout(function () { location.reload(); }, 9000);
   }
 
@@ -1893,51 +1555,37 @@
       cfg.fields = (data && data.fields) || [];
       renderConfig();
     } catch (e) {
-      el.settingsBody.innerHTML = '<p class="empty">Nastavení se nepodařilo načíst: ' +
-                                  esc(e.message) + "</p>";
+      el.settingsBody.innerHTML = '<p class="empty">Nastavení se nepodařilo načíst — zkus „Načíst znovu“.</p>';
     }
   }
 
   function renderConfig() {
-    if (!cfg.fields.length) {
-      el.settingsBody.innerHTML = '<p class="empty">Server nenabízí žádná nastavení.</p>';
-      return;
-    }
-    var html = cfg.fields.map(function (f, i) {
-      var key = f.key;
-      var val = cfg.values[key];
-      var id = "cfg_" + i;
+    if (!cfg.fields.length) { el.settingsBody.innerHTML = '<p class="empty">Server nenabízí žádná nastavení.</p>'; return; }
+    el.settingsBody.innerHTML = cfg.fields.map(function (f, i) {
+      var key = f.key, val = cfg.values[key], id = "cfg_" + i;
       var badge = f.restart ? ' <span class="tag">nutný restart</span>' : "";
       var help = f.help ? '<p class="help">' + esc(f.help) + "</p>" : "";
-      var label = esc(f.label || key);
-      var head = '<label class="top" for="' + id + '">' + label + badge + "</label>" + help;
+      var head = '<label class="top" for="' + id + '">' + esc(f.label || key) + badge + "</label>" + help;
       var out = '<div class="field" data-key="' + esc(key) + '" data-type="' + esc(f.type || "str") + '">';
-
       if (f.type === "bool") {
-        out += head + '<label class="check"><input type="checkbox" id="' + id + '"' +
-               (val ? " checked" : "") + "><span>" + (val ? "zapnuto" : "vypnuto") + "</span></label>";
+        out += head + '<label class="check"><input type="checkbox" id="' + id + '"' + (val ? " checked" : "") +
+               "><span>" + (val ? "zapnuto" : "vypnuto") + "</span></label>";
       } else if (f.type === "choice") {
         var opts = (f.choices || []).map(function (c) {
           var cv = (c && typeof c === "object") ? c.value : c;
           var cl = (c && typeof c === "object") ? (c.label != null ? c.label : c.value) : c;
           var sel = String(cv) === String(val == null ? "" : val) ? " selected" : "";
-          return '<option value="' + esc(cv) + '"' + sel + ">" +
-                 esc(cl === "" || cl == null ? "(výchozí)" : cl) + "</option>";
+          return '<option value="' + esc(cv) + '"' + sel + ">" + esc(cl === "" || cl == null ? "(výchozí)" : cl) + "</option>";
         }).join("");
         out += head + '<select id="' + id + '">' + opts + "</select>";
       } else if (f.type === "int") {
-        out += head + '<input type="number" step="1" id="' + id + '" value="' +
-               esc(val == null ? "" : val) + '">';
+        out += head + '<input type="number" step="1" id="' + id + '" value="' + esc(val == null ? "" : val) + '">';
       } else {
         var text = Array.isArray(val) ? val.join(" ") : (val == null ? "" : val);
         out += head + '<input type="text" id="' + id + '" value="' + esc(text) + '">';
       }
       return out + "</div>";
     }).join("");
-
-    el.settingsBody.innerHTML = html;
-
-    // keep the toggle label matching the state
     Array.prototype.forEach.call(el.settingsBody.querySelectorAll(".check input"), function (cb) {
       cb.addEventListener("change", function () {
         var span = cb.parentNode.querySelector("span");
@@ -1948,28 +1596,20 @@
 
   function collectChanges() {
     var changed = {};
-    var fields = el.settingsBody.querySelectorAll(".field");
-    Array.prototype.forEach.call(fields, function (div) {
-      var key = div.getAttribute("data-key");
-      var type = div.getAttribute("data-type");
+    Array.prototype.forEach.call(el.settingsBody.querySelectorAll(".field"), function (div) {
+      var key = div.getAttribute("data-key"), type = div.getAttribute("data-type");
       var input = div.querySelector("input, select");
       if (!input) return;
       var val;
-      if (type === "bool") {
-        val = input.checked;
-      } else if (type === "int") {
+      if (type === "bool") val = input.checked;
+      else if (type === "int") {
         if (input.value.trim() === "") return;
         val = parseInt(input.value, 10);
         if (isNaN(val)) return;
-      } else {
-        val = input.value;
-      }
-
+      } else val = input.value;
       var old = cfg.values[key];
       if (Array.isArray(old)) old = old.join(" ");
-      var same = (type === "bool")
-        ? (!!old === val)
-        : (String(old == null ? "" : old) === String(val));
+      var same = (type === "bool") ? (!!old === val) : (String(old == null ? "" : old) === String(val));
       if (!same) changed[key] = val;
     });
     return changed;
@@ -1979,7 +1619,6 @@
     var changed = collectChanges();
     var keys = Object.keys(changed);
     if (!keys.length) { setMsg("Beze změn."); return; }
-
     el.btnSave.disabled = true;
     setMsg("Ukládám…");
     try {
@@ -1993,10 +1632,10 @@
         });
         setMsg("Uloženo. Projeví se až po restartu ytdj: " + names.join(", ") + ".", "warn");
       } else {
-        setMsg("Uloženo — " + keys.length + (keys.length === 1 ? " změna." : " změny."));
+        setMsg("Uloženo — " + keys.length + " " + plural(keys.length, "změna", "změny", "změn") + ".");
       }
     } catch (e) {
-      setMsg("Uložení selhalo: " + e.message, "err");
+      setMsg("Uložení se nepovedlo: " + e.message, "err");
     } finally {
       el.btnSave.disabled = false;
     }
@@ -2006,10 +1645,11 @@
   /* start                                                               */
   /* ------------------------------------------------------------------ */
 
-  el.btnSend.disabled = true;
+  el.btnSend.disabled = !el.prompt.value.trim();
   autosize();
   refresh();
   startSSE();
+  initMe();
 })();
 </script>
 </body>

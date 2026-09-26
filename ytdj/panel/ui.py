@@ -11,6 +11,7 @@ one-pixel column.
 
 from __future__ import annotations
 
+import colorsys
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,7 @@ from typing import Callable
 from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 from .hw import Box
+from .qr import encode as qr_encode
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +40,7 @@ PRESSED_ON_ACCENT = (255, 250, 240)
 ACCENT_TEXT = (232, 183, 106)
 ON_ACCENT = (20, 17, 11)
 ERR = (217, 111, 111)
+WARN = (217, 140, 95)
 
 STRINGS = {
     "cs": {
@@ -50,18 +53,32 @@ STRINGS = {
         "busy": "DJ přemýšlí…",
         "silence": "Ticho",
         "nothing": "nic nehraje",
-        "idle_hint": "Ťukni na Hrát, nebo si řekni o Přání",
+        "idle_hint": "Ťukni na Hrát a DJ vybere hudbu podle času a dne.",
+        "qr_caption": "‹ Přání z mobilu: naskenuj kód",
+        "toast_says": " si přeje: ",
+        "toast_thinking": "DJ vybírá…",
+        "toast_playing": "hraje",
+        "qr_title": "Přání z mobilu",
+        "qr_steps": ("Naskenuj kód telefonem", "Napiš, co chceš slyšet", "DJ to zařadí do fronty"),
+        "qr_back": "Ťukni kamkoli pro návrat",
+        "qr_none": "Síť zatím neznám — zkus to za chvíli.",
         "dj_picking": "DJ vybírá hudbu…",
         "next_up": "Pak: ",
         "wish_of": "přeje si {who}",
-        "outage": "výpadek spojení",
-        "outage_line": "Vypadl YouTube — čekám, fronta i přání zůstávají",
-        "dj_offline": "DJ bez mozku",
+        "wish_by": "přeje si ",
+        "more": "+{n} přání ›",
+        "waiting_wishes": "Čeká {n} přání ›",
+        "outage": "čekám na YouTube",
+        "outage_line": "YouTube teď nehraje · zkouším znovu · přání počkají",
+        "outage_network": "Bez spojení s YouTube · zkouším znovu · přání počkají",
+        "outage_youtube_login": "YouTube chce znovu ověřit přihlášení · přání počkají",
+        "outage_youtube_limit": "YouTube nás brzdí · zkouším znovu · přání počkají",
+        "dj_offline": "DJ bez AI",
         "wish": "Přání",
         "unknown": "Neznámá skladba",
-        "offline_title": "ytdj neběží",
+        "offline_title": "ytdj neodpovídá",
         "connecting_title": "Připojuji se k ytdj…",
-        "waiting": "čekám na {target}",
+        "waiting": "zkouším to znovu · {target}",
         "play": "Hrát",
         "pause": "Pauza",
         "next": "Další",
@@ -78,18 +95,32 @@ STRINGS = {
         "busy": "DJ is thinking…",
         "silence": "Silence",
         "nothing": "nothing playing",
-        "idle_hint": "Tap Play, or make a Wish",
+        "idle_hint": "Tap Play and the DJ picks music for the time and day.",
+        "qr_caption": "‹ Wishes from a phone: scan the code",
+        "toast_says": " wishes: ",
+        "toast_thinking": "DJ is picking…",
+        "toast_playing": "playing",
+        "qr_title": "Wishes from a phone",
+        "qr_steps": ("Scan the code with a phone", "Type what you want to hear", "The DJ queues it"),
+        "qr_back": "Tap anywhere to go back",
+        "qr_none": "The network isn't known yet — try again in a moment.",
         "dj_picking": "the DJ is picking music…",
         "next_up": "Then: ",
         "wish_of": "{who}'s wish",
-        "outage": "connection lost",
-        "outage_line": "Lost the connection to YouTube — waiting, the queue and wishes stay",
-        "dj_offline": "DJ offline",
+        "wish_by": "wish of ",
+        "more": "+{n} wishes ›",
+        "waiting_wishes": "{n} wishes waiting ›",
+        "outage": "waiting for YouTube",
+        "outage_line": "YouTube isn't playing — retrying, wishes will wait",
+        "outage_network": "Can't reach YouTube — retrying, wishes will wait",
+        "outage_youtube_login": "YouTube wants the login checked — wishes will wait",
+        "outage_youtube_limit": "YouTube is throttling us — retrying, wishes will wait",
+        "dj_offline": "DJ without AI",
         "wish": "Wish",
         "unknown": "Unknown track",
-        "offline_title": "ytdj is not running",
+        "offline_title": "ytdj is not answering",
         "connecting_title": "Connecting to ytdj…",
-        "waiting": "waiting for {target}",
+        "waiting": "retrying · {target}",
         "play": "Play",
         "pause": "Pause",
         "next": "Next",
@@ -103,24 +134,35 @@ STRINGS = {
 
 NET_W = 58
 WISH_W = 112
-STATUS = (0, 0, W - NET_W - WISH_W, 32)
+PHONE_W = 54
+STATUS = (0, 0, W - NET_W - WISH_W - PHONE_W, 32)
 NET_BTN = (W - NET_W, 0, W, 32)  # the network button's drawing, in the status strip
 # …and its touch target: taller than the strip it sits in, nothing else is there
 NET_TARGET = (W - NET_W - 6, 0, W, 44)
 # the wish button ("Přání" → the screen for typing a wish), left of the network one
 WISH_BTN = (W - NET_W - WISH_W, 0, W - NET_W, 32)
 WISH_TARGET = (W - NET_W - WISH_W, 0, W - NET_W - 6, 44)
-TRACK = (0, 34, W, 126)
+# the phone button (→ a full-screen QR code to the web: wishes from a phone)
+PHONE_BTN = (W - NET_W - WISH_W - PHONE_W, 0, W - NET_W - WISH_W, 32)
+PHONE_TARGET = (W - NET_W - WISH_W - PHONE_W, 0, W - NET_W - WISH_W, 44)
+# a banner over the whole strip for a few seconds when somebody wishes something
+TOAST = (0, 0, W, 32)
+# Cover art (or, in silence, the QR code for wishes from a phone) on the left;
+# title, artist and "Pak:" right of it; the time under the text.
+ART = (0, 34, 160, 198)
+ART_SIDE = 144
+ART_AT = (8, 6)  # the tile's top-left inside ART
+TRACK = (160, 34, W, 166)
 # ťuknutí na název/„Pak:“ otevře frontu přání (pod tlačítky v liště, bez překryvu)
-TRACK_TARGET = (0, 46, W, 126)
-ELAPSED = (6, 128, 82, 160)
-BAR = (82, 128, 398, 160)
-TOTAL = (398, 128, 474, 160)
-PLAY = (8, 166, 236, 240)
-NEXT = (244, 166, 472, 240)
-VOL_DOWN = (8, 248, 80, 316)
-VOL = (88, 248, 392, 316)
-VOL_UP = (400, 248, 472, 316)
+TRACK_TARGET = (160, 46, W, 166)
+ELAPSED = (160, 166, 232, 198)
+BAR = (232, 166, 400, 198)
+TOTAL = (400, 166, 474, 198)
+PLAY = (8, 204, 236, 256)
+NEXT = (244, 204, 472, 256)
+VOL_DOWN = (8, 262, 80, 316)
+VOL = (88, 262, 392, 316)
+VOL_UP = (400, 262, 472, 316)
 
 # the volume track inside VOL, in VOL-local x; the knob must fit at both ends
 VOL_NUM_W = 62
@@ -137,6 +179,7 @@ TARGETS: dict[str, Box] = {
     "net": NET_TARGET,
     "wish": WISH_TARGET,
     "queue": TRACK_TARGET,
+    "phone": PHONE_TARGET,
 }
 
 
@@ -178,7 +221,14 @@ class View:
     now_who: str = ""  # whose wish plays now — in the status strip instead of the mood
     wishes: int = 0  # wishes waiting or playing — "Přání 3" on the button
     outage: bool = False  # YouTube / síť vypadly — nic nehraje, fronta čeká
+    outage_reason: str = ""  # "network" | "dns" | "youtube_login" | "youtube_limit" | …
+    more_wishes: int = 0  # wishes waiting besides the one now playing and the next one
     dj_offline: bool = False  # mozek DJe nejede (jistič Codexu)
+    track_id: str = ""  # YouTube video id of the current track — its cover art
+    art_ready: bool = False  # the cover is fetched (Renderer.art_source has it)
+    qr_url: str = ""  # the web on the LAN, for the QR code ("" = network not known yet)
+    rest: bool = False  # nothing has happened for a while: the calm screen
+    toast: tuple = ()  # (who, text, tail) — "Petr si přeje: …" for a few seconds
 
 
 # ---- helpers ----
@@ -258,13 +308,43 @@ def _area(b: Box) -> int:
     return (b[2] - b[0]) * (b[3] - b[1])
 
 
+def who_color(name: str) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    """A name → (fill, text) colours; the same person looks the same everywhere."""
+    h = 0
+    for ch in name or "?":
+        h = (h * 31 + ord(ch)) % 360
+    fill = colorsys.hls_to_rgb(h / 360, 0.26, 0.45)
+    text = colorsys.hls_to_rgb(h / 360, 0.78, 0.6)
+    return (tuple(int(c * 255) for c in fill), tuple(int(c * 255) for c in text))  # type: ignore[return-value]
+
+
+def name_chip(d: ImageDraw.ImageDraw, x: float, cy: float, name: str, font: ImageFont.FreeTypeFont,
+              max_w: float = 110, pad: int = 7) -> float:
+    """The coloured name tag of whoever wished something; returns its width."""
+    fill, text = who_color(name)
+    label = ellipsize(name, font, max_w)
+    tw = font.getlength(label)
+    half = font.size // 2 + 4
+    d.rounded_rectangle((x, cy - half, x + tw + 2 * pad, cy + half), radius=half, fill=fill)
+    d.text((x + pad, cy), label, font=font, fill=text, anchor="lm")
+    return tw + 2 * pad
+
+
 class Fonts:
     def __init__(self) -> None:
         self.status = self._load("DejaVuSans.ttf", 16)
         self.status_b = self._load("DejaVuSans-Bold.ttf", 16)
+        # the title steps down until it fits: one line as big as possible,
+        # then two lines, then two smaller ones (only then an ellipsis)
+        self.title_xl = self._load("DejaVuSans-Bold.ttf", 34)
         self.title_big = self._load("DejaVuSans-Bold.ttf", 30)
-        self.title = self._load("DejaVuSans-Bold.ttf", 25)
-        self.artist = self._load("DejaVuSans.ttf", 20)
+        self.title = self._load("DejaVuSans-Bold.ttf", 27)
+        self.title_sm = self._load("DejaVuSans-Bold.ttf", 24)
+        self.artist = self._load("DejaVuSans.ttf", 22)
+        self.artist_sm = self._load("DejaVuSans.ttf", 20)
+        self.hint = self._load("DejaVuSans.ttf", 18)
+        self.chip = self._load("DejaVuSans-Bold.ttf", 14)
+        self.initials = self._load("DejaVuSans-Bold.ttf", 52)
         self.time = self._load("DejaVuSans.ttf", 17)
         self.button = self._load("DejaVuSans-Bold.ttf", 21)
         self.volume = self._load("DejaVuSans-Bold.ttf", 22)
@@ -323,6 +403,60 @@ def icon_bubble(d: ImageDraw.ImageDraw, cx: float, cy: float, s: float, fill) ->
         d.ellipse((px - r, py - r, px + r, py + r), fill=BG)
 
 
+def icon_phone(d: ImageDraw.ImageDraw, cx: float, cy: float, s: float, fill) -> None:
+    """A phone with a QR-ish pattern on its screen — "wishes from your phone"."""
+    w, h = s * 0.62, s
+    x0, y0 = cx - w / 2, cy - h / 2
+    d.rounded_rectangle((x0, y0, x0 + w, y0 + h), radius=3, outline=fill, width=2)
+    q = w * 0.22
+    for qx, qy in ((x0 + 3.5, y0 + 4), (x0 + w - 3.5 - q, y0 + 4), (x0 + 3.5, y0 + 4 + q + 2)):
+        d.rectangle((qx, qy, qx + q, qy + q), fill=fill)
+    d.rectangle((cx - 2, y0 + h - 5, cx + 2, y0 + h - 3), fill=fill)
+
+
+def icon_note(d: ImageDraw.ImageDraw, cx: float, cy: float, s: float, fill) -> None:
+    """A beamed pair of eighth notes."""
+    r = s * 0.16
+    xa, xb = cx - s * 0.3, cx + s * 0.25
+    ya, yb = cy + s * 0.32, cy + s * 0.22
+    d.ellipse((xa - r * 1.2, ya - r, xa + r * 1.2, ya + r), fill=fill)
+    d.ellipse((xb - r * 1.2, yb - r, xb + r * 1.2, yb + r), fill=fill)
+    t = max(2, s * 0.07)
+    d.rectangle((xa + r * 1.2 - t, cy - s * 0.4, xa + r * 1.2, ya), fill=fill)
+    d.rectangle((xb + r * 1.2 - t, cy - s * 0.5, xb + r * 1.2, yb), fill=fill)
+    d.polygon([(xa + r * 1.2 - t, cy - s * 0.4), (xb + r * 1.2, cy - s * 0.5),
+               (xb + r * 1.2, cy - s * 0.36), (xa + r * 1.2 - t, cy - s * 0.26)], fill=fill)
+
+
+QR_LIGHT = (236, 233, 228)
+QR_DARK = (14, 16, 19)
+
+
+def draw_qr(d: ImageDraw.ImageDraw, x0: int, y0: int, max_side: int, m: list[list[bool]]) -> int:
+    """A QR code as big as fits in max_side, whole-pixel modules, quiet zone included; its side."""
+    n = len(m)
+    quiet = 2
+    scale = max(1, max_side // (n + 2 * quiet))
+    side = scale * (n + 2 * quiet)
+    off = (max_side - side) // 2
+    x0, y0 = x0 + off, y0 + off
+    d.rectangle((x0, y0, x0 + side - 1, y0 + side - 1), fill=QR_LIGHT)
+    ox, oy = x0 + quiet * scale, y0 + quiet * scale
+    for y, row in enumerate(m):
+        x = 0
+        while x < n:  # runs of dark modules as one rectangle — far fewer calls
+            if row[x]:
+                x1 = x
+                while x1 + 1 < n and row[x1 + 1]:
+                    x1 += 1
+                d.rectangle((ox + x * scale, oy + y * scale, ox + (x1 + 1) * scale - 1, oy + (y + 1) * scale - 1),
+                            fill=QR_DARK)
+                x = x1 + 1
+            else:
+                x += 1
+    return side + off
+
+
 def icon_wifi(d: ImageDraw.ImageDraw, cx: float, cy: float, s: float, lit: int, on, off) -> None:
     """A Wi-Fi fan with `lit` of its 4 levels (dot + 3 arcs) coloured `on`; cy is the dot."""
     r = s * 0.13
@@ -355,11 +489,19 @@ class Renderer:
         self.fonts = Fonts()
         self.s = STRINGS.get(lang, STRINGS["cs"])
         self._sigs: dict[str, tuple] = {}
-        # name, box, signature, draw
+        # video id → the cover tile (ART_SIDE² RGB) or None; set by the app (art.ArtCache.get)
+        self.art_source: Callable[[str], Image.Image | None] = lambda vid: None
+        self._qr_cache: tuple[str, list[list[bool]] | None] = ("", None)
+        self.qr_box: Box | None = None  # where the QR code is on the frame (kept bright in rest)
+        self._art_mask: Image.Image | None = None
+        # name, box, signature, draw — the header regions give way to the wish banner
         self._regions: list[tuple[str, Box, Callable[[View], tuple], Draw]] = [
             ("status", STATUS, self._sig_status, self._draw_status),
-            ("net", NET_BTN, lambda v: (v.net, v.pressed == "net", v.closed), self._draw_net),
+            ("phone", PHONE_BTN, lambda v: (v.pressed == "phone", v.closed, bool(v.qr_url)), self._draw_phone),
             ("wish", WISH_BTN, lambda v: (v.online, v.pressed == "wish", v.closed, v.wishes), self._draw_wish),
+            ("net", NET_BTN, lambda v: (v.net, v.pressed == "net", v.closed), self._draw_net),
+            ("toast", TOAST, lambda v: (v.toast,), self._draw_toast),
+            ("art", ART, self._sig_art, self._draw_art),
             ("track", TRACK, self._sig_track, self._draw_track),
             ("elapsed", ELAPSED, lambda v: (self._has_time(v), v.elapsed), self._draw_elapsed),
             ("bar", BAR, self._sig_bar, self._draw_bar),
@@ -371,13 +513,26 @@ class Renderer:
             ("vol_up", VOL_UP, lambda v: (v.online, v.pressed == "vol_up"), self._draw_vol_up),
         ]
 
+    HEADER = ("status", "phone", "wish", "net")
+
     def invalidate(self) -> None:
         self._sigs.clear()
 
     def render(self, v: View, full: bool = False) -> list[Box]:
         """Brings the frame up to `v`; returns the boxes that must go to the glass."""
         dirty: list[Box] = []
+        toast = bool(v.toast) and not v.closed
         for name, box, sig_fn, draw_fn in self._regions:
+            # the wish banner covers the header strip: while it shows, the
+            # header regions stand still (and don't paint over it); the banner
+            # itself paints only while there is one
+            if name in self.HEADER and toast:
+                sig: tuple = ("under-toast",)
+                self._sigs[name] = sig
+                continue
+            if name == "toast" and not toast:
+                self._sigs[name] = ("none",)
+                continue
             sig = sig_fn(v)
             if not full and self._sigs.get(name) == sig:
                 continue
@@ -393,11 +548,26 @@ class Renderer:
             return [(0, 0, W, H)]
         return merge_boxes(dirty)
 
-    # ---- status strip ----
+    # ---- status strip: one clear line ----
 
     def _sig_status(self, v: View) -> tuple:
         return (v.online, v.connecting, v.has_track, v.running, v.loading, v.paused, v.mood, v.busy, v.note,
                 v.closed, v.now_who, v.outage, v.dj_offline)
+
+    def _status_detail(self, v: View) -> tuple[str, tuple, str]:
+        """The one thing said after the state: (text, colour, name for a tag)."""
+        if v.note:
+            return v.note, ERR, ""
+        if not v.online or v.outage:
+            return "", DIM, ""
+        if v.busy and v.has_track:
+            return self.s["busy"], ACCENT_TEXT, ""  # (in silence the text under "Ticho" says it)
+        if v.now_who and v.has_track:
+            return self.s["wish_by"], DIM, v.now_who
+        if v.dj_offline:
+            # the music plays on; only free-text wishes suffer — a warning, not an error
+            return self.s["dj_offline"], WARN, ""
+        return v.mood, DIM, ""
 
     def _draw_status(self, d: ImageDraw.ImageDraw, size: tuple[int, int], v: View) -> None:
         w, h = size
@@ -410,19 +580,6 @@ class Renderer:
             d.ellipse((12, cy - 5, 22, cy + 5), fill=FAINT)
             d.text((32, cy), self.s["closed"], font=fb, fill=FAINT, anchor="lm")
             return
-
-        right, right_color = "", DIM
-        if v.note:
-            right, right_color = v.note, ERR
-        elif v.online and v.busy:
-            right, right_color = self.s["busy"], ACCENT_TEXT
-        elif v.online and v.dj_offline:
-            right, right_color = self.s["dj_offline"], ERR
-        right_w = 0
-        if right:
-            right = ellipsize(right, f, w * 0.45)
-            right_w = int(f.getlength(right)) + 18
-            d.text((w - 12, cy), right, font=f, fill=right_color, anchor="rm")
 
         if not v.online:
             label = self.s["connecting"] if v.connecting else self.s["offline"]
@@ -442,15 +599,53 @@ class Renderer:
         x = 32
         d.text((x, cy), label, font=fb, fill=color, anchor="lm")
         x += fb.getlength(label)
-        # whose wish plays — or, for the DJ's own picks, the mood
-        extra = self.s["wish_of"].format(who=v.now_who) if (v.now_who and v.has_track) else v.mood
-        if v.online and extra:
-            room = w - right_w - 12 - x - fb.getlength(" · ")
-            if room > 40:
-                d.text((x, cy), " · ", font=f, fill=FAINT, anchor="lm")
-                x += f.getlength(" · ")
-                d.text((x, cy), ellipsize(extra, f, room), font=f,
-                       fill=ACCENT_TEXT if v.now_who and v.has_track else DIM, anchor="lm")
+
+        text, tcolor, who = self._status_detail(v)
+        sep = f.getlength(" · ")
+        room = w - 8 - x - sep
+        if not text or room < 40:
+            return
+        need = f.getlength(text) + (self.fonts.chip.getlength(who) + 14 if who else 0)
+        if need > room and not (v.note or who):
+            return  # the mood only when it fits whole — no "klidný v…" stubs
+        d.text((x, cy), " · ", font=f, fill=FAINT, anchor="lm")
+        x += sep
+        if who:
+            if f.getlength(text) + 50 <= room:
+                d.text((x, cy), text, font=f, fill=tcolor, anchor="lm")
+                room -= f.getlength(text)
+                x += f.getlength(text)
+            name_chip(d, x, cy, who, self.fonts.chip, max_w=room - 14)
+        else:
+            d.text((x, cy), ellipsize(text, f, room), font=f, fill=tcolor, anchor="lm")
+
+    def _draw_phone(self, d: ImageDraw.ImageDraw, size: tuple[int, int], v: View) -> None:
+        w, h = size
+        d.line((0, h - 1, w, h - 1), fill=LINE)
+        if v.closed:
+            return
+        pressed = v.pressed == "phone"
+        d.rounded_rectangle((4, 3, w - 4, h - 6), radius=8, fill=SURFACE_HI if pressed else SURFACE)
+        icon_phone(d, w / 2, (h - 3) / 2, 20, ACCENT_TEXT if pressed else (TEXT if v.qr_url else FAINT))
+
+    def _draw_toast(self, d: ImageDraw.ImageDraw, size: tuple[int, int], v: View) -> None:
+        """"[Petr] si přeje: Kabát · DJ vybírá…" — a few seconds, in accent, over the strip."""
+        w, h = size
+        who, text, tail = v.toast
+        d.rectangle((0, 0, w, h), fill=ACCENT)
+        f, fb = self.fonts.status, self.fonts.status_b
+        cy = h // 2
+        icon_bubble(d, 22, cy, 22, ON_ACCENT)
+        x = 42.0
+        x += name_chip(d, x, cy, who, self.fonts.chip, max_w=120) + 6
+        says = self.s["toast_says"]
+        d.text((x, cy), says, font=f, fill=ON_ACCENT, anchor="lm")
+        x += f.getlength(says)
+        tail_w = f.getlength(tail) if tail else 0
+        room = w - 10 - x - tail_w
+        d.text((x, cy), ellipsize(text, fb, room), font=fb, fill=ON_ACCENT, anchor="lm")
+        if tail:
+            d.text((w - 10, cy), tail, font=f, fill=ON_ACCENT, anchor="rm")
 
     def _draw_net(self, d: ImageDraw.ImageDraw, size: tuple[int, int], v: View) -> None:
         w, h = size
@@ -490,60 +685,178 @@ class Renderer:
         icon_bubble(d, x + icon_w / 2, cy, icon_w, icon_color)
         d.text((x + icon_w + 8, cy), label, font=f, fill=color, anchor="lm")
 
+    # ---- cover art / QR ----
+
+    def _shows_qr(self, v: View) -> bool:
+        """Silence or rest: the art slot invites wishes from a phone instead."""
+        return bool(v.qr_url) and v.online and (not v.has_track or v.rest)
+
+    def _sig_art(self, v: View) -> tuple:
+        if self._shows_qr(v):
+            return ("qr", v.qr_url)
+        if not v.online or not v.has_track:
+            return ("none",)
+        return ("art", v.track_id, v.art_ready, v.artist if not v.art_ready else "", v.skipping)
+
+    def _qr(self, text: str) -> list[list[bool]] | None:
+        if self._qr_cache[0] != text:
+            try:
+                m = qr_encode(text, "M")
+            except ValueError:
+                m = None
+            self._qr_cache = (text, m)
+        return self._qr_cache[1]
+
+    def _draw_art(self, d: ImageDraw.ImageDraw, size: tuple[int, int], v: View) -> None:
+        ax, ay = ART_AT
+        side = ART_SIDE
+        self.qr_box = None
+        if self._shows_qr(v):
+            m = self._qr(v.qr_url)
+            if m is not None:
+                # the whole slot: a module more per side makes it easier to catch from a step away
+                qx, qy, qs = 4, 4, min(ART[2] - ART[0], ART[3] - ART[1]) - 8
+                drawn = draw_qr(d, qx, qy, qs, m)
+                self.qr_box = (ART[0] + qx, ART[1] + qy, ART[0] + qx + drawn, ART[1] + qy + drawn)
+                return
+        if not v.online or not v.has_track:
+            d.rounded_rectangle((ax, ay, ax + side - 1, ay + side - 1), radius=12, fill=SURFACE)
+            icon_note(d, ax + side / 2, ay + side / 2, side * 0.42, SURFACE_HI)
+            return
+        tile = self.art_source(v.track_id) if v.art_ready else None
+        if tile is not None and tile.size == (side, side):
+            if self._art_mask is None:  # rounded corners, like every other tile on the screen
+                self._art_mask = Image.new("L", (side, side), 0)
+                ImageDraw.Draw(self._art_mask).rounded_rectangle((0, 0, side - 1, side - 1), radius=12, fill=255)
+            d._image.paste(tile, (ax, ay), self._art_mask)  # type: ignore[attr-defined]
+        else:
+            self._fallback_tile(d, ax, ay, side, v.artist or v.title)
+
+    def _fallback_tile(self, d, x: int, y: int, side: int, name: str) -> None:
+        """No cover (offline, not found): the artist's initials on their own colour."""
+        fill, text = who_color(name.strip().lower() or "?")
+        d.rounded_rectangle((x, y, x + side - 1, y + side - 1), radius=12, fill=fill)
+        words = [w for w in name.replace("&", " ").split() if w[:1].isalnum()]
+        initials = "".join(w[0] for w in words[:2]).upper() or "♪"
+        d.text((x + side / 2, y + side / 2 - 4), initials, font=self.fonts.initials, fill=text, anchor="mm")
+
     # ---- title + artist ----
 
     def _sig_track(self, v: View) -> tuple:
         if not v.online:
             return ("off", v.connecting, v.target)
         if not v.has_track:
-            return ("idle", v.busy)
+            return ("idle", v.busy, v.more_wishes, bool(v.qr_url))
         return ("track", v.title, v.artist, v.skipping, v.next_title, v.next_artist, v.next_who,
-                v.outage)
+                v.outage, v.outage_reason, v.more_wishes, self._shows_qr(v))
+
+    def _fit_title(self, title: str, max_w: float) -> tuple[list[str], ImageFont.FreeTypeFont]:
+        """As big as fits: one line at 34 or 30 px, else two lines at 27 or 24 px."""
+        fs = self.fonts
+        for font in (fs.title_xl, fs.title_big):
+            if font.getlength(title) <= max_w:
+                return [title], font
+        lines: list[str] = []
+        for font in (fs.title, fs.title_sm):
+            lines = wrap(title, font, max_w, 2)
+            if not lines[-1].endswith("…") or title.endswith("…"):
+                return lines, font
+        return lines, fs.title_sm
+
+    def _outage_line(self, v: View) -> str:
+        reason = "network" if v.outage_reason == "dns" else v.outage_reason
+        return self.s.get(f"outage_{reason}", self.s["outage_line"])
+
+    LINE_Y = 114  # the bottom line of the text block ("Pak:", outage, QR caption), region-local centre
 
     def _draw_track(self, d: ImageDraw.ImageDraw, size: tuple[int, int], v: View) -> None:
         w, h = size
-        x, max_w = 14, w - 28
-        if not v.online:
-            title = self.s["connecting_title"] if v.connecting else self.s["offline_title"]
-            sub = self.s["waiting"].format(target=v.target)
-            title_color, sub_color = DIM if v.connecting else TEXT, FAINT
-        elif not v.has_track:
-            title, title_color = self.s["silence"], DIM
-            # what the two big buttons do when nothing plays — "Hrát" starts
-            # the DJ, which isn't obvious from a play icon
-            sub = self.s["dj_picking"] if v.busy else self.s["idle_hint"]
-            sub_color = ACCENT_TEXT if v.busy else DIM
-        else:
-            title = v.title.strip() or self.s["unknown"]
-            sub = v.artist.strip()
-            title_color = FAINT if v.skipping else TEXT
-            sub_color = FAINT if v.skipping else DIM
+        x, max_w = 8, w - 20
+        fs = self.fonts
+        cy = self.LINE_Y
+        if not v.online or not v.has_track:
+            if not v.online:
+                title = self.s["connecting_title"] if v.connecting else self.s["offline_title"]
+                sub = self.s["waiting"].format(target=v.target)
+                title_color, sub_color = DIM if v.connecting else TEXT, FAINT
+            else:
+                title, title_color = self.s["silence"], DIM
+                # what the two big buttons do when nothing plays — "Hrát" starts
+                # the DJ, which isn't obvious from a play icon
+                sub = self.s["dj_picking"] if v.busy else self.s["idle_hint"]
+                sub_color = ACCENT_TEXT if v.busy else DIM
+            lines, font = self._fit_title(title, max_w)
+            y = 2
+            for line in lines:
+                d.text((x, y), line, font=font, fill=title_color, anchor="la")
+                y += font.size + 4
+            y = max(y + 4, 46)
+            for line in wrap(sub, fs.hint, max_w, 2 if len(lines) == 1 else 1):
+                d.text((x, y), line, font=fs.hint, fill=sub_color, anchor="la")
+                y += 23
+            if v.online and v.more_wishes:
+                self._more(d, w, cy, v.more_wishes, alone=True)
+            elif v.online and v.qr_url:
+                d.text((x, cy), ellipsize(self.s["qr_caption"], fs.status_b, max_w), font=fs.status_b,
+                       fill=ACCENT_TEXT, anchor="lm")
+            return
 
-        big = self.fonts.title_big
-        if big.getlength(title) <= max_w:
-            lines, font, step = [title], big, 38
-        else:
-            font, step = self.fonts.title, 31
-            lines = wrap(title, font, max_w, 2)
-        y = 6
+        title = v.title.strip() or self.s["unknown"]
+        sub = v.artist.strip()
+        title_color = FAINT if v.skipping else TEXT
+        sub_color = FAINT if v.skipping else DIM
+        lines, font = self._fit_title(title, max_w)
+        y = 2 if font.size >= 30 else 3
+        step = font.size + 4
         for line in lines:
             d.text((x, y), line, font=font, fill=title_color, anchor="la")
             y += step
+        one = len(lines) == 1
         if sub:
-            y = max(y + 2, 48) if len(lines) == 1 else y + 1
-            d.text((x, y), ellipsize(sub, self.fonts.artist, max_w), font=self.fonts.artist, fill=sub_color, anchor="la")
-        if v.online and v.outage and len(lines) == 1:
-            d.text((x, 74), ellipsize(self.s["outage_line"], self.fonts.status, max_w),
-                   font=self.fonts.status, fill=ERR, anchor="la")
-        elif v.online and v.has_track and v.next_title and len(lines) == 1 and not v.skipping:
-            # what "Další" would bring — only when the title leaves room for it
-            f = self.fonts.status
-            label = self.s["next_up"]
-            by = self.s["wish_of"].format(who=v.next_who.strip()) if v.next_who.strip() else v.next_artist.strip()
-            nxt = v.next_title.strip() + (f" · {by}" if by else "")
-            d.text((x, 74), label, font=f, fill=FAINT, anchor="la")
-            lx = x + f.getlength(label)
-            d.text((lx, 74), ellipsize(nxt, f, max_w - (lx - x)), font=f, fill=DIM, anchor="la")
+            af = fs.artist if one else fs.artist_sm
+            y = 46 if one else y + 1
+            d.text((x, y), ellipsize(sub, af, max_w), font=af, fill=sub_color, anchor="la")
+        f = fs.status
+        if v.outage:
+            lines = wrap(self._outage_line(v), f, max_w, 2 if one else 1)
+            top = cy - 10 * (len(lines) - 1)
+            for i, line in enumerate(lines):
+                d.text((x, top + i * 20), line, font=f, fill=ERR, anchor="lm")
+            return
+        if self._shows_qr(v):
+            d.text((x, cy), ellipsize(self.s["qr_caption"], fs.status_b, max_w), font=fs.status_b,
+                   fill=ACCENT_TEXT, anchor="lm")
+            return
+        if v.skipping:
+            return
+        right = w - 12
+        if v.more_wishes:
+            right -= self._more(d, w, cy, v.more_wishes) + 10
+        if not v.next_title:
+            return
+        # what "Další" brings — and whose wish it is, with the same name tag as the queue
+        label = self.s["next_up"]
+        d.text((x, cy), label, font=f, fill=FAINT, anchor="lm")
+        lx = x + f.getlength(label)
+        who = v.next_who.strip()
+        if who:
+            lx += name_chip(d, lx, cy, who, fs.chip, max_w=min(100, (right - lx) / 3)) + 6
+            nxt = v.next_title.strip()
+        else:
+            nxt = v.next_title.strip() + (f" · {v.next_artist.strip()}" if v.next_artist.strip() else "")
+        if right - lx > 30:
+            d.text((lx, cy), ellipsize(nxt, f, right - lx), font=f, fill=DIM, anchor="lm")
+
+    def _more(self, d: ImageDraw.ImageDraw, w: int, cy: int, n: int, alone: bool = False) -> int:
+        """"+2 přání ›" at the right of the "Pak:" line — tapping there opens the queue."""
+        f = self.fonts.status_b
+        text = self.s["waiting_wishes" if alone else "more"].format(n=n)
+        tw = int(f.getlength(text))
+        if alone:
+            d.text((8, cy), text, font=f, fill=ACCENT_TEXT, anchor="lm")
+        else:
+            d.text((w - 12, cy), text, font=f, fill=ACCENT_TEXT, anchor="rm")
+        return tw
 
     # ---- progress ----
 
@@ -570,6 +883,8 @@ class Renderer:
         return (self._has_time(v), self._bar_px(v), v.running)
 
     def _draw_bar(self, d: ImageDraw.ImageDraw, size: tuple[int, int], v: View) -> None:
+        if not self._has_time(v):
+            return  # nothing plays: no empty track across the screen
         w, h = size
         cy = h // 2
         x0, x1 = 8, w - 8
@@ -642,3 +957,58 @@ class Renderer:
         d.rounded_rectangle((x0, cy - 4, kx, cy + 4), radius=4, fill=ACCENT)
         r = KNOB_R + (2 if dragging else 0)
         d.ellipse((kx - r, cy - r, kx + r, cy + r), fill=ACCENT_TEXT if dragging else TEXT)
+
+
+# ---- the full-screen QR page ("📱" in the status strip) ----
+
+
+class QrRenderer:
+    """"Přání z mobilu": a big code to the web, three steps, the address. Static —
+    one full frame when it opens, nothing after that."""
+
+    def __init__(self, fonts: Fonts, lang: str = "cs") -> None:
+        self.frame = Image.new("RGB", (W, H), BG)
+        self.fonts = fonts
+        self.s = STRINGS.get(lang, STRINGS["cs"])
+        self._sig: tuple | None = None
+
+    def invalidate(self) -> None:
+        self._sig = None
+
+    def render(self, urls: tuple[str, ...], full: bool = False) -> list[Box]:
+        sig = (urls,)
+        if not full and sig == self._sig:
+            return []
+        self._sig = sig
+        self.frame.paste(BG, (0, 0, W, H))
+        d = ImageDraw.Draw(self.frame)
+        fs = self.fonts
+        side = 0
+        if urls:
+            try:
+                m = qr_encode(urls[0], "M")
+            except ValueError:
+                m = None
+            if m is not None:
+                side = draw_qr(d, 12, 12, 250, m)
+        x = side + 30 if side else 20
+        room = W - x - 12
+        tf = next((f for f in (fs.title, fs.title_sm, fs.artist) if f.getlength(self.s["qr_title"]) <= room), fs.hint)
+        d.text((x, 16), self.s["qr_title"], font=tf, fill=TEXT, anchor="la")
+        if not urls:
+            for i, line in enumerate(wrap(self.s["qr_none"], fs.hint, room, 3)):
+                d.text((x, 70 + i * 24), line, font=fs.hint, fill=DIM, anchor="la")
+        else:
+            y = 66
+            for i, step in enumerate(self.s["qr_steps"], 1):
+                d.ellipse((x, y, x + 24, y + 24), fill=ACCENT)
+                d.text((x + 12, y + 12), str(i), font=fs.chip, fill=ON_ACCENT, anchor="mm")
+                lines = wrap(step, fs.status, room - 34, 2)
+                for j, line in enumerate(lines):
+                    d.text((x + 34, y + 12 + j * 19), line, font=fs.status, fill=TEXT, anchor="lm")
+                y += 26 + 19 * len(lines)
+            url = urls[0].removeprefix("http://")
+            d.text((x, max(y + 6, 226)), ellipsize(url, fs.status_b, room), font=fs.status_b, fill=ACCENT_TEXT,
+                   anchor="la")
+        d.text((W // 2, H - 16), self.s["qr_back"], font=fs.status, fill=FAINT, anchor="mm")
+        return [(0, 0, W, H)]

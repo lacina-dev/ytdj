@@ -54,8 +54,10 @@ class Identity(unittest.TestCase):
                 b = sub("Olympic prosím", "", "web", client={"ip": "10.8.0.1", "id": "web-bbbbbbbb2"})
                 await rig.until(lambda: b.state in ("queued", "playing"))
                 self.assertIn(a.state, ("queued", "playing"))  # nenahrazeno
-                self.assertNotEqual(a.who, b.who)
-                self.assertTrue(a.who.startswith("host ·") and a.who.endswith("aa1"))
+                # popisek je lidské "Host" (žádné "host ·aa1" na displeji);
+                # rozliší je who_key (barva jmenovky), ne jméno
+                self.assertEqual((a.who, b.who), ("Host", "Host"))
+                self.assertNotEqual(a.public()["who_key"], b.public()["who_key"])
 
         run(go())
 

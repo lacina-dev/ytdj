@@ -26,6 +26,8 @@ if not os.environ.get("YTDJ_EVENTS_FILE"):
     _EVENTS_TMP = tempfile.TemporaryDirectory(prefix="ytdj-panel-tests-")
     os.environ["YTDJ_EVENTS_FILE"] = str(Path(_EVENTS_TMP.name) / "events.jsonl")
 
+# no cover art from the internet in tests (fake ids aren't YouTube ids anyway)
+os.environ.setdefault("YTDJ_PANEL_ART_URL", "")
 from ytdj import telemetry  # noqa: E402
 from ytdj.panel import kedei  # noqa: E402
 from ytdj.panel.app import PanelApp  # noqa: E402
@@ -164,6 +166,7 @@ class EndToEndTest(unittest.TestCase):
         self.screen = SimScreen(Path(self.tmp.name) / "panel.png")
         self.touch = SimTouch(io.StringIO(""))
         self.app = PanelApp(self.screen, self.touch, f"http://127.0.0.1:{self.port}")
+        self.app.page_guard = 0.0  # the tests tap faster than a finger can (see PageGuardTest)
         self.thread = threading.Thread(target=self.app.run, daemon=True)
         self.thread.start()
         self.assertTrue(wait_for(lambda: self.app.online), "panel se nepřipojil")
@@ -331,6 +334,7 @@ class PanelEventsTest(unittest.TestCase):
         self.touch = SimTouch(io.StringIO(""))
         self.app = PanelApp(SimScreen(Path(self.tmp.name) / "panel.png"), self.touch,
                             f"http://127.0.0.1:{self.port}", net_backend=_NoNet())
+        self.app.page_guard = 0.0  # the tests tap faster than a finger can (see PageGuardTest)
         self.thread = threading.Thread(target=self.app.run, daemon=True)
         self.thread.start()
         self.assertTrue(wait_for(lambda: self.app.online), "panel se nepřipojil")
@@ -394,7 +398,7 @@ class PanelEventsTest(unittest.TestCase):
         self.touch.feed("move", x, y + 200)
         time.sleep(0.05)
         self.touch.feed("up", x, y + 200)
-        self.touch.tap(240, 144)  # the progress bar — nowhere near a button
+        self.touch.tap(300, 182)  # the progress bar — nowhere near a button
 
         # the speaker's wheel: one line per turn, not per click
         for _ in range(4):
@@ -592,6 +596,7 @@ class WishTest(unittest.TestCase):
         self.touch = SimTouch(io.StringIO(""))
         self.app = PanelApp(SimScreen(Path(self.tmp.name) / "panel.png"), self.touch,
                             f"http://127.0.0.1:{self.port}", net_backend=_NoNet())
+        self.app.page_guard = 0.0  # the tests tap faster than a finger can (see PageGuardTest)
         self.thread = threading.Thread(target=self.app.run, daemon=True)
         self.thread.start()
         self.assertTrue(wait_for(lambda: self.app.online), "panel se nepřipojil")
@@ -772,6 +777,316 @@ class WishTest(unittest.TestCase):
         self.touch.tap(*center(BTN_R))  # Zkusit znovu
         self.assertTrue(wait_for(lambda: self.app.wish.phase == "queued"))
         self.assertEqual([p["text"] for p in self.fake.prompts], ["něco klidnějšího"] * 2)
+
+
+class PlayerLookTest(unittest.TestCase):
+    """What the player says and how big — the part read from across the room."""
+
+    BASE = View(online=True, connecting=False, has_track=True, title="Holky z naší školky", artist="Olympic",
+                running=True, elapsed=60, duration=240, volume=50, can_next=True)
+
+    def test_title_as_big_as_fits(self):
+        r = Renderer()
+        lines, font = r._fit_title("Holky z naší školky", 452)
+        self.assertEqual((lines, font.size), (["Holky z naší školky"], 34))
+        lines, font = r._fit_title("Bohemian Rhapsody (Remastered 2011)", 452)
+        self.assertEqual(len(lines), 2)
+        self.assertFalse(lines[-1].endswith("…"))  # two lines, whole — no ellipsis while it fits
+        lines, font = r._fit_title("Příliš žluťoučký kůň úpěl ďábelské ódy " * 3, 452)
+        self.assertEqual((len(lines), font.size), (2, 24))
+        self.assertTrue(lines[-1].endswith("…"))
+
+    def test_outage_says_why_and_that_wishes_wait(self):
+        r = Renderer()
+        v = replace(self.BASE, outage=True, running=False)
+        self.assertIn("spojení s YouTube", r._outage_line(replace(v, outage_reason="dns")))
+        self.assertIn("přihlášení", r._outage_line(replace(v, outage_reason="youtube_login")))
+        self.assertIn("přání počkají", r._outage_line(replace(v, outage_reason="whatever")))
+        r.render(v, full=True)  # draws without error, whatever the reason
+
+    def test_friendly_copy(self):
+        from ytdj.panel.ui import STRINGS
+
+        cs = STRINGS["cs"]
+        self.assertNotIn("mozku", cs["dj_offline"])
+        self.assertNotIn("neběží", cs["offline_title"])  # the panel only knows it gets no answer
+
+    def test_silence_has_no_empty_progress_bar(self):
+        from ytdj.panel.ui import BAR, BG
+
+        r = Renderer()
+        r.render(replace(self.BASE, has_track=False, running=False), full=True)
+        tile = r.frame.crop(BAR)
+        self.assertEqual(tile.getcolors(), [(tile.width * tile.height, BG)])
+
+    def test_next_wish_line_changes_only_its_row(self):
+        r = Renderer()
+        v = replace(self.BASE, next_title="Amerika", next_artist="Lucie")
+        r.render(v, full=True)
+        boxes = r.render(replace(v, next_who="Tomáš", more_wishes=2))
+        self.assertTrue(boxes)
+        for b in boxes:  # the "Pak:" line only: nothing above the artist, nothing below the track area
+            self.assertGreaterEqual(b[1], 34 + 90)
+            self.assertLessEqual(b[3], 166)
+
+
+class PanelBehaviourTest(unittest.TestCase):
+    """Rest (dimming), the page-switch touch guard, the rolling refresh, the wish count."""
+
+    def setUp(self):
+        self.server, self.fake = make_server(0)
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.screen = SimScreen(Path(self.tmp.name) / "panel.png")
+        self.touch = SimTouch(io.StringIO(""))
+        self.app = PanelApp(self.screen, self.touch, f"http://127.0.0.1:{self.port}", net_backend=_NoNet())
+        self.thread = threading.Thread(target=self.app.run, daemon=True)
+        self.thread.start()
+        self.assertTrue(wait_for(lambda: self.app.online), "panel se nepřipojil")
+
+    def tearDown(self):
+        self.app.shutdown()
+        self.thread.join(3)
+        self.server.closing = True
+        self.server.shutdown()
+        self.server.server_close()
+        self.tmp.cleanup()
+
+    def _pause(self):
+        self.touch.tap(*center(PLAY))
+        self.assertTrue(wait_for(lambda: self.fake.paused and not self.app._view().running))
+
+    def test_rest_dims_and_first_touch_only_wakes(self):
+        self._pause()
+        self.app.rest_after = 0.3
+        self.app.events.put(("wake",))
+        self.assertTrue(wait_for(lambda: self.app.resting))
+        px = center(PLAY)
+        self.assertTrue(wait_for(lambda: self.screen.glass.getpixel(px) != self.app.renderer.frame.getpixel(px)))
+        glass, frame = self.screen.glass.getpixel(px), self.app.renderer.frame.getpixel(px)
+        self.assertLess(sum(glass), sum(frame) * 0.6)  # dimmed on the glass, the frame itself untouched
+        self.touch.tap(*px)
+        self.assertTrue(wait_for(lambda: not self.app.resting))
+        self.app.rest_after = 300.0
+        time.sleep(0.5)
+        self.assertTrue(self.fake.paused)  # the waking touch did not press Hrát
+        self.assertTrue(wait_for(lambda: self.screen.glass.getpixel(px) == self.app.renderer.frame.getpixel(px)))
+        self.touch.tap(*px)
+        self.assertTrue(wait_for(lambda: not self.fake.paused))
+
+    def test_music_keeps_it_awake(self):
+        self.app.rest_after = 0.3
+        time.sleep(1.0)
+        self.assertFalse(self.app.resting)
+
+    def test_double_tap_through_a_page_switch_does_nothing(self):
+        from ytdj.panel.wishui import BTN_R, chip_box
+        from ytdj.panel.ui import WISH_TARGET
+
+        self.app.page_guard = 0.0
+        self.touch.tap(*center(WISH_TARGET))
+        self.assertTrue(wait_for(lambda: self.app._shown_page == "wish:home"))
+        self.touch.tap(*center(chip_box(0)))
+        self.assertTrue(wait_for(lambda: self.app._shown_page == "wish:sent"))
+        self.app.page_guard = 0.5
+        vol = self.fake.volume
+        x, y = center(BTN_R)  # "Hotovo" — on the player, that spot is the volume bar
+        self.touch.tap(x, y, hold=0.05)
+        time.sleep(0.03)
+        self.touch.tap(x, y, hold=0.05)
+        self.assertTrue(wait_for(lambda: self.app._shown_page == "player"))
+        time.sleep(0.8)
+        self.assertEqual(self.fake.volume, vol)
+        self.assertEqual(self.app.hold_volume, None)
+        self.touch.tap(*center(VOL_UP))  # a deliberate tap later works as ever
+        self.assertTrue(wait_for(lambda: self.fake.volume != vol))
+
+    def test_rolling_refresh_sends_a_band_not_a_frame(self):
+        self._pause()
+        time.sleep(0.5)
+        px = self.screen.pushed_px
+        self.app._band_at = 0.0
+        self.app.events.put(("wake",))
+        self.assertTrue(wait_for(lambda: self.screen.pushed_px > px))
+        time.sleep(0.2)
+        self.assertLessEqual(self.screen.pushed_px - px, 480 * 32)
+        self.assertGreater(self.app._band_at, time.monotonic() + 10)
+
+    def test_new_wish_shows_a_banner_for_a_few_seconds(self):
+        from ytdj.panel import app as app_mod
+
+        time.sleep(0.3)
+        self.assertEqual(self.app._view().toast, ())
+        old = app_mod.TOAST_TIME
+        app_mod.TOAST_TIME = 1.0
+        try:
+            with self.fake.lock:
+                self.fake.add_request("něco od Kabátu", "Petr", state="thinking")
+            self.assertTrue(wait_for(lambda: self.app._view().toast[:2] == ("Petr", "něco od Kabátu")))
+            self.assertTrue(wait_for(lambda: self.app.renderer._sigs.get("toast", ("none",)) != ("none",)))
+            self.assertTrue(wait_for(lambda: self.app._view().toast == (), timeout=4))
+            self.assertTrue(wait_for(lambda: self.app.renderer._sigs.get("toast") == ("none",)))
+        finally:
+            app_mod.TOAST_TIME = old
+
+    def test_phone_button_opens_the_qr_page(self):
+        from ytdj.panel.ui import PHONE_TARGET
+
+        self.app.page_guard = 0.0
+        self.touch.tap(*center(PHONE_TARGET))
+        self.assertTrue(wait_for(lambda: self.app._shown_page == "qr"))
+        self.touch.tap(240, 160)
+        self.assertTrue(wait_for(lambda: self.app._shown_page == "player"))
+
+    def test_more_wishes_counted_besides_next(self):
+        with self.fake.lock:
+            self.fake.add_request("Amerika", "Tomáš", state="queued")
+            self.fake.add_request("Dancing Queen", "Jana", state="queued")
+            self.fake.add_request("něco od Queen", "Petr", state="thinking")
+        self.assertTrue(wait_for(lambda: self.app._view().next_who == "Tomáš"))
+        self.assertTrue(wait_for(lambda: self.app._view().more_wishes == 2))
+
+
+def _art_jpeg() -> bytes:
+    """An "Art Track" thumbnail: a red square cover letterboxed in black, 320×180."""
+    from PIL import Image as _Image
+
+    im = _Image.new("RGB", (320, 180), (0, 0, 0))
+    im.paste((200, 30, 30), (70, 0, 250, 180))
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=90)
+    return buf.getvalue()
+
+
+class ArtTest(unittest.TestCase):
+    def test_centre_square_of_a_letterboxed_cover(self):
+        from ytdj.panel.art import square_tile
+
+        tile = square_tile(_art_jpeg(), 144)
+        self.assertEqual(tile.size, (144, 144))
+        for px in ((3, 3), (140, 140), (72, 72)):  # corners too: the black bars are cut off
+            r, g, b = tile.getpixel(px)
+            self.assertGreater(r, 150, px)
+            self.assertLess(g, 80, px)
+
+    def test_fetched_once_in_the_background_then_cached(self):
+        from ytdj.panel.art import ArtCache
+
+        calls, ready = [], threading.Event()
+
+        def fetch(url, timeout):
+            calls.append(url)
+            return _art_jpeg()
+
+        stop = threading.Event()
+        cache = ArtCache(144, lambda vid: ready.set(), stop, fetch=fetch, url="http://x/{id}.jpg")
+        try:
+            self.assertIsNone(cache.get("qRIsEHxcgDY"))  # not yet — never blocks the caller
+            self.assertTrue(ready.wait(5))
+            self.assertEqual(cache.get("qRIsEHxcgDY").size, (144, 144))
+            cache.get("qRIsEHxcgDY")
+            self.assertEqual(calls, ["http://x/qRIsEHxcgDY.jpg"])
+            self.assertIsNone(cache.get("a1"))  # not a YouTube id: nothing to fetch
+            self.assertEqual(len(calls), 1)
+        finally:
+            stop.set()
+
+    def test_failure_is_not_retried_at_once(self):
+        from ytdj.panel.art import ArtCache
+
+        calls, ready = [], threading.Event()
+
+        def fetch(url, timeout):
+            calls.append(url)
+            raise OSError("offline")
+
+        stop = threading.Event()
+        cache = ArtCache(144, lambda vid: ready.set(), stop, fetch=fetch, url="http://x/{id}.jpg")
+        try:
+            cache.want("dQw4w9WgXcQ")
+            self.assertTrue(ready.wait(5))
+            self.assertTrue(cache.failed("dQw4w9WgXcQ"))
+            self.assertIsNone(cache.get("dQw4w9WgXcQ"))
+            time.sleep(0.2)
+            self.assertEqual(len(calls), 1)
+        finally:
+            stop.set()
+
+    def test_keeps_only_a_few_tiles(self):
+        from ytdj.panel import art
+
+        stop = threading.Event()
+        done = threading.Semaphore(0)
+        cache = art.ArtCache(32, lambda vid: done.release(), stop, fetch=lambda u, t: _art_jpeg(), url="{id}")
+        try:
+            ids = [f"abcdefghij{c}" for c in "ABCDEFGHIJ"]
+            for vid in ids:
+                cache.want(vid)
+            for _ in ids:
+                self.assertTrue(done.acquire(timeout=5))
+            self.assertEqual(len(cache._tiles), art.KEEP)
+            self.assertIn(ids[-1], cache._tiles)
+        finally:
+            stop.set()
+
+
+class NewLookTest(unittest.TestCase):
+    BASE = replace(PlayerLookTest.BASE, track_id="qRIsEHxcgDY", qr_url="http://192.168.0.24:8765")
+
+    def test_cover_or_initials_in_the_art_slot(self):
+        from ytdj.panel.art import square_tile
+        from ytdj.panel.ui import ART
+
+        tile = square_tile(_art_jpeg(), 144)
+        r = Renderer()
+        r.art_source = lambda vid: tile
+        r.render(self.BASE, full=True)  # not fetched yet: the artist's initials
+        before = r.frame.getpixel((ART[0] + 80, ART[1] + 30))
+        boxes = r.render(replace(self.BASE, art_ready=True))
+        self.assertEqual(len(boxes), 1)
+        b = boxes[0]
+        self.assertTrue(ART[0] <= b[0] and b[2] <= ART[2] and ART[1] <= b[1] and b[3] <= ART[3], b)
+        after = r.frame.getpixel((ART[0] + 80, ART[1] + 30))
+        self.assertNotEqual(before, after)
+        self.assertGreater(after[0], 150)
+
+    def test_silence_and_rest_show_the_qr(self):
+        r = Renderer()
+        r.render(replace(self.BASE, has_track=False, running=False), full=True)
+        self.assertIsNotNone(r.qr_box)
+        r.render(self.BASE, full=True)
+        self.assertIsNone(r.qr_box)  # playing: the cover
+        r.render(replace(self.BASE, running=False, paused=True, rest=True), full=True)
+        self.assertIsNotNone(r.qr_box)
+        r.render(replace(self.BASE, has_track=False, qr_url=""), full=True)
+        self.assertIsNone(r.qr_box)  # no known address, no code
+
+    def test_wish_banner_is_one_strip_in_and_out(self):
+        from ytdj.panel.ui import TOAST
+
+        r = Renderer()
+        r.render(self.BASE, full=True)
+        header = r.frame.crop(TOAST).tobytes()
+        boxes = r.render(replace(self.BASE, toast=("Petr", "něco od Kabátu", "DJ vybírá…")))
+        self.assertTrue(boxes)
+        for b in boxes:
+            self.assertLessEqual(b[3], TOAST[3])
+        self.assertEqual(r.render(replace(self.BASE, toast=("Petr", "něco od Kabátu", "DJ vybírá…"))), [])
+        boxes = r.render(self.BASE)
+        for b in boxes:
+            self.assertLessEqual(b[3], TOAST[3])
+        self.assertEqual(r.frame.crop(TOAST).tobytes(), header)  # the strip is back exactly
+
+    def test_status_strip_says_one_thing(self):
+        from ytdj.panel.ui import STATUS
+
+        r = Renderer()
+        long_mood = "klidný večer, český rock, trochu jazzu a hodně kytar"
+        r.render(replace(self.BASE, mood=long_mood), full=True)
+        clean = r.frame.crop(STATUS).tobytes()
+        r.render(replace(self.BASE, mood=""), full=True)
+        self.assertEqual(r.frame.crop(STATUS).tobytes(), clean)  # a mood that doesn't fit isn't cut to "klidný v…"
 
 
 class WishLayoutTest(unittest.TestCase):

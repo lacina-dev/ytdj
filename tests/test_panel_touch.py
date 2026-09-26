@@ -652,6 +652,165 @@ class CalibrationFlowTest(unittest.TestCase):
         self.assertTrue(self.log.wait("panel.calibration", phase="abandoned"))
 
 
+class _ExDevice:
+    """The KeDei bus with kd_touch_ex: (code, (x, y, z1, z2, spread x, spread y)) per sample."""
+
+    def __init__(self, samples):
+        self.samples = list(samples)
+        self.pen = False
+
+    def init(self, madctl):
+        pass
+
+    def touch_ex(self):
+        item = self.samples.pop(0) if self.samples else (0, (0, 0, 0, 0, 0, 0))
+        code, v = item
+        self.pen = code not in (0, -1)
+        return code, v
+
+    def touch_raw(self):  # not used when touch_ex exists
+        raise AssertionError("touch_ex should be used")
+
+    def pen_down(self):
+        return self.pen
+
+
+class DriverDiagnosticsTest(unittest.TestCase):
+    """Why samples are refused (invalid_* counters), raw Z1/Z2 for the finger test, the prepared filter."""
+
+    def setUp(self):
+        self.saved = kedei._Device._instance
+
+    def tearDown(self):
+        kedei._Device._instance = self.saved
+
+    def _touch(self, samples, env_filter=None):
+        kedei._Device._instance = _ExDevice(samples)
+        t = kedei.KedeiTouch(calibration=kedei.Calibration(1, 0, 0, 0, 1, 0))
+        t.DOWN_INTERVAL = t.IDLE_INTERVAL = 0.0
+        if env_filter is not None:
+            t.contact_filter = kedei.contact_filter_from_env(env_filter)
+        return t
+
+    @staticmethod
+    def _run(t, n):
+        evs = []
+        for _ in range(n):
+            ev = t.poll(0.0)
+            if ev:
+                evs.append(ev)
+        return evs
+
+    def test_invalid_reasons_are_counted(self):
+        ok = (1, (300, 230, 600, 3000, 20, 20))
+        t = self._touch([ok, (-3, (300, 230, 600, 3000, 400, 20)), ok, (-2, (10, 4090, 20, 4000, 0, 0)),
+                         ok, ok, ok, (0, (0,) * 6), (0, (0,) * 6), (0, (0,) * 6)])
+        evs = self._run(t, 14)
+        self.assertEqual([e.kind for e in evs], ["down", "up"])
+        st = t.take_stats()
+        self.assertEqual((st["invalid_samples"], st["invalid_spread"], st["invalid_rest"]), (2, 1, 1))
+
+    def test_recording_keeps_raw_pressure_and_positions(self):
+        ok = (1, (300, 230, 600, 3000, 20, 20))
+        t = self._touch([ok, ok, (-3, (305, 231, 590, 3100, 300, 10)), ok] + [(0, (0,) * 6)] * 3)
+        t.start_recording()
+        self._run(t, 10)
+        rec = t.take_recording()
+        self.assertEqual([r["c"] for r in rec], [1, 1, -3, 1])
+        self.assertEqual(rec[0]["raw"], [300, 230, 600, 3000, 20, 20])
+        self.assertEqual((rec[0]["x"], rec[0]["y"]), (300, 230))
+        self.assertNotIn("x", rec[2])
+        t.stop_recording()
+        self.assertEqual(t.take_recording(), [])
+
+    def test_contact_filter_is_off_unless_configured(self):
+        self.assertIsNone(kedei.contact_filter_from_env(""))
+        self.assertIsNone(kedei.contact_filter_from_env("nonsense"))
+        f = kedei.contact_filter_from_env("0.1:1.0")
+        self.assertTrue(f((2048, 0, 1000, 2000, 0, 0)))  # R = 0.5·(2 − 1) = 0.5
+        self.assertFalse(f((2048, 0, 1000, 9000, 0, 0)))  # R = 4.0
+
+    def test_contact_filter_drops_samples_when_on(self):
+        good = (1, (2048, 230, 1000, 2000, 10, 10))
+        dual = (1, (2048, 900, 1000, 4000, 10, 10))  # R 1.5 (z still above MIN_PRESSURE)
+        t = self._touch([good, good, dual, dual, good] + [(0, (0,) * 6)] * 3, env_filter="0.1:1.0")
+        evs = self._run(t, 12)
+        self.assertEqual([e.kind for e in evs], ["down", "up"])
+        self.assertEqual(t.take_stats().get("dual_rejected"), 2)
+
+
+class FingerTestFlowTest(_AppBase):
+    def test_twelve_spots_log_a_probe_each(self):
+        from ytdj.panel.fingertest import SPOTS
+        from ytdj.panel.netui import PROBE_BTN
+        from ytdj.panel.ui import NET_TARGET
+
+        self.touch.tap(*center(NET_TARGET))
+        self.assertTrue(wait_for(lambda: self.app._shown_page == "overview"))
+        self.touch.tap(*center(PROBE_BTN))
+        self.assertTrue(wait_for(lambda: self.app._shown_page == "fingertest"))
+        before = self.fake.index
+        for i, (x, y) in enumerate(SPOTS):
+            # the owner's finger at the top edge reads lower: simulate it there
+            ry = y + 60 if y <= 20 else y
+            self._gesture([(x, ry), (x + 2, ry + 1), (x - 1, ry), (x, ry + 2), (x + 1, ry - 1)], dt=0.02)
+            self.assertTrue(wait_for(lambda: self.app.fingertest.step == i + 1))
+        self.assertTrue(wait_for(lambda: self.app.fingertest.phase == "done"))
+        probes = self.log.wait("panel.touch_probe")
+        self.assertEqual(len(probes), 12)
+        top = probes[0]
+        self.assertEqual(top["target"], list(SPOTS[0]))
+        self.assertAlmostEqual(top["err"][1], 60, delta=2)
+        self.assertIsNone(top.get("aim"))  # (40, 10) is the status text, no button (None isn't logged)
+        self.assertEqual(probes[1]["aim"], "phone")
+        self.assertEqual(probes[2]["aim"], "wish")
+        self.assertEqual(probes[1]["button"], "queue")  # read 60 px lower: the owner's "Fronta"
+        self.assertEqual(self.fake.index, before)  # nothing pressed meanwhile
+        run = self.log.wait("panel.touch_probe_run", phase="done")
+        self.assertAlmostEqual(run[0]["top_err"], 60, delta=2)
+        from ytdj.panel.fingertest import BTN_DONE
+
+        self.touch.tap(*center(BTN_DONE))
+        self.assertTrue(wait_for(lambda: self.app._shown_page == "player"))
+
+
+class ProbeReportTest(unittest.TestCase):
+    def test_per_spot_error_spread_and_pressure(self):
+        from ytdj.panel.touchreport import probe_report
+
+        def probe(target, dy, r_z2):
+            samples = [{"t": i * 15, "c": 1, "raw": [2048, 100, 1000, r_z2, 20, 20], "x": target[0],
+                        "y": target[1] + dy + (i % 3)} for i in range(8)]
+            samples.append({"t": 130, "c": -3, "raw": [2048, 100, 1000, r_z2, 400, 20]})
+            return {"kind": "panel.touch_probe", "target": list(target), "err": [0, dy], "button": "x",
+                    "samples": samples}
+
+        text = probe_report([probe((282, 10), 70, 1400), probe((240, 160), 2, 3000)])
+        self.assertIn("282,10", text)
+        self.assertIn("+70", text)
+        self.assertIn("rozptyl 1", text)
+        self.assertIn("top edge: median dy +70 px, touch resistance R 0.20", text)
+        self.assertIn("rest: median dy +2 px, touch resistance R 1.00", text)
+        self.assertIn("no panel.touch_probe", probe_report([]))
+
+
+class TallStripProposalTest(unittest.TestCase):
+    def test_off_by_default_and_renders_when_on(self):
+        import subprocess
+
+        from ytdj.panel import ui
+
+        self.assertEqual(ui.STRIP_H, 32)  # the look the owner has now
+        code = ("import sys; sys.path.insert(0, %r); from ytdj.panel import ui; "
+                "r = ui.Renderer(); r.render(ui.View(online=True, connecting=False, has_track=True, title='X', "
+                "artist='Y', running=True, duration=100, can_next=True), full=True); "
+                "print(ui.STRIP_H, ui.NET_BTN, ui.ART[1], ui.Renderer.LINE_Y)") % str(Path(__file__).resolve().parents[1])
+        out = subprocess.run([sys.executable, "-c", code], env={"YTDJ_PANEL_TALL_STRIP": "1", "PATH": "/usr/bin"},
+                             capture_output=True, text=True, check=True).stdout.split()
+        self.assertEqual(out[0], "46")
+        self.assertEqual(out[-2], "48")
+
+
 class TouchReportTest(unittest.TestCase):
     def test_bias_and_rates(self):
         from ytdj.panel.touchreport import load, report

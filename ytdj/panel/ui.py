@@ -12,6 +12,7 @@ one-pixel column.
 from __future__ import annotations
 
 import colorsys
+import os
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -149,24 +150,29 @@ STRINGS = {
 NET_W = 58
 WISH_W = 112
 PHONE_W = 54
-STATUS = (0, 0, W - NET_W - WISH_W - PHONE_W, 32)
-NET_BTN = (W - NET_W, 0, W, 32)  # the network button's drawing, in the status strip
+# The top strip. Návrh (26. 9., zatím VYPNUTÝ, čeká na souhlas vlastníka):
+# prst úplně u horního okraje čte displej o 50–100 px níž, tlačítka Síť,
+# Přání a Mobil se proto dají posunout o 14 px dolů do vyšší lišty —
+# YTDJ_PANEL_TALL_STRIP=1 pro službu panelu. Výchozí vzhled se nemění.
+STRIP_H = 46 if os.environ.get("YTDJ_PANEL_TALL_STRIP", "") not in ("", "0") else 32
+STATUS = (0, 0, W - NET_W - WISH_W - PHONE_W, STRIP_H)
+NET_BTN = (W - NET_W, 0, W, STRIP_H)  # the network button's drawing, in the status strip
 # …and its touch target: taller than the strip it sits in, nothing else is there
 NET_TARGET = (W - NET_W - 6, 0, W, 56)
 # the wish button ("Přání" → the screen for typing a wish), left of the network one
-WISH_BTN = (W - NET_W - WISH_W, 0, W - NET_W, 32)
+WISH_BTN = (W - NET_W - WISH_W, 0, W - NET_W, STRIP_H)
 WISH_TARGET = (W - NET_W - WISH_W, 0, W - NET_W - 6, 56)
 # the phone button (→ a full-screen QR code to the web: wishes from a phone)
-PHONE_BTN = (W - NET_W - WISH_W - PHONE_W, 0, W - NET_W - WISH_W, 32)
+PHONE_BTN = (W - NET_W - WISH_W - PHONE_W, 0, W - NET_W - WISH_W, STRIP_H)
 PHONE_TARGET = (W - NET_W - WISH_W - PHONE_W - 8, 0, W - NET_W - WISH_W, 56)
 # a banner over the whole strip for a few seconds when somebody wishes something
-TOAST = (0, 0, W, 32)
+TOAST = (0, 0, W, STRIP_H)
 # Cover art (or, in silence, the QR code for wishes from a phone) on the left;
 # title, artist and "Pak:" right of it; the time under the text.
-ART = (0, 34, 160, 198)
+ART = (0, STRIP_H + 2, 160, 198)
 ART_SIDE = 144
-ART_AT = (8, 6)  # the tile's top-left inside ART
-TRACK = (160, 34, W, 166)
+ART_AT = (8, 6 if STRIP_H == 32 else 3)  # the tile's top-left inside ART
+TRACK = (160, STRIP_H + 2, W, 166)
 # ťuknutí na název/„Pak:“ otevře frontu přání (pod tlačítky v liště, bez překryvu)
 TRACK_TARGET = (160, 56, W, 166)
 ELAPSED = (160, 166, 232, 198)
@@ -645,7 +651,7 @@ class Renderer:
     def _draw_status(self, d: ImageDraw.ImageDraw, size: tuple[int, int], v: View) -> None:
         w, h = size
         f, fb = self.fonts.status, self.fonts.status_b
-        cy = h // 2
+        cy = h - 16  # in line with the buttons (the lower 32 px of the strip)
         d.line((0, h - 1, w, h - 1), fill=LINE)
 
         if v.closed:
@@ -706,8 +712,8 @@ class Renderer:
         if v.closed:
             return
         pressed = v.pressed == "phone"
-        d.rounded_rectangle((4, 3, w - 4, h - 6), radius=8, fill=SURFACE_HI if pressed else SURFACE)
-        icon_phone(d, w / 2, (h - 3) / 2, 20, ACCENT_TEXT if pressed else (TEXT if v.qr_url else FAINT))
+        d.rounded_rectangle((4, h - 29, w - 4, h - 6), radius=8, fill=SURFACE_HI if pressed else SURFACE)
+        icon_phone(d, w / 2, h - 17.5, 20, ACCENT_TEXT if pressed else (TEXT if v.qr_url else FAINT))
 
     def _draw_toast(self, d: ImageDraw.ImageDraw, size: tuple[int, int], v: View) -> None:
         """"[Petr] si přeje: Kabát · DJ vybírá…" — a few seconds, in accent, over the strip."""
@@ -734,8 +740,8 @@ class Renderer:
         if v.closed:
             return
         pressed = v.pressed == "net"
-        d.rounded_rectangle((4, 3, w - 8, h - 6), radius=8, fill=SURFACE_HI if pressed else SURFACE)
-        cx, cy = (w - 4) / 2, (h - 3) / 2
+        d.rounded_rectangle((4, h - 29, w - 8, h - 6), radius=8, fill=SURFACE_HI if pressed else SURFACE)
+        cx, cy = (w - 4) / 2, h - 17.5
         kind = v.net[0] if v.net else "?"
         on = ACCENT_TEXT if pressed else TEXT
         if kind == "wifi":
@@ -753,12 +759,12 @@ class Renderer:
         if v.closed:
             return
         pressed = v.pressed == "wish"
-        d.rounded_rectangle((4, 3, w - 4, h - 6), radius=8, fill=SURFACE_HI if pressed else SURFACE)
+        d.rounded_rectangle((4, h - 29, w - 4, h - 6), radius=8, fill=SURFACE_HI if pressed else SURFACE)
         f = self.fonts.status_b
         label = self.s["wish"] + (f" {v.wishes}" if v.wishes else "")
         icon_w = 20
         x = (w - (icon_w + 8 + f.getlength(label))) / 2
-        cy = (h - 3) / 2
+        cy = h - 17.5
         if v.online:
             icon_color, color = ACCENT, (ACCENT_TEXT if pressed else TEXT)
         else:
@@ -865,7 +871,7 @@ class Renderer:
         reason = "network" if v.outage_reason == "dns" else v.outage_reason
         return self.s.get(f"outage_{reason}", self.s["outage_line"])
 
-    LINE_Y = 114  # the bottom line of the text block ("Pak:", outage, QR caption), region-local centre
+    LINE_Y = TRACK[3] - TRACK[1] - 18  # the bottom line of the text block ("Pak:", outage, QR caption)
 
     def _draw_track(self, d: ImageDraw.ImageDraw, size: tuple[int, int], v: View) -> None:
         w, h = size

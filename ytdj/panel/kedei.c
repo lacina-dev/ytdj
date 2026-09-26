@@ -252,10 +252,14 @@ static void sort_int(int *a, int n) {
 }
 
 /*
- * Změří dotyk: vrátí 1 a surové x, y (0–4095) a tlak z, nebo 0 když se nikdo
- * nedotýká. Mediány z několika vzorků, protože odporová vrstva šumí.
+ * Změří dotyk a řekne i proč případně neplatí (diagnostika, panel.touch_probe):
+ * v[0] x, v[1] y (mediány 7 převodů, 0–4095), v[2] z1, v[3] z2, v[4] rozptyl x,
+ * v[5] rozptyl y (bez krajních převodů). Návrat: 1 platný, 0 nikdo se
+ * nedotýká, -1 prst se zvedl uprostřed měření, -2 klidové hodnoty / slabý tlak,
+ * -3 rozptýlené převody. Měření i podmínky jsou přesně ty, co kd_touch.
  */
-int kd_touch(int *x, int *y, int *z) {
+int kd_touch_ex(int *v) {
+    for (int i = 0; i < 6; i++) v[i] = 0;
     if (!kd_pen_down()) return 0;
     bus_touch();
 
@@ -271,18 +275,34 @@ int kd_touch(int *x, int *y, int *z) {
     xpt_read(0x80); /* zpět do power-down s povoleným PENIRQ */
     int still = kd_pen_down();
     bus_lcd();
-    if (!still) return 0; /* prst se zvedl uprostřed měření — hodnoty jsou smetí */
 
     sort_int(xs, N);
     sort_int(ys, N);
+    v[0] = xs[N / 2];
+    v[1] = ys[N / 2];
+    v[2] = z1;
+    v[3] = z2;
+    v[4] = xs[N - 2] - xs[1];
+    v[5] = ys[N - 2] - ys[1];
+    if (!still) return -1; /* prst se zvedl uprostřed měření — hodnoty jsou smetí */
     /* PENIRQ občas cukne i bez prstu a převodník pak vrátí klidové hodnoty
        (x≈0, y≈4095, z1≈0) — po kalibraci pravý dolní roh, tedy tlačítko
        hlasitosti. Skutečný dotyk má z1 v řádu stovek a osy mimo dorazy. */
-    if (z1 < 60 || xs[N / 2] < 40 || ys[N / 2] > 4050) return 0;
+    if (z1 < 60 || xs[N / 2] < 40 || ys[N / 2] > 4050) return -2;
     /* medián nesmí stát na rozptýlených vzorcích (prst dosedá/zvedá se) */
-    if (xs[N - 2] - xs[1] > 150 || ys[N - 2] - ys[1] > 150) return 0;
-    *x = xs[N / 2];
-    *y = ys[N / 2];
-    *z = z1 + 4095 - z2;
+    if (v[4] > 150 || v[5] > 150) return -3;
+    return 1;
+}
+
+/*
+ * Změří dotyk: vrátí 1 a surové x, y (0–4095) a tlak z, nebo 0 když se nikdo
+ * nedotýká. Mediány z několika vzorků, protože odporová vrstva šumí.
+ */
+int kd_touch(int *x, int *y, int *z) {
+    int v[6];
+    if (kd_touch_ex(v) != 1) return 0;
+    *x = v[0];
+    *y = v[1];
+    *z = v[2] + 4095 - v[3];
     return 1;
 }

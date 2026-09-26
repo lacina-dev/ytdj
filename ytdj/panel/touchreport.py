@@ -78,7 +78,8 @@ def report(events: list[dict]) -> str:
     landings = downs + drv.get("aborted_press", 0)
     lines.append(f"driver: {downs} presses from {landings} landings "
                  f"({100 * downs / landings:.0f} %)" if landings else "driver: no presses")
-    for key in ("aborted_press", "spread_rejected", "invalid_samples", "low_pressure", "jump_dropped",
+    for key in ("aborted_press", "spread_rejected", "invalid_samples", "invalid_lifted", "invalid_rest",
+                "invalid_spread", "low_pressure", "dual_rejected", "jump_dropped",
                 "noisy_release"):
         if drv.get(key):
             lines.append(f"  {key}: {drv[key]}")
@@ -107,13 +108,68 @@ def report(events: list[dict]) -> str:
     return "\n".join(lines)
 
 
+CODES = {1: "ok", -1: "zvedl se", -2: "klid/slabý", -3: "rozptyl", -4: "slabý tlak", -5: "dvojí dotyk"}
+
+
+def _r(raw: list) -> float | None:
+    # the same as kedei.touch_resistance, without importing the driver (ctypes, root)
+    if len(raw) < 4 or raw[2] <= 0:
+        return None
+    return raw[0] / 4096 * (raw[3] / raw[2] - 1)
+
+
+def _q(values: list[float]) -> str:
+    if not values:
+        return "–"
+    v = sorted(values)
+    return f"{v[len(v) // 2]:.2f} [{v[0]:.2f}–{v[-1]:.2f}]"
+
+
+def probe_report(events: list[dict]) -> str:
+    """Per spot of "Test prstem": the error, the spread within the press, pressure, refused samples."""
+    probes = [e for e in events if e.get("kind") == "panel.touch_probe"]
+    if not probes:
+        return "no panel.touch_probe events (run \"Test prstem\" on the display: Síť → Test prstem)"
+    lines = [f"{'spot':>11} {'err dx,dy':>11} {'button':>9} {'n ok/bad':>9} {'spread':>7} "
+             f"{'z1 median':>9} {'R median [min–max]':>22}  refused"]
+    groups: dict[str, dict[str, list]] = {"top edge": {"r": [], "dy": []}, "rest": {"r": [], "dy": []}}
+    for e in probes:
+        tx, ty = (e.get("target") or [0, 0])[:2]
+        dx, dy = (e.get("err") or [0, 0])[:2]
+        samples = [x for x in e.get("samples") or [] if isinstance(x, dict)]
+        ok = [x for x in samples if x.get("c") == 1]
+        bad = [x for x in samples if x.get("c") != 1]
+        xs = [x["x"] for x in ok if "x" in x]
+        ys = [x["y"] for x in ok if "y" in x]
+        spread = max(max(xs) - min(xs), max(ys) - min(ys)) if xs else 0
+        z1 = [x["raw"][2] for x in ok if len(x.get("raw", [])) >= 4]
+        rs = [r for r in (_r(x.get("raw", [])) for x in ok) if r is not None]
+        refused = Counter(CODES.get(x.get("c"), str(x.get("c"))) for x in bad)
+        g = groups["top edge" if ty <= 20 else "rest"]
+        g["r"].extend(rs)
+        g["dy"].append(dy)
+        lines.append(f"{tx:>4},{ty:<4}  {dx:+4d},{dy:+4d}  {str(e.get('button')):>9} {len(ok):>4}/{len(bad):<4}"
+                     f" {spread:>6}  {statistics.median(z1) if z1 else 0:>8.0f}  {_q(rs):>22}  "
+                     + ", ".join(f"{k} {v}" for k, v in refused.most_common()))
+    lines.append("")
+    for name, g in groups.items():
+        if g["dy"]:
+            lines.append(f"{name}: median dy {statistics.median(g['dy']):+.0f} px, touch resistance R {_q(g['r'])}")
+    lines.append("R = x/4096·(Z2/Z1 − 1): the XPT2046's touch resistance without the plate constant. If the top "
+                 "edge's R sits apart from the rest, it's a pressure signature (two contacts?) — the prepared filter "
+                 "is YTDJ_PANEL_CONTACT_R=\"od:do\" for the panel service.")
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python3 -m ytdj.panel.touchreport")
     ap.add_argument("events", nargs="?", default="/var/log/ytdj-panel/events.jsonl")
     ap.add_argument("--since", default="", help="ISO time, e.g. 2026-09-26T11:30")
+    ap.add_argument("--probes", action="store_true", help='the "Test prstem" spots (panel.touch_probe)')
     a = ap.parse_args(argv)
     since = datetime.fromisoformat(a.since).timestamp() if a.since else 0.0
-    print(report(load(a.events, since)))
+    events = load(a.events, since)
+    print(probe_report(events) if a.probes else report(events))
     return 0
 
 

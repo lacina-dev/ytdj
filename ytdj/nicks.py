@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import unicodedata
 from pathlib import Path
@@ -77,6 +78,12 @@ class Nicks:
         self.data: dict[str, dict] = {}
         self._saved_at = 0.0
         self._dirty = False
+        # Zápis na kartu mimo hlavní smyčku: Pi 26. 9. 17:23 write_text v ní
+        # stál 5,1 s (sys.loop_lag) — web i displej po tu dobu nereagovaly.
+        self._lock = threading.Lock()
+        self._gen = 0  # pořadí snímků; na disk jde jen novější, než už tam je
+        self._written = 0
+        self._writer: threading.Thread | None = None
         self._load()
 
     def _load(self) -> None:
@@ -96,17 +103,37 @@ class Nicks:
                                            "at": float(rec.get("at") or 0)}
 
     def save(self, force: bool = False) -> None:
+        """Snímek teď, zápis na kartu ve vlákně (nikdy ne v hlavní smyčce)."""
         if self.path is None or not (self._dirty or force):
             return
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(self.data, ensure_ascii=False), encoding="utf-8")
-            os.replace(tmp, self.path)
-            self._dirty = False
-            self._saved_at = time.monotonic()
-        except OSError:
-            log.warning("přezdívky se nepodařilo uložit", exc_info=True)
+        self._gen += 1
+        payload = (self._gen, json.dumps(self.data, ensure_ascii=False))
+        self._dirty = False
+        self._saved_at = time.monotonic()
+        self._writer = threading.Thread(target=self._write, args=payload, daemon=True,
+                                        name="ytdj-nicks")
+        self._writer.start()
+
+    def _write(self, gen: int, text: str) -> None:
+        assert self.path is not None
+        with self._lock:
+            if gen <= self._written:
+                return  # novější snímek už je na disku
+            try:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = self.path.with_suffix(".tmp")
+                tmp.write_text(text, encoding="utf-8")
+                os.replace(tmp, self.path)
+                self._written = gen
+            except OSError:
+                self._dirty = True  # zkusí se příště
+                log.warning("přezdívky se nepodařilo uložit", exc_info=True)
+
+    def flush(self, timeout: float = 5.0) -> None:
+        """Počká na rozepsaný zápis (vypínání, testy)."""
+        w = self._writer
+        if w is not None and w.is_alive():
+            w.join(timeout)
 
     def get(self, cid: str) -> str:
         rec = self.data.get(cid) if cid else None

@@ -624,6 +624,8 @@ class App:
             # skladba, která mezitím dohrála, je v přání hotová a po restartu
             # nezazní znovu (dřív se přání ukládala o celé ukončení dřív).
             self.wishes.save()
+            with contextlib.suppress(Exception):
+                self.wishes.nicks.flush()
             self.store.close()
         return rc
 

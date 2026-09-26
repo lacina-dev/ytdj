@@ -77,10 +77,33 @@ class Book(unittest.TestCase):
         self.assertTrue(book.set("web-bbbbbb", "petr"))  # stejné jméno, jiný člověk
         self.assertFalse(book.shared("web-aaaaaa", "Karel"))  # sám se sebou se nepere
         self.assertFalse(Nicks(None).set("web-aaaaaa", "Petr") or False)
+        book.flush()
         again = Nicks(path)
         self.assertEqual(again.get("web-aaaaaa"), "Petr")
         self.assertEqual(again.get("web-bbbbbb"), "petr")
         self.assertEqual(again.get("web-cccccc"), "")
+
+    def test_save_does_not_wait_for_a_slow_card(self):
+        """Pi 26. 9. 17:23: zápis přezdívek stál v hlavní smyčce 5,1 s."""
+        import time
+        from unittest import mock
+
+        path = Path(tempfile.mkdtemp(dir=_TMP)) / "nicks.json"
+        book = Nicks(path)
+        real = Path.write_text
+
+        def slow(self, *a, **kw):
+            time.sleep(0.5)
+            return real(self, *a, **kw)
+
+        with mock.patch.object(Path, "write_text", slow):
+            t0 = time.monotonic()
+            book.set("web-aaaaaa", "Petr")
+            book.set("web-bbbbbb", "Jana")
+            self.assertLess(time.monotonic() - t0, 0.2)
+            book.flush()
+        again = Nicks(path)
+        self.assertEqual((again.get("web-aaaaaa"), again.get("web-bbbbbb")), ("Petr", "Jana"))
 
     def test_shared_ignores_case_and_diacritics(self):
         book = Nicks(None)

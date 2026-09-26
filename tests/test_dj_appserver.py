@@ -307,6 +307,166 @@ class KeepWarm(unittest.TestCase):
         self.assertEqual(run(go()), (True, False))
 
 
+class SpareThread(unittest.TestCase):
+    """Pi 26. 9. (log Codexu, 29 tahů): tah v novém vlákně čekal na začátek
+    uvažování modelu medián 3,6 s, v rozjetém 1,35 s — a `thread/start` sám
+    0,1–2,7 s. Další vlákno se proto zakládá hned po tahu, který to staré
+    vyčerpal, a příští přání ho má hotové."""
+
+    def setUp(self):
+        self.log = Path(tempfile.mkdtemp(dir=_TMP)) / "msgs.jsonl"
+        os.environ["FAKE_LOG"] = str(self.log)
+        os.environ["FAKE_MODE"] = "ok"
+
+    def tearDown(self):
+        os.environ.pop("FAKE_THREAD_DELAY", None)
+
+    def methods(self):
+        return [json.loads(x).get("method") for x in self.log.read_text().splitlines()]
+
+    def test_next_thread_is_made_right_after_the_last_turn_of_a_thread(self):
+        os.environ["FAKE_THREAD_DELAY"] = "0.4"
+
+        async def go():
+            app = AppServer(str(FAKE), _TMP, max_turns_per_thread=2)
+            try:
+                first = await app.turn("p1", DECISION_SCHEMA, timeout=5)
+                second = await app.turn("p2", DECISION_SCHEMA, timeout=5)
+                await asyncio.sleep(0.8)  # posluchač teprve píše další přání
+                made_before = self.methods().count("thread/start")
+                third = await app.turn("p3", DECISION_SCHEMA, timeout=5)
+                return first, second, third, made_before
+            finally:
+                await app.close()
+
+        first, second, third, made_before = run(go())
+        self.assertGreaterEqual(first.startup_ms, 400)  # první vlákno se čekalo
+        self.assertFalse(first.premade)
+        self.assertEqual(made_before, 2)  # druhé vlákno vzniklo hned po 2. tahu
+        self.assertTrue(third.new_thread)  # pořád po 2 tazích nové vlákno
+        self.assertTrue(third.premade)
+        self.assertLess(third.startup_ms, 300)  # 0,4 s thread/start už zaplacené
+        self.assertIn("thread-2", json.loads(third.text)["reply"])
+        self.assertEqual(self.methods().count("initialize"), 1)
+
+    def test_spare_thread_never_starts_a_process_and_close_stops_a_pending_start(self):
+        os.environ["FAKE_START_DELAY"] = "0.3"
+
+        async def go():
+            app = AppServer(str(FAKE), _TMP)
+            app.prewarm(spawn=False)  # náhradní vlákno jen do běžícího procesu
+            await asyncio.sleep(0.1)
+            spare_spawned = app.proc is not None
+            app.prewarm()  # předstart… a hned vypnutí ytdj
+            await asyncio.sleep(0.05)
+            await app.close()
+            await asyncio.sleep(0.6)
+            return spare_spawned, app.proc is not None
+
+        try:
+            self.assertEqual(run(go()), (False, False))
+        finally:
+            del os.environ["FAKE_START_DELAY"]
+
+    def test_reasoning_effort_goes_with_each_turn_only_when_set(self):
+        async def go(effort):
+            app = AppServer(str(FAKE), _TMP, effort=effort)
+            try:
+                await app.turn("p", DECISION_SCHEMA, timeout=5)
+            finally:
+                await app.close()
+
+        run(go("low"))
+        run(go(""))
+        turns = [json.loads(x)["params"] for x in self.log.read_text().splitlines()
+                 if json.loads(x).get("method") == "turn/start"]
+        self.assertEqual([t.get("effort") for t in turns], ["low", None])
+
+    def test_effort_from_env_is_a_plain_word(self):
+        from ytdj.agent.appserver import effort_from_env
+
+        old = os.environ.get("YTDJ_CODEX_EFFORT")
+        try:
+            for value, want in (("low", "low"), (" Medium ", "medium"), ("", ""),
+                                ("low; rm -rf", ""), ("x" * 20, "")):
+                os.environ["YTDJ_CODEX_EFFORT"] = value
+                self.assertEqual(effort_from_env(), want, value)
+        finally:
+            if old is None:
+                os.environ.pop("YTDJ_CODEX_EFFORT", None)
+            else:
+                os.environ["YTDJ_CODEX_EFFORT"] = old
+
+
+class WarmAhead(unittest.TestCase):
+    """Studený start Codexu platilo 26. 9. 9 z 18 tahů posluchačů (4,8–12,4 s):
+    nahřát ho, když někdo začne psát přání, a po startu služby v pracovní době."""
+
+    def setUp(self):
+        import test_dj_apply  # noqa: F401 — nastaví YTDJ_CODEX_APP_SERVER=0; pak přepsat
+
+        self._env = os.environ.get("YTDJ_CODEX_APP_SERVER")
+        os.environ["YTDJ_CODEX_APP_SERVER"] = "1"
+        os.environ["FAKE_MODE"] = "ok"
+        os.environ["FAKE_LOG"] = str(Path(tempfile.mkdtemp(dir=_TMP)) / "w.jsonl")
+
+    def tearDown(self):
+        os.environ["YTDJ_CODEX_APP_SERVER"] = self._env or "0"
+
+    def dj(self):
+        from test_dj_apply import make
+
+        dj, _, _ = make()
+        dj.app = AppServer(str(FAKE), _TMP)
+        return dj
+
+    def warm(self, dj, source, free_mb=600, office=True):
+        from unittest import mock
+
+        from ytdj.agent import codex as codex_mod
+
+        async def go():
+            with mock.patch.object(codex_mod, "mem_available_mb", lambda: free_mb), \
+                    mock.patch.object(codex_mod, "office_warm", lambda: office):
+                ok = dj.warm_ahead(source)
+            await asyncio.sleep(0.8)
+            ready = dj.app.ready
+            await dj.close()
+            return ok, ready
+
+        return run(go())
+
+    def events(self):
+        return [json.loads(x) for x in Path(os.environ["YTDJ_EVENTS_FILE"]).read_text().splitlines()]
+
+    def test_typing_a_wish_warms_the_brain_any_time(self):
+        self.assertEqual(self.warm(self.dj(), "web", office=False), (True, True))
+        warm = [e for e in self.events() if e["kind"] == "dj.warm"]
+        self.assertEqual(warm[-1]["source"], "web")
+
+    def test_after_start_only_in_office_hours(self):
+        self.assertEqual(self.warm(self.dj(), "start", office=False), (False, False))
+        self.assertEqual(self.warm(self.dj(), "start", office=True), (True, True))
+
+    def test_not_with_little_memory_or_when_the_brain_is_down(self):
+        self.assertEqual(self.warm(self.dj(), "web", free_mb=120), (False, False))
+        dj = self.dj()
+        dj.breaker.failure(RuntimeError("unexpected status 429 Too Many Requests"))
+        self.assertEqual(self.warm(dj, "web"), (False, False))
+
+    def test_web_endpoint_only_warms(self):
+        from types import SimpleNamespace
+
+        from ytdj.web.server import WebServer
+
+        calls = []
+        app = SimpleNamespace(dj=SimpleNamespace(warm_ahead=lambda src: calls.append(src) or True))
+        srv = WebServer(app)
+        resp = run(srv._dj_warm(SimpleNamespace()))
+        self.assertEqual(json.loads(resp.body), {"ok": True})
+        self.assertEqual(calls, ["web"])
+
+
 class NativeBinary(unittest.TestCase):
     def test_finds_vendor_binary_next_to_npm_wrapper(self):
         root = Path(tempfile.mkdtemp(dir=_TMP)) / "@openai/codex"

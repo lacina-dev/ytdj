@@ -360,6 +360,12 @@ Tohle je seznam všeho, co aplikace umí (stav 26. 9. 2026, commit e713074).
   Testy: `tests/test_player_queue.py::TrueOrder::test_history_is_pruned`
 - **F-PROVOZ-07** Každý start služby zapíše do provozního logu událost `app.start` s časy fází od spuštění procesu (načtení, konfigurace, start přehrávače, aplikace, navázání, web) a časem spuštění procesu, aby šlo změřit ticho po restartu.
   Testy: `tests/test_startup.py::StartOrder::test_player_starts_before_the_rest_of_the_app_and_resumes`, `tests/test_startup.py::StartEvent::test_clock_measures_from_process_start`
+- **F-PROVOZ-08** Codex se nahřívá dřív, než přání přijde: když někdo na webu začne psát přání (kdykoli) a po startu služby v pracovní době — jen s ≥ 250 MB volné paměti a když mozek jede; nahřátí nic nepřehrává ani nezařazuje. Pravidla ukončení z F-PROVOZ-05 platí dál.
+  Nové pravidlo 26. 9. 2026 (rychlejší volná přání: studený start Codexu platilo 9 z 18 tahů posluchačů, 4,8–12,4 s).
+  Testy: `tests/test_dj_appserver.py::WarmAhead::test_typing_a_wish_warms_the_brain_any_time`, `tests/test_dj_appserver.py::WarmAhead::test_after_start_only_in_office_hours`, `tests/test_dj_appserver.py::WarmAhead::test_not_with_little_memory_or_when_the_brain_is_down`, `tests/test_dj_appserver.py::WarmAhead::test_web_endpoint_only_warms`, `tests/test_dj_appserver.py::SpareThread::test_spare_thread_never_starts_a_process_and_close_stops_a_pending_start`
+- **F-PROVOZ-09** Když tah vyčerpá vlákno Codexu (F-PROVOZ-05), další vlákno se založí hned na pozadí, ne až s dalším přáním; nikdy přitom nespustí nový proces.
+  Nové pravidlo 26. 9. 2026 (nové vlákno čekalo na začátek odpovědi modelu medián 3,6 s, rozjeté 1,35 s).
+  Testy: `tests/test_dj_appserver.py::SpareThread::test_next_thread_is_made_right_after_the_last_turn_of_a_thread`, `tests/test_dj_appserver.py::SpareThread::test_spare_thread_never_starts_a_process_and_close_stops_a_pending_start`
 
 ## Bezpečnost (současný stav — k rozhodnutí)
 

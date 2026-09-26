@@ -490,15 +490,21 @@ class App:
         if warning := await yt_dlp_warning(self.cfg):
             print(f"POZOR: {warning}\n")
         warm = getattr(self.catalog, "warm", None)
-        if warm is None:
-            return
-        t0 = time.monotonic()
-        try:
-            await asyncio.to_thread(warm)
-        except Exception:
-            log.warning("katalog (ytmusicapi) se nepodařilo připravit", exc_info=True)
-            return
-        log.info("katalog připraven za %d ms", (time.monotonic() - t0) * 1000)
+        if warm is not None:
+            t0 = time.monotonic()
+            try:
+                await asyncio.to_thread(warm)
+                log.info("katalog připraven za %d ms", (time.monotonic() - t0) * 1000)
+            except Exception:
+                log.warning("katalog (ytmusicapi) se nepodařilo připravit", exc_info=True)
+        # [latency] v pracovní době Codex nahřát hned po startu, ne až s prvním
+        # přáním (Pi 26. 9.: první přání po restartu čekalo 8,8–12,4 s)
+        warm_dj = getattr(self.dj, "warm_ahead", None)
+        if warm_dj is not None:
+            try:
+                warm_dj("start")
+            except Exception:
+                log.warning("nahřátí Codexu po startu selhalo", exc_info=True)
 
 
     async def run(self, repl: bool = True) -> int:

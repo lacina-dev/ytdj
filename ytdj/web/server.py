@@ -607,6 +607,7 @@ class WebServer:
             for rec in await self._history():
                 history.append(
                     {
+                        "id": getattr(rec, "video_id", "") or "",  # hlas ze seznamu Odehráno
                         "artist": rec.artist or "",
                         "title": rec.title or "",
                         "outcome": rec.outcome,
@@ -614,6 +615,10 @@ class WebServer:
                 )
         except Exception:
             log.debug("historii se nepodařilo přečíst", exc_info=True)
+        try:
+            votes_api.annotate_list(self.app, history)  # 👍/👎 i u odehraných
+        except Exception:
+            log.debug("hlasy k historii se nepodařilo přiřadit", exc_info=True)
 
         busy = self.busy
         dj_text, dj_source = self._dj_text, self._dj_source

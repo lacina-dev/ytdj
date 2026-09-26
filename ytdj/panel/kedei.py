@@ -195,6 +195,17 @@ class Calibration:
 
     source = "custom"  # odkud kalibrace je — do provozního logu
 
+    def then(self, other: "Calibration") -> "Calibration":
+        """Nejdřív self, pak other (skládání afinních map): other(self(raw))."""
+        ax, bx, cx, ay, by, cy = self.coef
+        ox, px, qx, oy, py, qy = other.coef
+        return Calibration(
+            ox * ax + px * ay, ox * bx + px * by, ox * cx + px * cy + qx,
+            oy * ax + py * ay, oy * bx + py * by, oy * cx + py * cy + qy,
+        )
+
+
+
     @classmethod
     def load(cls, path: Path = CALIBRATION) -> Calibration:
         try:
@@ -219,16 +230,48 @@ class Calibration:
         return cls(0.0031, 0.1317, -31.9, -0.0897, -0.0003, 332.3)
 
 
+# z pixelů naměřených se starou kalibrací na pixely, kam prst mířil
+MAX_CAL_ERROR = 25  # px — horší zbytek po proložení = body nesedí, nic se neuloží
+FLIP = Calibration(-1, 0, WIDTH - 1, 0, -1, HEIGHT - 1)  # otočení o 180°
+
+
+def screen_correction(pairs: list[tuple[tuple[int, int], tuple[int, int]]]) -> tuple[Calibration, float]:
+    """Oprava v souřadnicích obrazovky z párů (kam dotyk padl, kde byl křížek); (oprava, největší zbytek px)."""
+    if len(pairs) < 3:
+        raise ValueError("na kalibraci jsou potřeba aspoň tři body")
+    corr = Calibration.fit(pairs)
+    err = 0.0
+    for (mx, my), (tx, ty) in pairs:
+        ax, bx, cx, ay, by, cy = corr.coef
+        err = max(err, abs(ax * mx + bx * my + cx - tx), abs(ay * mx + by * my + cy - ty))
+    # rozumná oprava jen posouvá, mírně natahuje a natáčí — ne zrcadlí ani nemačká
+    ax, bx, _, ay, by, _ = corr.coef
+    if not (0.6 < ax < 1.6 and 0.6 < by < 1.6 and abs(bx) < 0.4 and abs(ay) < 0.4):
+        raise ValueError(f"kalibrační body nedávají smysl ({ax:.2f}, {bx:.2f}, {ay:.2f}, {by:.2f})")
+    return corr, err
+
+
 class KedeiTouch:
     """Vzorkuje převodník, filtruje šum a skládá z něj down/move/up."""
 
     DOWN_INTERVAL = 0.015  # s — vzorkování při držení
     IDLE_INTERVAL = 0.025  # s — hlídání PENIRQ
-    RELEASE_SAMPLES = 3    # tolik prázdných vzorků za sebou = prst je pryč
-    PRESS_SAMPLES = 3      # tolik shodných vzorků za sebou = opravdu dotyk
-    PRESS_SPREAD = 12      # px — jak blízko u sebe musí ty vzorky být
+    RELEASE_SAMPLES = 3    # tolik prázdných vzorků za sebou (PENIRQ nahoře) = prst je pryč
+    # Stisk platí, když aspoň PRESS_SAMPLES z posledních PRESS_WINDOW platných
+    # vzorků leží do PRESS_SPREAD px od nejnovějšího; poloha = jejich medián.
+    # Dřív 3 po sobě do 12 px a každý vadný vzorek stisk zahodil: na Pi
+    # 565× spread_rejected a 155× aborted_press na 347 stisků (25.–26. 9.),
+    # od 11:30 250× spread_rejected na 115 stisků.
+    PRESS_SAMPLES = 2
+    PRESS_WINDOW = 3
+    PRESS_SPREAD = 24      # px
     JUMP = 60              # px — větší skok při držení musí potvrdit další vzorek
+    JUMP_SPREAD = 12       # px — jak blízko musí být potvrzující vzorek skoku
     MOVE_THRESHOLD = 3     # px
+    # PENIRQ dole, ale převodník nedal použitelný vzorek (šum, slabý tlak):
+    # nic neruší ani neukončuje; teprve tolik za sebou při držení = konec
+    # (kdyby PENIRQ zůstal viset dole).
+    NOISY_RELEASE = 12
 
     def __init__(self, rotate: int = 0, calibration: Calibration | None = None) -> None:
         self._dev = _Device.get()
@@ -239,11 +282,31 @@ class KedeiTouch:
         self._pos = (0, 0)
         self._misses = 0
         self._candidates: list[tuple[int, int]] = []
+        self._recent: list[tuple[int, int]] = []  # poslední platné vzorky při držení (medián)
+        self._noisy = 0  # vadné vzorky za sebou při držení
         self._jump: tuple[int, int] | None = None
         # Anomálie převodníku za poslední souhrn (panel.touch_driver). Jen
         # přičítání v tomhle vlákně; `take_stats()` z hlavního vlákna vymění
         # celý slovník — případná ztráta jednoho přičtení nevadí.
         self._stats: dict[str, int] = {}
+
+    def apply_correction(self, pairs: list[tuple[tuple[int, int], tuple[int, int]]],
+                         path: Path | None = None) -> float:
+        """Kalibrace z panelu: páry (kam dotyk padl, kde byl křížek) v pixelech
+        obrazovky. Opraví a uloží kalibraci, platí hned; vrátí největší zbytek (px).
+        ValueError, když body nesedí — pak se nic nemění."""
+        corr, err = screen_correction(pairs)
+        if err > MAX_CAL_ERROR:
+            raise ValueError(f"odchylka {err:.0f} px")
+        if self._rotate == 180:
+            corr = FLIP.then(corr).then(FLIP)  # oprava v souřadnicích před otočením
+        new = self._cal.then(corr)
+        target = path or CALIBRATION
+        new.save(target)
+        new.source = f"file:{target}"
+        self._cal = new
+        log.info("kalibrace dotyku uložena do %s (odchylka %.0f px)", target, err)
+        return err
 
     @property
     def calibration_source(self) -> str:
@@ -257,72 +320,106 @@ class KedeiTouch:
         st, self._stats = self._stats, {}
         return st
 
-    def _sample(self) -> tuple[int, int] | None:
+    def _sample(self) -> tuple[int, int] | str:
+        """Poloha (x, y), nebo "noisy" (prst tam je, vzorek ale nepoužitelný), nebo "up"."""
         raw = self._dev.touch_raw()
         if raw is None:
             # PENIRQ hlásí prst, ale převodník nedal použitelné vzorky
             # (zvedl se uprostřed měření, klidové hodnoty, rozptyl)
             if self._dev.pen_down():
                 self._bump("invalid_samples")
-            return None
+                return "noisy"
+            return "up"
         if raw[2] < MIN_PRESSURE:
             self._bump("low_pressure")
-            return None
+            return "noisy"
         x, y = self._cal.map(raw[0], raw[1])
         if self._rotate == 180:
             x, y = WIDTH - 1 - x, HEIGHT - 1 - y
         return x, y
 
+    @staticmethod
+    def _median(points: list[tuple[int, int]]) -> tuple[int, int]:
+        xs = sorted(p[0] for p in points)
+        ys = sorted(p[1] for p in points)
+        return xs[len(xs) // 2], ys[len(ys) // 2]
+
+    def _landing(self, pos: tuple[int, int]) -> TouchEvent | None:
+        """Prst dosedá: stisk, jakmile se pár vzorků shodne."""
+        self._candidates = (self._candidates + [pos])[-self.PRESS_WINDOW:]
+        near = [p for p in self._candidates
+                if max(abs(p[0] - pos[0]), abs(p[1] - pos[1])) <= self.PRESS_SPREAD]
+        if len(near) >= self.PRESS_SAMPLES:
+            self._down = True
+            self._pos = self._median(near)
+            self._recent = near[-3:]
+            self._candidates, self._misses, self._noisy = [], 0, 0
+            self._bump("downs")
+            return TouchEvent("down", *self._pos)
+        if len(self._candidates) >= self.PRESS_SAMPLES:
+            self._bump("spread_rejected")  # dosedající prst, vzorky rozházené
+        return None
+
+    def _holding(self, pos: tuple[int, int]) -> TouchEvent | None:
+        """Prst drží: pohyb z mediánu posledních vzorků, osamělé skoky pryč."""
+        dist = max(abs(pos[0] - self._pos[0]), abs(pos[1] - self._pos[1]))
+        if dist > self.JUMP and (
+            self._jump is None
+            or max(abs(pos[0] - self._jump[0]), abs(pos[1] - self._jump[1])) > self.JUMP_SPREAD
+        ):
+            if self._jump is not None:
+                self._bump("jump_dropped")  # předchozí skok nikdo nepotvrdil
+            self._jump = pos  # počkat, jestli to potvrdí další vzorek
+            return None
+        if dist > self.JUMP:
+            self._recent = [self._jump, pos]  # potvrzený skok: prst se opravdu přesunul
+        else:
+            self._recent = (self._recent + [pos])[-3:]
+        self._jump = None
+        new = self._median(self._recent)
+        if max(abs(new[0] - self._pos[0]), abs(new[1] - self._pos[1])) >= self.MOVE_THRESHOLD:
+            self._pos = new
+            return TouchEvent("move", *new)
+        return None
+
     def poll(self, timeout: float) -> TouchEvent | None:
         deadline = time.monotonic() + timeout
         while True:
             pos = self._sample()
-            if pos is not None:
-                self._misses = 0
-                if not self._down:
-                    # Odporová vrstva při dosedání prstu hlásí nesmysly — stisk
-                    # platí, až když pár vzorků za sebou míří na stejné místo.
-                    self._candidates.append(pos)
-                    self._candidates = self._candidates[-self.PRESS_SAMPLES:]
-                    if len(self._candidates) == self.PRESS_SAMPLES:
-                        xs = sorted(p[0] for p in self._candidates)
-                        ys = sorted(p[1] for p in self._candidates)
-                        if xs[-1] - xs[0] <= self.PRESS_SPREAD and ys[-1] - ys[0] <= self.PRESS_SPREAD:
-                            self._down = True
-                            self._pos = (xs[len(xs) // 2], ys[len(ys) // 2])
-                            self._candidates = []
-                            self._bump("downs")
-                            return TouchEvent("down", *self._pos)
-                        self._bump("spread_rejected")  # dosedající prst, vzorky rozházené
-                else:
-                    dist = max(abs(pos[0] - self._pos[0]), abs(pos[1] - self._pos[1]))
-                    if dist > self.JUMP and (
-                        self._jump is None
-                        or max(abs(pos[0] - self._jump[0]), abs(pos[1] - self._jump[1])) > self.PRESS_SPREAD
-                    ):
-                        if self._jump is not None:
-                            self._bump("jump_dropped")  # předchozí skok nikdo nepotvrdil
-                        self._jump = pos  # počkat, jestli to potvrdí další vzorek
-                    elif dist >= self.MOVE_THRESHOLD:
-                        self._jump = None
-                        self._pos = pos
-                        return TouchEvent("move", *pos)
-            else:
+            ev: TouchEvent | None = None
+            if isinstance(pos, tuple):
+                self._misses = self._noisy = 0
+                ev = self._holding(pos) if self._down else self._landing(pos)
+            elif pos == "noisy":
+                # šum při dosedání ani při držení stisk neruší
+                if self._down:
+                    self._noisy += 1
+                    if self._noisy >= self.NOISY_RELEASE:
+                        self._bump("noisy_release")
+                        ev = self._release()
+            else:  # PENIRQ nahoře: prst se zvedá
                 if self._candidates:
-                    # prst "dosedl" (1–2 vzorky), ale stisk se nepotvrdil
+                    # prst "dosedl", ale stisk se nepotvrdil
                     self._bump("aborted_press")
                 self._candidates = []
                 self._jump = None
                 if self._down:
                     self._misses += 1
                     if self._misses >= self.RELEASE_SAMPLES:
-                        self._down, self._misses = False, 0
-                        return TouchEvent("up", *self._pos)
+                        ev = self._release()
+            if ev is not None:
+                return ev
             now = time.monotonic()
             if now >= deadline:
                 return None
             interval = self.DOWN_INTERVAL if (self._down or self._candidates) else self.IDLE_INTERVAL
             time.sleep(min(interval, deadline - now))
+
+    def _release(self) -> TouchEvent:
+        self._down, self._misses, self._noisy = False, 0, 0
+        self._jump = None
+        self._recent = []
+        return TouchEvent("up", *self._pos)
 
     def close(self) -> None:
         pass

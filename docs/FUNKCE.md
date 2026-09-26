@@ -69,7 +69,8 @@ Tohle je seznam všeho, co aplikace umí (stav 26. 9. 2026, commit e713074).
   Testy: `tests/test_panel_net.py::NetFlowTest::test_media_keys_and_state_while_open`
 - **F-HLAS-03** Ťuknutí na −/+ na displeji je jeden krok po 5.
   Testy: `tests/test_panel.py::EndToEndTest::test_volume_tap_is_one_step`, `tests/test_panel.py::EndToEndTest::test_volume_step_and_drag`
-- **F-HLAS-04** Podržené −/+ mění hlasitost plynule (po 0,45 s každých 0,15 s, po 1,5 s každých 0,1 s) a zastaví se na 0/100, po zvednutí nebo sjetí prstu.
+- **F-HLAS-04** Podržené −/+ mění hlasitost plynule (po 0,45 s každých 0,15 s, po 1,5 s každých 0,1 s) a zastaví se na 0/100, po zvednutí nebo zřetelném sjetí prstu (2 vzorky za sebou dál než 44 px od tlačítka).
+  Změněno 26. 9. 2026 se souhlasem vlastníka: „sjetí prstu" = zřetelné sjetí, ne šum rezistivní vrstvy (dřív stačilo 14 px a stisky se ztrácely — ráno 26. 9. jen ~40 % dotyků prošlo).
   Testy: `tests/test_panel.py::EndToEndTest::test_volume_hold_repeats`, `tests/test_panel.py::EndToEndTest::test_volume_hold_clamps`, `tests/test_panel.py::EndToEndTest::test_volume_slide_out_stops_repeat`, `tests/test_panel.py::EndToEndTest::test_volume_hold_survives_glitch`
 - **F-HLAS-05** Hlasitost si ytdj pamatuje přes restart: zapíše se 2 s po poslední změně (ne při každém pohybu) a mpv startuje rovnou s ní.
   Testy: `tests/test_funkce_guards.py::VolumeRemembered::test_set_volume_is_written_to_config_once_after_a_pause`, `tests/test_funkce_guards.py::VolumeRemembered::test_mpv_starts_at_the_saved_volume_capped`
@@ -215,7 +216,9 @@ Tohle je seznam všeho, co aplikace umí (stav 26. 9. 2026, commit e713074).
 
 ## Displej
 
-- **F-DISPLEJ-01** Displej ukazuje, co hraje (název, interpret, čas), a ovládá hrát/pauza, další a hlasitost; ťuknutí mimo tlačítko nic nedělá.
+- **F-DISPLEJ-01** Displej ukazuje, co hraje (název, interpret, čas), a ovládá hrát/pauza, další a hlasitost; ťuknutí dál než 10 px od tlačítka nic nedělá (mezera mezi tlačítky patří nejbližšímu).
+  Změněno 26. 9. 2026 se souhlasem vlastníka: dřív „ťuknutí mimo tlačítko nic nedělá"; mezery 6–8 px mezi tlačítky teď patří nejbližšímu tlačítku, aby se dalo trefit.
+  Testy: `tests/test_panel_touch.py::PressRulesTest::test_nearest_target_within_grab`, `tests/test_panel_touch.py::PressRulesTest::test_player_touch_areas_cover_the_gaps`, `tests/test_panel_touch.py::AppTouchTest::test_press_in_the_gap_between_play_and_next`
   Testy: `tests/test_panel.py::EndToEndTest::test_play_pause`, `tests/test_panel.py::EndToEndTest::test_next`, `tests/test_panel.py::EndToEndTest::test_tap_off_button_does_nothing`, `tests/test_panel.py::PlayerLookTest::test_title_as_big_as_fits`
 - **F-DISPLEJ-02** Hrát v tichu (nic nehraje) rozjede DJe.
   Testy: `tests/test_panel.py::WishTest::test_play_in_silence_asks_the_server_to_start`
@@ -237,8 +240,13 @@ Tohle je seznam všeho, co aplikace umí (stav 26. 9. 2026, commit e713074).
   Testy: `tests/test_panel.py::PlayerLookTest::test_outage_says_why_and_that_wishes_wait`, `tests/test_panel.py::PlayerLookTest::test_friendly_copy`, `tests/test_panel.py::PlayerLookTest::test_silence_has_no_empty_progress_bar`, `tests/test_panel.py::NewLookTest::test_status_strip_says_one_thing`, `tests/test_panel.py::TextTest::test_ellipsize_czech`, `tests/test_panel.py::TextTest::test_wrap_two_lines`, `tests/test_panel.py::TextTest::test_wrap_one_giant_word`
 - **F-DISPLEJ-11** Na displej jde jen to, co se změnilo (tik hodin je pár pixelů), plus průběžné překreslení po pruzích, aby se případná chyba srovnala sama.
   Testy: `tests/test_panel.py::RenderTest::test_merge`, `tests/test_panel.py::RenderTest::test_tick_is_tiny`, `tests/test_panel.py::PanelBehaviourTest::test_rolling_refresh_sends_a_band_not_a_frame`, `tests/test_panel.py::VotesTest::test_a_vote_redraws_only_the_text_block`
-- **F-DISPLEJ-12** ⚙️ mění se (26. 9.) Dotyk: dvojí ťuknutí přes změnu obrazovky nic nezmáčkne, cíle se nepřekrývají, zákmity a anomálie převodníku se zahodí a spočítají.
+- **F-DISPLEJ-12** Dotyk: stisk platí pro tlačítko, kam prst dosedl; zruší ho jen zřetelné sjetí; šum převodníku stisk nepřeruší ani neukončí; hned při dotyku se tlačítko orámuje; minutí se logují s nejbližším tlačítkem. Dvojí ťuknutí přes změnu obrazovky nic nezmáčkne, cíle se nepřekrývají, anomálie převodníku se spočítají.
+  Změněno 26. 9. 2026 se souhlasem vlastníka: přesnější znění po opravě dotyku (dosednutí = medián 2 ze 3 vzorků do 24 px, šum neukončí stisk).
+  Testy: `tests/test_panel_touch.py::PressRulesTest::test_jitter_and_a_lift_drift_keep_the_press`, `tests/test_panel_touch.py::PressRulesTest::test_sustained_drag_away_cancels`, `tests/test_panel_touch.py::DriverReplayTest::test_scattered_landing_with_a_noisy_sample_still_presses`, `tests/test_panel_touch.py::DriverReplayTest::test_noise_while_held_is_not_a_release`, `tests/test_panel_touch.py::DriverReplayTest::test_a_single_touchy_sample_is_not_a_press`, `tests/test_panel_touch.py::AppTouchTest::test_jittery_press_on_next_counts`, `tests/test_panel_touch.py::AppTouchTest::test_drag_away_does_not_skip`, `tests/test_panel_touch.py::AppTouchTest::test_feedback_ring_shows_before_release`, `tests/test_panel_touch.py::AppTouchTest::test_miss_is_logged_with_the_nearest_button`
   Testy: `tests/test_panel.py::PanelBehaviourTest::test_double_tap_through_a_page_switch_does_nothing`, `tests/test_panel.py::WishLayoutTest::test_player_targets_do_not_overlap`, `tests/test_panel.py::TouchDriverStatsTest::test_anomalies_are_counted_and_summarised`, `tests/test_panel.py::TouchDriverStatsTest::test_calibration_source`, `tests/test_panel.py::TouchDriverStatsTest::test_repeated_errors_are_throttled`
+- **F-DISPLEJ-14** Kalibrace dotyku z displeje (síť → „Kalibrace dotyku"): 5 křížků; uloží se a platí hned jen když body sedí (odchylka ≤ 25 px), jinak se nic nezmění a nabídne se „Znovu"; bez dotyku 45 s se vzdá.
+  Nové pravidlo 26. 9. 2026 se souhlasem vlastníka.
+  Testy: `tests/test_panel_touch.py::CalibrationTest::test_composes_on_top_of_the_current_calibration_and_saves`, `tests/test_panel_touch.py::CalibrationTest::test_points_that_dont_fit_change_nothing`, `tests/test_panel_touch.py::CalibrationFlowTest::test_calibrate_then_taps_land_where_aimed`, `tests/test_panel_touch.py::CalibrationFlowTest::test_a_slipped_point_changes_nothing_and_offers_again`, `tests/test_panel_touch.py::CalibrationFlowTest::test_leaving_it_alone_gives_up`
 - **F-DISPLEJ-13** Ovladač displeje KeDei 3.5" v6.2 a dotykového čipu XPT2046 (přímý přístup na SPI/GPIO).
   (bez testu: hardwarový protokol displeje; ověřuje `python -m ytdj.panel.kedei --test` na Pi)
 
@@ -373,4 +381,6 @@ Opraveno v dokumentaci (kód se neměnil):
 
 | Datum | Pravidlo | Co se změnilo a proč |
 |---|---|---|
-| — | — | zatím žádné |
+| 26. 9. 2026 | F-DISPLEJ-01 | Mezera mezi tlačítky (do 10 px) stiskne nejbližší tlačítko — ráno se trefovalo jen ~40 % dotyků. |
+| 26. 9. 2026 | F-HLAS-04, F-DISPLEJ-12 | Stisk ruší jen zřetelné sjetí prstu (2× dál než 44 px), šum převodníku ho nepřeruší. |
+| 26. 9. 2026 | F-DISPLEJ-14 (nové) | Kalibrace dotyku z displeje, 5 křížků. |

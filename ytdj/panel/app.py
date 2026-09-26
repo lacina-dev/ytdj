@@ -19,6 +19,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from .art import ArtCache
+from .calib import CalibController
 from .client import Api, Commander, StatusFeed
 from .hw import Screen, Touch, TouchEvent
 from .netapp import NetController
@@ -118,6 +119,8 @@ class PanelApp:
         self.renderer.art_source = self.art.get
         # the full-screen "wishes from a phone" QR page
         self.qr_renderer = QrRenderer(self.renderer.fonts, lang)
+        # "Kalibrace dotyku" (from the network screen): five crosses, a corrected calibration
+        self.calib = CalibController(touch, lang, fonts=self.renderer.fonts, count=self.stats.count)
         self.qr_open = False
         self.qr_at = 0.0
         self._art_is_qr = False  # the art slot shows the QR code (tapping it opens the page)
@@ -247,6 +250,7 @@ class PanelApp:
                 self.net.renderer.invalidate()
                 self.wish.invalidate()
                 self.qr_renderer.invalidate()
+                self.calib.renderer.invalidate()
                 self.stop.wait(1.0)
         # poslední souhrny, ať se neztratí minuta před zastavením
         self._log_gesture()
@@ -362,6 +366,8 @@ class PanelApp:
                 self._fire(msg[1], now, source="mediakey")
 
     def _page(self) -> str:
+        if self.calib.page:
+            return "calib"
         if self.net.page:
             return self.net.page
         if self.wish.page:
@@ -392,8 +398,13 @@ class PanelApp:
             return
         page = self._page()
         overlay = self._overlay()
-        if overlay is not None:
+        if page == "calib":
+            self.calib.touch_event(ev, at)
+        elif overlay is not None:
             overlay.touch(ev, at)
+            if self.net.want_calib:
+                self.net.want_calib = False
+                self.calib.open(at)
         elif page == "qr":
             self.qr_at = at
             if ev.kind == "up":  # a tap anywhere goes back
@@ -621,6 +632,9 @@ class PanelApp:
         elif page == "qr":
             view = self.net.urls()  # type: ignore[assignment]
             renderer, pressed = self.qr_renderer, None  # type: ignore[assignment]
+        elif page == "calib":
+            view = self.calib.view()  # type: ignore[assignment]
+            renderer, pressed = self.calib.renderer, self.calib.pressed  # type: ignore[assignment]
         else:
             note = ""
             if now - self.key_vol_at < NOTE_TIME and self.online:
@@ -693,6 +707,7 @@ class PanelApp:
             self.net.renderer.invalidate()
             self.wish.invalidate()
             self.qr_renderer.invalidate()
+            self.calib.renderer.invalidate()
             self.stop.wait(1.0)
             return
         t2 = time.perf_counter()
@@ -708,7 +723,8 @@ class PanelApp:
 
     def _next_deadline(self) -> float:
         now = time.monotonic()
-        deadlines = [now + 60.0, self._band_at, self.net.deadline(now), self.wish.deadline(now)]
+        deadlines = [now + 60.0, self._band_at, self.net.deadline(now), self.wish.deadline(now),
+                     self.calib.deadline(now)]
         if not self.resting:
             deadlines.append(self._active_at + self.rest_after + 0.01)
         if self.toast is not None:
@@ -749,6 +765,7 @@ class PanelApp:
         if self.vol_pending is not None and now - self.vol_sent_at >= VOL_INTERVAL:
             self._send_volume(self.vol_pending)
         self.net.timers(now)
+        self.calib.timers(now)
         self.wish.timers(now)
         if self.key_burst is not None and now - self.key_burst[3] >= KEY_BURST_GAP:
             self._flush_key_burst()

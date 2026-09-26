@@ -8,9 +8,15 @@ Proč: `codex exec` na Pi 3 platí při každém tahu start CLI (node obal + bin
   app-server, 1. tah   8.6 s   (start procesu 0.4–2.1 s jen jednou)
   app-server, 2. tah   5.3 s
 
-Paměť: nativní binárka bez node obalu má v klidu ~165 MB RSS, při tahu ~180 MB
-(Pi má ~450 MB volných). Proto se proces spouští až při prvním přání a po
-IDLE_TTL bez tahu se ukončí — v kanceláři chodí přání v dávkách.
+Paměť: nativní binárka bez node obalu má v klidu ~165 MB RSS, při tahu ~180 MB.
+Proces se spouští až při prvním přání. Mimo pracovní dobu se po IDLE_TTL bez
+tahu ukončí; v pracovní době (`office_warm`) zůstává běžet, dokud má Pi dost
+volné paměti (WARM_MIN_FREE_MB). Důvod — Pi 26. 9. 9:23: první přání po
+pauze přetáhlo 25 s rozpočtu (request.done took_ms 25049) a skončilo chybou;
+podle rozboru provozu (dj.turn) studený start ~9 s + model ~14 s. Volná paměť
+na Pi podle telemetrie ze zadání: medián 590 MB, minimum 383 MB (nevím, zda
+app-server v tu chvíli běžel) — proto hlídka paměti a při jejím nedostatku
+ukončení jako dřív.
 
 Codex dál nedostává žádné nástroje: sandbox read-only, schvalování `never`
 a každý požadavek serveru (schválení příkazu, souboru…) se odmítne.
@@ -59,7 +65,9 @@ def feature_args() -> list[str]:
     return out
 
 
-IDLE_TTL = 600.0  # s bez tahu → proces končí (uvolní ~165 MB)
+IDLE_TTL = 600.0  # s bez tahu → proces končí (uvolní ~165 MB), mimo pracovní dobu
+WARM_HOURS = (7, 19)  # pracovní doba (Po–Pá): app-server drží teplý
+WARM_MIN_FREE_MB = 250  # …ale jen když Pi i bez něj zbývá aspoň tolik paměti
 START_TIMEOUT = 30.0  # s na initialize + thread/start (Pi pod zátěží)
 
 
@@ -126,6 +134,7 @@ class AppServer:
         max_turns_per_thread: int = 3,
         idle_ttl: float = IDLE_TTL,
         extra_args: list[str] | None = None,
+        keep_warm: Any = None,
     ) -> None:
         self.binary = binary
         self.cwd = cwd
@@ -133,6 +142,8 @@ class AppServer:
         self.max_turns = max_turns_per_thread
         self.idle_ttl = idle_ttl
         self.extra_args = extra_args or []
+        # () -> bool: True = po IDLE_TTL nečinnosti proces neukončovat (office_warm)
+        self.keep_warm = keep_warm
         self.proc: asyncio.subprocess.Process | None = None
         self._reader: asyncio.Task | None = None
         self._idle: asyncio.Task | None = None
@@ -152,6 +163,11 @@ class AppServer:
     @property
     def alive(self) -> bool:
         return self.proc is not None and self.proc.returncode is None
+
+    @property
+    def ready(self) -> bool:
+        """Proces i vlákno běží — tah nezaplatí studený start."""
+        return self.alive and self.thread_id is not None and self.thread_turns < self.max_turns
 
     async def _start(self) -> None:
         self.proc = await asyncio.create_subprocess_exec(
@@ -200,7 +216,14 @@ class AppServer:
             self._idle = asyncio.create_task(self._idle_close())
 
     async def _idle_close(self) -> None:
-        await asyncio.sleep(self.idle_ttl)
+        while True:
+            await asyncio.sleep(self.idle_ttl)
+            keep = False
+            if self.keep_warm is not None:
+                with contextlib.suppress(Exception):
+                    keep = bool(self.keep_warm())
+            if not keep:
+                break
         log.info("app-server %d s bez tahu — ukončuji (uvolní paměť)", int(self.idle_ttl))
         await self.close()
 
@@ -398,6 +421,32 @@ class AppServer:
             model_ms=int((time.monotonic() - t_turn) * 1000),
             new_thread=new_thread,
         )
+
+
+def mem_available_mb() -> int | None:
+    """MemAvailable z /proc/meminfo v MB; None, když nejde přečíst."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def office_warm(now: Any = None, free_mb: int | None = -1) -> bool:
+    """Držet app-server teplý? Po–Pá v WARM_HOURS a jen s dost volnou pamětí.
+
+    `now` (datetime) a `free_mb` dosadí testy; -1 = změřit.
+    """
+    from datetime import datetime
+
+    now = now or datetime.now()
+    if now.weekday() >= 5 or not (WARM_HOURS[0] <= now.hour < WARM_HOURS[1]):
+        return False
+    free = mem_available_mb() if free_mb == -1 else free_mb
+    return free is None or free >= WARM_MIN_FREE_MB
 
 
 def app_server_enabled() -> bool:

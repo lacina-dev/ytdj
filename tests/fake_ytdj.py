@@ -257,8 +257,10 @@ class FakeYtdj:
         up = sum(1 for b in ballots.values() if b["vote"] > 0)
         down = sum(1 for b in ballots.values() if b["vote"] < 0)
         if target == "artist":
-            status = "banned" if down >= 3 else "pending" if down else "neutral"
-            need = max(0, 3 - down)
+            banned = down >= 3 and down > up
+            status = ("banned" if banned else "favourite" if up > down
+                      else "pending" if down else "neutral")
+            need = 0 if banned else max(3 - down, up - down + 1, 1)
         else:
             banned = down >= 2 and down > up
             status = ("banned" if banned else "favourite" if up > down
@@ -297,10 +299,14 @@ class FakeYtdj:
         for name in self.credits(track.get("artist", "")):
             k = name.lower()
             a = self._tally("artist", k)
-            if a["down"] or full:
-                arts.append({"name": name, "down": a["down"], "status": a["status"],
-                             "by": [self._tag(c) for c, x in self.votes.get(("artist", k), {}).items()
-                                    if x["vote"] < 0]})
+            if a["up"] or a["down"] or full:
+                bal = self.votes.get(("artist", k), {})
+                ent = {"name": name, "up": a["up"], "down": a["down"], "status": a["status"]}
+                if a["down"]:
+                    ent["by"] = ent["down_by"] = [self._tag(c) for c, x in bal.items() if x["vote"] < 0]
+                if a["up"]:
+                    ent["up_by"] = [self._tag(c) for c, x in bal.items() if x["vote"] > 0]
+                arts.append(ent)
         if arts:
             out["artists"] = arts
             if not full:
@@ -309,6 +315,8 @@ class FakeYtdj:
                     out["artist_status"] = "banned"
                 elif any(a["status"] == "pending" for a in arts):
                     out["artist_status"] = "pending"
+                elif any(a["status"] == "favourite" for a in arts):
+                    out["artist_status"] = "favourite"
         return out or None
 
     def _find(self, vid: str) -> dict | None:
@@ -328,8 +336,6 @@ class FakeYtdj:
                 return 403, {"error": "Hlasovat jde s přezdívkou — nastav si ji nahoře vpravo."}
             if target not in ("song", "artist") or vote not in (1, -1, 0) or isinstance(vote, bool):
                 return 400, {"error": "Hlas je 1 (👍), -1 (👎), nebo 0 (stáhnout)."}
-            if target == "artist" and vote > 0:
-                return 400, {"error": "Interpretům se dává jen 👎 — 👍 patří konkrétním skladbám."}
             key = str(data.get("key") or "")
             vid = str(data.get("video_id") or "")
             track = None
@@ -419,6 +425,7 @@ class FakeYtdj:
         put("song", pohoda, "web-jana0001", "Jana", -1, "Kabát", "Pohoda", "k2", 90000)
         put("song", pohoda, "web-karel001", "Karel", -1, "Kabát", "Pohoda", "k2", 7200)
         put("artist", "calm trio", "web-karel001", "Karel", -1, "Calm Trio", ago=600)
+        put("artist", "olympic", "web-jana0001", "Jana", 1, "Olympic", ago=2400)  # oblíbený interpret
         put("song", self.song_key("Lucie", "Amerika"), "web-jana0001", "Jana", -1, "Lucie", "Amerika",
             "l1", 300)
 

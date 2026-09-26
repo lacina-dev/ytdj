@@ -140,6 +140,13 @@ async def run(out: Path, base: str, fake, cdp_port: int) -> None:
                              "document.querySelector('#queue .rv').click()")
                 await asyncio.sleep(0.6)
                 await tab.shot(out / f"{tag}-11-vote-row.png", full=False)
+                if scheme == "light":
+                    # 👍 celému interpretovi z řádku fronty → pak znovu otevřít: aktivní stav
+                    await tab.js("document.querySelector('#vsOpts [data-act^=\"artist:0:1\"]').click()")
+                    await asyncio.sleep(1.2)
+                    await tab.js("document.querySelector('#queue .rv').click()")
+                    await asyncio.sleep(0.8)
+                    await tab.shot(out / f"{tag}-11b-artist-up.png", full=False)
                 await tab.js("document.querySelector('#vsClose').click(); location.hash='#hlasovani'")
                 await asyncio.sleep(1.0)
                 await tab.shot(out / f"{tag}-12-votes-page.png")

@@ -47,21 +47,50 @@ Pravidla při rozhodování (v tomhle pořadí):
 | C1 | Hrát přesně, co uživatel píše | 🔄 agent DJ |
 | C2 | Správný výklad záměru: interpret / konkrétní píseň / víc interpretů / žánr, období / „jako X" / „víc takového" / „něco jiného" / „od X, ale ne Y" / „jen česky" | 🔄 agent DJ |
 | C3 | Režim interpreta: „písničky od Midi Lidi" = fronta z jeho skladeb | 🔄 katalog ✅ (`set_artist`), DJ zapojení 🔄 |
-| C4 | Poctivé odpovědi (neslibovat, co nehraje; „nenašel jsem") | 🔄 agent DJ |
+| C4 | Poctivé odpovědi (neslibovat, co nehraje; „nenašel jsem"). Potvrzení přání skládá aplikace z toho, co se opravdu zařadilo („Zařadil jsem: …"); model nesmí slibovat režimy ani nastavení, která neexistují („nastavím střídání") | ✅ fronta přání (26. 9.) |
 | C5 | Přání posluchače má vždy přednost před automatickými zásahy | ✅ (web ruší auto-přeseedování) |
 | C6 | Když je potřeba lepší model, nasadit lepší | 🔄 posudek agenta DJ |
 | C7 | „Hrát" bez přání a bez fronty = playlist podle času, dne, kanceláře a historie | 🔄 agent context |
 | C8 | Učit se z přeskočení/dohrání bez přebíjení přání | 📋 |
+| C9 | Otázka nebo stížnost na frontu („proč nehraje moje…", „kdy bude…", „to není demokracie") není přání: pravdivá odpověď ze stavu (co hraje a čí to je, kde jsou moje přání a ETA), žádná hudba navíc; kdo ≥ 10 min nic svého neslyšel, jde hned po hrající; telemetrie `request.meta` | ✅ |
+| C10 | „Oboje" / „i X i Y" = obojí (skladba i interpret); „střídej X a Y" = jedno přání se dvěma interprety střídavě | ✅ |
 
 ### D. Víc lidí v kanceláři
 | ID | Požadavek | Stav |
 |---|---|---|
 | D1 | Fronta přání se jménem autora | 📋 fáze 2 |
-| D2 | Spravedlivé střídání mezi lidmi | 📋 |
+| D2 | Spravedlivé střídání mezi lidmi — pravidla viz „Pravidla fronty" níž | ✅ (26. 9.) |
 | D3 | Volitelně „zařadit hned" (za právě hrající, bez přerušení) | 📋 |
 | D4 | Přání se přijmou hned, žádné „DJ ještě dokončuje…" | 📋 (částečně ✅ C5) |
 | D5 | Fronta vidět na webu i displeji; autor může své přání odebrat | 📋 |
 | D6 | Automatické změny nálady jen v podkladovém rádiu, nikdy nemažou přání | 📋 |
+| D7 | Podkres jde za naposledy SPLNĚNÝM přáním; režim interpreta v podkresu je omezený (10 skladeb / 40 min, pak „… a podobné"); po restartu se vypršelý neobnoví | ✅ |
+| D8 | Nové přání člověka jde PŘED jeho starší, to zůstává; nahrazuje jen oprava („ne, radši…", „místo toho", „zruš…"), změna směru („něco jiného") nebo skoro stejný text | ✅ |
+
+#### Pravidla fronty (26. 9., po ranním provozu)
+
+Pi 26. 9. 9:00–9:50: přání „Parni Valjak" z displeje (12 skladeb) drželo
+kancelář 52 minut, Robertova přeskočení jen pouštěla další skladbu toho
+přání, podkres se k Parni Valjak vracel i po restartu.
+
+1. **Kola.** Na řadě je ten, kdo nejdéle nic neslyšel; kolo = 2 skladby,
+   když čekají i jiní (3, když ne). Kolo patří člověku: jeho nové přání
+   dohraje rozehrané kolo.
+2. **Rozpočet.** Přání s víc skladbami (interpret, oblíbené, playlist) zahraje,
+   dokud mají jiní co hrát, nejvýš **4 skladby** celkem (z displeje **3**);
+   pak jde za všechny ostatní a pokračuje, až nikdo jiný nečeká.
+3. **Displej = jeden člověk.** Každé zavření přání na displeji je nová relace
+   (id klienta), v pořadí se ale počítá jako jedno místo — jinak by byl
+   pokaždé „nováček" a předběhl všechny. Menší rozpočet: displej je sdílené,
+   anonymní zařízení a jeho přání často nikdo nehlídá; přezdívka z webu je
+   konkrétní člověk, který si přání upraví sám.
+4. **Přeskočení.** Přeskočí-li skladbu přání někdo jiný než autor, kolo toho
+   přání hned končí (další hraje někdo jiný). Druhé cizí přeskočení přání
+   ukončí („přeskočeno ostatními") a s ním i jeho podkres. Autorovo
+   přeskočení = „další z mých". Tlačítko Další na displeji u přání
+   z displeje = autor.
+5. **Moje přání.** Nové jde před moje starší (to zůstává za ním); „a pak …"
+   / „přidej …" za ně. Nahrazuje jen oprava, změna směru nebo skoro stejný text.
 
 ### E. Ovládání
 | ID | Požadavek | Stav |
@@ -76,6 +105,7 @@ Pravidla při rozhodování (v tomhle pořadí):
 | F1 | Logování všeho podstatného (přání, rozhodnutí, skladby, latence, zvuk, systém, panel) | 🔄 agenti A, B + DJ/katalog |
 | F2 | Report pro ladění podle provozu | 🔄 agent A |
 | F3 | Diagnostika jen podle dat | ✅ zásada |
+| F4 | Mozek DJ bez studeného startu v práci: app-server Po–Pá 7–19 běží dál (když Pi zbývá ≥ 250 MB); jinak studený start dostane +15 s k 25 s rozpočtu. Vypršený rozpočet = „DJ nestihl odpovědět", ne „síť" | ✅ (26. 9. 9:23 chyba „síť" po studeném startu) |
 
 ### G. Bezpečnost a přihlášení (na konec)
 | ID | Požadavek | Stav |

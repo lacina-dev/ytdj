@@ -1,4 +1,4 @@
-"""Hlasování kanceláře: 👍/👎 skladbám, 👎 interpretům (PLAN H).
+"""Hlasování kanceláře: 👍/👎 skladbám i celým interpretům (PLAN H).
 
 Kdo hlasuje: id klienta (`Wish.key` — prohlížeč, relace displeje), jméno je
 jen popisek (přezdívka z `nicks.py`, jinak to, co poslal). Jeden hlas na
@@ -20,12 +20,15 @@ Stav se neukládá, počítá se z hlasů (config `ban_song_votes`,
     skladba    vyřazená     aspoň ban_song_votes (2) lidí 👎 a víc 👎 než 👍
                oblíbená     aspoň jeden 👍 a víc 👍 než 👎
                upozaděná    víc 👎 než 👍, ale na vyřazení to nestačí
-    interpret  vyřazený     aspoň ban_artist_votes (3) lidí 👎 (jen 👎)
-               čeká         1–2 👎
+    interpret  vyřazený     aspoň ban_artist_votes (3) lidí 👎 a víc 👎 než 👍
+               oblíbený     aspoň jeden 👍 a víc 👍 než 👎
+               čeká         nějaké 👎, ale na vyřazení to nestačí
 
 Co to dělá s hudbou (radio.py, codex.py, enforce() níže): podkres (pooly)
-vyřazené nikdy nevydá, upozaděné jen napůl, oblíbené smí zase hrát i dřív
-než po `repeat_days`. Výslovné přání vyřazené skladby / interpreta se
+vyřazené nikdy nevydá, upozaděné jen napůl, oblíbené (skladby i skladby
+oblíbených interpretů) smí zase hrát i dřív než po `repeat_days` a v poolu
+se posunou dopředu (boost_pools). "Pusť oblíbené" hraje oblíbené skladby
+i známé skladby oblíbených interpretů (favourite_mix). Výslovné přání vyřazené skladby / interpreta se
 splní — s poznámkou, kdo ji vyřadil. Při vyřazení zmizí z fronty jen
 podkres; hraje-li zrovna podkres, přeskočí se.
 """
@@ -53,6 +56,9 @@ TARGETS = (SONG, ARTIST)
 RATE_MAX = 30  # hlasů na člověka…
 RATE_WINDOW = 600.0  # …za tolik sekund
 DOWNWEIGHT_PASS = 0.5  # pravděpodobnost, že upozaděná skladba projde do podkresu
+BOOST_LIFT = 8  # o kolik míst v poolu se posune oblíbená (jednou za skladbu)
+ARTIST_MIX = 3  # "pusť oblíbené": kolik známých skladeb od každého oblíbeného interpreta
+MIX_TIMEOUT = 6.0  # s — katalog pro oblíbené interprety; pak jen oblíbené skladby
 LIST_MAX = 100  # nejvýš tolik položek v jednom seznamu API
 WHO_MAX = 24
 
@@ -205,7 +211,8 @@ class CastResult:
 
 
 class _Index:
-    __slots__ = ("sig", "banned_songs", "fav_songs", "down_songs", "banned_artists", "by_vid")
+    __slots__ = ("sig", "banned_songs", "fav_songs", "down_songs", "banned_artists",
+                 "fav_artists", "by_vid")
 
     def __init__(self, sig: tuple) -> None:
         self.sig = sig
@@ -213,6 +220,7 @@ class _Index:
         self.fav_songs: set[str] = set()
         self.down_songs: set[str] = set()
         self.banned_artists: set[str] = set()
+        self.fav_artists: set[str] = set()
         self.by_vid: dict[str, str] = {}  # videoId → klíč skladby
 
 
@@ -240,6 +248,12 @@ class VoteBook:
         self._version = 0
         self._index: _Index | None = None
         self._rate: dict[str, deque[float]] = {}
+        self._lifted: set[str] = set()  # videoId, které boost_pools už posunul
+        self._pool_sig: tuple = ()
+        # RadioPools (zapojí wire): pool_reject, který plnič volá u každé
+        # skladby, přitom posune oblíbené v poolech dopředu — radio.py nic
+        # dalšího volat nemusí
+        self.pools: Any = None
         self.loaded = False
 
     # ---- načtení ----
@@ -282,8 +296,12 @@ class VoteBook:
     def _status(self, target: str, up: int, down: int) -> Tally:
         song_t, artist_t = self.thresholds()
         if target == ARTIST:
-            status = BANNED if down >= artist_t else PENDING if down else NEUTRAL
-            return Tally(0, down, status, max(0, artist_t - down))
+            if down >= artist_t and down > up:
+                return Tally(up, down, BANNED, 0)
+            need = max(artist_t - down, up - down + 1, 1)
+            if up >= 1 and up > down:
+                return Tally(up, down, FAVOURITE, need)
+            return Tally(up, down, PENDING if down else NEUTRAL, need)
         if down >= song_t and down > up:
             return Tally(up, down, BANNED, 0)
         need = max(song_t - down, up - down + 1, 1)
@@ -301,6 +319,8 @@ class VoteBook:
             if target == ARTIST:
                 if t.status == BANNED:
                     idx.banned_artists.add(key)
+                elif t.status == FAVOURITE:
+                    idx.fav_artists.add(key)
                 continue
             if t.status == BANNED:
                 idx.banned_songs.add(key)
@@ -373,6 +393,7 @@ class VoteBook:
         """Důvod do statistiky radio.pool: "voted_out" | "downweighted" | None."""
         if not self.items:
             return None
+        self._maybe_boost()
         if self.blocked(track, exempt):
             return "voted_out"
         idx = self._idx()
@@ -382,8 +403,57 @@ class VoteBook:
         return None
 
     def is_favourite(self, track: Any) -> bool:
+        """Oblíbená skladba, nebo skladba oblíbeného interpreta (a nevyřazená)."""
         idx = self._idx()
-        return bool(idx.fav_songs) and bool(self._song_hits(track) & idx.fav_songs)
+        if idx.fav_songs and self._song_hits(track) & idx.fav_songs:
+            return True
+        if idx.fav_artists:
+            _, artist, _ = _tat(track)
+            return bool(artist_keys(artist) & idx.fav_artists) and self.blocked(track) is None
+        return False
+
+    def _maybe_boost(self) -> None:
+        """boost_pools, jen když se pooly od minula změnily (doplnění, nové seedy)."""
+        pools = getattr(self.pools, "pools", None)
+        if not pools:
+            return
+        sig = tuple((len(p.tracks), p.tracks[-1].id if p.tracks else "") for p in pools
+                    if getattr(p, "tracks", None) is not None) + (self._version,)
+        if sig != self._pool_sig:
+            self.boost_pools(pools)
+            self._pool_sig = tuple((len(p.tracks), p.tracks[-1].id if p.tracks else "")
+                                   for p in pools if getattr(p, "tracks", None) is not None) \
+                + (self._version,)
+
+    def boost_pools(self, pools: Iterable[Any]) -> int:
+        """Oblíbené (skladby i interpreti) v poolech dopředu — každou jednou
+        nejvýš o BOOST_LIFT míst, ať podkres nezaplaví. Vrací počet posunů."""
+        idx = self._idx()
+        if not (idx.fav_songs or idx.fav_artists):
+            return 0
+        moved = 0
+        for pool in pools:
+            q = getattr(pool, "tracks", None)
+            if not q:
+                continue
+            items = list(q)
+            changed = False
+            for t in list(items):
+                if t.id in self._lifted or not self.is_favourite(t):
+                    continue
+                self._lifted.add(t.id)
+                j = items.index(t)
+                k = max(0, j - BOOST_LIFT)
+                if k < j:
+                    items.insert(k, items.pop(j))
+                    changed = True
+                    moved += 1
+            if changed:
+                q.clear()
+                q.extend(items)
+        if len(self._lifted) > 5000:
+            self._lifted.clear()
+        return moved
 
     def ban_note(self, track: Any, asked_artists: Iterable[str] = ()) -> str:
         """Poznámka k výslovnému přání: "(pozn.: vyřazená hlasováním — Petr, Jana)"."""
@@ -417,8 +487,6 @@ class VoteBook:
             raise VoteError("Hlas je 1 (👍), -1 (👎), nebo 0 (stáhnout).")
         if not voter:
             raise VoteError("Chybí id prohlížeče — obnov prosím stránku.")
-        if target == ARTIST and vote > 0:
-            raise VoteError("Interpretům se dává jen 👎 — 👍 patří konkrétním skladbám.")
         vid, t_artist, t_title = _tat(track) if track is not None else ("", "", "")
         if key:
             if (target, key) not in self.items:
@@ -604,10 +672,13 @@ class VoteBook:
         for name in credits(artist):
             k = artist_key(name)
             t = self.tally(ARTIST, k)
-            if t.down or full:
-                a: dict[str, Any] = {"name": name, "down": t.down, "status": t.status}
+            if t.up or t.down or full:
+                a: dict[str, Any] = {"name": name, "up": t.up, "down": t.down, "status": t.status}
                 if t.down:
-                    a["by"] = [tag_of(b.voter) for b in self._ballots(ARTIST, k, -1)]
+                    # "by" = 👎 (starší web a displej), "down_by" = totéž pod novým jménem
+                    a["by"] = a["down_by"] = [tag_of(b.voter) for b in self._ballots(ARTIST, k, -1)]
+                if t.up:
+                    a["up_by"] = [tag_of(b.voter) for b in self._ballots(ARTIST, k, 1)]
                 arts.append(a)
         if arts:
             out["artists"] = arts
@@ -618,6 +689,8 @@ class VoteBook:
                     out["artist_status"] = BANNED
                 elif any(a["status"] == PENDING for a in arts):
                     out["artist_status"] = PENDING
+                elif any(a["status"] == FAVOURITE for a in arts):
+                    out["artist_status"] = FAVOURITE
         return out or None
 
     def detail(self, track: Any, viewer: str = "") -> dict:
@@ -675,11 +748,70 @@ class VoteBook:
                 out.append(Track(b.video_id, b.title, b.artist))
         return out
 
+    def favourite_artists(self, voter: str = "") -> list[str]:
+        """Oblíbení interpreti kanceláře, nebo (s `voter`) ti, kterým dal 👍."""
+        idx = self._idx()
+        keys: list[str] = []
+        for (target, key), ballots in self.items.items():
+            if target != ARTIST or key in idx.banned_artists:
+                continue
+            if voter:
+                b = ballots.get(voter)
+                if b is not None and b.vote > 0:
+                    keys.append(key)
+            elif key in idx.fav_artists:
+                keys.append(key)
+        score = {k: self.tally(ARTIST, k).up - self.tally(ARTIST, k).down for k in keys}
+        keys.sort(key=lambda k: (-score[k], k))
+        return [self._display_name(ARTIST, k) for k in keys]
+
+    async def favourite_mix(self, catalog: Any, voter: str = "", per_artist: int = ARTIST_MIX,
+                            timeout: float = MIX_TIMEOUT) -> list:
+        """ "Pusť oblíbené": oblíbené skladby prostřídané se známými skladbami
+        oblíbených interpretů (katalog; když nestihne, jen oblíbené skladby)."""
+        songs = self.favourite_tracks(voter)
+        names = self.favourite_artists(voter)
+        lookup = getattr(catalog, "artist_tracks", None) if catalog is not None else None
+        per: list[list] = []
+        if names and lookup is not None:
+            async def one(name: str) -> list:
+                try:
+                    return list(await lookup(name, limit=20))
+                except Exception as exc:  # katalog umí selhat na čemkoli
+                    log.info("oblíbený interpret %r: katalog selhal (%s)", name, exc)
+                    return []
+            try:
+                found = await asyncio.wait_for(
+                    asyncio.gather(*(one(n) for n in names[:6])), timeout)
+            except asyncio.TimeoutError:
+                found = []
+                telemetry.event("vote.mix_timeout", artists=names[:6])
+            for tracks in found:
+                ok = [t for t in tracks if self.blocked(t) is None][: max(per_artist * 3, 6)]
+                random.shuffle(ok)
+                per.append(ok[:per_artist])
+        out, seen = [], set()
+        lists = [list(songs)] + per
+        while any(lists):
+            for lst in lists:
+                if lst:
+                    t = lst.pop(0)
+                    if t.id not in seen:
+                        seen.add(t.id)
+                        out.append(t)
+        return out
+
     def summary(self, n_fav: int = 8, n_ban: int = 8) -> tuple[list[str], list[str], list[str]]:
-        """(oblíbené skladby, vyřazení interpreti, vyřazené skladby) jako popisky."""
+        """(oblíbené — skladby prostřídané s "interpret X", vyřazení interpreti,
+        vyřazené skladby) jako popisky."""
         idx = self._idx()
         favs = sorted(idx.fav_songs, key=lambda k: -(self.tally(SONG, k).up - self.tally(SONG, k).down))
-        return ([self._display_name(SONG, k) for k in favs[:n_fav]],
+        songs = [self._display_name(SONG, k) for k in favs]
+        arts = [f"interpret {a}" for a in self.favourite_artists()]
+        mixed: list[str] = []
+        for i in range(max(len(songs), len(arts))):
+            mixed += songs[i:i + 1] + arts[i:i + 1]
+        return (mixed[:n_fav],
                 [self._display_name(ARTIST, k) for k in sorted(idx.banned_artists)[:n_ban]],
                 [self._display_name(SONG, k) for k in sorted(idx.banned_songs)[:n_ban]])
 
@@ -687,8 +819,12 @@ class VoteBook:
         """Kompaktní řádky pro DJ (Codex) — "" když se nehlasovalo."""
         favs, arts, songs = self.summary()
         lines = []
-        if favs:
-            lines.append("Oblíbené kanceláře (👍): " + "; ".join(favs))
+        fav_songs = [f for f in favs if not f.startswith("interpret ")]
+        fav_artists = [f[len("interpret "):] for f in favs if f.startswith("interpret ")]
+        if fav_songs:
+            lines.append("Oblíbené kanceláře (👍): " + "; ".join(fav_songs))
+        if fav_artists:
+            lines.append("Oblíbení interpreti kanceláře (👍): " + ", ".join(fav_artists))
         if arts or songs:
             parts = []
             if arts:
@@ -753,6 +889,7 @@ def wire(app: Any) -> VoteBook:
         return wq.censor.clean(name) if wq is not None else name
 
     book = VoteBook(app.store, app.cfg, label=label)
+    book.pools = getattr(app, "pools", None)
     app.votes = book
     for part in (getattr(app, "pools", None), getattr(app, "dj", None)):
         if part is not None:

@@ -1105,6 +1105,13 @@ class VotesTest(unittest.TestCase):
         self.assertEqual(vote_mark({"status": "neutral", "artist_status": "banned"}), "banned")
         self.assertEqual(vote_mark({"status": "neutral", "artists": [{"name": "Oasis", "status": "banned"}]}), "banned")
         self.assertEqual(vote_mark({"status": "neutral", "artist_status": "pending"}), "")
+        # 👍 celému interpretovi: ♥ i u skladby bez vlastních hlasů
+        self.assertEqual(vote_mark({"status": "neutral", "artist_status": "favourite"}), "favourite")
+        self.assertEqual(vote_mark({"status": "neutral", "artists": [{"name": "Olympic", "status": "favourite"}]}),
+                         "favourite")
+        # vyřazený spoluinterpret přebije oblíbeného
+        self.assertEqual(vote_mark({"status": "neutral", "artists": [{"name": "A", "status": "favourite"},
+                                                                     {"name": "B", "status": "banned"}]}), "banned")
 
     def test_badge_texts(self):
         r = Renderer()

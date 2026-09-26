@@ -371,7 +371,8 @@ class Queue(unittest.TestCase):
                     played.append(rig.fake.current_vid())
                 names = ["J" if v == j.tracks[0].id else ("P" if "kab" in v else "-")
                          for v in played]
-                # P1 hraje, P2 dokončí kolo (2, když čeká Jana), Jana, zbytek Kabátu
+                # P1 hraje, P2 dokončí kolo (2, když čeká Jana), Jana, P3 P4 (rozpočet
+                # přání BUDGET = 4 skladby), zbytek Kabátu je podkres
                 self.assertEqual("".join(names[:5]), "PPJPP", played)
                 # Jana je hotová; Petr sám → zbytek Kabátu pokračuje jako podkres
                 self.assertEqual(j.state, "done")
@@ -605,6 +606,44 @@ class Queue(unittest.TestCase):
                                            now=datetime(2026, 9, 25, 10, 0))
                 self.assertEqual(why, "reboot")
                 self.assertEqual(rig4.wq.active(), [])
+
+        run(go())
+
+    def test_restart_resumes_interrupted_track(self):
+        """Po restartu služby hraje dál skladba, kterou restart přerušil (od
+        svého místa, z cache resolveru) — a přání ji nezařadí podruhé."""
+        async def go():
+            async with Rig() as rig:
+                await rig.background()
+                wq = rig.wq
+                j = wq.submit("Holky z naší školky", "Jana")
+                await rig.until(lambda: j.state == "playing")
+                playing = rig.fake.current_vid()
+                self.assertIn(playing, [t.id for t in j.tracks])
+                await wq.refresh_playing()
+                wq.save()
+                saved = wq.load_state()
+                pb = rig.dir / "playback.json"
+                rig.player.playback_file = pb
+                rig.player._time_pos = 42.0
+                rig.player._save_playback()
+            async with Rig() as rig2:
+                rig2.player.playback_file = pb
+                why = await rig2.wq.resume(saved, now=datetime(2026, 9, 25, 10, 0))
+                self.assertEqual(why, "fresh")
+                await rig2.settle(0.3)
+                self.assertEqual(rig2.fake.started[0], playing)
+                self.assertEqual(list(rig2.fake.loadfile_options.values()), [{"start": "40.0"}])
+                # přání ji bere jako hrající, ve frontě podruhé není
+                self.assertNotIn(playing, rig2.fake.upcoming())
+                self.assertEqual(rig2.fake.ids().count(playing), 1)
+                self.assertTrue(any(k == "player.resume_track" for k, _ in rig2.events))
+            # v noci (hudba se sama nerozjede) se nenavazuje
+            async with Rig() as rig3:
+                rig3.player.playback_file = pb
+                await rig3.wq.resume(saved, now=datetime(2026, 9, 25, 23, 0))
+                await rig3.settle(0.2)
+                self.assertFalse(rig3.fake.loadfile_options)
 
         run(go())
 
@@ -915,10 +954,13 @@ class WebApi(unittest.TestCase):
 
 
 class Supersede(unittest.TestCase):
-    """Nové přání téhož člověka nahradí jeho starší (Pi 26. 9.: "pusť Kometu"
-    čekalo za dvěma skladbami Kabátu, o který si řekl on sám)."""
+    """Nové přání téhož člověka jde PŘED jeho starší a to zůstává (Pi 26. 9.
+    9:36: "Zahraj … Budulínek" smazalo "A co třeba Depeche mode" a Robert
+    psal "chci oboje"). Nahrazuje jen oprava ("ne, radši…") nebo změna směru.
+    Původní důvod (Pi 26. 9.: "pusť Kometu" čekalo za dvěma skladbami Kabátu,
+    o který si řekl on sám) platí dál: nové přání nečeká za jeho starším."""
 
-    def test_single_person_switching_plays_at_once(self):
+    def test_single_person_new_wish_first_old_stays(self):
         async def go():
             async with Rig() as rig:
                 await rig.background()
@@ -926,20 +968,24 @@ class Supersede(unittest.TestCase):
                 a = wq.submit("pusť Kabát", "Petr")
                 await rig.until(lambda: a.state == "playing" and "kab" in rig.fake.current_vid())
                 s = wq.submit("Holky z naší školky", "petr")  # stejný člověk (velikost písmen)
-                await rig.until(lambda: s.state == "playing")
-                self.assertEqual(rig.fake.current_vid(), s.tracks[0].id)
-                self.assertEqual(a.state, "replaced")
-                self.assertIn("Hraje hned", s.reply)
-                self.assertFalse([v for v in rig.upcoming() if "kab" in v and wq.owner.get(v)])
-                m = wq.submit("něco klidnějšího", "Petr")
+                await rig.until(lambda: s.state == "queued")
+                await rig.settle(0.2)
+                # nečeká za Kabátem: hned po hrající skladbě (vlastní se neutíná)
+                self.assertEqual(rig.upcoming()[0], s.tracks[0].id)
+                self.assertIn("hned po téhle", s.reply)
+                self.assertIn(a.state, ("queued", "playing"))  # Kabát zůstává
+                # oprava nahradí to poslední, co řekl, a hraje hned
+                SCRIPT["ne, radši něco klidnějšího"] = SCRIPT["něco klidnějšího"]
+                m = wq.submit("ne, radši něco klidnějšího", "Petr")
                 await rig.until(lambda: m.state == "playing")
                 self.assertIn(rig.fake.current_vid(), [t.id for t in m.tracks])
                 self.assertEqual(s.state, "replaced")
+                self.assertIn(a.state, ("queued", "playing"))
                 self.assertEqual(STATE_CS["replaced"], "nahrazeno")
 
         run(go())
 
-    def test_with_others_waiting_the_own_block_is_replaced_in_place(self):
+    def test_with_others_waiting_the_new_wish_takes_the_running_turn(self):
         async def go():
             async with Rig() as rig:
                 await rig.background()
@@ -952,12 +998,12 @@ class Supersede(unittest.TestCase):
                 d = wq.submit("Dancing Queen", "Petr")
                 await rig.until(lambda: d.state in ("queued", "playing"))
                 await rig.settle(0.2)
-                self.assertEqual(p.state, "replaced")
+                self.assertIn(p.state, ("queued", "playing"))  # nenahrazeno
                 self.assertEqual(rig.fake.current_vid(), cur)  # Jana čeká → nic se neutne
                 owners = rig.owners()
-                self.assertNotIn("kab", "".join(v for v, o in zip(rig.upcoming(), owners) if o == "Petr"))
-                # Petr zůstal na svém místě v kole: rozehrané kolo dohraje nové přání
+                # Petrovo rozehrané kolo dohraje jeho nové přání, pak Jana
                 self.assertEqual(owners[:2], ["Petr", "Jana"], owners)
+                self.assertEqual(rig.upcoming()[0], d.tracks[0].id)
 
         run(go())
 

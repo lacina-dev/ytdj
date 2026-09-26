@@ -78,10 +78,17 @@ class Identity(unittest.TestCase):
                 x = sub("Dancing Queen", "jana", "web", client={"id": "web-thief0001"})
                 await rig.until(lambda: x.state in ("queued", "playing"))
                 self.assertIn(j.state, ("queued", "playing"))
-                # tentýž prohlížeč své přání nahradí
+                # tentýž prohlížeč: nové přání jde před jeho starší, to zůstává…
                 y = sub("Jasná zpráva", "Jana", "web", client={"id": "web-jana0001"})
                 await rig.until(lambda: y.state in ("queued", "playing"))
-                self.assertEqual(j.state, "replaced")
+                self.assertIn(j.state, ("queued", "playing"))
+                self.assertLess(y.rank, j.rank)
+                # …a oprava ("ne, radši…") nahradí to poslední
+                SCRIPT["ne, radši Dancing Queen"] = SCRIPT["Dancing Queen"]
+                z = sub("ne, radši Dancing Queen", "Jana", "web", client={"id": "web-jana0001"})
+                await rig.until(lambda: z.state in ("queued", "playing"))
+                self.assertEqual(y.state, "replaced")
+                self.assertIn(j.state, ("queued", "playing"))
 
         run(go())
 

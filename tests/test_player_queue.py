@@ -461,6 +461,7 @@ class ResolverQueue(unittest.TestCase):
         res = r.Resolver()
         res.template = ["-J", "--"]
         res.ydl = object()  # type: ignore[assignment]
+        res.loaded = True  # yt-dlp "naimportované"
         return r, res
 
     def argv(self, v: str) -> list[str]:
@@ -506,8 +507,6 @@ class ResolverQueue(unittest.TestCase):
         """Ruční dotaz shimem bez voleb mpv přepnul formát na video HLS a
         hotové JSONy s ním pak dostávalo mpv (Pi 25. 9.: načtení 25 s)."""
         r, res = self.resolver()
-        r.yt_dlp.parse_options = lambda argv: types.SimpleNamespace(ydl_opts={})
-        r.yt_dlp.YoutubeDL = lambda opts: object()
         mpv_argv = ["--format=774/251", "-J", "--"]
         res.template = mpv_argv
         res.ready[vid(1)] = (r.time.time(), "{}")

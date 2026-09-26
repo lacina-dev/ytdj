@@ -353,7 +353,36 @@ def parse_song(text: str) -> SongParse | None:
             if title and artist and _is_title(title) and len(artist) <= MAX_NAME_TOKENS:
                 if not any(_NOT_NAME.match(norm(w)) for w in artist):
                     pairs.append((" ".join(artist), " ".join(title)))
+            elif not title:
+                pairs += _artist_then_title(words[idx[0] + 1:])
     return SongParse(pairs, insist) if pairs else None
+
+
+# "od <interpret> píseň <název>" — Pi 26. 9. 9:23: "Zahraj od Vojtano píseň
+# Budulínek nebo galantní jelen nebo jak se to jmenuje" šlo k modelu (a na
+# studeném Codexu skončilo chybou), i když interpret i název byly v textu.
+_SONG_NOUN = {"pisen", "pisnicku", "pisnicka", "skladbu", "skladba", "song", "vec", "hit", "track"}
+_TITLE_TAIL = re.compile(
+    r"\s*(?:,|\bnebo jak se (?:to )?jmenuje\b|\bnebo tak nejak\b|\bnebo tak\b|\bnebo co\b"
+    r"|\bjak se (?:to )?jmenuje\b|\bprosim\b|\bprosimte\b).*$", re.I)
+
+
+def _artist_then_title(rest: list[str]) -> list[tuple[str, str]]:
+    """ "Vojtano píseň Budulínek nebo galantní jelen" → [(Vojtano, Budulínek),
+    (Vojtano, galantní jelen)] — alternativy, které posluchač nabídl."""
+    noun = next((i for i, w in enumerate(rest) if norm(w) in _SONG_NOUN), None)
+    if noun is None or noun == 0:
+        return []
+    artist = [w.strip(",") for w in rest[:noun] if norm(w) not in _FILLER]
+    if not artist or len(artist) > MAX_NAME_TOKENS or any(_NOT_NAME.match(norm(w)) for w in artist):
+        return []
+    tail = _TITLE_TAIL.sub("", " ".join(rest[noun + 1:])).strip()
+    out: list[tuple[str, str]] = []
+    for alt in re.split(r"\s+(?:nebo|or|anebo)\s+", tail)[:2]:
+        words = alt.strip(" ,.?!").split()
+        if words and _is_title(words):
+            out.append((" ".join(artist), " ".join(words)))
+    return out
 
 
 def _clean_words(text: str) -> list[str]:
@@ -381,7 +410,13 @@ def song_matches(track, artist: str, title: str) -> bool:
     if not any(_artist_ok(a_toks, c) for c in credited + [track.artist]):
         return False
     base, _tags = split_title(track.title)
-    return name_matches(_clean_words(title), base)
+    asked = _clean_words(title)
+    if name_matches(asked, base):
+        return True
+    # spojené skladby / medley ("Budulínek vs. Galantní Jelen", "A / B"): stačí
+    # celá jedna část — interpret už sedí přísně
+    parts = re.split(r"\s+(?:vs\.?|versus|/|&|x|\+)\s+", base, flags=re.I)
+    return len(parts) > 1 and any(name_matches(asked, p) for p in parts)
 
 
 @dataclass

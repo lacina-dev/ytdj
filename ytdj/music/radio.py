@@ -66,6 +66,12 @@ class RadioPools:
         # běžná rádia ze seedů.
         self.artist: str = ""
         self._artist_all: list[Track] = []
+        # Omezený režim interpreta (podkres po přání): kolik skladeb ještě a do
+        # kdy (epoch s, přežije restart); None = bez omezení ("hraj X" sám).
+        # Pi 26. 9.: podkres z přání displeje hrál Parni Valjak i po dalších
+        # přáních a po restartu znovu — celkem skoro hodinu.
+        self.artist_left: int | None = None
+        self.artist_until: float | None = None
         # hlasování kanceláře (ytdj/votes.py, zapojí App): vyřazené ne,
         # upozaděné napůl, oblíbené i dřív než po repeat_days
         self.votes = None
@@ -97,6 +103,7 @@ class RadioPools:
         self.allow_long = allow_long
         self.artist = ""
         self._artist_all = []
+        self.artist_left = self.artist_until = None
         summary = []
         self.remember_tracks(seeds)
         # rádia všech seedů naráz (dřív po sobě: 5 seedů = 4 s, než přání
@@ -124,7 +131,8 @@ class RadioPools:
         return {"mood": mood, "pools": summary}
 
     async def set_artist(
-        self, name: str, tracks: list[Track] | None = None, mood: str = ""
+        self, name: str, tracks: list[Track] | None = None, mood: str = "",
+        max_tracks: int | None = None, until: float | None = None,
     ) -> dict:
         """Režim interpreta: fronta hraje jen jeho, dokud nepřijde jiný pokyn.
 
@@ -132,7 +140,10 @@ class RadioPools:
         rádio z něj do tří skladeb uteče k jiným kapelám; tady se místo rádia
         hraje seznam skladeb toho interpreta (nejznámější první, každá
         jednou, živáky a remixy až nakonec) a když dojde, jede se znovu od
-        začátku. Končí to až další set_seeds() nebo set_artist().
+        začátku. Končí to až další set_seeds() nebo set_artist() — nebo po
+        `max_tracks` skladbách / v čase `until` (epoch s), pak přejde na rádio
+        "<interpret> a podobné" (podkres po přání nesmí viset na jednom
+        interpretovi donekonečna).
 
         `tracks` jsou typicky `catalog.artist_tracks(name)`; None = dohledá
         si je samo. Když interpreta nezná, stávající pooly nechá být a vrátí
@@ -157,6 +168,8 @@ class RadioPools:
         self.allow_long = True
         self.artist = name
         self._artist_all = list(tracks)
+        self.artist_left = max_tracks
+        self.artist_until = until
         self.remember_tracks(tracks)
         self.store.record_seed(tracks[0].id, self.mood)
         return {
@@ -214,8 +227,46 @@ class RadioPools:
 
     # ---- dispensing ----
 
+    def artist_expired(self, now: float | None = None) -> bool:
+        """Omezený režim interpreta vypršel (skladby nebo čas)?"""
+        if not self.artist:
+            return False
+        if self.artist_left is not None and self.artist_left <= 0:
+            return True
+        now = time.time() if now is None else now
+        return self.artist_until is not None and now >= self.artist_until
+
+    async def soften_artist(self, why: str = "expired") -> bool:
+        """Režim interpreta → rádio "<interpret> a podobné" (jeho známé skladby
+        jako seedy). True = přepnuto."""
+        if not self.artist:
+            return False
+        name, every = self.artist, list(self._artist_all)
+        seeds, seen = [], set()
+        for t in every:  # nejznámější první, od každého uvedeného interpreta
+            if t.artist not in seen:
+                seen.add(t.artist)
+                seeds.append(t)
+            if len(seeds) >= 3:
+                break
+        for t in every:
+            if len(seeds) >= 3:
+                break
+            if t not in seeds:
+                seeds.append(t)
+        telemetry.event("radio.artist_mode", artist=name, ended=why, seeds=len(seeds))
+        log.info("režim interpreta %s končí (%s) → %s a podobné", name, why, name)
+        if not seeds:
+            self.artist, self._artist_all = "", []
+            self.artist_left = self.artist_until = None
+            return True
+        await self.set_seeds(seeds, mood=f"{name} a podobné")
+        return True
+
     async def next_tracks(self, count: int) -> list[Track]:
         """Pulls `count` tracks, alternating between pools, with filters applied."""
+        if self.artist_expired():
+            await self.soften_artist()
         out: list[Track] = []
         blocked = await _aread(self.store, "blacklisted")
         # vyžádaný interpret má přednost před pravidlem neopakování
@@ -264,6 +315,10 @@ class RadioPools:
             self.session_seen.add(track.id)
             artist_counts[track.artist] = artist_counts.get(track.artist, 0) + 1
             out.append(track)
+            if self.artist and self.artist_left is not None:
+                self.artist_left -= 1
+                if self.artist_left <= 0:
+                    break  # zbytek už z rádia "a podobné" (příští dávka)
 
             if len(pool) < self.cfg.pool_low:
                 await self._refill(pool)
@@ -406,6 +461,8 @@ class RadioPools:
         jako zahrané, ať o ně režim interpreta nepřijde."""
         for t in tracks:
             self.session_seen.discard(t.id)
+            if self.artist_left is not None and any(t.id == a.id for a in self._artist_all):
+                self.artist_left += 1
 
     def retrying(self) -> bool:
         """Některý pool čeká na nový pokus o rádio (selhalo) — nepřeseedovávat."""

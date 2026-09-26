@@ -58,7 +58,10 @@ class Classify(unittest.TestCase):
         self.assertEqual(classify("Codex není přihlášen: …"), "login")
         self.assertEqual(classify("unexpected status 429 Too Many Requests"), "limit")
         self.assertEqual(classify("You've hit your usage limit"), "limit")
-        self.assertEqual(classify(TimeoutError("x")), "network")
+        # náš vlastní strop tahu není síť (Pi 26. 9. 9:23: studený start + model
+        # přetáhl 25 s a posluchač četl "síť")
+        self.assertEqual(classify(TimeoutError("x")), "slow")
+        self.assertEqual(classify("Codex neodpověděl do 240 s, ukončen"), "slow")
         self.assertEqual(classify("stream disconnected before completion"), "network")
         self.assertIsNone(classify("JSONDecodeError: Expecting value"))
 
@@ -218,8 +221,49 @@ class OfflineDJ(unittest.TestCase):
             self.assertLess(time.monotonic() - t0, 2)
         finally:
             codex_mod.LISTENER_BUDGET = old
-        self.assertEqual(cm.exception.reason, "network")
-        self.assertEqual(dj.breaker.reason, "network")
+        # vypršel NÁŠ rozpočet → "DJ nestihl odpovědět", ne "síť"
+        self.assertEqual(cm.exception.reason, "slow")
+        self.assertIn("nestihl", str(cm.exception))
+        self.assertNotIn("síť", str(cm.exception))
+        self.assertIsNone(dj.breaker.reason)  # jeden pomalý tah jistič neotevře
+        codex_mod.LISTENER_BUDGET = 0.3
+        try:
+            with self.assertRaises(CodexOffline):
+                run(dj.interpret("něco na zlepšení nálady"))
+        finally:
+            codex_mod.LISTENER_BUDGET = old
+        self.assertEqual(dj.breaker.reason, "slow")  # druhý za sebou už ano
+
+    def test_cold_start_gets_extra_budget(self):
+        """Studený app-server (proces + vlákno) se do rozpočtu posluchače
+        nepočítá — 9:57 start 8.8 s + model 14 s."""
+        dj, _, _ = make()
+        dj.breaker.auth_file = Path(_TMP) / "nope.json"
+
+        async def slowish(prompt, auto):
+            await asyncio.sleep(0.5)
+            return {"action": "nothing", "reply": "stihl jsem to"}
+
+        dj._model_decision = slowish
+        old = (codex_mod.LISTENER_BUDGET, codex_mod.COLD_START_BUDGET,
+               os.environ.get("YTDJ_CODEX_APP_SERVER"))
+        codex_mod.LISTENER_BUDGET, codex_mod.COLD_START_BUDGET = 0.3, 1.0
+        os.environ["YTDJ_CODEX_APP_SERVER"] = "1"
+        try:
+            dj.app = None  # neběží → studený start
+            self.assertEqual(run(dj.interpret("ahoj")).reply, "stihl jsem to")
+
+            class Warm:
+                ready = True
+
+            dj.app = Warm()  # běží → jen rozpočet modelu
+            with self.assertRaises(CodexOffline) as cm:
+                run(dj.interpret("ahoj"))
+            self.assertEqual(cm.exception.reason, "slow")
+        finally:
+            codex_mod.LISTENER_BUDGET, codex_mod.COLD_START_BUDGET = old[0], old[1]
+            os.environ["YTDJ_CODEX_APP_SERVER"] = old[2] or "0"
+            dj.app = None
 
     def test_recovers_after_probe(self):
         dj, _, _, _ = self.dj_401()

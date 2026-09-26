@@ -572,5 +572,161 @@ class PlayerResumeTest(unittest.TestCase):
         run(go())
 
 
+class TemplateOrderTest(unittest.TestCase):
+    """F-RESTART-09: tytéž volby od mpv v jiném pořadí nejsou jiná šablona."""
+
+    def test_reordered_options_keep_prepared_tracks(self) -> None:
+        r = load_resolver()
+        a = ["--no-warnings", "-J", "--format", "774/251", "--cookies", "/c.txt",
+             "--js-runtimes", "node", "--"]
+        b = ["--js-runtimes", "node", "--no-warnings", "--cookies", "/c.txt", "-J",
+             "--format", "774/251", "--"]
+        self.assertEqual(r.template_key(a), r.template_key(b))
+        self.assertNotEqual(r.template_key(a),
+                            r.template_key(["--no-warnings", "-J", "--format", "251",
+                                            "--cookies", "/c.txt", "--js-runtimes", "node", "--"]))
+        res = r.Resolver()
+        res.template = a
+        res.ready[vid(1)] = (time.time(), info(vid(1)))
+        with redirect_stderr(io.StringIO()) as err:
+            res.set_template(b + ["url"])  # mpv po restartu: jiné pořadí
+            self.assertIs(res.template, a)
+            self.assertIn(vid(1), res.ready)
+            res.set_template(["--format", "251", "-J", "--", "url"])  # opravdu jiný formát
+        self.assertNotIn(vid(1), res.ready)
+        self.assertEqual(err.getvalue().count("šablona od mpv převzata"), 1)
+
+
+class FastPreparationTest(unittest.TestCase):
+    """F-ZVUK-20: rychlý klient se zálohou, pluginy jednou, trvalý node."""
+
+    def test_fast_client_falls_back_to_default_choice(self) -> None:
+        r = load_resolver()
+        res = r.Resolver()
+        res.template = list(TEMPLATE)
+
+        class Failing(FakeYdl):
+            _ytdj_client = "web_music"
+
+            def extract_info(self, url, download=False):
+                raise RuntimeError("ERROR: [youtube] x: This video is not available")
+
+        plain = FakeYdl()
+        res._plain["main"] = (res.template, plain)
+        with redirect_stderr(io.StringIO()):
+            data, fields = res._extract(Failing(), vid(1), res.template, False)
+        self.assertIn("fresh=1", data)
+        self.assertEqual(plain.calls, [vid(1)])
+        self.assertIn("not available", fields["fallback"])
+        # bez rychlého klienta (šablona ho určuje sama) se chyba hlásí rovnou
+        own = Failing()
+        own._ytdj_client = None  # type: ignore[assignment]
+        with self.assertRaises(RuntimeError):
+            res._extract(own, vid(2), res.template, False)
+        self.assertEqual(plain.calls, [vid(1)])
+
+    def test_build_sets_fast_client_only_when_template_does_not(self) -> None:
+        r = load_resolver()
+        seen = []
+
+        class Parsed:
+            def __init__(self, ea):
+                self.ydl_opts = {"format": "774", "extractor_args": ea}
+
+        stub = types.SimpleNamespace(
+            parse_options=lambda argv: Parsed({"youtube": {"player_client": ["tv"]}}
+                                              if "--extractor-args" in argv else {}),
+            YoutubeDL=lambda opts: seen.append(opts) or types.SimpleNamespace())
+        res = r.Resolver()
+        with mock.patch.object(r, "yt_dlp", stub), redirect_stderr(io.StringIO()):
+            fast = res._build(list(TEMPLATE))
+            own = res._build(["--extractor-args", "youtube:player_client=tv", "-J", "--"])
+            plain = res._build(list(TEMPLATE), fast=False)
+        self.assertEqual(seen[0]["extractor_args"]["youtube"]["player_client"], ["web_music"])
+        self.assertEqual(fast._ytdj_client, "web_music")
+        self.assertEqual(seen[1]["extractor_args"]["youtube"]["player_client"], ["tv"])
+        self.assertIsNone(own._ytdj_client)
+        self.assertFalse(seen[2].get("extractor_args"))
+        self.assertIsNone(plain._ytdj_client)
+
+    def test_youtubedl_is_never_built_twice_at_once(self) -> None:
+        """Dvě vlákna naráz načetla pluginy dvakrát (PoTokenProvider … already
+        registered, Pi 26. 9.) — pluginy jednou při importu, stavba pod zámkem."""
+        r = load_resolver()
+        inside, overlap = [0], []
+
+        def ydl(opts):
+            inside[0] += 1
+            overlap.append(inside[0])
+            time.sleep(0.05)
+            inside[0] -= 1
+            return types.SimpleNamespace()
+
+        stub = types.SimpleNamespace(parse_options=lambda a: types.SimpleNamespace(ydl_opts={}),
+                                     YoutubeDL=ydl)
+        res = r.Resolver()
+        with mock.patch.object(r, "yt_dlp", stub), redirect_stderr(io.StringIO()):
+            ts = [threading.Thread(target=res._build, args=(list(TEMPLATE),)) for _ in range(3)]
+            [t.start() for t in ts]
+            [t.join() for t in ts]
+        self.assertEqual(max(overlap), 1)
+        # import: pluginy se načtou jednou, hned (ne až v YoutubeDL() dvou vláken)
+        calls = []
+        pkg = types.ModuleType("yt_dlp")
+        plugins = types.ModuleType("yt_dlp.plugins")
+        plugins.load_all_plugins = lambda: calls.append(1)  # type: ignore[attr-defined]
+        pkg.plugins = plugins  # type: ignore[attr-defined]
+        with mock.patch.dict(sys.modules, {"yt_dlp": pkg, "yt_dlp.plugins": plugins}), \
+                redirect_stderr(io.StringIO()):
+            r._import_ytdlp()
+        self.assertEqual(calls, [1])
+
+    def test_persistent_node_solves_and_keeps_compiled_player(self) -> None:
+        import shutil
+
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node není")
+        from ytdj.player import ytdl_jsc
+
+        lib_core = ("var lib = {};\nObject.assign(globalThis, lib);\n"
+                    "var jsc = (function () { return function main(input) {"
+                    " const s = {}; Function('_result', 'code' in input ? input.code : '')(s);"
+                    " return { type: 'result', responses: [], preprocessed_player: "
+                    "'_result.n = (c) => c + \"!\"; _result.sig = (c) => c.split(\"\").reverse().join(\"\");' };"
+                    " }; })();")
+        srv = ytdl_jsc.NodeServer(idle_s=60)
+        try:
+            player = '_result.n = (c) => c + "!"; _result.sig = (c) => c.split("").reverse().join("");'
+            reqs = [{"type": "n", "challenges": ["ab"]}, {"type": "sig", "challenges": ["xyz"]}]
+            out = json.loads(srv.solve(node, lib_core, player, True, reqs))
+            self.assertEqual(out["responses"][0], {"type": "result", "data": {"ab": "ab!"}})
+            self.assertEqual(out["responses"][1]["data"], {"xyz": "zyx"})
+            pid = srv.proc.pid
+            # podruhé bez kódu přehrávače (node ho drží), týž proces
+            with mock.patch.object(srv, "_ask", wraps=srv._ask) as ask:
+                out = json.loads(srv.solve(node, lib_core, player, True,
+                                           [{"type": "n", "challenges": ["q"]}]))
+            self.assertEqual(out["responses"][0]["data"], {"q": "q!"})
+            self.assertNotIn("preprocessed_player", ask.call_args.args[0]["data"])
+            self.assertEqual(srv.proc.pid, pid)
+            # nová verze přehrávače: celé jádro (vrátí předzpracovaný pro cache)
+            out = json.loads(srv.solve(node, lib_core, "raw player", False, reqs))
+            self.assertIn("preprocessed_player", out)
+            # node spadl → výjimka (poskytovatel pak řeší postaru), příště nový
+            srv.proc.kill()
+            srv.proc.wait()
+            with self.assertRaises(Exception):
+                srv._ask({"op": "solve", "key": "k", "data": {"type": "preprocessed",
+                                                            "requests": []}})
+            srv.stop_locked()
+            out = json.loads(srv.solve(node, lib_core, player, True, reqs))
+            self.assertEqual(out["responses"][0]["data"], {"ab": "ab!"})
+            self.assertEqual(srv.starts, 2)
+        finally:
+            with srv.lock:
+                srv.stop_locked()
+
+
 if __name__ == "__main__":
     unittest.main()

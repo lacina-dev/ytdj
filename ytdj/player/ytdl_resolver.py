@@ -70,6 +70,18 @@ import time
 yt_dlp = None
 _ejs = None  # předzpracovaný přehrávač v cache (hlavní zrychlení ~9 s → ~0 s v node)
 _IMPORT_MS: int | None = None
+_JSC = False  # trvalý node pro JS výzvy (ytdl_jsc) zaregistrovaný
+# YoutubeDL() při prvním vytvoření načítá pluginy (PO token bgutil). Dvě
+# vlákna naráz je načetla dvakrát a registrace podruhé spadla ("PoTokenProvider
+# BgUtilHTTP already registered", Pi 26. 9.). Pluginy se proto načtou jednou
+# při importu a YoutubeDL se staví jen pod zámkem.
+_BUILD_LOCK = threading.Lock()
+_JSC_LOCAL = threading.local()  # výsledek JS výzvy poslední skladby tohoto vlákna
+# Klient YouTube, se kterým se skladba řeší napřed (Premium opus 774 dává
+# i sám, s PO tokenem od bgutil). Výchozí výběr yt-dlp (web_creator + tv +
+# web_music) stál na Pi ~2 s navíc za dva klienty, které se nepoužijí. Když
+# s ním skladba selže, řeší se znovu výchozím výběrem — nic se neztratí.
+FAST_CLIENT = "web_music"
 
 WATCH_URL = "https://music.youtube.com/watch?v={}"
 VIDEO_ID = re.compile(r"[?&]v=([\w-]{11})")
@@ -112,8 +124,55 @@ def _import_ytdlp() -> None:
         _ejs = ejs
     except Exception:  # jiná verze yt-dlp — poběží to, jen pomaleji
         _ejs = None
+    try:
+        from yt_dlp.plugins import load_all_plugins
+
+        load_all_plugins()  # jednou, v jednom vlákně (viz _BUILD_LOCK)
+    except Exception as exc:  # starší yt-dlp: načte si je YoutubeDL() sám
+        log(f"pluginy yt-dlp předem nejdou načíst: {exc}")
+    _install_jsc()
     yt_dlp = mod
     _IMPORT_MS = int((time.monotonic() - t0) * 1000)
+
+
+def _install_jsc() -> None:
+    global _JSC
+    try:
+        try:
+            from . import ytdl_jsc  # type: ignore[no-redef]  # v testech (balíček ytdj)
+        except ImportError:
+            import ytdl_jsc  # type: ignore[no-redef]  # spuštěno jako skript: sousední soubor
+
+        def note(status: str, ms: int, preprocessed: bool) -> None:
+            _JSC_LOCAL.last = (status, ms)
+
+        _JSC = ytdl_jsc.install(note)
+    except Exception as exc:  # postaru: jednorázový node od yt-dlp
+        log(f"trvalý node pro JS výzvy nejde: {exc}")
+        _JSC = False
+
+
+def template_key(argv: list[str]) -> tuple:
+    """Šablona bez ohledu na pořadí voleb. ytdl_hook v mpv skládá
+    --ytdl-raw-options z tabulky Lua (`pairs`), jejíž pořadí se mezi běhy
+    mpv mění: stejné volby v jiném pořadí vypadaly jako jiná šablona —
+    restart pak zahodil hotové skladby z disku i rozdělanou skladbu
+    (Pi 26. 9. 17:28: 15 hotových pryč, výsledek po 17 s zahozen)."""
+    groups: list[tuple[str, ...]] = []
+    tail: list[str] = []
+    cur: list[str] | None = None
+    for i, a in enumerate(argv):
+        if a == "--":
+            tail = argv[i:]
+            break
+        if a.startswith("-"):
+            cur = [a]
+            groups.append(cur)  # type: ignore[arg-type]
+        elif cur is not None:
+            cur.append(a)
+        else:
+            groups.append((a,))
+    return tuple(sorted(tuple(g) for g in groups)) + (tuple(tail),)
 
 
 def url_hash(url: str) -> str:
@@ -289,6 +348,7 @@ class Resolver:
         self.ydl_urgent = None  # vlastní YoutubeDL druhého vlákna (sdílet se nedá)
         self.ydl_urgent_for: list[str] | None = None
         self.lanes = 1  # kolik vláken řeší (serve() pustí i druhé, urgentní)
+        self._plain: dict[str, tuple] = {}  # vlákno → (šablona, YoutubeDL bez rychlého klienta)
         self.waiting: dict[str, int] = {}  # vid → kolik "get" na něj čeká
         self.cancelled: set[str] = set()
         # ---- cache na disku (tmpfs) ----
@@ -416,16 +476,72 @@ class Resolver:
 
     # ---- vlákno, které jediné volá yt-dlp ----
 
-    def _build(self, tmpl: list[str], lane: str | None = None):
+    def _build(self, tmpl: list[str], lane: str | None = None, fast: bool = True):
+        """YoutubeDL pro šablonu. fast: s FAST_CLIENT, pokud šablona (config
+        player_client) klienta sama neurčuje; jinak výchozí výběr yt-dlp."""
         t0 = time.monotonic()
         parsed = yt_dlp.parse_options(tmpl + ["--", WATCH_URL.format("dQw4w9WgXcQ")])
         opts = dict(parsed.ydl_opts)
         opts["quiet"] = True
         opts["no_warnings"] = True
-        ydl = yt_dlp.YoutubeDL(opts)
+        client = None
+        if fast and FAST_CLIENT:
+            ea = {k: dict(v) for k, v in (opts.get("extractor_args") or {}).items()}
+            yt = ea.setdefault("youtube", {})
+            if not yt.get("player_client"):
+                yt["player_client"] = [FAST_CLIENT]
+                opts["extractor_args"] = ea
+                client = FAST_CLIENT
+        with _BUILD_LOCK:
+            ydl = yt_dlp.YoutubeDL(opts)
+        ydl._ytdj_client = client  # type: ignore[attr-defined]  # None = šablona / výchozí
         extra = {"lane": lane} if lane else {}
+        if client:
+            extra["client"] = client
+        if not fast:
+            extra["fallback"] = True
         emit("resolver.template", took_ms=int((time.monotonic() - t0) * 1000),
              changed=self._tmpl_changed, **extra)
+        return ydl
+
+    def _extract(self, ydl, vid: str, tmpl: list[str], urgent_only: bool) -> tuple[str, dict]:
+        """JSON pro mpv; s rychlým klientem, a když selže, výchozím výběrem.
+        Vrací (JSON, pole do resolver.resolve). Výjimka = selhalo obojí."""
+        info: dict = {}
+        _JSC_LOCAL.last = None
+        try:
+            data = ydl.extract_info(WATCH_URL.format(vid), download=False)
+            out = json.dumps(ydl.sanitize_info(data))
+        except Exception as exc:
+            if not getattr(ydl, "_ytdj_client", None):
+                raise
+            first = str(exc).splitlines()[0][:200] if str(exc) else type(exc).__name__
+            log(f"{vid}: klient {ydl._ytdj_client} selhal ({first}) — zkouším výchozí")
+            info["fallback"] = first
+            plain = self._plain_ydl(tmpl, urgent_only)
+            _JSC_LOCAL.last = None
+            data = plain.extract_info(WATCH_URL.format(vid), download=False)
+            out = json.dumps(plain.sanitize_info(data))
+        else:
+            if getattr(ydl, "_ytdj_client", None):
+                info["client"] = ydl._ytdj_client
+        if isinstance(data, dict) and data.get("format_id"):
+            info["format"] = str(data.get("format_id"))[:20]
+        jsc = getattr(_JSC_LOCAL, "last", None)
+        if jsc:
+            info["jsc_ms"] = jsc[1]
+            if jsc[0] != "ok":
+                info["jsc"] = jsc[0]
+        return out, info
+
+    def _plain_ydl(self, tmpl: list[str], urgent_only: bool):
+        """YoutubeDL bez rychlého klienta (záloha), jeden na vlákno, líně."""
+        key = "urgent" if urgent_only else "main"
+        cached = self._plain.get(key)
+        if cached and cached[0] is tmpl:
+            return cached[1]
+        ydl = self._build(tmpl, "urgent" if urgent_only else None, fast=False)
+        self._plain[key] = (tmpl, ydl)
         return ydl
 
     def worker(self) -> None:
@@ -441,6 +557,7 @@ class Resolver:
                 self.cv.notify_all()
             log(f"yt-dlp načteno za {_IMPORT_MS} ms ({'s' if _ejs else 'bez'} cache přehrávače)")
             emit("resolver.ready", import_ms=_IMPORT_MS, ejs_cache=_ejs is not None,
+                 jsc_server=_JSC, fast_client=FAST_CLIENT or None,
                  yt_dlp=getattr(getattr(yt_dlp, "version", None), "__version__", "?"))
         while True:
             self._run_one(urgent_only=False)
@@ -507,16 +624,15 @@ class Resolver:
                         else:
                             self.ydl, self.ydl_for = ydl, tmpl
                 t0 = time.monotonic()
-            info = ydl.extract_info(WATCH_URL.format(vid), download=False)
-            data = json.dumps(ydl.sanitize_info(info))
-            result, error = data, None
+            result, fields = self._extract(ydl, vid, tmpl, urgent_only)
+            error = None
         except Exception as exc:  # nepřehratelné, síť…
-            result, error = None, str(exc).splitlines()[0][:300]
+            result, error, fields = None, str(exc).splitlines()[0][:300], {}
         took = time.monotonic() - t0
-        self._finish(vid, tmpl, why, result, error, took, urgent_only)
+        self._finish(vid, tmpl, why, result, error, took, urgent_only, fields)
 
     def _finish(self, vid: str, tmpl, why: str, result: str | None, error: str | None,
-                took: float, urgent_only: bool) -> None:
+                took: float, urgent_only: bool, fields: dict | None = None) -> None:
         with self.cv:
             if urgent_only:
                 self.busy_urgent = None
@@ -538,7 +654,9 @@ class Resolver:
             else:
                 self.failed[vid] = (time.time(), error or "?")
                 log(f"selhalo {vid} za {took:.1f} s: {error}")
-            extra = {"lane": "urgent"} if urgent_only else {}
+            extra = dict(fields or {})
+            if urgent_only:
+                extra["lane"] = "urgent"
             emit("resolver.resolve", video_id=vid, took_ms=int(took * 1000), why=why,
                  ok=result is not None, error=error, size_kb=len(result or "") // 1024,
                  **extra)
@@ -589,6 +707,8 @@ class Resolver:
         template = argv[:-1]
         if template == self.template:
             return
+        if self.template is not None and template_key(template) == template_key(self.template):
+            return  # tytéž volby v jiném pořadí (ytdl_hook) — hotové platí dál
         changed = self.template is not None
         self.template = template
         self.ydl, self.ydl_for = None, None  # postaví worker (potřebuje yt-dlp)
@@ -614,7 +734,7 @@ class Resolver:
         vid = m.group(1)
         t0 = time.monotonic()
         self.t_get = t0  # skladba startuje: rozšiřování okna chvíli počká
-        if argv[:-1] == self.template:
+        if self.template is not None and template_key(argv[:-1]) == template_key(self.template):
             self._verify(vid)  # jen starší skladba z disku: platí její adresa ještě?
         with self.cv:
             self.waiting[vid] = self.waiting.get(vid, 0) + 1

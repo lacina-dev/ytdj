@@ -63,6 +63,8 @@ Tohle je seznam všeho, co aplikace umí (stav 26. 9. 2026, commit e713074).
   Testy: `tests/test_radio_artist.py::ArtistRotation::test_new_turn_continues_where_the_last_one_stopped`, `tests/test_radio_artist.py::ArtistRotation::test_after_whole_pool_the_least_recent_comes_first`, `tests/test_radio_artist.py::ArtistRotation::test_restart_inside_session_also_rotates`, `tests/test_radio_artist.py::ArtistRotation::test_given_back_tracks_are_not_lost`
 - **F-ZVUK-19** Na konci skladby drží přehrávač 2 s zvuku v zásobě, takže otevření další skladby do 2 s neudělá ticho s výpadky (xruny) mezi skladbami. Začátek skladby hlásí formát zvuku a odhad ticha (`gap_ms`), xruny se hlásí s přesným časem (pw-top po řádcích).
   Testy: `tests/test_telemetry.py::AudioGapTest::test_mpv_keeps_two_seconds_of_audio_gapless`, `tests/test_telemetry.py::AudioGapTest::test_track_start_has_audio_format_and_gap`, `tests/test_telemetry.py::AudioGapTest::test_pwtop_is_line_buffered`
+- **F-ZVUK-20** Příprava skladby je rychlá a Premium zůstává: resolver řeší napřed klientem `web_music` (Premium opus 774 s PO tokenem), a když s ním skladba selže, hned znovu výchozím výběrem yt-dlp; JS výzvy YouTube řeší trvale běžící node (přeložený přehrávač drží, po 10 min nečinnosti skončí) a při jeho chybě jednorázový node jako dřív; pluginy yt-dlp se načtou jednou a YoutubeDL se nestaví ve dvou vláknech naráz.
+  Testy: `tests/test_resume_cache.py::FastPreparationTest::test_fast_client_falls_back_to_default_choice`, `tests/test_resume_cache.py::FastPreparationTest::test_build_sets_fast_client_only_when_template_does_not`, `tests/test_resume_cache.py::FastPreparationTest::test_youtubedl_is_never_built_twice_at_once`, `tests/test_resume_cache.py::FastPreparationTest::test_persistent_node_solves_and_keeps_compiled_player`
 
 ## Hlasitost
 
@@ -325,6 +327,8 @@ Tohle je seznam všeho, co aplikace umí (stav 26. 9. 2026, commit e713074).
   Testy: `tests/test_player_start.py::StartTest::test_start_breakdown_priority_and_resolver_first`, `tests/test_player_start.py::StartTest::test_stale_socket_is_reported_and_not_connected_to`, `tests/test_player_start.py::StartTest::test_mpv_that_exits_fails_fast`, `tests/test_resume_cache.py::ShimTest::test_waits_for_socket_that_appears_later`, `tests/test_resume_cache.py::ShimTest::test_startup_error_falls_back_to_real_ytdlp`
 - **F-RESTART-08** Po startu služby se přehrávač (mpv a resolver) spustí hned po načtení konfigurace, souběžně s načítáním zbytku aplikace; navázání přerušené skladby nečeká na web, terminál ani katalog YouTube Music (ytmusicapi), ty se načtou až po něm.
   Testy: `tests/test_startup.py::StartOrder::test_player_starts_before_the_rest_of_the_app_and_resumes`, `tests/test_startup.py::StartOrder::test_failed_import_stops_the_started_player`, `tests/test_startup.py::LightStart::test_player_path_does_not_import_the_heavy_parts`, `tests/test_startup.py::LightStart::test_lazy_ytmusic_is_created_once_in_the_calling_thread`
+- **F-RESTART-09** Tytéž volby od mpv v jiném pořadí (ytdl_hook je skládá pokaždé jinak) nejsou jiná šablona: hotové skladby z disku ani rozdělaná skladba se kvůli tomu nezahodí; jiný formát ano.
+  Testy: `tests/test_resume_cache.py::TemplateOrderTest::test_reordered_options_keep_prepared_tracks`
 
 ## Chytrý start
 

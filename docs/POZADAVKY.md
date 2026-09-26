@@ -81,6 +81,8 @@ Stav k 26. 9. 2026 15:45 (na Pi běží e713074).
 | 41 | Bezpečnost a přihlášení vyřešit na konec a připomenout | 📋 | viz níž |
 | 42 | „Aby to, co aplikace už umí, zůstávalo" — jasné funkce, žádný další požadavek je potichu nezmění | ✅ | `docs/FUNKCE.md`: 139 pravidel v 16 oblastech, každé s testem; `tests/test_funkce.py` hlídá, že žádné nezůstane bez testu; `CLAUDE.md`: změna jen se souhlasem vlastníka |
 | 43 | Nápověda v poli přání ne „Olympic", ale např. „Zahraj mi něco veselého k práci" | ✅ | web i displej (15:42) |
+| 44 | „Proč jen tři skladby? Jde to nastavit v nastavení?" | 🔄 | dnes napevno: kolo 3 skladby (2 když čekají jiní), rozpočet přání 4 (displej 3) — kvůli férovosti; → do nastavení jukeboxu, výchozí hodnoty stejné |
+| 45 | „Co hraje dál a nemá to u sebe moje jméno?" | 🔄 | je to podkres (rádio) podle naposledy splněného přání → bude vidět „Rádio podle přání X" na webu i displeji |
 
 ## Na konec: bezpečnost a přihlášení (připomenout)
 

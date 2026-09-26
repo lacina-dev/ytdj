@@ -46,7 +46,7 @@ from .appserver import (
     effort_from_env,
     feature_args,
     mem_available_mb,
-    office_warm,
+    warm_policy,
 )
 from .offline import (
     CALMER,
@@ -307,6 +307,8 @@ class CodexDJ:
         self._switch_task: asyncio.Task | None = None
         # hlasování kanceláře (ytdj/votes.py, zapojí App) — None = bez něj
         self.votes = None
+        # kdy naposledy přišlo přání posluchače (time.time()) — drží Codex teplý
+        self._last_wish_at = 0.0
 
     # ---- calling Codex ----
 
@@ -329,10 +331,12 @@ class CodexDJ:
         )
         return f"{ROLE}\n\n{state}\n\nUživatel říká: {user_input}"
 
-    # [latency] Obnovená session narůstá (na Pi 15k → 29k vstupních tokenů za
-    # 5 tahů, model 7.7 → 12.3 s); stav se posílá celý v každém zadání, takže
-    # stačí session po pár tazích začít znovu.
-    MAX_RESUMED_TURNS = 3
+    # [latency] Obnovená session narůstá (stav se posílá celý v každém zadání),
+    # takže stačí session po pár tazích začít znovu. Dřív 3 (codex exec: 15k →
+    # 29k vstupních tokenů za 5 tahů, model 7.7 → 12.3 s); 5 se souhlasem
+    # vlastníka 26. 9. — app-server: tah v rozjetém vlákně je rychlejší (Pi:
+    # model medián 8,4 s proti 11,3 s v novém), měření délky viz FUNKCE F-PROVOZ-05.
+    MAX_RESUMED_TURNS = 5
 
     def _args(self, resume: bool) -> list[str]:
         args = [self.codex, "exec"]
@@ -784,6 +788,7 @@ class CodexDJ:
 
     async def fast_plan(self, text: str) -> Plan | None:
         """Rychlá cesta jako plán (nic nepřehrává) — pro frontu přání."""
+        self.note_wish()
         self.prewarm()  # [app-server] kdyby přání šlo k modelu, ať Codex už běží
         t0 = time.monotonic()
         try:
@@ -928,7 +933,8 @@ class CodexDJ:
             self.app = AppServer(
                 self._binary, str(self._dir), model=self.cfg.codex_model,
                 max_turns_per_thread=self.MAX_RESUMED_TURNS,
-                keep_warm=office_warm,  # v pracovní době bez studeného startu
+                # v pracovní době a 2 h po přání bez studeného startu
+                keep_warm=lambda: warm_policy(self.last_wish_at()),
                 effort=effort_from_env(),
             )
         return self.app
@@ -949,14 +955,16 @@ class CodexDJ:
 
         Studený start (proces + vlákno) platilo na Pi 26. 9. 9 z 18 tahů
         posluchačů, 4,8–12,4 s (dj.turn startup_ms, medián 8,4 s). Proto:
-          - "web": někdo začal psát přání (web to pošle při psaní),
-          - "start": po startu služby, jen v pracovní době (office_warm).
+          - "web": někdo začal psát přání (web při psaní, displej při otevření
+            obrazovky přání),
+          - "start": po startu služby, když ho drží `warm_policy` (pracovní
+            doba, nebo přání posluchače před méně než 2 h — i před restartem).
         Jen s dost volnou pamětí (WARM_MIN_FREE_MB) a když mozek jede (jistič).
-        Mimo pracovní dobu proces zase skončí po IDLE_TTL bez tahu.
+        Když ho `warm_policy` nedrží, proces zase skončí po IDLE_TTL bez tahu.
         """
         if not app_server_enabled() or not self.breaker.allow():
             return False
-        if source == "start" and not office_warm():
+        if source == "start" and not warm_policy(self.last_wish_at()):
             return False
         free = mem_available_mb()
         if free is not None and free < WARM_MIN_FREE_MB:
@@ -967,6 +975,14 @@ class CodexDJ:
                         alive=bool(self.app is not None and self.app.alive) or None)
         self.prewarm()
         return True
+
+    def note_wish(self) -> None:
+        """Přišlo přání posluchače — Codex pak zůstane teplý (WISH_WARM_S)."""
+        self._last_wish_at = time.time()
+
+    def last_wish_at(self) -> float:
+        """Poslední přání posluchače; po restartu z uloženého přání (dj-intent.json)."""
+        return max(self._last_wish_at, self.wish.ts if self.wish.text else 0.0)
 
     async def _via_app_server(self, prompt: str, auto: bool) -> dict | None:
         """Tah přes trvale běžící Codex; None = selhalo, ať to vezme `codex exec`.
@@ -1080,6 +1096,8 @@ class CodexDJ:
         česká zpráva pro posluchače, `.reason` druh výpadku.
         Posluchačův tah má rozpočet LISTENER_BUDGET, automatický AUTO_BUDGET.
         """
+        if not auto:
+            self.note_wish()
         if not self.breaker.allow():
             return await self._offline_intent(user_input, auto, None)
         prompt = await self._build_prompt(user_input)

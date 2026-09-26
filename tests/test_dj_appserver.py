@@ -287,6 +287,51 @@ class KeepWarm(unittest.TestCase):
         self.assertFalse(office_warm(datetime(2026, 9, 25, 20, 0), free_mb=590))
         self.assertFalse(office_warm(datetime(2026, 9, 26, 10, 0), free_mb=590))  # sobota
 
+    def test_two_hours_after_a_wish_at_any_time(self):
+        """Souhlas vlastníka 26. 9.: Codex zahřátý vždy po přání (2 h), i večer
+        a o víkendu; paměťová pojistka platí dál."""
+        from datetime import datetime
+
+        from ytdj.agent.appserver import WISH_WARM_S, warm_policy
+
+        sat_22 = datetime(2026, 9, 26, 22, 0)
+        wall = 1_000_000.0
+        self.assertFalse(warm_policy(0.0, sat_22, free_mb=590, wall=wall))  # žádné přání
+        self.assertTrue(warm_policy(wall - 60, sat_22, free_mb=590, wall=wall))
+        self.assertTrue(warm_policy(wall - WISH_WARM_S + 60, sat_22, free_mb=590, wall=wall))
+        self.assertFalse(warm_policy(wall - WISH_WARM_S - 60, sat_22, free_mb=590, wall=wall))
+        self.assertFalse(warm_policy(wall - 60, sat_22, free_mb=120, wall=wall))  # málo paměti
+        fri_9 = datetime(2026, 9, 25, 9, 0)
+        self.assertTrue(warm_policy(0.0, fri_9, free_mb=590, wall=wall))  # pracovní doba dál
+        self.assertEqual(WISH_WARM_S, 2 * 3600)
+
+    def test_dj_keeps_it_warm_after_a_listener_wish_and_rotates_after_five(self):
+        import test_dj_apply  # noqa: F401 — nastaví YTDJ_CODEX_APP_SERVER=0; pak přepsat
+        from test_dj_apply import make
+
+        from ytdj.agent.intent import ListenerIntent
+
+        old = os.environ.get("YTDJ_CODEX_APP_SERVER")
+        os.environ["YTDJ_CODEX_APP_SERVER"] = "1"
+        try:
+            dj, _, _ = make()
+            dj._binary = str(FAKE)
+            self.assertEqual(dj.last_wish_at(), 0.0)
+            app = run(dj._app())
+            self.assertEqual(app.max_turns, 5)  # 3 → 5 se souhlasem vlastníka
+            if "YTDJ_CODEX_EFFORT" not in os.environ:
+                self.assertEqual(app.effort, "low")  # F-PROVOZ-10
+            import time as _t
+
+            dj.note_wish()
+            self.assertAlmostEqual(dj.last_wish_at(), _t.time(), delta=5)
+            # po restartu: uložené přání (dj-intent.json) se počítá taky
+            dj2, _, _ = make()
+            dj2.wish = ListenerIntent(text="hraj jazz", ts=_t.time() - 600)
+            self.assertAlmostEqual(dj2.last_wish_at(), _t.time() - 600, delta=5)
+        finally:
+            os.environ["YTDJ_CODEX_APP_SERVER"] = old or "0"
+
     def test_kept_warm_while_policy_says_so(self):
         os.environ["FAKE_LOG"] = str(Path(tempfile.mkdtemp(dir=_TMP)) / "w.jsonl")
         os.environ["FAKE_MODE"] = "ok"
@@ -382,13 +427,13 @@ class SpareThread(unittest.TestCase):
                  if json.loads(x).get("method") == "turn/start"]
         self.assertEqual([t.get("effort") for t in turns], ["low", None])
 
-    def test_effort_from_env_is_a_plain_word(self):
+    def test_dj_thinks_with_low_effort_unless_told_otherwise(self):
         from ytdj.agent.appserver import effort_from_env
 
         old = os.environ.get("YTDJ_CODEX_EFFORT")
         try:
-            for value, want in (("low", "low"), (" Medium ", "medium"), ("", ""),
-                                ("low; rm -rf", ""), ("x" * 20, "")):
+            for value, want in (("low", "low"), (" Medium ", "medium"), ("", "low"),
+                                ("default", ""), ("low; rm -rf", "low"), ("x" * 20, "low")):
                 os.environ["YTDJ_CODEX_EFFORT"] = value
                 self.assertEqual(effort_from_env(), want, value)
         finally:
@@ -427,7 +472,7 @@ class WarmAhead(unittest.TestCase):
 
         async def go():
             with mock.patch.object(codex_mod, "mem_available_mb", lambda: free_mb), \
-                    mock.patch.object(codex_mod, "office_warm", lambda: office):
+                    mock.patch.object(codex_mod, "warm_policy", lambda last: office):
                 ok = dj.warm_ahead(source)
             await asyncio.sleep(0.8)
             ready = dj.app.ready
@@ -444,7 +489,7 @@ class WarmAhead(unittest.TestCase):
         warm = [e for e in self.events() if e["kind"] == "dj.warm"]
         self.assertEqual(warm[-1]["source"], "web")
 
-    def test_after_start_only_in_office_hours(self):
+    def test_after_start_only_when_kept_warm(self):
         self.assertEqual(self.warm(self.dj(), "start", office=False), (False, False))
         self.assertEqual(self.warm(self.dj(), "start", office=True), (True, True))
 

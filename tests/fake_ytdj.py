@@ -105,6 +105,9 @@ class FakeYtdj:
         self.nicks: dict[str, str] = {"web-jana0001": "Jana", "web-karel001": "Karel"}
         # office votes (the real thing: ytdj/votes.py): (target, key) → {cid: ballot}
         self.votes: dict[tuple[str, str], dict[str, dict]] = {}
+        # playlists imported into favourites (the real thing: ytdj/imports.py)
+        self.imports: list[dict] = []
+        self.import_delay = 1.0
 
     def _position(self) -> float:
         if self.paused:
@@ -296,7 +299,8 @@ class FakeYtdj:
                "label": (f"{last.get('artist')} — {last.get('title')}" if target == "song"
                          else last.get("artist", key)),
                **self._tally(target, key),
-               "voters": [{"nick": b["who"], "vote": b["vote"], "at": b["at"], "tag": self._tag(c)}
+               "voters": [{"nick": b["who"], "vote": b["vote"], "at": b["at"], "tag": self._tag(c),
+                           **({"playlist": b["playlist"]} if b.get("playlist") else {})}
                           for c, b in sorted(ballots.items(), key=lambda kv: kv[1]["at"]) if b["vote"]],
                "updated": last.get("at")}
         if target == "song":
@@ -409,10 +413,74 @@ class FakeYtdj:
                     mine.append(it)
         fav.sort(key=lambda i: -(i["up"] - i["down"]))
         out = {"favourites": fav, "banned": ban, "pending": sorted(pend, key=lambda i: i["need"]),
-               "rules": {"ban_song_votes": 2, "ban_artist_votes": 3}}
+               "rules": {"ban_song_votes": 2, "ban_artist_votes": 3, "favourite_artist_votes": 2},
+               "counts": {"favourites": len(fav), "banned": len(ban), "pending": len(pend)}}
+        # imported songs are counted, not listed one by one (like the real LIST_MAX cut)
+        extra = sum(i["songs"] for i in self.imports)
+        if extra:
+            out["counts"]["favourites"] += extra
         if viewer:
-            out["mine"] = mine
+            out["mine"] = [i for i in mine if not any(v.get("playlist") and v["tag"] == self._tag(viewer)
+                                                     for v in i["voters"])]
+            out["counts"]["mine"] = len(out["mine"])
         return out
+
+    # ---- playlist imports (simplified ytdj/imports.py; same JSON shapes) ----
+
+    def import_list(self, viewer: str) -> dict:
+        with self.lock:
+            rows = [{**{k: v for k, v in i.items() if k != "client"},
+                     "tag": self._tag(i["client"]), "mine": i["client"] == viewer,
+                     "url": "https://music.youtube.com/playlist?list=" + i["playlist_id"]}
+                    for i in self.imports]
+            mine = sum(i["songs"] for i in self.imports if i["client"] == viewer)
+        rows.sort(key=lambda r: (not r["mine"], -r["created"]))
+        return {"imports": rows, "max": 300, "max_playlists": 10, "mine_songs": mine}
+
+    def import_add(self, data: dict) -> tuple[int, dict]:
+        cid, text = str(data.get("client") or ""), str(data.get("url") or "")
+        if not self.nicks.get(cid):
+            return 403, {"error": "Importovat jde s přezdívkou — nastav si ji nahoře vpravo."}
+        m = re.search(r"list=([\w-]+)", text) or re.fullmatch(r"(PL[\w-]{10,})", text.strip())
+        if not m:
+            return 400, {"error": "Tohle nevypadá jako odkaz na playlist — v YouTube Music otevři "
+                                  "playlist a zkopíruj jeho odkaz (Sdílet → Kopírovat odkaz)."}
+        pid = m.group(1)
+        if pid.startswith("RD") and not pid.startswith("RDCLAK5uy_"):
+            return 400, {"error": "Tohle je mix (rádio) YouTube, ne playlist — skládá se pokaždé jinak. "
+                                  "Pošli odkaz na svůj playlist."}
+        time.sleep(self.import_delay)
+        if "soukrom" in pid.lower() or "private" in pid.lower():
+            return 404, {"error": "Playlist je soukromý (nebo neexistuje) — nastav ho v YouTube Music "
+                                  "jako Neveřejný (s odkazem) a zkus znovu."}
+        now = time.time()
+        with self.lock:
+            imp = {"id": secrets.token_hex(6), "client": cid, "who": self.nicks[cid], "playlist_id": pid,
+                   "title": "Moje oblíbené na práci", "songs": 212, "active": 207, "skipped": 4,
+                   "cut": 0, "created": now, "fetched": now}
+            self.imports.append(imp)
+        return 200, {"ok": True, "action": "add", "songs": 212, "import": imp,
+                     "message": "Hotovo: z playlistu ‚Moje oblíbené na práci‘ je mezi tvými 👍 212 písniček. "
+                                "5 už jsi 👍 měl(a); 4 vynecháno (nedostupné nebo to nejsou písničky)."}
+
+    def import_change(self, iid: str, data: dict, action: str) -> tuple[int, dict]:
+        cid = str(data.get("client") or "")
+        with self.lock:
+            imp = next((i for i in self.imports if i["id"] == iid), None)
+            if imp is None:
+                return 404, {"error": "Tenhle playlist tu už není."}
+            if imp["client"] != cid:
+                return 403, {"error": ("Obnovit" if action == "refresh" else "Odebrat") +
+                                      " jde jen vlastní playlist."}
+            if action == "remove":
+                self.imports.remove(imp)
+                return 200, {"ok": True, "removed": imp["active"],
+                             "message": f"Playlist ‚{imp['title']}‘ odebrán — {imp['active']} písniček "
+                                        "už nemá tvůj 👍 (vlastní hlasy zůstaly)."}
+            imp["fetched"] = time.time()
+            imp["songs"] += 3
+        return 200, {"ok": True, "action": "refresh",
+                     "message": f"Playlist ‚{imp['title']}‘ obnoven: +3 nové (teď {imp['songs']} písniček)."}
 
     def vote_detail(self, vid: str, viewer: str) -> tuple[int, dict]:
         with self.lock:
@@ -449,6 +517,15 @@ class FakeYtdj:
         put("artist", "olympic", "web-jana0001", "Jana", 1, "Olympic", ago=2400)  # oblíbený interpret
         put("song", self.song_key("Lucie", "Amerika"), "web-jana0001", "Jana", -1, "Lucie", "Amerika",
             "l1", 300)
+        # Karel's playlist in favourites: his 👍 carry the source
+        put("song", self.song_key("Mig 21", "Snadné je žít"), "web-karel001", "Karel", 1, "Mig 21",
+            "Snadné je žít", "m1", 5400)
+        self.votes[("song", self.song_key("Mig 21", "Snadné je žít"))]["web-karel001"]["playlist"] = \
+            "Pátek odpoledne"
+        self.imports.append({"id": "a1b2c3d4e5f6", "client": "web-karel001", "who": "Karel",
+                             "playlist_id": "PLkarel0000000000000000000000000000",
+                             "title": "Pátek odpoledne", "songs": 48, "active": 47, "skipped": 2,
+                             "cut": 0, "created": now - 86400 * 2, "fetched": now - 5400})
 
     # ---- the request queue ----
 
@@ -647,6 +724,8 @@ def make_server(port: int = 0, fake: FakeYtdj | None = None, sse: bool = True) -
                 q = {k: v[0] for k, v in parse_qs(u.query).items()}
                 if u.path == "/api/votes/track":
                     self._json(*fake.vote_detail(q.get("video_id", ""), q.get("client", "")))
+                elif u.path == "/api/votes/imports":
+                    self._json(200, fake.import_list(q.get("client", "")))
                 else:
                     self._json(200, fake.vote_lists(q.get("client", "")))
             elif self.path.startswith("/api/me"):
@@ -691,7 +770,11 @@ def make_server(port: int = 0, fake: FakeYtdj | None = None, sse: bool = True) -
                 pass
 
         def do_DELETE(self) -> None:
-            if self.path.startswith("/api/requests/"):
+            if self.path.startswith("/api/votes/imports/"):
+                data = self._body()
+                if data is not None:
+                    self._json(*fake.import_change(self.path.rsplit("/", 1)[-1], data, "remove"))
+            elif self.path.startswith("/api/requests/"):
                 data = self._body()
                 if data is not None:
                     self._json(*fake.request_action(self.path.rsplit("/", 1)[-1],
@@ -716,6 +799,12 @@ def make_server(port: int = 0, fake: FakeYtdj | None = None, sse: bool = True) -
                 return
             data = self._body()  # read it always: an unread body breaks keep-alive
             if data is None:
+                return
+            if self.path == "/api/votes/imports":
+                self._json(*fake.import_add(data))
+                return
+            if self.path.startswith("/api/votes/imports/") and self.path.endswith("/refresh"):
+                self._json(*fake.import_change(self.path.split("/")[-2], data, "refresh"))
                 return
             if self.path not in ("/api/control", "/api/prompt", "/fake/state", "/api/me", "/api/votes"):
                 self._json(404, {"error": "Nenalezeno."})

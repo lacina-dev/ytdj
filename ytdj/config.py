@@ -84,6 +84,9 @@ DEFAULTS: dict = {
     "wish_budget": 4,
     "wish_budget_panel": 3,
     "wish_artist_max": 12,
+    # Import playlistu do oblíbených (ytdj/imports.py): nejvýš tolik písniček
+    # z playlistů na člověka (všechny jeho playlisty dohromady).
+    "playlist_import_max": 1000,
     # Last set volume. mpv starts at it, so a restarted service picks up where
     # it left off instead of coming back at full blast.
     "volume": 100,
@@ -200,6 +203,7 @@ class Config:
     wish_budget: int = 4
     wish_budget_panel: int = 3
     wish_artist_max: int = 12
+    playlist_import_max: int = 1000
     prefetch_first: int = 3
     prefetch_max: int = 10
 

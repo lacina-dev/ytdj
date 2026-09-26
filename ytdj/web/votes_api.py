@@ -29,6 +29,17 @@ Položka (item) — stejná v POST, GET /api/votes i v detailu:
     status skladby: banned | favourite | downweighted | neutral
     status interpreta: banned | favourite | pending | neutral   (👍 i 👎 jako u skladby)
     need = kolik 👎 ještě chybí k vyřazení; mine jen s ?client= / "client".
+    voters[].playlist = název playlistu u 👍 z importu ("z playlistu ‚…‘").
+    GET /api/votes navíc "counts": celé počty seznamů (seznamy mají nejvýš 100).
+
+Import playlistu do oblíbených (ytdj/imports.py) — 👍 každé písničce z něj:
+    GET    /api/votes/imports?client=        {"imports": [{id, title, who, tag, url,
+                                               songs, active, skipped, cut, created,
+                                               fetched, mine}], "max": 300, "mine_songs": n}
+    POST   /api/votes/imports                {"client", "url"} → zpráva s počty
+    POST   /api/votes/imports/{id}/refresh   {"client"}  (jen vlastní, jinak 403)
+    DELETE /api/votes/imports/{id}           {"client"}  (jen vlastní, jinak 403)
+    Seznamy importů nejsou v /api/status (snímek zůstává malý).
 """
 
 from __future__ import annotations
@@ -174,10 +185,73 @@ def routes(srv: "WebServer") -> list[Route]:
             return _err("Teď nic nehraje." if not video_id else "Tuhle skladbu neznám.", 404)
         return JSONResponse(votes.detail(track, clean_cid(request.query_params.get("client"))))
 
+    # ---- import playlistů do oblíbených (ytdj/imports.py, POZADAVKY #48) ----
+
+    def importer() -> Any:
+        return getattr(app, "imports", None)
+
+    async def _import_call(request: Request, action: str, import_id: str = "") -> Response:
+        imp = importer()
+        if imp is None or book() is None:
+            return _err("Import playlistů tu není.", 404)
+        try:
+            data = await srv._body(request)
+        except ValueError as exc:
+            return _err(str(exc), 400)
+        cid = clean_cid(data.get("client"))
+        rec: dict[str, Any] = {**_client(request), "action": action}
+        if not cid:
+            return _err("Chybí id prohlížeče — obnov prosím stránku.", 400)
+        wq = getattr(app, "wishes", None)
+        if wq is not None and not wq.name_for(cid):
+            rec["status"] = 403
+            telemetry.event("vote.import_rejected", reason="no_nick", **rec)
+            return _err("Importovat jde s přezdívkou — nastav si ji nahoře vpravo.", 403)
+        raw_who = " ".join(str(data.get("who") or "").split())[:WHO_MAX]
+        who = (wq.name_for(cid, raw_who) if wq is not None else raw_who) or "Host"
+        from ..imports import ImportRefused
+
+        try:
+            if action == "add":
+                out = await imp.add(cid, who, str(data.get("url") or data.get("text") or "")[:500])
+            elif action == "refresh":
+                out = await imp.refresh(cid, import_id)
+            else:
+                out = imp.remove(cid, import_id)
+        except ImportRefused as exc:
+            return _err(str(exc), exc.status)
+        if action != "add":
+            # ubyly 👍 → skladba mohla spadnout pod vyřazení: úklid podkresu jako u hlasu
+            try:
+                out["effect"] = await enforce(app, reason=f"import:{action}")
+            except Exception:
+                log.exception("změna importu se nepodařilo promítnout do fronty")
+        srv.poke()
+        return JSONResponse(out)
+
+    async def import_add(request: Request) -> Response:
+        return await _import_call(request, "add")
+
+    async def import_refresh(request: Request) -> Response:
+        return await _import_call(request, "refresh", request.path_params.get("iid", ""))
+
+    async def import_remove(request: Request) -> Response:
+        return await _import_call(request, "remove", request.path_params.get("iid", ""))
+
+    async def import_list(request: Request) -> Response:
+        imp = importer()
+        if imp is None:
+            return _err("Import playlistů tu není.", 404)
+        return JSONResponse(imp.listing(clean_cid(request.query_params.get("client"))))
+
     return [
         Route("/api/votes", _safe(cast), methods=["POST"]),
         Route("/api/votes", _safe(lists), methods=["GET"]),
         Route("/api/votes/track", _safe(detail), methods=["GET"]),
+        Route("/api/votes/imports", _safe(import_list), methods=["GET"]),
+        Route("/api/votes/imports", _safe(import_add), methods=["POST"]),
+        Route("/api/votes/imports/{iid}/refresh", _safe(import_refresh), methods=["POST"]),
+        Route("/api/votes/imports/{iid}", _safe(import_remove), methods=["DELETE"]),
     ]
 
 

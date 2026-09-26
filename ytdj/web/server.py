@@ -147,6 +147,7 @@ LIVE_KEYS = (
     "wish_budget",
     "wish_budget_panel",
     "wish_artist_max",
+    "playlist_import_max",
     "prefetch_first",
     "prefetch_max",
 )
@@ -337,6 +338,12 @@ FIELD_META: dict[str, tuple[str, str, tuple[int, int] | None]] = {
         "Přání interpreta: skladeb v přání",
         "Kolik skladeb interpreta patří k přání; zbytek hraje podkres (rádio). Výchozí 12.",
         (1, 50),
+    ),
+    "playlist_import_max": (
+        "Import playlistu: písniček na člověka",
+        "Kolik písniček z importovaných playlistů může mít jeden člověk mezi 👍 (všechny "
+        "jeho playlisty dohromady); jen technická pojistka (paměť Pi), co se nevejde, import řekne. Výchozí 1000.",
+        (10, 5000),
     ),
     "mpv_extra_args": (
         "Další argumenty mpv",

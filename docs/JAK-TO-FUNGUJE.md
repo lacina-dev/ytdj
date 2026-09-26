@@ -77,6 +77,10 @@ vyřazení potřebuje víc lidí, aby jeden nespokojený kolega neumlčel cizí
 oblíbenou písničku. Hlasy řídí podkres; výslovné přání se splní vždycky,
 jen s poznámkou, kdo skladbu vyřadil.
 
+Své oblíbené nemusíš vypisovat: odkaz na tvůj playlist z YouTube Music dá
+tvůj 👍 každé písničce v něm. Aby jeden velký playlist nepřehlušil kolegy,
+berou se oblíbené kanceláře po lidech na střídačku — každý přispěje stejně.
+
 ## Displej
 
 Dotykový displej u repráku je pro toho, kdo zrovna stojí u něj: co hraje,
@@ -149,6 +153,7 @@ spouštět příkazy ani sahat na soubory.
 - **F-FRONTA-10** Tatáž skladba ve dvou přáních zazní jen jednou
 - **F-PRESKOK-04** Když tvé přání přeskakují ostatní, skončí dřív
 - **F-HLASY-06** Vyřazená skladba hned zmizí z podkresu
+- **F-HLASY-17** Oblíbené kanceláře se hrají po lidech na střídačku
 - **F-ZVUK-11** Vulgární skladby se samy do podkresu nedostanou
 - **F-ZVUK-12** Nepřehratelná skladba se na týden vynechá
 - **F-ZVUK-15** Automatika nikdy sama nepřeskočí skladbu bez důvodu

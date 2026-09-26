@@ -225,12 +225,35 @@ Tohle je seznam všeho, co aplikace umí (stav 26. 9. 2026, commit e713074).
   Testy: `tests/test_votes.py::WithQueue::test_explicit_wish_for_banned_song_is_honoured_with_note`, `tests/test_votes.py::WithQueue::test_banned_artist_wish_note_and_set_drops_banned_songs`
 - **F-HLASY-08** „Pusť oblíbené (kanceláře)" a „pusť moje oblíbené" jdou bez modelu (i tlačítky na webu); DJ a chytrý start znají oblíbené a vyřazené.
   Testy: `tests/test_votes.py::WithQueue::test_play_favourites_office_and_mine`, `tests/test_votes.py::ContextForDJ::test_favourites_phrases`, `tests/test_votes.py::ContextForDJ::test_describe_and_start_context`, `tests/test_votes.py::FavouriteArtists::test_favourite_mix_adds_artist_songs`, `tests/test_votes.py::FavouriteArtists::test_dj_context_names_favourite_artists`, `tests/test_web_votes.py::Page::test_quick_buttons_are_understood_without_the_model`
-- **F-HLASY-09** Nejvýš 30 hlasů na člověka za 10 min (pak 429).
+- **F-HLASY-09** Nejvýš 30 hlasů na člověka za 10 min (pak 429); 👍 z importu playlistu se nepočítají — import jen rozšíří oblíbené jako lajky, nic nepouští (má vlastní pojistku F-HLASY-13).
+  Změněno 27. 9. 2026 se souhlasem vlastníka: „asi to neomezuj. Import nemá hned přehrát vše, má jen použít seznam skladeb pro rozšíření oblíbených, jako kdyby uživatel dal skladbě lajk."
   Testy: `tests/test_votes.py::RateLimit::test_30_per_10_minutes`, `tests/test_votes.py::Api::test_rate_limit_is_429`
 - **F-HLASY-10** Web hlasuje u hrající, fronty i odehraných (hlas z Odehráno patří té skladbě), stránka Hlasování ukazuje oblíbené, čekající, vyřazené a moje hlasy.
   Testy: `tests/test_web_votes.py::History::test_vote_from_history_hits_that_song_not_the_playing_one`, `tests/test_web_votes.py::Page::test_page_uses_the_contract`, `tests/test_votes.py::Api::test_status_without_votes_module`
 - **F-HLASY-11** Displej ukazuje hlasy: ♥ oblíbená, ▲/▼ počty, „vyřazená hlasováním", značky ve frontě; bez hlasů kreslí jako dřív.
   Testy: `tests/test_panel.py::VotesTest::test_vote_mark`, `tests/test_panel.py::VotesTest::test_badge_texts`, `tests/test_panel.py::VotesTest::test_no_votes_draws_exactly_as_before`, `tests/test_panel.py::VotesTest::test_queue_rows_carry_the_verdict_of_their_track`, `tests/test_panel.py::VotesEndToEndTest::test_votes_of_the_current_track_reach_the_player`
+- **F-HLASY-12** Import playlistu (stránka Hlasování, jen s přezdívkou): odkaz na playlist z YouTube Music nebo YouTube (i skladba v playlistu, youtu.be s `list=`, holé id) = 👍 importujícího každé písničce v něm, pod jeho přezdívkou a u hlasu „z playlistu ‚Název‘“; nedostupná videa a nepísničky (podcast, delší než 15 min, kratší než 30 s, bez interpreta) se vynechají a import řekne kolik; mix/rádio YouTube (id `RD…` kromě výběrů YouTube Music `RDCLAK5uy_…`), „To se mi líbí“/„Přehrát později“ a odkaz na jednu skladbu se odmítnou s vysvětlením; soukromý nebo neexistující playlist dostane radu „nastav ho jako Neveřejný (s odkazem)“.
+  Nové pravidlo 26. 9. 2026 na přání vlastníka (POZADAVKY #48: „importovat playlisty a použít je pro oblíbené“).
+  Testy: `tests/test_playlist_import.py::ParseRef::test_url_variants`, `tests/test_playlist_import.py::ParseRef::test_refusals_are_czech_and_specific`, `tests/test_playlist_import.py::Normalize::test_skips_non_music_and_unavailable`, `tests/test_playlist_import.py::Normalize::test_private_or_missing_says_how_to_share`, `tests/test_playlist_import.py::Normalize::test_network_error_and_timeout`, `tests/test_playlist_import.py::ImportVotes::test_import_is_thumbs_up_under_the_nick_with_source`
+- **F-HLASY-13** Z playlistů má jeden člověk nejvýš `playlist_import_max` (1000) písniček, všechny jeho playlisty dohromady, a nejvýš 10 playlistů; co se nevejde, import řekne i s limitem. Importovat a obnovovat jde nejvýš 6× za 10 min a jeden import člověka naráz.
+  Nové pravidlo 26. 9. 2026 na přání vlastníka (POZADAVKY #48: „omezená velikost“).
+  Testy: `tests/test_playlist_import.py::ImportVotes::test_cap_per_import_and_per_person`, `tests/test_playlist_import.py::ImportVotes::test_rate_limit_and_one_at_a_time`
+- **F-HLASY-14** Vlastní hlas má přednost před playlistem: vlastní 👍 i 👎 importujícího zůstanou, jak jsou, vlastní stažení hlasu taky, když je novější než písnička v playlistu; 👍 dané ručně písničce z playlistu přežije odebrání playlistu. Jiná verze téže písně ani písnička, kterou už člověk má, se nezapočítá dvakrát a import to řekne.
+  Nové pravidlo 26. 9. 2026 na přání vlastníka (POZADAVKY #48).
+  Testy: `tests/test_playlist_import.py::ImportVotes::test_duplicates_and_own_votes_win`, `tests/test_playlist_import.py::ImportVotes::test_explicit_vote_on_imported_song_is_kept_after_removal`
+- **F-HLASY-15** Seznam importovaných playlistů (kdo, název, kolik písniček, kdy) vidí všichni; Obnovit (načte playlist znovu: nové písničky přidá, ty, co v něm už nejsou, ubere) a Odebrat (stáhne všechny 👍 toho playlistu) jde jen u vlastního (id prohlížeče). Importy přežijí restart.
+  Nové pravidlo 26. 9. 2026 na přání vlastníka (POZADAVKY #48: „vidět kdo co importoval, odebrat/obnovit“).
+  Testy: `tests/test_playlist_import.py::ImportVotes::test_refresh_adds_and_removes`, `tests/test_playlist_import.py::ImportVotes::test_remove_withdraws_and_persists`, `tests/test_playlist_import.py::Api::test_only_own_imports_can_be_managed`
+- **F-HLASY-16** 👍 z playlistu je 👍 písničce jako každý jiný (oblíbená, podkres ji smí i dřív než po 30 dnech, „pusť moje oblíbené“ ji hraje) a kolegové ji 👎 vyřadí podle F-HLASY-03; celému interpretovi import 👍 nikdy nedá, takže z playlistů oblíbený interpret nevznikne.
+  Nové pravidlo 26. 9. 2026 na přání vlastníka (POZADAVKY #48: „bez 👍 celým interpretům“).
+  Testy: `tests/test_playlist_import.py::ImportVotes::test_colleagues_thumbs_down_still_ban`, `tests/test_playlist_import.py::ImportVotes::test_imports_never_make_a_favourite_artist`, `tests/test_playlist_import.py::Fairness::test_radio_uses_imported_favourites_like_any_favourite`
+- **F-HLASY-17** Oblíbené kanceláře jsou férové k lidem: „pusť oblíbené“, oblíbené pro DJe i chytrý start se berou po lidech na střídačku, takže každý, kdo dal 👍, přispěje stejným dílem, ať má 5 oblíbených, nebo playlist o 300 písničkách; v kole jde první skladba s nejvíc 👍 a u každého jeho vlastní 👍 před playlistem. V podkresu se písničky, které drží jen playlisty, posunou v rádiu dopředu nejvýš 2 za člověka na jedno doplnění.
+  Změněno 27. 9. 2026 se souhlasem vlastníka: „pusť oblíbené" se střídá po lidech (dřív jen podle počtu 👍) — velký import nepřehlasuje ostatní.
+  Nové pravidlo 26. 9. 2026 na přání vlastníka (POZADAVKY #48: „férově, každý člověk zhruba stejným dílem“).
+  Testy: `tests/test_playlist_import.py::Fairness::test_each_person_gets_an_equal_share`, `tests/test_playlist_import.py::Fairness::test_most_liked_first_and_own_before_playlist`, `tests/test_playlist_import.py::Fairness::test_dj_summary_is_fair_and_stable`, `tests/test_playlist_import.py::Fairness::test_pool_boost_capped_for_playlist_only_songs`
+- **F-HLASY-18** Import nezdrží hudbu ani web: YouTube se čte mimo hlavní smyčku s limitem 40 s, zápis jde jednou transakcí přes vlákno zápisů a stav webu (`/api/status`) seznam importů nenese.
+  Nové pravidlo 26. 9. 2026 (POZADAVKY #48; SD karta je pomalá, F-PROVOZ-04).
+  Testy: `tests/test_playlist_import.py::LoopNotBlocked::test_import_keeps_the_loop_responsive`, `tests/test_playlist_import.py::Api::test_only_own_imports_can_be_managed`
 
 ## Displej
 
@@ -270,6 +293,9 @@ Tohle je seznam všeho, co aplikace umí (stav 26. 9. 2026, commit e713074).
 - **F-DISPLEJ-15** Test dotyku z displeje (síť → „Test dotyku"): přes obrysy tlačítek přehrávače ukazuje živě, kde displej čte prst, a po zvednutí, které tlačítko by se stisklo; nic nemačká; „Zpět" nebo 60 s bez dotyku vrátí přehrávač.
   Nové pravidlo 26. 9. 2026 se souhlasem vlastníka (spolehlivý dotyk a jeho kontrola).
   Testy: `tests/test_panel_touch.py::TouchTestScreenTest::test_shows_the_reading_presses_nothing_and_goes_back`
+- **F-DISPLEJ-16** Test prstem z displeje (síť → „Test prstem"): 12 označených míst (4 úplně u horního okraje) se ťukají prstem; ke každému se do logu zapíše cíl, všechny surové vzorky převodníku (x, y, Z1, Z2, rozptyl, proč byl vzorek odmítnut), kalibrované polohy, rozhodnutý bod a tlačítko, které by se stisklo (`panel.touch_probe`); nic se nemačká; na konci shrnutí chyby u okraje a jinde; 60 s bez dotyku se vzdá.
+  Nové pravidlo 26. 9. 2026 se souhlasem vlastníka (spolehlivý dotyk: najít, proč prst u horního okraje čte níž).
+  Testy: `tests/test_panel_touch.py::FingerTestFlowTest::test_twelve_spots_log_a_probe_each`, `tests/test_panel_touch.py::DriverDiagnosticsTest::test_recording_keeps_raw_pressure_and_positions`, `tests/test_panel_touch.py::DriverDiagnosticsTest::test_invalid_reasons_are_counted`, `tests/test_panel_touch.py::ProbeReportTest::test_per_spot_error_spread_and_pressure`
 - **F-DISPLEJ-13** Ovladač displeje KeDei 3.5" v6.2 a dotykového čipu XPT2046 (přímý přístup na SPI/GPIO).
   (bez testu: hardwarový protokol displeje; ověřuje `python -m ytdj.panel.kedei --test` na Pi)
 
@@ -439,8 +465,11 @@ Opraveno v dokumentaci (kód se neměnil):
 | 26. 9. 2026 | F-DISPLEJ-12 | Tlačítko podle toho, kde prst ležel (ne kam dosedl); horní tlačítka a „Zpět" až k hornímu okraji. |
 | 26. 9. 2026 | F-DISPLEJ-14 | Kalibrace 9 body (mřížka 3×3) místo 5 — opraví i nerovnoměrnost skla. |
 | 26. 9. 2026 | F-DISPLEJ-15 (nové) | Test dotyku z displeje. |
+| 26. 9. 2026 | F-DISPLEJ-16 (nové) | Test prstem: 12 míst, všechny vzorky do logu (hledá se chyba prstu u horního okraje). |
 | 26. 9. 2026 | F-HLAS-03, F-DISPLEJ-12 | Hlasitost z displeje nikdy skokem: lišta jen tažením, ťuknutí na ni = krok 5, stisk jiného tlačítka se do lišty nepřesune (na Pi ťuknutí na „+"/„Další" dalo 100). |
 | 26. 9. 2026 | F-PROVOZ-10 (nové) | DJ uvažuje s úsilím „low" — A/B na Pi: stejné porozumění, model o ~1,4 s rychlejší (medián). |
 | 26. 9. 2026 | F-PROVOZ-05 | Codex zahřátý i 2 h po každém přání posluchače (kdykoli, s paměťovou pojistkou) a vlákno po 5 tazích místo 3 — volba vlastníka („Codex zahřátý vždy po přání, 5 přání na jedno vlákno"). |
 | 26. 9. 2026 | F-ZVUK-05 | Postupná příprava: nejdřív 3 nejbližší, pak po jedné až 10 (dřív pevně 6), nikdy na úkor naléhavé skladby — návrh vlastníka („vždy udělat třeba tři hned a pak jich postupně přidávat"). |
 | 26. 9. 2026 | F-PROVOZ-08 | Nahřívání Codexu dopředu až nad 330 MB volné paměti (dřív 250), jeden pokus za minutu — spolehlivost paměti Pi (zadání „v nejlepší podobě"). |
+| 27. 9. 2026 | F-HLASY-09, F-HLASY-13 | 👍 z importu playlistu se nepočítají do 30 hlasů / 10 min; pojistka importu 1000 písniček na člověka (dřív navrženo 300). |
+| 27. 9. 2026 | F-HLASY-17 | „Pusť oblíbené" a oblíbené pro DJe se střídají po lidech místo řazení jen podle počtu 👍. |

@@ -473,7 +473,11 @@ def _office_votes(store: Any, cfg: Any) -> tuple[list[str], list[str]]:
             return [], []
         from ..votes import VoteBook
 
-        favs, arts, songs = VoteBook(cfg=cfg).load(rows()).summary(MAX_FAV, MAX_BANNED)
+        book = VoteBook(cfg=cfg).load(rows())
+        imports = getattr(store, "all_imports", None)
+        if imports is not None:  # 👍 z playlistů (POZADAVKY #48) patří k oblíbeným
+            book.load_imports(*imports())
+        favs, arts, songs = book.summary(MAX_FAV, MAX_BANNED)
     except Exception:
         log.exception("hlasy pro rozjezd se nenačetly")
         return [], []

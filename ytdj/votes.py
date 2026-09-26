@@ -15,14 +15,15 @@ Cíle a klíče (jiné nahrání / verze téže písně = tatáž píseň):
                na každého uvedeného v "A, B & C" / "feat. D".
 
 Stav se neukládá, počítá se z hlasů (config `ban_song_votes`,
-`ban_artist_votes`):
+`ban_artist_votes`, `favourite_artist_votes`):
 
     skladba    vyřazená     aspoň ban_song_votes (2) lidí 👎 a víc 👎 než 👍
                oblíbená     aspoň jeden 👍 a víc 👍 než 👎
                upozaděná    víc 👎 než 👍, ale na vyřazení to nestačí
     interpret  vyřazený     aspoň ban_artist_votes (3) lidí 👎 a víc 👎 než 👍
-               oblíbený     aspoň jeden 👍 a víc 👍 než 👎
-               čeká         nějaké 👎, ale na vyřazení to nestačí
+               oblíbený     aspoň favourite_artist_votes (2) lidí 👍 a víc 👍 než 👎
+                            (jeden 👍 celého interpreta z něj oblíbeného neudělá)
+               čeká         nějaké 👎, ale na vyřazení to nestačí (jen 👍 pod prahem = neutrální)
 
 Co to dělá s hudbou (radio.py, codex.py, enforce() níže): podkres (pooly)
 vyřazené nikdy nevydá, upozaděné jen napůl, oblíbené (skladby i skladby
@@ -293,14 +294,28 @@ class VoteBook:
         down = sum(1 for b in ballots.values() if b.vote < 0)
         return self._status(target, up, down)
 
+    def fav_artist_threshold(self) -> int:
+        """Kolik různých lidí musí dát 👍 celému interpretovi, aby byl oblíbený."""
+        return max(1, int(getattr(self.cfg, "favourite_artist_votes", 2) or 2))
+
+    def rules(self) -> dict:
+        """Prahy pro web (stránka Hlasování skládá pravidla z nich)."""
+        song_t, artist_t = self.thresholds()
+        return {"ban_song_votes": song_t, "ban_artist_votes": artist_t,
+                "favourite_artist_votes": self.fav_artist_threshold()}
+
     def _status(self, target: str, up: int, down: int) -> Tally:
         song_t, artist_t = self.thresholds()
         if target == ARTIST:
             if down >= artist_t and down > up:
                 return Tally(up, down, BANNED, 0)
             need = max(artist_t - down, up - down + 1, 1)
-            if up >= 1 and up > down:
+            # Celý interpret je oblíbený, až když to řekne víc lidí: jeden 👍
+            # by jinak posouval všechny jeho skladby v podkresu (rozhodnutí
+            # vlastníka 26. 9.). Písnička stačí jedním 👍.
+            if up >= self.fav_artist_threshold() and up > down:
                 return Tally(up, down, FAVOURITE, need)
+            # (jeden 👍 bez 👎 = "neutral": ve výpisu mezi čekajícími, na webu ne jako 👎)
             return Tally(up, down, PENDING if down else NEUTRAL, need)
         if down >= song_t and down > up:
             return Tally(up, down, BANNED, 0)
@@ -310,7 +325,7 @@ class VoteBook:
         return Tally(up, down, DOWN if down > up else NEUTRAL, need)
 
     def _idx(self) -> _Index:
-        sig = (self._version, self.thresholds())
+        sig = (self._version, self.thresholds(), self.fav_artist_threshold())
         if self._index is not None and self._index.sig == sig:
             return self._index
         idx = _Index(sig)
@@ -413,17 +428,25 @@ class VoteBook:
         return False
 
     def _maybe_boost(self) -> None:
-        """boost_pools, jen když se pooly od minula změnily (doplnění, nové seedy)."""
+        """boost_pools, jen když se pooly od minula doplnily (nové seedy, doplnění
+        rádiem) nebo se změnily hlasy — ne po každé vydané skladbě.
+
+        Otisk poolu = on sám a jeho poslední skladba: vydání skladby (popleft)
+        ho nemění, doplnění (extend) a nové pooly ano. Dřív byla v otisku i
+        délka, takže se boost počítal nad všemi pooly u každé zvažované
+        skladby (~1 ms tady, na Pi 3 ~10 ms v event loopu)."""
         pools = getattr(self.pools, "pools", None)
         if not pools:
             return
-        sig = tuple((len(p.tracks), p.tracks[-1].id if p.tracks else "") for p in pools
-                    if getattr(p, "tracks", None) is not None) + (self._version,)
-        if sig != self._pool_sig:
-            self.boost_pools(pools)
-            self._pool_sig = tuple((len(p.tracks), p.tracks[-1].id if p.tracks else "")
-                                   for p in pools if getattr(p, "tracks", None) is not None) \
-                + (self._version,)
+        if self._pool_sig == self._sig(pools):
+            return
+        self.boost_pools(pools)
+        self._pool_sig = self._sig(pools)  # po přesunech (poslední se mohla posunout)
+
+    def _sig(self, pools: Any) -> tuple:
+        return (getattr(self.pools, "generation", None), self._version) + tuple(
+            (id(p), p.tracks[-1].id if p.tracks else "") for p in pools
+            if getattr(p, "tracks", None) is not None)
 
     def boost_pools(self, pools: Iterable[Any]) -> int:
         """Oblíbené (skladby i interpreti) v poolech dopředu — každou jednou
@@ -635,12 +658,11 @@ class VoteBook:
         banned.sort(key=lambda i: -(i["updated"] or 0))
         pending.sort(key=lambda i: (i["need"], -(i["updated"] or 0)))
         mine.sort(key=lambda i: -(i["updated"] or 0))
-        song_t, artist_t = self.thresholds()
         out = {
             "favourites": favourites[:LIST_MAX],
             "banned": banned[:LIST_MAX],
             "pending": pending[:LIST_MAX],
-            "rules": {"ban_song_votes": song_t, "ban_artist_votes": artist_t},
+            "rules": self.rules(),
         }
         if viewer:
             out["mine"] = mine[:LIST_MAX]
@@ -708,10 +730,8 @@ class VoteBook:
                 it.update(label=name, artist=name)
             it["name"] = name
             arts.append(it)
-        song_t, artist_t = self.thresholds()
         return {"video_id": vid, "artist": artist, "title": title, "song": song,
-                "artists": arts,
-                "rules": {"ban_song_votes": song_t, "ban_artist_votes": artist_t}}
+                "artists": arts, "rules": self.rules()}
 
     # ---- oblíbené jako zdroj hudby ----
 

@@ -144,13 +144,13 @@ PHONE_W = 54
 STATUS = (0, 0, W - NET_W - WISH_W - PHONE_W, 32)
 NET_BTN = (W - NET_W, 0, W, 32)  # the network button's drawing, in the status strip
 # …and its touch target: taller than the strip it sits in, nothing else is there
-NET_TARGET = (W - NET_W - 6, 0, W, 44)
+NET_TARGET = (W - NET_W - 6, 0, W, 48)
 # the wish button ("Přání" → the screen for typing a wish), left of the network one
 WISH_BTN = (W - NET_W - WISH_W, 0, W - NET_W, 32)
-WISH_TARGET = (W - NET_W - WISH_W, 0, W - NET_W - 6, 44)
+WISH_TARGET = (W - NET_W - WISH_W, 0, W - NET_W - 6, 48)
 # the phone button (→ a full-screen QR code to the web: wishes from a phone)
 PHONE_BTN = (W - NET_W - WISH_W - PHONE_W, 0, W - NET_W - WISH_W, 32)
-PHONE_TARGET = (W - NET_W - WISH_W - PHONE_W, 0, W - NET_W - WISH_W, 44)
+PHONE_TARGET = (W - NET_W - WISH_W - PHONE_W - 8, 0, W - NET_W - WISH_W, 48)
 # a banner over the whole strip for a few seconds when somebody wishes something
 TOAST = (0, 0, W, 32)
 # Cover art (or, in silence, the QR code for wishes from a phone) on the left;
@@ -160,7 +160,7 @@ ART_SIDE = 144
 ART_AT = (8, 6)  # the tile's top-left inside ART
 TRACK = (160, 34, W, 166)
 # ťuknutí na název/„Pak:“ otevře frontu přání (pod tlačítky v liště, bez překryvu)
-TRACK_TARGET = (160, 46, W, 166)
+TRACK_TARGET = (160, 48, W, 166)
 ELAPSED = (160, 166, 232, 198)
 BAR = (232, 166, 400, 198)
 TOTAL = (400, 166, 474, 198)
@@ -176,12 +176,20 @@ KNOB_R = 13
 VOL_TRACK_X = (VOL_NUM_W + KNOB_R + 4, VOL[2] - VOL[0] - KNOB_R - 10)
 
 # what can be touched; the order doesn't matter, they don't overlap
+# The touch rectangles fill the gaps between the buttons (a finger on the
+# resistive glass lands ±10–20 px off; a touch in a gap used to be a miss).
+# The drawing stays as it is.
+PLAY_TARGET = (0, 200, 240, 259)
+NEXT_TARGET = (240, 200, W, 259)
+VOL_DOWN_TARGET = (0, 259, 84, H)
+VOL_TARGET = (84, 259, 396, H)
+VOL_UP_TARGET = (396, 259, W, H)
 TARGETS: dict[str, Box] = {
-    "play": PLAY,
-    "next": NEXT,
-    "vol_down": VOL_DOWN,
-    "vol": VOL,
-    "vol_up": VOL_UP,
+    "play": PLAY_TARGET,
+    "next": NEXT_TARGET,
+    "vol_down": VOL_DOWN_TARGET,
+    "vol": VOL_TARGET,
+    "vol_up": VOL_UP_TARGET,
     "net": NET_TARGET,
     "wish": WISH_TARGET,
     "queue": TRACK_TARGET,

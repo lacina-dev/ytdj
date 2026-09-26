@@ -98,7 +98,9 @@ class DiskCacheTest(unittest.TestCase):
         a = self.fresh()
         a.template = list(TEMPLATE)
         now = time.time()
-        a.ready = {vid(1): (now - 60, info(vid(1))), vid(2): (now - 30, info(vid(2)))}
+        # starší než TRUST_AGE: podají se až po kontrole adresy
+        old = now - r.TRUST_AGE - 60
+        a.ready = {vid(1): (old - 30, info(vid(1))), vid(2): (old, info(vid(2)))}
         a.flush()
         self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
         # beze změny se nepíše znovu
@@ -119,7 +121,7 @@ class DiskCacheTest(unittest.TestCase):
             data, err = b.get(argv(vid(1)))
         self.assertEqual(data, a.ready[vid(1)][1])
         get = self.events("resolver.get")[-1]
-        self.assertEqual((get["how"], get["hit"]), ("disk", True))
+        self.assertEqual((get["how"], get["hit"], get["verified"]), ("disk", True, True))
         self.assertNotIn(vid(1), b.unverified)
         # žádná adresa streamu v logu, jen videoId a otisk
         self.assertNotIn("googlevideo", self.err.getvalue())
@@ -174,7 +176,7 @@ class DiskCacheTest(unittest.TestCase):
         a = self.fresh()
         a.template = list(TEMPLATE)
         stale = info(vid(1))
-        a.ready = {vid(1): (time.time() - 60, stale)}
+        a.ready = {vid(1): (time.time() - r.TRUST_AGE - 60, stale)}
         a.flush()
         b = self.fresh()
         b.load_disk()
@@ -202,13 +204,47 @@ class DiskCacheTest(unittest.TestCase):
         r = self.r
         a = self.fresh()
         a.template = list(TEMPLATE)
-        a.ready = {vid(1): (time.time() - 60, info(vid(1)))}
+        a.ready = {vid(1): (time.time() - r.TRUST_AGE - 60, info(vid(1)))}
         a.flush()
         b = self.fresh()
         b.load_disk()
-        with mock.patch.object(r, "probe", return_value=("unknown", None, "abc")):
+        with mock.patch.object(r, "probe", return_value=("unknown", None, "abc")) as probe:
             data, err = b.get(argv(vid(1)))
+        probe.assert_called_once()
         self.assertEqual(data, a.ready[vid(1)][1])
+
+    def test_young_disk_entry_served_without_probe(self) -> None:
+        """Po restartu: mladé z disku hned, bez HTTPS kontroly (ta se přetahovala
+        o GIL s importem yt-dlp — 2,5 s); starší se kontrolují dál."""
+        r = self.r
+        now = time.time()
+        a = self.fresh()
+        a.template = list(TEMPLATE)
+        a.ready = {vid(1): (now - 120, info(vid(1))),
+                   vid(2): (now - r.TRUST_AGE - 60, info(vid(2)))}
+        a.flush()
+        b = self.fresh()
+        b.load_disk()
+        self.assertEqual(b.trusted, {vid(1)})
+        self.assertEqual(b.unverified, {vid(2)})
+        self.assertEqual(self.events("resolver.disk")[-1]["trusted"], 1)
+        with mock.patch.object(r, "probe", return_value=("dead", 403, "abc")) as probe:
+            data, err = b.get(argv(vid(1)))
+            probe.assert_not_called()
+            self.assertEqual(data, a.ready[vid(1)][1])
+            get = self.events("resolver.get")[-1]
+            self.assertEqual((get["how"], get["verified"]), ("disk", False))
+            self.assertGreaterEqual(get["age_s"], 119)
+            # starší: kontrola, mrtvá → vyřeší se znovu ("resolver startuje", yt-dlp není)
+            data, err = b.get(argv(vid(2)), timeout=0.3)
+            probe.assert_called_once()
+        self.assertIsNone(data)
+        # mpv adresu neotevřelo → drop → příště čerstvě, ne z disku
+        b.drop([vid(1)])
+        self.assertNotIn(vid(1), b.trusted)
+        data, err = b.get(argv(vid(1)), timeout=0.3)
+        self.assertEqual(err, r.STARTUP_ERROR)
+        self.assertNotEqual(self.events("resolver.get")[-1]["how"], "disk")
 
     def test_other_template_drops_disk(self) -> None:
         """Po restartu s jiným formátem se hotové z disku nesmí podat."""
@@ -428,6 +464,102 @@ class PlayerResumeTest(unittest.TestCase):
                 # vypršelá adresa není vlastnost skladby: žádná černá listina
                 self.assertNotIn(("error", vid(1)), [(k, f.get("video_id")) for k, f in h.events
                                                      if k == "track.end" and f.get("reason") == "error"])
+        run(go())
+
+    @staticmethod
+    def disk_get(h, v: str) -> None:
+        """Resolver podal skladbu z cache na disku (adresa z doby před restartem)."""
+        h.player._on_resolver_event("resolver.get", {
+            "video_id": v, "hit": True, "how": "disk", "ok": True, "verified": False,
+            "wait_ms": 2})
+
+    def test_dead_disk_url_replays_same_entry(self) -> None:
+        """Adresa z disku nejde otevřít: zahodit, načíst tutéž položku znovu.
+        Žádná chyba (černá listina), žádné přeskočení, čekání od restartu."""
+        async def go():
+            async with Harness() as h:
+                p = h.player
+                seen: list[tuple[str, str | None]] = []
+
+                async def handler(ev):
+                    seen.append((ev.kind, ev.track.id if ev.track else None))
+                p.on_event(handler)
+                h.fake.fail_once.add(vid(1))
+                self.disk_get(h, vid(1))
+                self.assertTrue(await p.resume_track(T(1), 80.0))
+                await h.settle(0.3)
+                self.assertIn({"op": "drop", "ids": [vid(1)]}, h.resolver)
+                self.assertEqual(h.fake.current_vid(), vid(1))
+                self.assertEqual(h.fake.started, [vid(1)])
+                # znovu načítaná položka nese původní požadavek (why=restart)
+                self.assertEqual(p._load["req"]["why"], "restart")
+                kinds = [k for k, v in seen if v == vid(1)]
+                self.assertNotIn("error", kinds)
+                self.assertNotIn("unavailable", kinds)
+                self.assertNotIn("skipped", kinds)
+                retry = [f for k, f in h.events if k == "player.retry"]
+                self.assertEqual([(f["video_id"], f["ok"]) for f in retry], [(vid(1), True)])
+                ends = [f["reason"] for k, f in h.events
+                        if k == "track.end" and f["video_id"] == vid(1)]
+                self.assertEqual(ends, ["retry"])
+                self.assertEqual(p._err_streak, [])  # nepočítá se do výpadku
+        run(go())
+
+    def test_disk_retry_after_mpv_moved_on(self) -> None:
+        """mpv po chybě přešlo na další: ta se odsune jako "replaced" (ne
+        přeskočení posluchačem) a hraje se znovu ta, která selhala."""
+        async def go():
+            async with Harness() as h:
+                p = h.player
+                seen: list[tuple[str, str | None]] = []
+
+                async def handler(ev):
+                    seen.append((ev.kind, ev.track.id if ev.track else None))
+                p.on_event(handler)
+                h.fake.fail_once.add(vid(1))
+                self.disk_get(h, vid(1))
+                await p.enqueue([T(1), T(2), T(3)])
+                await h.settle(0.3)
+                self.assertEqual(h.fake.current_vid(), vid(1))
+                self.assertEqual(h.fake.upcoming(), [vid(2), vid(3)])
+                self.assertIn(("replaced", vid(2)), seen)
+                self.assertNotIn(("skipped", vid(2)), seen)
+                self.assertFalse([k for k, v in seen if v == vid(1)
+                                  and k in ("error", "unavailable", "skipped")])
+        run(go())
+
+    def test_disk_retry_only_once(self) -> None:
+        """Selže i čerstvá adresa: podruhé už obyčejná chyba (bez smyčky)."""
+        async def go():
+            async with Harness() as h:
+                p = h.player
+                seen: list[tuple[str, str | None]] = []
+
+                async def handler(ev):
+                    seen.append((ev.kind, ev.track.id if ev.track else None))
+                p.on_event(handler)
+                h.fake.fail.add(vid(1))
+                self.disk_get(h, vid(1))
+                await p.enqueue([T(1), T(2)])
+                await h.settle(0.4)
+                retry = [f for k, f in h.events if k == "player.retry"]
+                self.assertEqual(len(retry), 1)
+                # "loading failed" není vlastnost videa → unavailable, ne černá listina
+                self.assertIn(("unavailable", vid(1)), seen)
+                self.assertNotIn(("error", vid(1)), seen)
+                self.assertEqual(h.fake.current_vid(), vid(2))
+        run(go())
+
+    def test_non_disk_failure_is_not_retried(self) -> None:
+        async def go():
+            async with Harness() as h:
+                h.fake.fail.add(vid(1))
+                h.player._on_resolver_event("resolver.get", {
+                    "video_id": vid(1), "hit": True, "how": "hit", "ok": True})
+                await h.player.enqueue([T(1), T(2)])
+                await h.settle(0.2)
+                self.assertFalse([f for k, f in h.events if k == "player.retry"])
+                self.assertEqual(h.fake.current_vid(), vid(2))
         run(go())
 
     def test_startup_get_is_not_a_video_error(self) -> None:

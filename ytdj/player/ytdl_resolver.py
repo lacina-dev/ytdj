@@ -78,6 +78,12 @@ EXPIRE_MARGIN = 10 * 60  # s — adresu, které zbývá méně, už nepodávat
 # (resolver.ready import_ms) krátký proti ~19 s skutečného yt-dlp.
 STARTUP_WAIT = 0.0
 PROBE_TIMEOUT = 3.0  # s — kontrola adresy z cache na disku
+# Mladší hotové z disku se podají bez kontroly adresy: platí ~6 h a jsou
+# vázané na IP, která se za pár minut restartu nemění. Kontrola (vlákno
+# s HTTPS dotazem) se po restartu přetahovala o GIL s importem yt-dlp a
+# navazovaná skladba na ni čekala 2,5 s (Pi 26. 9.). Když přesto mpv adresu
+# neotevře, přehrávač ji zahodí (drop) a tutéž položku načte znovu čerstvou.
+TRUST_AGE = 30 * 60  # s
 CACHE_MAX = 50  # kolik skladeb nejvýš ukládat
 CACHE_DEBOUNCE = 2.0  # s — dávka změn se zapíše najednou
 DISK_GRACE = 120.0  # s — po startu se hotové z disku drží, i když nejsou v okně ahead
@@ -270,6 +276,7 @@ class Resolver:
         self.disk = disk
         self.from_disk: set[str] = set()  # hotové načtené po startu (ne vyřešené tímhle během)
         self.unverified: set[str] = set()  # z disku, adresa ještě nezkontrolovaná
+        self.trusted: set[str] = set()  # z disku, mladé — podají se bez kontroly
         self.verifying: dict[str, threading.Event] = {}
         self.t_start = time.monotonic()
         self._tmpl_changed = False
@@ -284,6 +291,7 @@ class Resolver:
         self.ready.pop(vid, None)
         self.from_disk.discard(vid)
         self.unverified.discard(vid)
+        self.trusted.discard(vid)
 
     def _dirty(self) -> None:
         if self.disk is not None:
@@ -299,10 +307,15 @@ class Resolver:
         with self.cv:
             if template is not None and self.template is None:
                 self.template = template
+                now = time.time()
                 for vid, entry in entries.items():
                     self.ready.setdefault(vid, entry)
                     self.from_disk.add(vid)
-                    self.unverified.add(vid)
+                    if 0 <= now - entry[0] < TRUST_AGE:
+                        self.trusted.add(vid)
+                    else:
+                        self.unverified.add(vid)
+                stats["trusted"] = len(self.trusted)
                 self._state()  # ytdj hned ví, co je hotové (okno ahead, track.request)
             else:
                 entries = {}
@@ -484,6 +497,7 @@ class Resolver:
             self.failed.clear()
             self.from_disk.clear()
             self.unverified.clear()
+            self.trusted.clear()
         self._dirty()
         log("šablona od mpv převzata")
 
@@ -494,9 +508,11 @@ class Resolver:
         vid = m.group(1)
         t0 = time.monotonic()
         if argv[:-1] == self.template:
-            self._verify(vid)  # jen skladba z disku: platí její adresa ještě?
+            self._verify(vid)  # jen starší skladba z disku: platí její adresa ještě?
         with self.cv:
             self.waiting[vid] = self.waiting.get(vid, 0) + 1
+            trusted = vid in self.trusted
+            disk_t = self.ready[vid][0] if vid in self.from_disk and vid in self.ready else None
             try:
                 data, error, how, blocked_by = self._get(vid, argv, timeout)
             finally:
@@ -504,11 +520,16 @@ class Resolver:
                 if self.waiting[vid] <= 0:
                     del self.waiting[vid]
                     self.cancelled.discard(vid)
+            extra = {}
+            if how == "disk":
+                # verified=False: podáno bez kontroly adresy (mladší než TRUST_AGE)
+                extra = {"verified": not trusted,
+                         "age_s": int(time.time() - disk_t) if disk_t else None}
             # "hit" = mpv dostalo hotové ("disk" = hotové z cache před restartem),
             # "wait" = řešilo se, zatímco mpv čekalo
             emit("resolver.get", video_id=vid, hit=how in ("hit", "disk"), how=how,
                  wait_ms=int((time.monotonic() - t0) * 1000), ok=data is not None,
-                 error=error, blocked_by=blocked_by)
+                 error=error, blocked_by=blocked_by, **extra)
             self._state()
             return data, error
 

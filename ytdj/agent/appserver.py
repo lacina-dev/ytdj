@@ -10,13 +10,16 @@ Proč: `codex exec` na Pi 3 platí při každém tahu start CLI (node obal + bin
 
 Paměť: nativní binárka bez node obalu má v klidu ~165 MB RSS, při tahu ~180 MB.
 Proces se spouští až při prvním přání. Mimo pracovní dobu se po IDLE_TTL bez
-tahu ukončí; v pracovní době (`office_warm`) zůstává běžet, dokud má Pi dost
-volné paměti (WARM_MIN_FREE_MB). Důvod — Pi 26. 9. 9:23: první přání po
-pauze přetáhlo 25 s rozpočtu (request.done took_ms 25049) a skončilo chybou;
-podle rozboru provozu (dj.turn) studený start ~9 s + model ~14 s. Volná paměť
-na Pi podle telemetrie ze zadání: medián 590 MB, minimum 383 MB (nevím, zda
-app-server v tu chvíli běžel) — proto hlídka paměti a při jejím nedostatku
-ukončení jako dřív.
+tahu ukončí; v pracovní době (`office_warm`) zůstává běžet. Důvod — Pi 26. 9.
+9:23: první přání po pauze přetáhlo 25 s rozpočtu (request.done took_ms 25049)
+a skončilo chybou; podle rozboru provozu (dj.turn) studený start ~9 s + model
+~14 s. Volná paměť na Pi podle telemetrie ze zadání: medián 590 MB, minimum
+383 MB (nevím, zda app-server v tu chvíli běžel).
+
+Hlídka paměti: mimo tah se každých MEM_CHECK s (60) čte MemAvailable
+z /proc/meminfo — měřeno i s běžícím app-serverem (jeho ~165 MB už jsou
+v tom čísle započtené jako obsazené). Klesne-li pod WARM_MIN_FREE_MB (250),
+proces se ukončí hned (v pracovní době i mimo ni), ne až po IDLE_TTL.
 
 Codex dál nedostává žádné nástroje: sandbox read-only, schvalování `never`
 a každý požadavek serveru (schválení příkazu, souboru…) se odmítne.
@@ -39,6 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .. import telemetry
 from .offline import LIMIT, LOGIN, classify
 
 log = logging.getLogger(__name__)
@@ -67,7 +71,8 @@ def feature_args() -> list[str]:
 
 IDLE_TTL = 600.0  # s bez tahu → proces končí (uvolní ~165 MB), mimo pracovní dobu
 WARM_HOURS = (7, 19)  # pracovní doba (Po–Pá): app-server drží teplý
-WARM_MIN_FREE_MB = 250  # …ale jen když Pi i bez něj zbývá aspoň tolik paměti
+WARM_MIN_FREE_MB = 250  # MemAvailable (s běžícím app-serverem) pod tímhle → ukončit
+MEM_CHECK = 60.0  # s — jak často se mimo tah kontroluje paměť
 START_TIMEOUT = 30.0  # s na initialize + thread/start (Pi pod zátěží)
 
 
@@ -135,6 +140,8 @@ class AppServer:
         idle_ttl: float = IDLE_TTL,
         extra_args: list[str] | None = None,
         keep_warm: Any = None,
+        mem_check: float = MEM_CHECK,
+        mem_free: Any = None,
     ) -> None:
         self.binary = binary
         self.cwd = cwd
@@ -144,6 +151,10 @@ class AppServer:
         self.extra_args = extra_args or []
         # () -> bool: True = po IDLE_TTL nečinnosti proces neukončovat (office_warm)
         self.keep_warm = keep_warm
+        self.mem_check = mem_check
+        # () -> int | None: MemAvailable v MB (testy dosadí vlastní)
+        self.mem_free = mem_free or mem_available_mb
+        self._turning = 0  # běžící tahy — uprostřed tahu se proces neukončuje
         self.proc: asyncio.subprocess.Process | None = None
         self._reader: asyncio.Task | None = None
         self._idle: asyncio.Task | None = None
@@ -216,15 +227,30 @@ class AppServer:
             self._idle = asyncio.create_task(self._idle_close())
 
     async def _idle_close(self) -> None:
+        """Ukončit po IDLE_TTL nečinnosti (když ho keep_warm nedrží), nebo dřív,
+        když Pi dochází paměť — ta se kontroluje každých `mem_check` s."""
+        idle_from = time.monotonic()
+        step = max(0.01, min(self.mem_check, self.idle_ttl))
         while True:
-            await asyncio.sleep(self.idle_ttl)
+            await asyncio.sleep(step)
+            if self._turning:
+                continue
+            free = None
+            with contextlib.suppress(Exception):
+                free = self.mem_free()
+            if free is not None and free < WARM_MIN_FREE_MB:
+                log.info("app-server: Pi zbývá %d MB (< %d) — ukončuji", free, WARM_MIN_FREE_MB)
+                telemetry.event("dj.app_server_close", why="memory", free_mb=free)
+                break
+            if time.monotonic() - idle_from < self.idle_ttl:
+                continue
             keep = False
             if self.keep_warm is not None:
                 with contextlib.suppress(Exception):
                     keep = bool(self.keep_warm())
             if not keep:
+                log.info("app-server %d s bez tahu — ukončuji (uvolní paměť)", int(self.idle_ttl))
                 break
-        log.info("app-server %d s bez tahu — ukončuji (uvolní paměť)", int(self.idle_ttl))
         await self.close()
 
     # ---- JSON-RPC ----
@@ -350,6 +376,13 @@ class AppServer:
 
     async def turn(self, prompt: str, schema: dict, timeout: float) -> TurnResult:
         """Jeden tah; vrací text poslední zprávy agenta (JSON podle `schema`)."""
+        self._turning += 1
+        try:
+            return await self._turn(prompt, schema, timeout)
+        finally:
+            self._turning -= 1
+
+    async def _turn(self, prompt: str, schema: dict, timeout: float) -> TurnResult:
         t0 = time.monotonic()
         new_thread = await self.warm()
         startup_ms = int((time.monotonic() - t0) * 1000)  # ~0, když byl předstartovaný

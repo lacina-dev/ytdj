@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 import time
 from contextlib import suppress
@@ -48,31 +49,106 @@ RESOLVER_SOCKET = MPV_SOCKET.parent / "ytdl-resolver.sock"
 # jádrech jako yt-dlp + JS. mpv tedy dostane přednost jako PipeWire (-11,
 # povoleno skupinou pipewire).
 MPV_NICE = -11
+# Resolver o kousek níž než zbytek ytdj; dědí i jeho node/deno. Ne SCHED_IDLE:
+# 26. 9. 11:29 po restartu (souběžně start Codexu) trvala přednostní skladba
+# 21 s místo ~7 s a posluchač čekal 27 s na zvuk. Zvuk chrání přednost mpv.
 RESOLVER_NICE = 5
+SOCKET_POLL = 0.01  # s — jak často se po spuštění mpv dívat po jeho IPC socketu
+SOCKET_TIMEOUT = 20.0  # s — při bootu Pi 3 startuje všechno naráz
 
 
-def _audio_first() -> None:
-    """preexec mpv: priorita pro celý proces (vlákna ji zdědí). Bez oprávnění
-    (limit nice) zůstane 0 — `player.start` hlásí, co skutečně platí."""
-    with suppress(OSError):
-        os.setpriority(os.PRIO_PROCESS, 0, MPV_NICE)
+# Proč ne preexec_fn: mezi fork() a exec() v potomkovi vícevláknového procesu
+# (ytdj má vlákna telemetrie, úložiště, to_thread…) smí běžet jen async-signal-
+# safe kód — Python v preexec_fn může uváznout na zámku, který v okamžiku
+# forku držel jiný thread. Navíc preexec_fn vynutí fork() místo vfork/
+# posix_spawn, což u velkého procesu na Pi 3 stojí zbytečně času. Priorita se
+# proto nastavuje obalem `nice -n <rozdíl> …`: rozdíl se počítá z vlastní
+# priority, takže výsledek je absolutní (MPV_NICE, RESOLVER_NICE), a všechna
+# vlákna potomka ji zdědí, protože se nastaví před exec. Bez oprávnění
+# (limit nice) nice(1) jen varuje a spustí program s prioritou ytdj — co
+# skutečně platí, hlásí `player.priority`.
+NICE_BIN = shutil.which("nice")
 
 
-def _background() -> None:
-    """preexec resolveru: o kousek níž než zbytek ytdj; dědí i jeho node/deno.
+def niced(argv: list[str], target: int) -> list[str]:
+    """argv obalené `nice`, aby potomek běžel s absolutní prioritou `target`."""
+    if not NICE_BIN:
+        return argv
+    try:
+        delta = target - os.getpriority(os.PRIO_PROCESS, 0)
+    except OSError:
+        return argv
+    if delta == 0:
+        return argv
+    return [NICE_BIN, "-n", str(delta), *argv]
 
-    Ne SCHED_IDLE: 26. 9. 11:29 po restartu (souběžně start Codexu) trvala
-    přednostní skladba 21 s místo ~7 s a posluchač čekal 27 s na zvuk. Zvuk
-    chrání přednost mpv (MPV_NICE), resolver hladovět nemusí."""
-    with suppress(OSError):
-        os.nice(RESOLVER_NICE)
+
+def task_nices(pid: int | None) -> list[int]:
+    """Priorita (nice) každého vlákna procesu — `nice` je v Linuxu po vláknech."""
+    if not pid:
+        return []
+    out = []
+    try:
+        tids = os.listdir(f"/proc/{pid}/task")
+    except OSError:
+        return []
+    for tid in tids:
+        with suppress(OSError, ValueError):
+            out.append(os.getpriority(os.PRIO_PROCESS, int(tid)))
+    return out
+
+
+def renice_tasks(pid: int | None, target: int) -> int:
+    """Náhradní cesta bez nice(1): priorita všem existujícím vláknům procesu
+    (nová vlákna ji zdědí od toho, kdo je vytvoří). Vrací, kolika se změnila."""
+    if not pid:
+        return 0
+    n = 0
+    try:
+        tids = os.listdir(f"/proc/{pid}/task")
+    except OSError:
+        return 0
+    for tid in tids:
+        with suppress(OSError, ValueError):
+            if os.getpriority(os.PRIO_PROCESS, int(tid)) != target:
+                os.setpriority(os.PRIO_PROCESS, int(tid), target)
+                n += 1
+    return n
 
 
 def _nice_of(pid: int | None) -> int | None:
+    """nice hlavního vlákna procesu (getpriority s pid = tid hlavního vlákna)."""
     try:
         return os.getpriority(os.PRIO_PROCESS, pid) if pid else None
     except OSError:
         return None
+
+
+def _proc_stat(pid: int | None) -> dict[str, int]:
+    """Z /proc/<pid>/stat: čas CPU (ms) a počet velkých výpadků stránek
+    (čtení z karty) — rozliší start mpv brzděný CPU od čekání na SD kartu."""
+    if not pid:
+        return {}
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            fields = f.read().rsplit(")", 1)[1].split()
+        tick = os.sysconf("SC_CLK_TCK")
+        # po ")": [0]=stav, [9]=majflt, [11]=utime, [12]=stime
+        return {"majflt": int(fields[9]),
+                "cpu_ms": (int(fields[11]) + int(fields[12])) * 1000 // tick}
+    except (OSError, ValueError, IndexError):
+        return {}
+
+
+def _mem_available_mb() -> int | None:
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
 
 
 def runtime_file(name: str) -> Path | None:
@@ -247,6 +323,12 @@ class MpvPlayer(Player):
         self._requested_at: dict[str, float] = {}  # vid → kdy přišel přes enqueue_next
         self._resolver_started = 0.0
         self._resolver_restarts = 0
+        self._mpv_up = False  # IPC mpv spojené (player.priority až potom)
+        self._res_listening = False  # resolver ohlásil resolver.listen
+        # položky, které po chybě adresy z cache na disku už jednou znovu
+        # načítáme (entry → požadavek, ke kterému se měří čekání do zvuku)
+        self._retry: dict[int, dict[str, Any] | None] = {}
+        self._retried: set[int] = set()  # tyhle už jednou znovu (podruhé ne)
         self.sampler: SystemSampler | None = None
         # hrající skladba + pozice (tmpfs) — nastaví start(); testy ho nemají
         self.playback_file: Path | None = None
@@ -319,6 +401,9 @@ class MpvPlayer(Player):
         return args
 
     async def start(self) -> None:
+        # Socket po minulém běhu (stop ho maže, po pádu zůstane): mpv by ho při
+        # bind() smazalo samo, ale do té doby by se k němu dalo "připojit".
+        stale = MPV_SOCKET.exists()
         with suppress(FileNotFoundError):
             os.unlink(MPV_SOCKET)
         MPV_SOCKET.parent.mkdir(parents=True, exist_ok=True)
@@ -330,38 +415,42 @@ class MpvPlayer(Player):
             env[ytdl_cache.ENV_SOCKET] = str(RESOLVER_SOCKET)
         self.playback_file = runtime_file("playback.json")
         env.update(telemetry.child_env())
-        t0 = time.monotonic()
+        argv = self._args()
+        t0, wall0 = time.monotonic(), time.time()
         self.proc = await asyncio.create_subprocess_exec(
-            *self._args(),
+            *niced(argv, MPV_NICE),  # zvuk má přednost (bez preexec_fn, viz niced)
             env=env,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
-            preexec_fn=_audio_first,
         )
-
-        # Při bootu Pi 3 startuje všechno naráz a mpv socket občas nestihl
-        # do 5 s — ytdj pak spadl a systemd ho pouštěl znovu.
-        for _ in range(400):  # ~20 s for the socket to appear
-            if MPV_SOCKET.exists():
-                try:
-                    self.reader, self.writer = await asyncio.open_unix_connection(
-                        str(MPV_SOCKET)
-                    )
-                    break
-                except (ConnectionRefusedError, FileNotFoundError):
-                    pass
-            await asyncio.sleep(0.05)
-        else:
-            telemetry.event("player.fail", error="socket mpv nevznikl")
-            raise RuntimeError(f"mpv nenastartoval (socket {MPV_SOCKET} nevznikl)")
+        t_spawn = time.monotonic()
+        try:
+            # Resolver hned, souběžně s mpv — ne až po jeho IPC: po restartu
+            # služby má resolver navazovanou skladbu v cache na disku a socket
+            # otevře za zlomek toho, co trvá import yt-dlp (ten běží až ve
+            # vlákně workeru). Shim na socket resolveru počká (SOCKET_WAIT).
+            # mpv má -11, resolver 5 — start resolveru mpv nebrzdí.
+            await self._start_resolver()
+            timing = await self._connect_mpv(t0, wall0)
+        except BaseException:
+            if self._resolver and self._resolver.returncode is None:
+                self._resolver.terminate()
+            if self.proc.returncode is None:
+                self.proc.terminate()
+            raise
+        pid = self.proc.pid
+        nices = task_nices(pid)
+        reniced = 0
+        if not NICE_BIN and nices and (min(nices) != MPV_NICE or max(nices) != MPV_NICE):
+            reniced = renice_tasks(pid, MPV_NICE)  # bez nice(1): aspoň dodatečně
         telemetry.event("player.start", took_ms=_ms(t0, time.monotonic()),
-                        volume=self._volume, format=self.cfg.ytdl_format,
-                        nice=_nice_of(self.proc.pid))
+                        spawn_ms=_ms(t0, t_spawn), **timing, stale_sock=stale or None,
+                        reniced=reniced or None, volume=self._volume,
+                        format=self.cfg.ytdl_format, nice=_nice_of(pid))
+        self._mpv_up = True
+        self._t_priority()
 
         self._reader_task = asyncio.create_task(self._read_loop())
-        # Resolver až po mpv: jeho start (import yt-dlp) bere Pi 3 desítky
-        # vteřin CPU. Než naběhne, jde mpv přes yt-dlp postaru.
-        await self._start_resolver()
         self._dispatch_task = asyncio.create_task(self._dispatch_loop())
 
         await self._observe()
@@ -370,6 +459,50 @@ class MpvPlayer(Player):
         self.sampler.start()
         if self.playback_file is not None:
             self._playback_task = asyncio.create_task(self._playback_loop())
+
+    async def _connect_mpv(self, t0: float, wall0: float) -> dict[str, Any]:
+        """Počká na IPC socket mpv a připojí se. Vrací rozpad času pro
+        `player.start`: sock_ms = kdy mpv socket vytvořilo (čas souboru, nezávisí
+        na tom, jak často se tu díváme), seen_ms = kdy jsme ho uviděli,
+        connect_ms = spojeno; gap_ms = nejdelší mezera mezi pohledy (zdržený
+        event loop), refused = pokusy před listen(); mpv_cpu_ms / mpv_majflt =
+        kolik CPU mpv do té doby spotřebovalo a kolikrát čekalo na kartu."""
+        assert self.proc
+        seen = None
+        sock_ms = None
+        refused = 0
+        gap = 0.0
+        last = time.monotonic()
+        while True:
+            now = time.monotonic()
+            gap = max(gap, now - last)
+            last = now
+            if MPV_SOCKET.exists():
+                if seen is None:
+                    seen = now
+                    with suppress(OSError):
+                        sock_ms = int((MPV_SOCKET.stat().st_mtime - wall0) * 1000)
+                try:
+                    self.reader, self.writer = await asyncio.open_unix_connection(
+                        str(MPV_SOCKET))
+                    break
+                except (ConnectionRefusedError, FileNotFoundError):
+                    refused += 1
+            if self.proc.returncode is not None:
+                telemetry.event("player.fail", error=f"mpv skončil (kód {self.proc.returncode})")
+                raise RuntimeError(f"mpv skončil při startu (kód {self.proc.returncode})")
+            if now - t0 > SOCKET_TIMEOUT:
+                telemetry.event("player.fail", error="socket mpv nevznikl")
+                raise RuntimeError(f"mpv nenastartoval (socket {MPV_SOCKET} nevznikl)")
+            await asyncio.sleep(SOCKET_POLL)
+        out: dict[str, Any] = {"sock_ms": sock_ms, "seen_ms": _ms(t0, seen),
+                               "connect_ms": _ms(t0, time.monotonic()),
+                               "gap_ms": int(gap * 1000), "refused": refused or None}
+        st = _proc_stat(self.proc.pid)
+        if st:
+            out["mpv_cpu_ms"], out["mpv_majflt"] = st["cpu_ms"], st["majflt"]
+        out["mem_avail_mb"] = _mem_available_mb()
+        return out
 
     async def _observe(self) -> None:
         for i, prop in enumerate(
@@ -554,6 +687,16 @@ class MpvPlayer(Player):
                 kind = "replaced"
             self._replacing = False
             detail = reason
+            if kind == "error" and self._disk_retry(entry):
+                # Adresa z cache na disku (z doby před restartem) se nedala
+                # otevřít — vypršela / jiná IP. Není to vlastnost skladby ani
+                # výpadek: zahodit ji v resolveru a tutéž položku načíst znovu
+                # (čerstvě vyřešenou). Žádná černá listina, žádné přeskočení.
+                self._retry[entry] = (self._load or {}).get("req")
+                self._t_end_file("retry", msg, False)
+                self._time_pos = 0.0
+                self._events.put_nowait(("retry", entry, reason))
+                return
             if kind == "error":
                 # vlastnost skladby (černá listina), nebo výpadek (nic neblokovat)?
                 vid = self._entries.get(entry)
@@ -815,10 +958,15 @@ class MpvPlayer(Player):
 
     def _t_start_file(self, entry_id: int) -> None:
         now = time.monotonic()
-        req = self._req
+        if entry_id in self._retry:
+            # znovu načítaná položka (adresa z disku nešla otevřít): čekání
+            # se počítá od původního požadavku (např. why=restart)
+            req = self._retry.pop(entry_id)
+        else:
+            req = self._req
+            self._req = None
         if req and now - req["t0"] > REQUEST_MAX_AGE:
             req = None
-        self._req = None
         self._load = {
             "entry": entry_id, "vid": self._entries.get(entry_id), "t_start": now,
             "t_loaded": None, "t_play": None, "req": req, "paused": self._paused,
@@ -978,6 +1126,11 @@ class MpvPlayer(Player):
         if kind in ("resolver.listen", "resolver.ready"):
             # resolver (znovu) poslouchá / má yt-dlp — hned mu říct, co chystat
             self._schedule_prefetch(now=True)
+        if kind == "resolver.listen":
+            fields["listen_ms"] = _ms(self._resolver_started, time.monotonic())
+            self._res_listening = True
+            with suppress(Exception):
+                self._t_priority()
         if (kind in ("resolver.resolve", "resolver.get") and fields.get("video_id")
                 and fields.get("how") != "startup"):  # "resolver startuje" není chyba videa
             if fields.get("ok"):
@@ -1007,6 +1160,10 @@ class MpvPlayer(Player):
         the order the events arrived."""
         while True:
             kind, entry_id, detail = await self._events.get()
+            if kind == "retry":
+                with suppress(Exception):
+                    await self._retry_entry(entry_id)
+                continue  # handlerům nic: skladba nehrála, ani nechybovala
             if kind == "unavailable":
                 kind, detail = self._reclassify(entry_id, detail)
 
@@ -1436,23 +1593,41 @@ class MpvPlayer(Player):
             return
         RESOLVER_SOCKET.parent.mkdir(parents=True, exist_ok=True)
         self._resolver_started = time.monotonic()
+        self._res_listening = False
         self._resolver = await asyncio.create_subprocess_exec(
-            python, str(Path(__file__).with_name("ytdl_resolver.py")),
-            "--socket", str(RESOLVER_SOCKET),
-            # hotové skladby přežijí restart služby (tmpfs) — bez něj nic
-            *(["--cache", str(cache)] if (cache := runtime_file("resolver-cache")) else []),
+            *niced([python, str(Path(__file__).with_name("ytdl_resolver.py")),
+                    "--socket", str(RESOLVER_SOCKET),
+                    # hotové skladby přežijí restart služby (tmpfs) — bez něj nic
+                    *(["--cache", str(cache)] if (cache := runtime_file("resolver-cache")) else [])],
+                   RESOLVER_NICE),  # zvuk má přednost
             env=self.cfg.child_env(),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
-            preexec_fn=_background,  # zvuk má přednost
         )
         self._resolver_task = asyncio.create_task(self._watch_resolver(self._resolver))
-        sched = None
+
+    def _t_priority(self) -> None:
+        """`player.priority`: co skutečně platí — až když mpv odpovídá a resolver
+        poslouchá (obal nice(1) prioritu nastaví až po spuštění, dřív by se
+        četla hodnota ytdj). mpv: hlavní vlákno a min/max přes všechna vlákna."""
+        if not (self._mpv_up and (self._res_listening or self._resolver is None)):
+            return
+        mpv_pid = self.proc.pid if self.proc and self.proc.returncode is None else None
+        res_pid = (self._resolver.pid if isinstance(self._resolver, asyncio.subprocess.Process)
+                   and self._resolver.returncode is None else None)
+        fields: dict[str, Any] = {"mpv": _nice_of(mpv_pid), "resolver": _nice_of(res_pid),
+                                  "want_mpv": MPV_NICE, "want_resolver": RESOLVER_NICE,
+                                  "wrapper": bool(NICE_BIN)}
+        for name, pid in (("mpv", mpv_pid), ("resolver", res_pid)):
+            nices = task_nices(pid)
+            if nices:
+                fields[f"{name}_min"], fields[f"{name}_max"] = min(nices), max(nices)
+                fields[f"{name}_tasks"] = len(nices)
         with suppress(OSError, AttributeError):
-            sched = {os.SCHED_IDLE: "idle", os.SCHED_OTHER: "other"}.get(
-                os.sched_getscheduler(self._resolver.pid), "other")
-        telemetry.event("player.priority", mpv=_nice_of(self.proc.pid if self.proc else None),
-                        resolver=_nice_of(self._resolver.pid), resolver_sched=sched)
+            if res_pid:
+                fields["resolver_sched"] = {os.SCHED_IDLE: "idle", os.SCHED_OTHER: "other"}.get(
+                    os.sched_getscheduler(res_pid), "other")
+        telemetry.event("player.priority", **fields)
 
     async def _watch_resolver(self, proc: asyncio.subprocess.Process) -> None:
         """Přeposílá log resolveru a po pádu ho spustí znovu."""
@@ -1500,6 +1675,60 @@ class MpvPlayer(Player):
             with suppress(RuntimeError):
                 asyncio.get_running_loop().create_task(
                     self._resolver_call({"op": "drop", "ids": [vid]}))
+
+    def _disk_retry(self, entry: Any) -> bool:
+        """Selhala položka, kterou resolver podal z cache na disku (adresa
+        z doby před restartem), a ještě se znovu nezkoušela? Bez IPC."""
+        if not isinstance(entry, int) or entry < 0 or self._resolver is None:
+            return False
+        if entry in self._retry or self._outage is not None:
+            return False
+        load = self._load
+        if load and load.get("entry") == entry and load.get("t_play") is not None:
+            return False  # hrála a spadla uprostřed — to adresa z disku nebyla
+        vid = self._entries.get(entry)
+        got = self._res_gets.get(vid or "")
+        if not got or got[1].get("how") != "disk":
+            return False
+        if entry in self._retried:
+            return False
+        self._retried.add(entry)
+        if len(self._retried) > 100:
+            self._retried.clear()
+            self._retried.add(entry)
+        return True
+
+    async def _retry_entry(self, entry: int) -> None:
+        """Položku, jejíž adresa z disku nešla otevřít, načíst znovu: resolver
+        ji zahodí (dotaz se počká, ať ji mpv hned nedostane zase z cache) a mpv
+        ji pustí znovu na jejím místě v playlistu — i s volbami položky (start
+        navázané skladby). Na co mpv mezitím přešlo, je "replaced"."""
+        vid = self._entries.get(entry)
+        self._res_gets.pop(vid or "", None)
+        self._res_ready.discard(vid or "")
+        dropped = await self._resolver_call({"op": "drop", "ids": [vid]}) if vid else None
+        ok = False
+        async with self._mutex:
+            await self._sync()
+            idx = self._index_of(entry)
+            if idx >= 0 and self._outage is None:
+                load = self._load
+                if load and load.get("entry") != entry:
+                    if load["t_play"] is None and load.get("vid"):
+                        # mpv mezitím načítá další a čeká na resolver — pustit ho
+                        self._abandoned.add(load["entry"])
+                        asyncio.create_task(
+                            self._resolver_call({"op": "cancel", "ids": [load["vid"]]}))
+                if self._cur_index() >= 0 and self._cur_entry != entry:
+                    self._replacing = True
+                ok = _ok(await self._command("playlist-play-index", idx))
+                if not ok:
+                    self._replacing = False
+        if not ok:
+            self._retry.pop(entry, None)
+        telemetry.event("player.retry", video_id=vid, why="disk_url", ok=ok,
+                        dropped=bool(dropped and dropped.get("ok")))
+        self._schedule_prefetch(now=True)
 
     # ---------- navázání po restartu služby ----------
 

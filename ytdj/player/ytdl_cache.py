@@ -114,12 +114,17 @@ def _note_fallback(argv: list[str], reason: str) -> None:
         pass
 
 
+REAL_NICE = 5  # jako resolver (mpv.RESOLVER_NICE) — modul nesmí importovat ytdj
+
+
 def _exec_real(argv: list[str]) -> None:
     real = os.environ.get(ENV_REAL) or "yt-dlp"
-    # s nižší prioritou: yt-dlp a node vytíží jádro na desítky vteřin a na Pi 3
-    # by jinak braly čas zvuku
+    # S nižší prioritou: yt-dlp a node vytíží jádro na desítky vteřin a na Pi 3
+    # by jinak braly čas zvuku. Absolutně, ne os.nice(+5): shim je potomek mpv
+    # a dědí jeho -11, relativně by yt-dlp i node běžely na -6 — nad ytdj
+    # i resolverem. Zvýšit nice (snížit přednost) smí proces vždycky.
     try:
-        os.nice(5)
+        os.setpriority(os.PRIO_PROCESS, 0, REAL_NICE)
     except OSError:
         pass
     if os.path.isabs(real):

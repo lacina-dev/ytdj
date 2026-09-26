@@ -140,6 +140,7 @@ LIVE_KEYS = (
     "display_blocklist",
     "ban_song_votes",
     "ban_artist_votes",
+    "favourite_artist_votes",
 )
 
 CODEX_MODELS = [
@@ -282,6 +283,12 @@ FIELD_META: dict[str, tuple[str, str, tuple[int, int] | None]] = {
     "ban_artist_votes": (
         "Vyřazení interpreta: kolik lidí 👎",
         "Interpret zmizí z podkresu, když mu dá 👎 aspoň tolik lidí.",
+        (1, 50),
+    ),
+    "favourite_artist_votes": (
+        "Oblíbený interpret: kolik lidí 👍",
+        "Celý interpret je oblíbený (podkres ho hraje častěji), když mu dá 👍 aspoň tolik "
+        "lidí a 👍 je víc než 👎. Písničce stačí jeden 👍.",
         (1, 50),
     ),
     "mpv_extra_args": (

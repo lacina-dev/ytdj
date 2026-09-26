@@ -44,3 +44,12 @@ The owner paused all ytdj work on 2026-09-26 around 12:30 ("za 5 minut končíme
 - the model-path wish latency.
 
 Related: [[ytdj-requirements-checklist]], [[ytdj-pi-security-todo]], [[visible-results-first]].
+
+## Doplněno po zastavení (26. 9. ~12:35)
+- Agent PŘEHRÁVAČ byl zastaven natvrdo uprostřed přepisu `start()` v `ytdj/player/mpv.py`, bez předávací poznámky.
+  `mpv.py`, `ytdl_cache.py` a `ytdl_resolver.py` tedy mohou být nedokončené. Před pokračováním je porovnat s 448fb41 (`git diff 448fb41 -- ytdj/player/`)
+  a dokončit: souběžný start resolveru, bez ověření čerstvých položek cache, absolutní nice pro záložní yt-dlp, bezpečné nastavení priorit místo preexec_fn,
+  časové složky `player.start`.
+- Agent DOTYK byl zastaven bez předávací poznámky. Změny jsou v `ytdj/panel/*` a `tests/test_panel.py`, stav je neznámý. Prvním krokem je spustit `python3 -m unittest tests.test_panel tests.test_panel_net`.
+- Agent FRONTA/DJ je hotový (handoff-queue.md). Po jeho posledních změnách ještě neproběhla celá sada testů.
+- Agent FUNKCE má docs/FUNKCE.md hotový zčásti (16 pravidel, 3 oblasti), viz handoff-funkce.md.

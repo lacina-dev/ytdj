@@ -52,7 +52,7 @@ Pravidla při rozhodování (v tomhle pořadí):
 | C4 | Poctivé odpovědi (neslibovat, co nehraje; „nenašel jsem"). Potvrzení přání skládá aplikace z toho, co se opravdu zařadilo („Zařadil jsem: …"); model nesmí slibovat režimy ani nastavení, která neexistují („nastavím střídání") | ✅ fronta přání (26. 9.) |
 | C5 | Přání posluchače má vždy přednost před automatickými zásahy | ✅ (web ruší auto-přeseedování) |
 | C6 | Když je potřeba lepší model, nasadit lepší | 🔄 posudek agenta DJ |
-| C7 | „Hrát" bez přání a bez fronty = playlist podle času, dne, kanceláře a historie | 🔄 agent context |
+| C7 | „Hrát" bez přání a bez fronty = playlist podle času, dne, kanceláře a historie | ✅ (F-START-01…04) |
 | C8 | Učit se z přeskočení/dohrání bez přebíjení přání | 📋 |
 | C9 | Otázka nebo stížnost na frontu („proč nehraje moje…", „kdy bude…", „to není demokracie") není přání: pravdivá odpověď ze stavu (co hraje a čí to je, kde jsou moje přání a ETA), žádná hudba navíc; kdo ≥ 10 min nic svého neslyšel, jde hned po hrající; telemetrie `request.meta` | ✅ |
 | C10 | „Oboje" / „i X i Y" = obojí (skladba i interpret); „střídej X a Y" = jedno přání se dvěma interprety střídavě | ✅ |
@@ -60,12 +60,12 @@ Pravidla při rozhodování (v tomhle pořadí):
 ### D. Víc lidí v kanceláři
 | ID | Požadavek | Stav |
 |---|---|---|
-| D1 | Fronta přání se jménem autora | 📋 fáze 2 |
+| D1 | Fronta přání se jménem autora | ✅ (F-FRONTA, F-NICK) |
 | D2 | Spravedlivé střídání mezi lidmi — pravidla viz „Pravidla fronty" níž | ✅ (26. 9.) |
-| D3 | Volitelně „zařadit hned" (za právě hrající, bez přerušení) | 📋 |
-| D4 | Přání se přijmou hned, žádné „DJ ještě dokončuje…" | 📋 (částečně ✅ C5) |
-| D5 | Fronta vidět na webu i displeji; autor může své přání odebrat | 📋 |
-| D6 | Automatické změny nálady jen v podkladovém rádiu, nikdy nemažou přání | 📋 |
+| D3 | Volitelně „zařadit hned" (za právě hrající, bez přerušení) | ✅ (F-FRONTA-04) |
+| D4 | Přání se přijmou hned, žádné „DJ ještě dokončuje…" | ✅ (F-PRANI-01) |
+| D5 | Fronta vidět na webu i displeji; autor může své přání odebrat | ✅ (F-FRONTA-06, F-DISPLEJ-05) |
+| D6 | Automatické změny nálady jen v podkladovém rádiu, nikdy nemažou přání | ✅ (F-FRONTA-06, F-FRONTA-12) |
 | D7 | Podkres jde za naposledy SPLNĚNÝM přáním; režim interpreta v podkresu je omezený (10 skladeb / 40 min, pak „… a podobné"); po restartu se vypršelý neobnoví | ✅ |
 | D8 | Nové přání člověka jde PŘED jeho starší, to zůstává; nahrazuje jen oprava („ne, radši…", „místo toho", „zruš…"), změna směru („něco jiného") nebo skoro stejný text | ✅ |
 
@@ -138,12 +138,12 @@ Hlasy bez stavu navíc — stav se počítá z hlasů (`ytdj/votes.py`, tabulka 
 
 | ID | Požadavek | Stav |
 |---|---|---|
-| H1 | 👍/👎 skladbě, 👎 interpretovi; jeden hlas na člověka (id klienta, jméno = přezdívka přes kancelářský filtr), změna i stažení kdykoli; u každého hlasu kdo a kdy | ✅ backend (`/api/votes`), 📋 UI webu |
+| H1 | 👍/👎 skladbě, 👎 interpretovi; jeden hlas na člověka (id klienta, jméno = přezdívka přes kancelářský filtr), změna i stažení kdykoli; u každého hlasu kdo a kdy | ✅ backend i web (F-HLASY-01, F-HLASY-10) |
 | H2 | Jiné nahrání / verze téže písně = tatáž píseň; interpret sedí na každého uvedeného („A, B & C", „feat.") | ✅ |
 | H3 | Skladba vyřazená: ≥ `ban_song_votes` (2) lidí 👎 a víc 👎 než 👍; jeden 👎 = upozaděná; 👍 a víc 👍 než 👎 = oblíbená. Interpret vyřazený: ≥ `ban_artist_votes` (3) lidí 👎; oblíbený: ≥ `favourite_artist_votes` (2) různých lidí 👍 a víc 👍 než 👎 — jeden 👍 celého interpreta z něj oblíbeného neudělá (rozhodnutí vlastníka 26. 9.). Hlasy nestárnou, změnou hlasů se položka sama vrátí | ✅ |
 | H4 | Podkres a DJ vyřazené nenabízí, upozaděné méně, oblíbené i dřív než po `repeat_days`; při vyřazení zmizí z fronty podkres (přání nikdy) a hrající podkres se přeskočí | ✅ |
 | H5 | Výslovné přání vyřazené skladby / interpreta se splní — s poctivou poznámkou „(pozn.: vyřazená hlasováním — Petr, Jana)"; ze sady (interpret, oblíbené) vyřazené skladby vypadnou | ✅ |
-| H6 | „Pusť oblíbené" / „oblíbené kanceláře" / „pusť moje oblíbené" bez modelu; DJ a rozjezd (C7) znají oblíbené a vyřazené kanceláře | ✅ backend, 📋 čip na webu |
+| H6 | „Pusť oblíbené" / „oblíbené kanceláře" / „pusť moje oblíbené" bez modelu; DJ a rozjezd (C7) znají oblíbené a vyřazené kanceláře | ✅ backend i tlačítka na webu (F-HLASY-08) |
 | H7 | Ochrana: jeden hlas na klienta, nejvýš 30 hlasů / 10 min; telemetrie `vote.*` | ✅ |
 
 ## Fáze

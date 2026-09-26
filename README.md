@@ -285,7 +285,9 @@ handled **without the model**, instantly:
 
 Czech variants (`další`, `pauza`, `hlasitěji`, …) work too — see `ui/repl.py`.
 
-Everything else is a full Codex request (16–21 s).
+Everything else goes to the DJ. A named artist or song ("pusť Kabát") takes the
+fast path without the model (~3 s); anything else is a Codex turn — 5.6–9.8 s
+on the Pi while the Codex app-server is warm, up to ~25 s after a cold start.
 
 ### YouTube links
 
@@ -400,7 +402,7 @@ The API, if you want to script it:
 |---|---|
 | `GET /api/status` | player state, queue (`queue[].req` = whose wish), history, `requests[]`, `current.reason`, `build` (fingerprint of the page — an open tab reloads itself when it changes) and `version` (of the whole app), `dj_offline` + `dj_brain` (the DJ's model is down: what works and when it retries), `outage` (YouTube / network down — nothing plays, the queue waits). Names and wish texts are shown with rude words masked (`display_filter`, `display_blocklist`) |
 | `GET /api/events` | SSE: the full state when something changes, `event: pos` `[123.4]` every second in between |
-| `POST /api/prompt` | `{"text","who","source","client","chip","play_next","wait":false}` → **202** `{"id","token","state"}` at once; progress and the DJ's reply arrive in `requests[]`. Without `who`/`wait` (old clients) it answers `{"reply"}` once the DJ decided. Plain commands ("další", "hlasitost 40") → 200 `{"reply"}` right away; 429 = too many open wishes of one person. `client` is a random id the browser keeps (the panel: one per wish session) — *that* is who a person is: a newer wish replaces the same client's older one, fairness and the per-person limit count clients, and the name is only a label. `chip` (`calmer`, `livelier`, `czech`, `more`, `other`, `surprise`) lets a mood button work even while the DJ's model is down |
+| `POST /api/prompt` | `{"text","who","source","client","chip","play_next","wait":false}` → **202** `{"id","token","state"}` at once; progress and the DJ's reply arrive in `requests[]`. Without `who`/`wait` (old clients) it answers `{"reply"}` once the DJ decided. Plain commands ("další", "hlasitost 40") → 200 `{"reply"}` right away; 429 = too many open wishes of one person. `client` is a random id the browser keeps (the panel: one per wish session) — *that* is who a person is: a newer wish goes ahead of the same client's older ones, which stay (only a correction — "ne, radši…", "místo toho", "zruš…" —, a change of direction or a near-identical text replaces), fairness and the per-person limit count clients, and the name is only a label. `chip` (`calmer`, `livelier`, `czech`, `more`, `other`, `surprise`) lets a mood button work even while the DJ's model is down |
 | `GET /api/requests` | the wish queue alone |
 | `POST /api/requests/<id>` | `{"action":"remove\|next","token"}` — the author removes a wish or puts it right after the current track (`DELETE` = remove) |
 | `POST /api/control` | `{"action":"play\|pause\|next\|stop\|volume","value":int}`; `play` with nothing to play starts the DJ by the time of day → `{"starting":true}`; `stop` is only a pause (nobody's wishes are removed — each person removes their own with the token); `next` may carry `who`, so the owner of a skipped wish sees "přeskočil X"; volume is capped at 100 everywhere |
@@ -440,10 +442,12 @@ touches only the background and never removes a wish.
 With nothing playing and nothing queued, ▶ (web), Hrát (panel) or
 `/api/control play` starts the DJ from `agent/context.py`: time of day, the
 day, the office, what played well here at this time — an automatic turn, not
-somebody's wish. After a restart of the service ytdj carries on where it was
-(the wishes and the background mood, `~/.local/share/ytdj/session.json`), but
-only when it was playing, the state is at most 15 minutes old and it isn't
-night (22–7 h): a cold boot in the morning or a reboot at night stays silent
+somebody's wish. After a restart of the service (same boot, state at most 2 hours old) the
+wishes, their tokens and the background mood come back
+(`~/.local/share/ytdj/session.json`) even if nothing was playing. The music
+itself starts again on its own only when it was playing, the state is at most
+15 minutes old and it isn't night (22–7 h); the interrupted track continues
+where it stopped. A cold boot in the morning or a reboot at night stays silent
 until somebody presses Play.
 
 ## Configuration

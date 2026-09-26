@@ -66,7 +66,7 @@ Stav k 26. 9. 2026 15:45 (na Pi běží e713074).
 | # | Požadavek | Stav | Doklad / kde |
 |---|---|---|---|
 | 33 | Projít a vylepšit UI displeje i webu, s ohledem na 1 GB RAM | ✅ | obaly alb, QR „přání z mobilu", oznámení přání, hlasy; web gzip 110 → ~25 kB |
-| 34 | Dotyk: „je utrpení na něco kliknout, trefit" | 🔄 | ráno jen ~40 % dotyků → akce; od 15:42 tolerantnější stisk (volba při dotyku, prst smí ujet 28 px); zbývá filtr v ovladači a kalibrace |
+| 34 | Dotyk: „je utrpení na něco kliknout, trefit" | 🔄 nasazeno 16:08, měří se | ráno jen ~40 % dotyků → akce; nový filtr v ovladači, stisk podle dosednutí, mezery patří nejbližšímu tlačítku, orámování při dotyku, Kalibrace dotyku (síť → 5 křížků); vyhodnotí `python3 -m ytdj.panel.touchreport` |
 | 35 | „Škoda, že není větší" | 📝 | UI je kreslené v PIL, větší HDMI displej (např. 7" 800×480) = jiný ovladač, ne přepis |
 
 ## Provoz a způsob práce

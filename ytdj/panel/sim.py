@@ -57,8 +57,29 @@ class SimTouch:
         if self.stream is not None and not self.stream.closed:
             threading.Thread(target=self._read, name="sim-touch", daemon=True).start()
 
+    # a calibration error to simulate (screen px → where the "glass" reports it),
+    # and the correction a calibration from the panel put on top of it
+    offset: tuple[int, int] = (0, 0)
+    correction = None
+
     def feed(self, kind: str, x: int, y: int) -> None:
-        self.q.put(TouchEvent(kind, int(x), int(y)))
+        x, y = x + self.offset[0], y + self.offset[1]
+        if self.correction is not None:
+            ax, bx, cx, ay, by, cy = self.correction.coef
+            x, y = ax * x + bx * y + cx, ay * x + by * y + cy
+        self.q.put(TouchEvent(kind, int(round(x)), int(round(y))))
+
+    def apply_correction(self, pairs, path=None) -> float:
+        """Like KedeiTouch.apply_correction, without the file (unless a path is given)."""
+        from .kedei import MAX_CAL_ERROR, screen_correction
+
+        corr, err = screen_correction(pairs)
+        if err > MAX_CAL_ERROR:
+            raise ValueError(f"odchylka {err:.0f} px")
+        self.correction = corr if self.correction is None else self.correction.then(corr)
+        if path is not None:
+            self.correction.save(path)
+        return err
 
     def tap(self, x: int, y: int, hold: float = 0.08) -> None:
         self.feed("down", x, y)

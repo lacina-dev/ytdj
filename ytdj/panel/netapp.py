@@ -85,6 +85,7 @@ class NetController:
         # gesture
         self.pressed: str | None = None
         self.press: Press | None = None  # the press in progress (touchpress rules)
+        self.want_calib = False  # "Kalibrace dotyku" was tapped — the app opens the calibration
         self.press_at = 0.0
         self.last_xy = (0, 0)
         self.inside = False
@@ -380,6 +381,10 @@ class NetController:
                 self.close()
             elif name == "wifi_list":
                 self._open_list(rescan=False)
+            elif name == "calib":
+                # the app takes over: crosses over the whole screen (calib.py)
+                self.close()
+                self.want_calib = True
         elif page == "list":
             if name == "back":
                 self._go("overview")

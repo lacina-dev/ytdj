@@ -1004,6 +1004,8 @@ class Renderer:
         if v.online:
             self._button(d, size, ACCENT)
             color = PRESSED_ON_ACCENT if v.pressed == "play" else ON_ACCENT
+            if v.pressed == "play":
+                self._ring(d, size, PRESSED_ON_ACCENT)
         else:
             self._button(d, size, SURFACE)
             color = FAINT
@@ -1012,10 +1014,18 @@ class Renderer:
         else:
             self._icon_label(d, size, icon_play, self.s["play"], color)
 
+    @staticmethod
+    def _ring(d: ImageDraw.ImageDraw, size: tuple[int, int], color) -> None:
+        """Pressed: a ring round the button at once on touch-down — a few thousand
+        px on the glass, and the finger sees the button took it before it lifts."""
+        d.rounded_rectangle((0, 0, size[0] - 1, size[1] - 1), radius=14, outline=color, width=3)
+
     def _plain_button(self, d, size, v: View, name: str, enabled: bool) -> object:
         self._button(d, size, SURFACE)
         if not enabled:
             return FAINT
+        if v.pressed == name:
+            self._ring(d, size, ACCENT)
         return ACCENT_TEXT if v.pressed == name else TEXT
 
     def _draw_next(self, d: ImageDraw.ImageDraw, size: tuple[int, int], v: View) -> None:

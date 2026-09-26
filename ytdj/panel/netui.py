@@ -61,6 +61,7 @@ STRINGS = {
         "offline_hint": "Pi není v žádné síti. Zapoj kabel, nebo vyber Wi-Fi.",
         "scan_qr": "naskenuj telefonem",
         "wifi_btn": "Wi-Fi sítě",
+        "cal_btn": "Kalibrace\ndotyku",
         "list_title": "Wi-Fi sítě",
         "rescan": "Hledat",
         "scanning": "hledám…",
@@ -108,6 +109,7 @@ STRINGS = {
         "offline_hint": "The Pi is not on any network. Plug in a cable or pick a Wi-Fi.",
         "scan_qr": "scan with a phone",
         "wifi_btn": "Wi-Fi networks",
+        "cal_btn": "Touch\ncalibration",
         "list_title": "Wi-Fi networks",
         "rescan": "Scan",
         "scanning": "scanning…",
@@ -153,7 +155,8 @@ ROW_ETH = (0, 76, 324, 104)
 ROW_WIFI = (0, 104, 324, 156)
 URLS = (0, 158, 324, 254)
 QR = (324, 48, W, 254)
-WIFI_BTN = (8, 262, 472, 314)
+WIFI_BTN = (8, 262, 300, 314)
+CAL_BTN = (308, 262, 472, 314)  # "Kalibrace dotyku" — when taps land off
 
 # list
 LIST_TITLE = (118, 0, W - 124, 44)
@@ -284,7 +287,7 @@ class NetView:
 def targets(v: NetView, lang: str = "cs") -> dict[str, Box]:
     """What can be touched on the current page."""
     if v.page == "overview":
-        return {"back": BACK, "wifi_list": WIFI_BTN}
+        return {"back": BACK, "wifi_list": WIFI_BTN, "calib": CAL_BTN}
     if v.page == "list":
         t = {"back": BACK, "rescan": RESCAN, "up": UP, "down": DOWN}
         for i in range(ROWS):
@@ -425,6 +428,7 @@ class NetRenderer:
                 ("urls", URLS, lambda v: (v.loaded, v.urls), self._draw_urls, False),
                 ("qr", QR, lambda v: (v.urls[:1],), self._draw_qr, False),
                 ("wifi_btn", WIFI_BTN, lambda v: (v.pressed == "wifi_list",), self._draw_wifi_btn, False),
+                ("cal_btn", CAL_BTN, lambda v: (v.pressed == "calib",), self._draw_cal_btn, False),
             ]
         if v.page == "list":
             regs: list[Region] = [
@@ -645,6 +649,18 @@ class NetRenderer:
         icon_wifi(d, x + 13, h / 2 + 8, 26, 4, color, color)
         d.text((x + 38, h / 2), label, font=self.f.button, fill=color, anchor="lm")
         icon_back_right(d, w - 30, h / 2, 16, FAINT if v.pressed != "wifi_list" else color)
+
+    def _draw_cal_btn(self, d, size, v: NetView) -> None:
+        w, h = size
+        self._button(d, size, SURFACE, 14)
+        color = ACCENT_TEXT if v.pressed == "calib" else DIM
+        cx, cy = 26, h / 2
+        d.line((cx - 11, cy, cx + 11, cy), fill=color, width=3)
+        d.line((cx, cy - 11, cx, cy + 11), fill=color, width=3)
+        d.ellipse((cx - 5, cy - 5, cx + 5, cy + 5), outline=color, width=2)
+        lines = self.s["cal_btn"].split("\n")
+        for i, line in enumerate(lines):
+            d.text((48, h / 2 + (i - (len(lines) - 1) / 2) * 19), line, font=self.label, fill=color, anchor="lm")
 
     # ---- list ----
 

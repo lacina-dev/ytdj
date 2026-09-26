@@ -608,8 +608,8 @@ class VoteBook:
         délka, takže se boost počítal nad všemi pooly u každé zvažované
         skladby (~1 ms tady, na Pi 3 ~10 ms v event loopu)."""
         pools = getattr(self.pools, "pools", None)
-        if not pools:
-            return
+        if not pools or getattr(self.pools, "favourites", ""):
+            return  # v režimu oblíbených je všechno oblíbené a pořadí je napřeskáčku
         if self._pool_sig == self._sig(pools):
             return
         self.boost_pools(pools)
@@ -1016,7 +1016,7 @@ class VoteBook:
         return [self._display_name(ARTIST, k) for k in keys]
 
     async def favourite_mix(self, catalog: Any, voter: str = "", per_artist: int = ARTIST_MIX,
-                            timeout: float = MIX_TIMEOUT) -> list:
+                            timeout: float = MIX_TIMEOUT, alternate: bool = True) -> list:
         """ "Pusť oblíbené": oblíbené skladby prostřídané se známými skladbami
         oblíbených interpretů (katalog; když nestihne, jen oblíbené skladby)."""
         songs = self.favourite_tracks(voter)
@@ -1049,7 +1049,19 @@ class VoteBook:
                     if t.id not in seen:
                         seen.add(t.id)
                         out.append(t)
-        return out
+        # napřeskáčku: ne dvakrát za sebou týž interpret (když posluchač
+        # výslovně nechce jinak — model: alternate_artists = false)
+        return spread_artists(out) if alternate else out
+
+    def favourite_rotation(self, voter: str = "", exclude: Iterable[str] = (),
+                           alternate: bool = True) -> list:
+        """Režim oblíbených (podkres, RadioPools.set_favourites): oblíbené
+        kanceláře (nebo 👍 člověka `voter`) po lidech na střídačku,
+        napřeskáčku podle interpretů, bez skladeb z `exclude` (už zazněly
+        v tomhle kole) a bez vyřazených."""
+        skip = set(exclude)
+        tracks = [t for t in self.favourite_tracks(voter) if t.id not in skip]
+        return spread_artists(tracks) if alternate else tracks
 
     def summary(self, n_fav: int = 8, n_ban: int = 8) -> tuple[list[str], list[str], list[str]]:
         """(oblíbené — skladby prostřídané s "interpret X", vyřazení interpreti,
@@ -1073,12 +1085,45 @@ class VoteBook:
                 [self._display_name(ARTIST, k) for k in sorted(idx.banned_artists)[:n_ban]],
                 [self._display_name(SONG, k) for k in sorted(idx.banned_songs)[:n_ban]])
 
-    def describe(self, max_chars: int = 600) -> str:
+    def favourites_overview(self, asker: str = "") -> str:
+        """Jeden řádek pro DJ: kolik oblíbených má kancelář (a od koho), hlavní
+        interpreti a oblíbené toho, kdo píše — ať model ví, co akce
+        `favourites` zahraje (Pi 27. 9. 0:59: "co máme rádi" → model vybral
+        z historie dva interprety, oblíbených bylo 93 od 64 interpretů)."""
+        idx = self._idx()
+        artists: dict[str, int] = {}
+        people: set[str] = set()
+        for key in idx.fav_songs:
+            ballots = self.items.get((SONG, key), {})
+            last = max(ballots.values(), key=lambda b: b.ts, default=None)
+            if last is not None and last.artist:
+                name = (credits(last.artist) or (last.artist,))[0]
+                artists[name] = artists.get(name, 0) + 1
+            people |= {b.voter for b in ballots.values() if b.vote > 0}
+        if not idx.fav_songs and not idx.fav_artists:
+            out = "Oblíbené kanceláře: zatím žádné."
+        else:
+            top = sorted(artists, key=lambda a: (-artists[a], a))[:5]
+            out = (f"Oblíbené kanceláře (akce favourites): {len(idx.fav_songs)} skladeb od "
+                   f"{len(artists)} interpretů, 👍 od {len(people)} lidí"
+                   + (f"; nejvíc {', '.join(top)}" if top else "") + ".")
+        if asker:
+            mine = sum(1 for (t, _k), bs in self.items.items()
+                       if t == SONG and (b := bs.get(asker)) is not None and b.vote > 0)
+            lists = [i.title for i in self._imports_by.get(asker, ())]
+            out += (f" Kdo píše, má {mine} vlastních oblíbených"
+                    + (f" (i z playlistu {', '.join(f'‚{x}‘' for x in lists[:2])})" if lists else "")
+                    + "." if mine else " Kdo píše, vlastní oblíbené nemá.")
+        return out
+
+    def describe(self, max_chars: int = 800, asker: str = "") -> str:
         """Kompaktní řádky pro DJ (Codex) — "" když se nehlasovalo."""
         favs, arts, songs = self.summary()
         lines = []
         fav_songs = [f for f in favs if not f.startswith("interpret ")]
         fav_artists = [f[len("interpret "):] for f in favs if f.startswith("interpret ")]
+        if self.items or asker:
+            lines.append(self.favourites_overview(asker))
         if fav_songs:
             lines.append("Oblíbené kanceláře (👍): " + "; ".join(fav_songs))
         if fav_artists:
@@ -1148,6 +1193,49 @@ def fair_order(per: dict[str, list[tuple]], rng: random.Random | None,
             if n is not None and len(out) >= n:
                 break
         voters = [v for v in voters if head(v) is not None]
+    return out
+
+
+SPREAD_GAP = 4  # "napřeskáčku": interpret se nevrátí dřív než po tolika jiných
+SPREAD_LOOK = 60  # jak daleko dopředu se hledá jiný interpret (Pi: tisíce oblíbených)
+
+
+def spread_artists(tracks: list, gap: int = SPREAD_GAP, look: int = SPREAD_LOOK) -> list:
+    """Pořadí "napřeskáčku": nikdy dvakrát za sebou týž interpret, a když to
+    jde, ani v posledních `gap` skladbách. Jinak drží původní pořadí (férovost
+    po lidech, nejoblíbenější první) — bere se první vhodná z nejbližších
+    `look` skladeb. Interpret = kterýkoli uvedený ("A feat. B")."""
+    rest = []
+    left: dict[str, int] = {}  # kolik skladeb interpreta ještě zbývá (hlavní klíč)
+    for t in tracks:
+        keys = artist_keys(getattr(t, "artist", "") or "")
+        main = min(keys) if keys else ""
+        rest.append((t, keys, main))
+        left[main] = left.get(main, 0) + 1
+    out: list = []
+    recent: deque = deque(maxlen=max(1, gap))
+    while rest:
+        n = len(rest)
+        last = recent[-1] if recent else frozenset()
+        window = range(min(look, n))
+        pick = None
+        # interpret, kterého zbývá přes polovinu, musí jít teď (jinak by na
+        # konci zbyl sám a hrál dvakrát za sebou)
+        heavy = max(left, key=lambda k: left[k], default="")
+        if heavy and left[heavy] * 2 > n and heavy not in last:
+            pick = next((i for i in range(n) if rest[i][2] == heavy), None)
+        if pick is None:  # v původním pořadí první, který nebyl v posledních `gap`
+            pick = next((i for i in window if not any(rest[i][1] & r for r in recent)), None)
+        if pick is None:  # jinak aspoň ne jako předchozí — toho, koho zbývá nejvíc
+            cands = [i for i in window if not (rest[i][1] & last)]
+            if cands:
+                pick = max(cands, key=lambda i: (left[rest[i][2]], -i))
+        t, keys, main = rest.pop(pick if pick is not None else 0)
+        left[main] -= 1
+        if not left[main]:
+            del left[main]
+        out.append(t)
+        recent.append(keys)
     return out
 
 

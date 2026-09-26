@@ -23,6 +23,7 @@ from .catalog import Catalog, Track
 log = logging.getLogger(__name__)
 
 RADIO_RETRY = 60.0  # s — po selhání rádia (síť, YouTube) nový pokus nejdřív za tolik
+FAV_KEEP = 8  # režim oblíbených: posledních tolik se na začátku nového kola nezopakuje
 
 
 @dataclass
@@ -81,6 +82,14 @@ class RadioPools:
         # roste s každým naplněním poolů (nové seedy, interpret, doplnění) —
         # hlasování podle něj posouvá oblíbené jen jednou na doplnění
         self.generation = 0
+        # Režim oblíbených ("hraj, co máme rádi, pořád") — viz set_favourites().
+        # "office" / "mine" / "" = není. Hraje oblíbené napřeskáčku, dokud
+        # nepřijde jiné přání; bez limitu skladeb (na rozdíl od interpreta).
+        self.favourites: str = ""
+        self._fav_voter = ""
+        self._fav_played: set[str] = set()  # zazněly v tomhle kole oblíbených
+        self._fav_alternate = True  # napřeskáčku podle interpretů
+        self._fav_last: deque = deque(maxlen=FAV_KEEP)
 
     def remember_tracks(self, tracks: list[Track]) -> None:
         for t in tracks:
@@ -104,6 +113,7 @@ class RadioPools:
         self._rr = 0
         self.mood = mood
         self.allow_long = allow_long
+        self.favourites = ""
         self.artist = ""
         self._artist_all = []
         self.artist_left = self.artist_until = None
@@ -171,6 +181,7 @@ class RadioPools:
         self._rr = 0
         self.mood = mood or name
         self.allow_long = True
+        self.favourites = ""
         self.artist = name
         self._artist_all = list(tracks)
         self.artist_left = max_tracks
@@ -182,6 +193,76 @@ class RadioPools:
             "pool_size": len(tracks),
             "sample": [t.label() for t in tracks[:5]],
         }
+
+    async def set_favourites(self, which: str = "office", voter: str = "", mood: str = "",
+                             played: list[str] | tuple = (), alternate: bool = True) -> dict:
+        """Režim oblíbených: podkres hraje oblíbené kanceláře (`which` "office")
+        nebo 👍 jednoho člověka ("mine", `voter`), dokud nepřijde jiný pokyn.
+
+        Vlastník 27. 9.: "ať hraje to, co máme rádi, napřeskáčku interprety …
+        chtěl jsem, aby to hrál pořád, ale on naplánoval jen pár." Pořadí dává
+        VoteBook.favourite_rotation: po lidech na střídačku, napřeskáčku podle
+        interpretů; každá oblíbená zazní jednou, než se kolo zopakuje (pak se
+        znovu zamíchá). `played` = co už zaznělo v bloku přání. Vyřazené
+        hlasováním neprojdou (pool_reject). Na rozdíl od režimu interpreta po
+        přání nemá limit skladeb ani času — "pořád" (FUNKCE F-FRONTA-20).
+        Bez oblíbených nechá pooly být a vrátí pool_size 0.
+        """
+        votes = self.votes
+        mine = which == "mine" and bool(voter)
+        who = voter if mine else ""
+        # bez toho, co už zaznělo nebo čeká ve frontě (blok přání); když tím
+        # oblíbené došly (jich je jen pár), podkres zůstane rádiem (volající)
+        skip = set(played) | self.session_seen
+        order = votes.favourite_rotation(who, skip, alternate) if votes is not None else []
+        telemetry.event("radio.favourites_mode", which="mine" if mine else "office", n=len(order),
+                        played=len(played), artists=len({t.artist for t in order}) or None)
+        if not order:
+            return {"favourites": which, "pool_size": 0, "sample": []}
+        self.pools = [Pool(seed=order[0], tracks=deque(order), last_good=order[0].id)]
+        self.generation += 1
+        self._rr = 0
+        # na webu a displeji to vidí všichni: "vlastní", ne "tvoje"/"moje"
+        self.mood = "vlastní oblíbené" if mine else "oblíbené kanceláře"
+        self.allow_long = False
+        self.artist = ""
+        self._artist_all = []
+        self.artist_left = self.artist_until = None
+        self.favourites = "mine" if mine else "office"
+        self._fav_voter = voter if mine else ""
+        self._fav_alternate = alternate
+        self._fav_played = set(played)
+        self._fav_last.clear()
+        self._fav_last.extend(played)
+        self.remember_tracks(order)
+        self.store.record_seed(order[0].id, self.mood)
+        return {"favourites": self.favourites, "pool_size": len(order),
+                "sample": [t.label() for t in order[:5]]}
+
+    def _refill_favourites(self, pool: Pool) -> None:
+        """Další oblíbené; když zazněly všechny, nové kolo (znovu zamíchané,
+        bez posledních pár, ať se nic nevrátí hned)."""
+        votes = self.votes
+        if votes is None:
+            return
+        skip = self._fav_played | {t.id for t in pool.tracks}
+        fresh = votes.favourite_rotation(self._fav_voter, skip, self._fav_alternate)
+        if not fresh and not pool.tracks:
+            if not votes.favourite_tracks(self._fav_voter, shuffle=False):
+                return  # oblíbené zmizely (vše vyřazené / odebrané) — pool se zavře
+            log.info("oblíbené dohrány (%d), jedu nové kolo", len(self._fav_played))
+            telemetry.event("radio.favourites_mode", which=self.favourites, restart=True,
+                            played=len(self._fav_played))
+            # nové kolo: co zaznělo, smí znovu — kromě posledních pár (a toho,
+            # co mezitím zařadila přání: to je v session_seen, ne v _fav_played)
+            keep = set(self._fav_last)
+            self.session_seen -= self._fav_played - keep
+            self._fav_played = keep
+            fresh = votes.favourite_rotation(self._fav_voter, keep | self.session_seen,
+                                             self._fav_alternate)
+        self.remember_tracks(fresh)
+        pool.tracks.extend(fresh)
+        self.generation += 1
 
     async def _history(self, n: int) -> list:
         try:
@@ -275,7 +356,7 @@ class RadioPools:
         out: list[Track] = []
         blocked = await _aread(self.store, "blacklisted")
         # vyžádaný interpret má přednost před pravidlem neopakování
-        recent = set() if self.artist else await _aread(
+        recent = set() if (self.artist or self.favourites) else await _aread(
             self.store, "recently_played", self.cfg.repeat_days)
         artist_counts: dict[str, int] = {}
         # Dlouhé kusy se nezahazují, jen odloží: když se fronta z krátkých
@@ -320,6 +401,9 @@ class RadioPools:
             self.session_seen.add(track.id)
             artist_counts[track.artist] = artist_counts.get(track.artist, 0) + 1
             out.append(track)
+            if self.favourites:
+                self._fav_played.add(track.id)
+                self._fav_last.append(track.id)
             if self.artist and self.artist_left is not None:
                 self.artist_left -= 1
                 if self.artist_left <= 0:
@@ -418,12 +502,15 @@ class RadioPools:
                 return "too_long"
         # at most 2 tracks by the same artist per refill — kromě režimu
         # interpreta, kde je to celý smysl
-        if not self.artist and artist_counts.get(track.artist, 0) >= 2:
+        if not self.artist and not self.favourites and artist_counts.get(track.artist, 0) >= 2:
             return "artist_cap"
         return None
 
     async def _refill(self, pool: Pool) -> None:
         """Reseeds from the last track not skipped — implicit feedback."""
+        if self.favourites:
+            self._refill_favourites(pool)
+            return
         if self.artist:
             history = await self._history(len(self._artist_all))
             blocked = await _aread(self.store, "blacklisted")
@@ -468,6 +555,7 @@ class RadioPools:
         jako zahrané, ať o ně režim interpreta nepřijde."""
         for t in tracks:
             self.session_seen.discard(t.id)
+            self._fav_played.discard(t.id)
             if self.artist_left is not None and any(t.id == a.id for a in self._artist_all):
                 self.artist_left += 1
 
@@ -485,11 +573,15 @@ class RadioPools:
     def exhausted(self) -> bool:
         if self.artist and self._artist_all:
             return False  # dojde-li, jede se znovu — viz _refill_artist
+        if self.favourites and self.pools:
+            return False  # nové kolo oblíbených — viz _refill_favourites
         return not self.pools or all(len(p) == 0 for p in self.pools)
 
     def describe(self) -> str:
         if self.artist and self.pools:
             return f"interpret {self.artist} (v zásobě {len(self.pools[0])} skladeb)"
+        if self.favourites and self.pools:
+            return f"{self.mood} napřeskáčku (v zásobě {len(self.pools[0])} skladeb)"
         if not self.pools:
             return "žádné aktivní seedy"
         return ", ".join(f"{p.seed.label()} ({len(p)})" for p in self.pools)

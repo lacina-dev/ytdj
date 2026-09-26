@@ -432,7 +432,12 @@ _FAVOURITES = re.compile(
 
 
 def favourites_request(text: str) -> str | None:
-    """ "mine" (moje oblíbené) / "office" (oblíbené kanceláře) / None."""
+    """ "mine" (moje oblíbené) / "office" (oblíbené kanceláře) / None.
+
+    Jen přesný povel ("pusť oblíbené", "pusť moje oblíbené") — všechno
+    ostatní ("co máme rádi", "naše srdcovky a nepřestávej") pozná model
+    (akce `favourites`, prompts.py). Vlastník 27. 9.: "nechci, aby se učil
+    konkrétní fráze … chci, aby chápal, co mu user napíše"."""
     t = norm(text)
     if not t or len(t) > 80:
         return None
@@ -675,6 +680,12 @@ class Intent:
     # hotová semínka (DJ bez modelu) — resolve je nehledá znovu
     seed_tracks: list = field(default_factory=list)
     note: str = ""  # co opravila pravidla — pro log
+    # "office" / "mine": přání oblíbených (hlasování) — hraje je aplikace sama
+    # (CodexDJ.favourites_plan); `fav_continuous` = podkres pak v režimu
+    # oblíbených, dokud si nikdo nepřeje jinak; `fav_alternate` = napřeskáčku
+    favourites: str = ""
+    fav_continuous: bool = True
+    fav_alternate: bool = True
 
     @property
     def changes_music(self) -> bool:
@@ -701,6 +712,17 @@ def build_intent(user_text: str, data: dict, auto: bool = False) -> Intent:
     jak ho model vyložil.
     """
     action = str(data.get("action") or "nothing")
+    if action == "favourites":
+        # oblíbené (hlasování kanceláře): skladby vybere aplikace, ne model
+        # z historie (Pi 27. 9. 0:59: "co máme rádi" → Vojtaano a Depeche Mode
+        # z posledních přání). Rozsah, "pořád" a střídání interpretů určil model.
+        scope = str(data.get("favourites_scope") or "office")
+        scope = scope if scope in ("office", "mine") else "office"
+        return Intent(kind="song", text=user_text, auto=auto, favourites=scope,
+                      fav_continuous=bool(data.get("continuous", True)),
+                      fav_alternate=bool(data.get("alternate_artists", True)),
+                      mood="moje oblíbené" if scope == "mine" else "oblíbené kanceláře",
+                      note="favourites_model", remember=str(data.get("remember") or ""))
     requested = [r for r in data.get("requested") or [] if isinstance(r, dict)]
     seeds = [s for s in data.get("seeds") or [] if isinstance(s, dict)]
     focus = [str(a).strip() for a in data.get("focus_artists") or [] if str(a).strip()]

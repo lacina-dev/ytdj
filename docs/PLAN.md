@@ -20,6 +20,12 @@ Pravidla při rozhodování (v tomhle pořadí):
 2. **Chytře vyplnit, když nikdo nic nechce** (čas, den, kancelář, co tu lidi dohrávají).
 3. **Učit se z reakcí** (přeskočení, dohrání) — nikdy proti výslovnému přání.
 4. Rychlost a spolehlivost před efekty. Tvrdit jen to, co doloží data (log, měření).
+5. **Rozumět, ne učit se fráze.** „Já ale hlavně nechci, aby se učil konkrétní
+   fráze a podle nich pak něco dělal. Já chci, aby chápal, co mu user napíše,
+   a choval se podle toho." (vlastník 27. 9.) Co přání znamená, vykládá model;
+   aplikace mu dá, co potřebuje vědět (stav, oblíbené, co umí), a jeho
+   rozhodnutí provede. Bez modelu jen jednoznačné povely a jména (interpret,
+   skladba, odkaz, „pusť oblíbené"), ne seznamy hovorových obratů.
 
 ## Požadavky
 

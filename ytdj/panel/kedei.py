@@ -157,15 +157,52 @@ class KedeiScreen:
 
 class Calibration:
     """Afinní převod surových hodnot převodníku na pixely: pokryje prohozené
-    i převrácené osy a mírné natočení vrstvy vůči displeji."""
+    i převrácené osy a mírné natočení vrstvy vůči displeji.
 
-    def __init__(self, ax: float, bx: float, cx: float, ay: float, by: float, cy: float):
+    Nahoře volitelně mřížka 3×3 oprav (`grid`): odporová vrstva se neprohýbá
+    všude stejně — po kalibraci 5 body na Pi (26. 9. 16:42) zůstalo 12 px,
+    vlevo dole se četlo výš, vpravo dole níž. Mřížka z 9 bodů se mezi uzly
+    bilineárně interpoluje.
+    """
+
+    def __init__(self, ax: float, bx: float, cx: float, ay: float, by: float, cy: float,
+                 grid: dict | None = None):
         self.coef = (ax, bx, cx, ay, by, cy)
+        self.grid = grid  # {"xs": [3], "ys": [3], "d": [[dx, dy] × 9, po řádcích]}
+
+    def affine(self, rx: float, ry: float) -> tuple[float, float]:
+        ax, bx, cx, ay, by, cy = self.coef
+        return ax * rx + bx * ry + cx, ay * rx + by * ry + cy
+
+    def offset(self, x: float, y: float) -> tuple[float, float]:
+        """Oprava z mřížky v bodě (x, y) obrazovky; bez mřížky (0, 0)."""
+        g = self.grid
+        if not g:
+            return 0.0, 0.0
+        xs, ys, d = g["xs"], g["ys"], g["d"]
+        i = 0 if x < xs[1] else 1
+        j = 0 if y < ys[1] else 1
+        # za krajními uzly jen mírně dál (prodloužení krajní buňky), ne do nekonečna
+        tx = min(max((x - xs[i]) / (xs[i + 1] - xs[i]), -0.3), 1.3)
+        ty = min(max((y - ys[j]) / (ys[j + 1] - ys[j]), -0.3), 1.3)
+
+        def node(a: int, b: int) -> list[float]:
+            return d[b * 3 + a]
+
+        out = []
+        for k in (0, 1):
+            top = node(i, j)[k] * (1 - tx) + node(i + 1, j)[k] * tx
+            bottom = node(i, j + 1)[k] * (1 - tx) + node(i + 1, j + 1)[k] * tx
+            out.append(top * (1 - ty) + bottom * ty)
+        return out[0], out[1]
+
+    def map_float(self, rx: float, ry: float) -> tuple[float, float]:
+        x, y = self.affine(rx, ry)
+        dx, dy = self.offset(x, y)
+        return x + dx, y + dy
 
     def map(self, rx: int, ry: int) -> tuple[int, int]:
-        ax, bx, cx, ay, by, cy = self.coef
-        x = ax * rx + bx * ry + cx
-        y = ay * rx + by * ry + cy
+        x, y = self.map_float(rx, ry)
         return (min(max(int(round(x)), 0), WIDTH - 1),
                 min(max(int(round(y)), 0), HEIGHT - 1))
 
@@ -209,7 +246,8 @@ class Calibration:
     @classmethod
     def load(cls, path: Path = CALIBRATION) -> Calibration:
         try:
-            cal = cls(*json.loads(path.read_text())["coef"])
+            data = json.loads(path.read_text())
+            cal = cls(*data["coef"], grid=data.get("grid") or None)
             cal.source = f"file:{path}"
             return cal
         except FileNotFoundError:
@@ -220,7 +258,10 @@ class Calibration:
 
     def save(self, path: Path = CALIBRATION) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"coef": self.coef}) + "\n")
+        data: dict = {"coef": self.coef}
+        if self.grid:
+            data["grid"] = self.grid
+        path.write_text(json.dumps(data) + "\n")
 
     @classmethod
     def default(cls) -> Calibration:
@@ -251,6 +292,50 @@ def screen_correction(pairs: list[tuple[tuple[int, int], tuple[int, int]]]) -> t
     return corr, err
 
 
+MAX_GRID = 35  # px — větší zbytek v jednom z 9 bodů = sklouzlý prst, nic se neuloží
+
+
+def recalibrate(old: Calibration, pairs: list[tuple[tuple[int, int], tuple[int, int]]]) -> tuple[Calibration, dict]:
+    """Nová kalibrace z párů (kam dotyk padl se starou kalibrací, kde byl křížek).
+
+    Nejdřív afinní oprava navrch té staré (5 i 9 bodů); z 9 bodů v mřížce 3×3
+    navíc mřížka zbytků, takže sedí i tam, kde se vrstva prohýbá jinak.
+    ValueError, když body nedávají smysl — pak se nic nemění.
+    """
+    # co naměřila stará kalibrace bez své mřížky (mřížka je hladká: stačí odečíst)
+    base = [((m[0] - old.offset(*m)[0], m[1] - old.offset(*m)[1]), t) for m, t in pairs]
+    corr, affine_err = screen_correction(base)
+    affine = Calibration(*old.coef).then(corr)
+    txs = sorted({t[0] for _, t in pairs})
+    tys = sorted({t[1] for _, t in pairs})
+    info = {"points": len(pairs), "affine_error": round(affine_err, 1)}
+    if len(pairs) < 9 or len(txs) != 3 or len(tys) != 3:
+        if affine_err > MAX_CAL_ERROR:
+            raise ValueError(f"odchylka {affine_err:.0f} px")
+        info["error"] = round(affine_err, 1)
+        return affine, info
+    # zbytky po afinní části v uzlech mřížky; pár kol, ať sedí i s interpolací
+    after = [(corr.affine(*m), t) for m, t in base]
+    d = [[0.0, 0.0] for _ in range(9)]
+    new = Calibration(*affine.coef, grid={"xs": txs, "ys": tys, "d": d})
+    for _ in range(6):
+        for (a, t) in after:
+            k = tys.index(t[1]) * 3 + txs.index(t[0])
+            ox, oy = new.offset(*a)
+            d[k][0] += t[0] - (a[0] + ox)
+            d[k][1] += t[1] - (a[1] + oy)
+    worst = max(max(abs(v[0]), abs(v[1])) for v in d)
+    if worst > MAX_GRID:
+        raise ValueError(f"jeden bod je mimo o {worst:.0f} px")
+    new.grid = {"xs": txs, "ys": tys, "d": [[round(v[0], 2), round(v[1], 2)] for v in d]}
+    err = 0.0
+    for a, t in after:
+        ox, oy = new.offset(*a)
+        err = max(err, abs(a[0] + ox - t[0]), abs(a[1] + oy - t[1]))
+    info.update(error=round(err, 1), grid_max=round(worst, 1))
+    return new, info
+
+
 class KedeiTouch:
     """Vzorkuje převodník, filtruje šum a skládá z něj down/move/up."""
 
@@ -272,6 +357,9 @@ class KedeiTouch:
     # nic neruší ani neukončuje; teprve tolik za sebou při držení = konec
     # (kdyby PENIRQ zůstal viset dole).
     NOISY_RELEASE = 12
+    # Poslední vzorky před zvednutím ujíždějí (tlak klesá). Pohyb se proto
+    # hlásí o LIFT_SKIP vzorků (~30 ms) později a ty poslední se zahodí.
+    LIFT_SKIP = 2
 
     def __init__(self, rotate: int = 0, calibration: Calibration | None = None) -> None:
         self._dev = _Device.get()
@@ -283,6 +371,7 @@ class KedeiTouch:
         self._misses = 0
         self._candidates: list[tuple[int, int]] = []
         self._recent: list[tuple[int, int]] = []  # poslední platné vzorky při držení (medián)
+        self._pending: list[tuple[int, int]] = []  # čerstvé vzorky, které se ještě nehlásí (LIFT_SKIP)
         self._noisy = 0  # vadné vzorky za sebou při držení
         self._jump: tuple[int, int] | None = None
         # Anomálie převodníku za poslední souhrn (panel.touch_driver). Jen
@@ -295,18 +384,18 @@ class KedeiTouch:
         """Kalibrace z panelu: páry (kam dotyk padl, kde byl křížek) v pixelech
         obrazovky. Opraví a uloží kalibraci, platí hned; vrátí největší zbytek (px).
         ValueError, když body nesedí — pak se nic nemění."""
-        corr, err = screen_correction(pairs)
-        if err > MAX_CAL_ERROR:
-            raise ValueError(f"odchylka {err:.0f} px")
         if self._rotate == 180:
-            corr = FLIP.then(corr).then(FLIP)  # oprava v souřadnicích před otočením
-        new = self._cal.then(corr)
+            # kalibrace platí před otočením obrazu: body do jejích souřadnic
+            pairs = [((WIDTH - 1 - m[0], HEIGHT - 1 - m[1]), (WIDTH - 1 - t[0], HEIGHT - 1 - t[1]))
+                     for m, t in pairs]
+        new, info = recalibrate(self._cal, pairs)
         target = path or CALIBRATION
         new.save(target)
         new.source = f"file:{target}"
         self._cal = new
-        log.info("kalibrace dotyku uložena do %s (odchylka %.0f px)", target, err)
-        return err
+        self.last_calibration = info
+        log.info("kalibrace dotyku uložena do %s (%s)", target, info)
+        return info["error"]
 
     @property
     def calibration_source(self) -> str:
@@ -389,7 +478,12 @@ class KedeiTouch:
             ev: TouchEvent | None = None
             if isinstance(pos, tuple):
                 self._misses = self._noisy = 0
-                ev = self._holding(pos) if self._down else self._landing(pos)
+                if self._down:
+                    self._pending.append(pos)
+                    if len(self._pending) > self.LIFT_SKIP:
+                        ev = self._holding(self._pending.pop(0))
+                else:
+                    ev = self._landing(pos)
             elif pos == "noisy":
                 # šum při dosedání ani při držení stisk neruší
                 if self._down:
@@ -419,6 +513,7 @@ class KedeiTouch:
         self._down, self._misses, self._noisy = False, 0, 0
         self._jump = None
         self._recent = []
+        self._pending = []  # vzorky ze zvedání prstu se nehlásí
         return TouchEvent("up", *self._pos)
 
     def close(self) -> None:

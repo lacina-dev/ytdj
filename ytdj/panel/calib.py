@@ -26,7 +26,10 @@ from .ui import ACCENT, ACCENT_TEXT, BG, DIM, ERR, FAINT, ON_ACCENT, SURFACE, SU
 log = logging.getLogger(__name__)
 
 MARGIN = 40
-POINTS = ((MARGIN, MARGIN), (W - MARGIN, MARGIN), (W - MARGIN, H - MARGIN), (MARGIN, H - MARGIN), (W // 2, H // 2))
+# 3×3 mřížka: afinní oprava + mřížka zbytků (kedei.recalibrate). Po 5 bodech
+# na Pi (26. 9.) zůstalo 12 px, vlevo dole se četlo výš, vpravo dole níž.
+_XS, _YS = (MARGIN, W // 2, W - MARGIN), (MARGIN, H // 2, H - MARGIN)
+POINTS = tuple((x, y) for j, y in enumerate(_YS) for x in (_XS if j % 2 == 0 else _XS[::-1]))
 IDLE_CANCEL = 45.0  # s without a touch in the middle of it: give up, change nothing
 DONE_CLOSE = 20.0  # s the result stays up
 
@@ -39,7 +42,8 @@ STRINGS = {
         "title": "Kalibrace dotyku",
         "hint": "Ťukni přesně doprostřed křížku a chvilku podrž ({i}/{n})",
         "done": "Hotovo — dotyk je zkalibrovaný",
-        "done_detail": "Posun byl až {shift} px, zbývá do {err} px. Platí hned a zůstane i po restartu.",
+        "done_detail": "Posun byl až {shift} px, nerovnoměrnost skla {bend} px je vyrovnaná; zbývá do {err} px. "
+                       "Platí hned a zůstane i po restartu.",
         "failed": "Body nesedí — nic jsem neměnil",
         "failed_detail": "{why} Zkus to znovu a drž prst na křížku klidně.",
         "unsupported": "Tenhle displej kalibraci neumí.",
@@ -51,7 +55,8 @@ STRINGS = {
         "title": "Touch calibration",
         "hint": "Tap the very centre of the cross and hold it a moment ({i}/{n})",
         "done": "Done — touch is calibrated",
-        "done_detail": "The shift was up to {shift} px, {err} px remain. It applies now and after a restart.",
+        "done_detail": "The shift was up to {shift} px, the glass's unevenness of {bend} px is evened out; "
+                       "{err} px remain. It applies now and after a restart.",
         "failed": "The points don't fit — nothing changed",
         "failed_detail": "{why} Try again and keep the finger still on the cross.",
         "unsupported": "This display can't be calibrated.",
@@ -182,8 +187,11 @@ class CalibController:
                  points=[list(m) for m, _ in self.pairs])
             return
         self.phase = "done"
-        self.detail = self.s["done_detail"].format(shift=shift, err=max(1, round(err)))
+        info = dict(getattr(self.touch, "last_calibration", None) or {})
+        bend = info.get("affine_error", err)
+        self.detail = self.s["done_detail"].format(shift=shift, bend=round(bend), err=max(1, round(err)))
         emit("panel.calibration", phase="saved", shift=shift, error=round(err, 1),
+             affine_error=info.get("affine_error"), grid_max=info.get("grid_max"), n=len(self.pairs),
              points=[list(m) for m, _ in self.pairs])
 
 
@@ -214,7 +222,7 @@ class CalibRenderer:
         if v.phase == "points":
             step = min(v.step, n - 1)
             hint = self.s["hint"].format(i=step + 1, n=n)
-            ty = H // 2 + 44 if step == n - 1 else H // 2 - 40
+            ty = 70 if POINTS[step][1] == H // 2 else 116  # never over the current cross
             d.text((W // 2, ty), self.s["title"], font=fs.status_b, fill=TEXT, anchor="mm")
             for i, line in enumerate(wrap(hint, fs.status, W - 120, 2)):
                 d.text((W // 2, ty + 26 + i * 20), line, font=fs.status, fill=DIM, anchor="mm")

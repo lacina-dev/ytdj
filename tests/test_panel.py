@@ -541,6 +541,7 @@ class TouchDriverStatsTest(unittest.TestCase):
             (200, 200, p), (201, 200, p), (200, 201, p),    # a real press
             (400, 50, p),                                   # unconfirmed jump…
             (50, 300, p),                                   # …replaced by another
+            (201, 200, p), (200, 200, p),                   # the finger rests again (reports lag LIFT_SKIP)
             None, None, None,                               # release
         ]
         t = self._touch(samples)
@@ -1229,6 +1230,53 @@ class WishLayoutTest(unittest.TestCase):
         self.assertFalse(c.timers(100.0 + IDLE_CLOSE - 1))
         self.assertTrue(c.timers(100.0 + IDLE_CLOSE + 1))
         self.assertIsNone(c.page)
+
+
+class RadioOriginTest(unittest.TestCase):
+    """F-FRONTA-19 na displeji: rádio po přání řekne, podle čího přání hraje —
+    tlumeným textem ve stavovém řádku, ne jmenovkou přání."""
+
+    BASE = replace(PlayerLookTest.BASE, mood="veselý český punk")
+
+    def test_status_strip_says_whose_wish_the_radio_follows(self):
+        from ytdj.panel.ui import DIM, STATUS
+
+        r = Renderer()
+        self.assertEqual(r._status_detail(self.BASE), ("veselý český punk", DIM, ""))
+        v = replace(self.BASE, now_from="Robert")
+        self.assertEqual(r._status_detail(v), ("rádio podle přání Robert", DIM, ""))  # bez jmenovky
+        self.assertEqual(r._status_detail(replace(self.BASE, now_start=True))[0], "rádio podle času a dne")
+        # hraje přání: jmenovka přání jako dřív
+        self.assertEqual(r._status_detail(replace(v, now_who="Jana"))[2], "Jana")
+        r.render(self.BASE, full=True)
+        plain = r.frame.crop(STATUS).tobytes()
+        r.render(v, full=True)
+        self.assertNotEqual(r.frame.crop(STATUS).tobytes(), plain)
+        # dlouhé jméno se zkrátí, stavový řádek se nerozlije
+        r.render(replace(v, now_from="Maximilián Veliký z Horní Dolní"), full=True)
+
+    def test_panel_reads_the_origin_from_the_status(self):
+        server, fake = make_server(0)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        tmp = tempfile.TemporaryDirectory()
+        app = PanelApp(SimScreen(Path(tmp.name) / "panel.png"), SimTouch(io.StringIO("")),
+                       f"http://127.0.0.1:{server.server_address[1]}", net_backend=_NoNet())
+        thread = threading.Thread(target=app.run, daemon=True)
+        thread.start()
+        try:
+            self.assertTrue(wait_for(lambda: app.online and app._view().has_track))
+            self.assertEqual(app._view().now_from, "")
+            with fake.lock:
+                fake.radio_from = {"from_who": "Robert", "from_key": "abc"}
+            self.assertTrue(wait_for(lambda: app._view().now_from == "Robert"))
+            self.assertEqual(app._view().now_who, "")  # není to přání
+        finally:
+            app.shutdown()
+            thread.join(3)
+            server.closing = True
+            server.shutdown()
+            server.server_close()
+            tmp.cleanup()
 
 
 if __name__ == "__main__":

@@ -137,7 +137,8 @@ class DriverReplayTest(unittest.TestCase):
         kinds = [e.kind for e in events]
         self.assertEqual(kinds[0], "down")
         self.assertIn("move", kinds)
-        self.assertGreater(events[-1].y, 300)  # the finger ended far below
+        # the finger ended far below (the last LIFT_SKIP samples before a lift are not reported)
+        self.assertGreater(events[-1].y, 270)
 
     def test_a_single_touchy_sample_is_not_a_press(self):
         events, st = replay([(300, 230, P), None, None, None])
@@ -181,9 +182,29 @@ class AppTouchTest(unittest.TestCase):
 
     def test_jittery_press_on_next_counts(self):
         before = self.fake.index
-        # landed near the lower edge of Další, wandered, the last sample drifted off at lift
-        self._gesture([(300, 250), (312, 262), (298, 257), (306, 266), (330, 300)])
+        # landed reading into the volume row, then rested on Další ±10 px, the last sample drifted at lift
+        self._gesture([(300, 266), (310, 248), (296, 236), (305, 244), (301, 232), (299, 241), (330, 300)])
         self.assertTrue(wait_for(lambda: self.fake.index != before))
+        self.assertEqual(self.fake.volume, 65)  # the landing on the volume row did nothing
+
+    def test_owner_case_finger_on_volume_minus_reading_high(self):
+        """"Prst mám přes celé −volume, ale když jsem moc nahoře, aktivuje se Play" (26. 9.)."""
+        vol = self.fake.volume
+        # the logged vol_down hits: dy −30…+3 around the centre (289); the landing read in Hrát
+        self._gesture([(50, 255), (52, 262), (47, 270), (51, 266), (49, 275), (50, 268), (48, 290)])
+        self.assertTrue(wait_for(lambda: self.fake.volume == vol - 5))
+        time.sleep(0.3)
+        self.assertFalse(self.fake.paused)  # Hrát was not pressed
+        e = self.log.wait("panel.action", button="vol_down")
+        self.assertTrue(e)
+        self.assertEqual(e[0].get("landed"), "play")
+
+    def test_top_strip_reading_above_the_screen_edge_still_hits(self):
+        from ytdj.panel.ui import NET_TARGET
+
+        x = (NET_TARGET[0] + NET_TARGET[2]) // 2
+        self._gesture([(x, 0), (x, 1), (x, 0)])
+        self.assertTrue(wait_for(lambda: self.app._shown_page == "overview"))
 
     def test_press_in_the_gap_between_play_and_next(self):
         self._gesture([(238, 230), (239, 231)])  # the 8 px gap, a hair nearer to Hrát
@@ -266,6 +287,136 @@ class CalibrationTest(unittest.TestCase):
         self.assertEqual(t._cal.coef, (1, 0, 0, 0, 1, 0))
 
 
+def bent_glass(x, y):
+    """A position-dependent error like the Pi's after the 5-point calibration (26. 9.):
+    bottom-left reads high and right, bottom-right reads low and left."""
+    fx, fy = x / 480, y / 320
+    return x + 14 * (1 - fx) * fy - 12 * fx * fy, y - 26 * (1 - fx) * fy + 10 * fx * fy
+
+
+class GridCalibrationTest(unittest.TestCase):
+    """9 crosses: an affine correction plus a 3×3 grid of what's left."""
+
+    CHECK = ((50, 289), (436, 289), (122, 230), (358, 230), (240, 100), (300, 20), (60, 20))
+
+    def _pairs(self, points):
+        return [((round(bent_glass(x, y)[0]), round(bent_glass(x, y)[1])), (x, y)) for x, y in points]
+
+    def _worst(self, cal):
+        return max(max(abs(a - b) for a, b in zip(cal.map_float(*bent_glass(x, y)), (x, y))) for x, y in self.CHECK)
+
+    def test_nine_points_fix_what_five_cannot(self):
+        ident = kedei.Calibration(1, 0, 0, 0, 1, 0)
+        five = [(40, 40), (440, 40), (440, 280), (40, 280), (240, 160)]
+        cal5, info5 = kedei.recalibrate(ident, self._pairs(five))
+        cal9, info9 = kedei.recalibrate(ident, self._pairs(POINTS))
+        self.assertEqual(len(POINTS), 9)
+        self.assertIsNone(cal5.grid)
+        self.assertIsNotNone(cal9.grid)
+        self.assertGreater(self._worst(cal5), 5)  # an affine fit can't follow the bend
+        self.assertLess(self._worst(cal9), 3.5)
+        self.assertLess(info9["error"], 1.0)
+        self.assertGreater(info9["affine_error"], 3)  # the bend is reported
+
+    def test_grid_survives_save_and_load(self):
+        cal, _ = kedei.recalibrate(kedei.Calibration(1, 0, 0, 0, 1, 0), self._pairs(POINTS))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cal.json"
+            cal.save(path)
+            back = kedei.Calibration.load(path)
+        self.assertEqual(back.grid, cal.grid)
+        self.assertEqual(back.map(50, 289), cal.map(50, 289))
+
+    def test_recalibrating_again_does_not_stack_grids(self):
+        ident = kedei.Calibration(1, 0, 0, 0, 1, 0)
+        cal, _ = kedei.recalibrate(ident, self._pairs(POINTS))
+        # measured with the new calibration, the points are already right
+        again = [((round(cal.map_float(*bent_glass(x, y))[0]), round(cal.map_float(*bent_glass(x, y))[1])), (x, y))
+                 for x, y in POINTS]
+        cal2, info = kedei.recalibrate(cal, again)
+        self.assertLess(self._worst(cal2), 3.5)
+
+    def test_a_slipped_point_among_nine_is_refused(self):
+        pairs = self._pairs(POINTS)
+        (mx, my), t = pairs[4]
+        pairs[4] = ((mx + 60, my - 50), t)
+        with self.assertRaises(ValueError):
+            kedei.recalibrate(kedei.Calibration(1, 0, 0, 0, 1, 0), pairs)
+
+
+class TouchTestScreenTest(unittest.TestCase):
+    def setUp(self):
+        self.log = EventLog()
+        self.server, self.fake = make_server(0)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.screen = SimScreen(Path(self.tmp.name) / "p.png")
+        self.touch = SimTouch(io.StringIO(""))
+        self.app = PanelApp(self.screen, self.touch, f"http://127.0.0.1:{self.server.server_address[1]}",
+                            net_backend=_NoNet())
+        self.app.page_guard = 0.0
+        self.thread = threading.Thread(target=self.app.run, daemon=True)
+        self.thread.start()
+        self.assertTrue(wait_for(lambda: self.app.online and self.app._view().has_track))
+
+    def tearDown(self):
+        self.app.shutdown()
+        self.thread.join(3)
+        self.server.closing = True
+        self.server.shutdown()
+        self.server.server_close()
+        self.tmp.cleanup()
+        self.log.close()
+
+    def test_shows_the_reading_presses_nothing_and_goes_back(self):
+        from ytdj.panel.netui import TEST_BTN
+        from ytdj.panel.touchtest import BACK_BOX
+        from ytdj.panel.ui import NET_TARGET
+
+        self.touch.tap(*center(NET_TARGET))
+        self.assertTrue(wait_for(lambda: self.app._shown_page == "overview"))
+        self.touch.tap(*center(TEST_BTN))
+        self.assertTrue(wait_for(lambda: self.app._shown_page == "touchtest"))
+        before, paused = self.fake.index, self.fake.paused
+        x, y = center(NEXT)
+        self.touch.feed("down", x, y)
+        self.assertTrue(wait_for(lambda: self.app.touchtest.view().cursor == (x, y)))
+        px = self.screen.pushed_px
+        self.touch.feed("move", x + 6, y + 3)
+        self.assertTrue(wait_for(lambda: self.app.touchtest.view().cursor == (x + 6, y + 3)))
+        time.sleep(0.1)
+        # two crosshairs and the info line (≈ 10 000 px), not a frame (153 600)
+        self.assertLess(self.screen.pushed_px - px, 12000)
+        self.touch.feed("up", x + 6, y + 3)
+        self.assertTrue(wait_for(lambda: self.app.touchtest.view().lit == "next"))
+        self.assertIn("Další", self.app.touchtest.view().info)
+        time.sleep(0.3)
+        self.assertEqual((self.fake.index, self.fake.paused), (before, paused))  # nothing pressed
+        self.touch.tap(*center(BACK_BOX))
+        self.assertTrue(wait_for(lambda: self.app._shown_page == "player"))
+        self.assertTrue(self.log.wait("panel.touch_test", phase="end"))
+
+
+class HeaderReachTest(unittest.TestCase):
+    def test_header_buttons_reach_the_top_edge(self):
+        from ytdj.panel.netui import NetView
+        from ytdj.panel.netui import targets as net_targets
+        from ytdj.panel.wishui import WishView
+        from ytdj.panel.wishui import targets as wish_targets
+
+        for page in ("home", "queue"):
+            t = wish_targets(WishView(page=page))
+            self.assertEqual(nearest(t, 30, 0)[0], "back", page)
+            self.assertEqual(nearest(t, 30, 49)[0], "back", page)
+        self.assertEqual(nearest(wish_targets(WishView(page="home")), 420, 2)[0], "queue")
+        for page in ("overview", "list"):
+            self.assertEqual(nearest(net_targets(NetView(page=page, loaded=True)), 30, 1)[0], "back", page)
+        for name in ("net", "wish", "phone"):
+            box = TARGETS[name]
+            self.assertEqual(nearest(TARGETS, (box[0] + box[2]) // 2, 0)[0], name)
+            self.assertEqual(nearest(TARGETS, (box[0] + box[2]) // 2, 52)[0], name)
+
+
 class CalibrationFlowTest(unittest.TestCase):
     """The whole flow on the panel: network screen → five crosses → taps land right."""
 
@@ -333,6 +484,23 @@ class CalibrationFlowTest(unittest.TestCase):
             ev = touch.q.queue[-1]
             got.append((ev.x, ev.y))
         return spy
+
+    def test_nine_crosses_straighten_a_bent_glass(self):
+        self.touch.offset = (0, 0)
+        self.touch.distort = bent_glass
+        self._open()
+        for i, (x, y) in enumerate(POINTS):
+            self._hold(x, y)
+            self.assertTrue(wait_for(lambda: self.app.calib.step == i + 1 or self.app.calib.phase != "points"))
+        self.assertTrue(wait_for(lambda: self.app.calib.phase == "done"), self.app.calib.detail)
+        saved = self.log.wait("panel.calibration", phase="saved")
+        self.assertEqual(saved[0]["n"], 9)
+        self.assertIsNotNone(saved[0]["grid_max"])
+        # the owner's case: aiming at the top of −volume (y 270) reads there, not in Hrát
+        got = []
+        self.touch.feed = self._spy(self.touch.feed, got)
+        self.touch.tap(44, 270)
+        self.assertLessEqual(abs(got[0][1] - 270), 3)
 
     def test_a_slipped_point_changes_nothing_and_offers_again(self):
         self._open()

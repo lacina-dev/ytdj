@@ -22,6 +22,8 @@ from PIL import ImageDraw
 from .hw import Box
 from .netui import (
     BACK,
+    BACK_TARGET,
+    HEADER_REACH,
     BTN_FULL,
     BTN_L,
     BTN_R,
@@ -231,14 +233,15 @@ class WishView:
 
 def targets(v: WishView, lang: str = "cs") -> dict[str, Box]:
     if v.page == "home":
-        t = {"back": BACK, "field": FIELD_BTN, "who": WHO_BTN, "queue": QUEUE_BTN}
+        t = {"back": BACK_TARGET, "field": FIELD_BTN, "who": (WHO_BTN[0], 0, WHO_BTN[2], HEADER_REACH),
+             "queue": (QUEUE_BTN[0], 0, W, HEADER_REACH)}
         for i in range(len(CHIPS.get(lang, CHIPS["cs"]))):
             t[f"chip{i}"] = chip_box(i)
         return t
     if v.page == "keys":
         return dict(kb_keys(v.kb_page, lang, accents=True))
     if v.page == "queue":
-        t = {"back": BACK, "up": UP, "down": DOWN}
+        t = {"back": BACK_TARGET, "up": UP, "down": DOWN}
         for i in range(ROWS):
             k = v.scroll + i
             if k < len(v.rows) and v.rows[k].mine and v.rows[k].state in ACTIVE:

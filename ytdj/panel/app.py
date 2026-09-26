@@ -20,12 +20,13 @@ from typing import Any
 
 from .art import ArtCache
 from .calib import CalibController
+from .touchtest import TouchTestController
 from .client import Api, Commander, StatusFeed
 from .hw import Screen, Touch, TouchEvent
 from .netapp import NetController
 from .netui import NetRenderer, NetView
 from .stats import PanelStats, emit
-from .touchpress import Press, centre_offset, closest, nearest
+from .touchpress import Gesture, Press, centre_offset, closest, decide, nearest
 from .ui import VOL, ART, ART_SIDE, STRINGS, TARGETS, QrRenderer, Renderer, View, merge_boxes, volume_at, vote_mark
 from .wishapp import WishController
 from .wishui import WishRenderer, WishView
@@ -121,6 +122,8 @@ class PanelApp:
         self.qr_renderer = QrRenderer(self.renderer.fonts, lang)
         # "Kalibrace dotyku" (from the network screen): five crosses, a corrected calibration
         self.calib = CalibController(touch, lang, fonts=self.renderer.fonts, count=self.stats.count)
+        # "Test dotyku": where the panel reads the finger, over the player's buttons
+        self.touchtest = TouchTestController(lang, fonts=self.renderer.fonts)
         self.qr_open = False
         self.qr_at = 0.0
         self._art_is_qr = False  # the art slot shows the QR code (tapping it opens the page)
@@ -152,6 +155,9 @@ class PanelApp:
         # touch gesture
         self.pressed: str | None = None
         self.press: Press | None = None  # the press in progress (touchpress rules)
+        self.gesture: Gesture | None = None  # its positions (the button is decided from all of them)
+        self.landed: str | None = None  # the button it landed on (for the log)
+        self.vol_live = False  # a finger on the volume bar sets the volume (after the pressure ramp)
         self.press_at = 0.0
         self.last_xy = (0, 0)
         self.inside = False
@@ -251,6 +257,7 @@ class PanelApp:
                 self.wish.invalidate()
                 self.qr_renderer.invalidate()
                 self.calib.renderer.invalidate()
+                self.touchtest.renderer.invalidate()
                 self.stop.wait(1.0)
         # poslední souhrny, ať se neztratí minuta před zastavením
         self._log_gesture()
@@ -368,6 +375,8 @@ class PanelApp:
     def _page(self) -> str:
         if self.calib.page:
             return "calib"
+        if self.touchtest.page:
+            return "touchtest"
         if self.net.page:
             return self.net.page
         if self.wish.page:
@@ -400,11 +409,16 @@ class PanelApp:
         overlay = self._overlay()
         if page == "calib":
             self.calib.touch_event(ev, at)
+        elif page == "touchtest":
+            self.touchtest.touch_event(ev, at)
         elif overlay is not None:
             overlay.touch(ev, at)
             if self.net.want_calib:
                 self.net.want_calib = False
                 self.calib.open(at)
+            if self.net.want_touchtest:
+                self.net.want_touchtest = False
+                self.touchtest.open(at)
         elif page == "qr":
             self.qr_at = at
             if ev.kind == "up":  # a tap anywhere goes back
@@ -564,6 +578,9 @@ class PanelApp:
         nxt_req = nxt.get("req") if isinstance(nxt.get("req"), dict) else {}
         reason = (cur or {}).get("reason")
         now_who = str(reason.get("who") or "") if isinstance(reason, dict) and reason.get("kind") == "wish" else ""
+        # background radio: whose wish set it (from_who), or the start by time and day
+        radio = reason if isinstance(reason, dict) and reason.get("kind") in ("radio", "start") else {}
+        now_from = str(radio.get("from_who") or "")
         # wishes still to come besides the playing one and the one "Pak:" shows
         shown = {nxt_req.get("id")}
         if isinstance(reason, dict) and reason.get("kind") == "wish":
@@ -604,6 +621,8 @@ class PanelApp:
             next_artist=str(nxt.get("artist") or ""),
             next_who=str(nxt_req.get("who") or ""),
             now_who=now_who,
+            now_from=now_from,
+            now_start=radio.get("kind") == "start",
             wishes=self.wish.active_count(),
             outage=bool(outage),
             outage_reason=str(outage.get("reason") or "") if isinstance(outage, dict) else "",
@@ -635,6 +654,9 @@ class PanelApp:
         elif page == "calib":
             view = self.calib.view()  # type: ignore[assignment]
             renderer, pressed = self.calib.renderer, self.calib.pressed  # type: ignore[assignment]
+        elif page == "touchtest":
+            view = self.touchtest.view()  # type: ignore[assignment]
+            renderer, pressed = self.touchtest.renderer, self.touchtest.pressed  # type: ignore[assignment]
         else:
             note = ""
             if now - self.key_vol_at < NOTE_TIME and self.online:
@@ -708,6 +730,7 @@ class PanelApp:
             self.wish.invalidate()
             self.qr_renderer.invalidate()
             self.calib.renderer.invalidate()
+            self.touchtest.renderer.invalidate()
             self.stop.wait(1.0)
             return
         t2 = time.perf_counter()
@@ -724,7 +747,7 @@ class PanelApp:
     def _next_deadline(self) -> float:
         now = time.monotonic()
         deadlines = [now + 60.0, self._band_at, self.net.deadline(now), self.wish.deadline(now),
-                     self.calib.deadline(now)]
+                     self.calib.deadline(now), self.touchtest.deadline(now)]
         if not self.resting:
             deadlines.append(self._active_at + self.rest_after + 0.01)
         if self.toast is not None:
@@ -766,6 +789,7 @@ class PanelApp:
             self._send_volume(self.vol_pending)
         self.net.timers(now)
         self.calib.timers(now)
+        self.touchtest.timers(now)
         self.wish.timers(now)
         if self.key_burst is not None and now - self.key_burst[3] >= KEY_BURST_GAP:
             self._flush_key_burst()
@@ -788,10 +812,13 @@ class PanelApp:
             extra.setdefault("y", self.down_xy[1])
             extra.setdefault("press_ms", int((now - self.press_at) * 1000))
             if self.press is not None:
-                # where the finger landed relative to the button's centre (calibration bias)
-                extra.setdefault("off", list(centre_offset(self.press.box, *self.down_xy)))
+                # where the finger rested relative to the button's centre (calibration bias)
+                at = self.gesture.robust() if self.gesture is not None else self.down_xy
+                extra.setdefault("off", list(centre_offset(self.press.box, *at)))
                 if self.press.max_out:
                     extra.setdefault("wander", self.press.max_out)
+            if self.landed and self.landed != button:
+                extra.setdefault("landed", self.landed)  # landed elsewhere, decided by where it rested
         emit("panel.action", button=button, source=source, **extra)
 
     # ---- touch ----
@@ -882,48 +909,49 @@ class PanelApp:
                 # which is never what a finger resting next to the bar wants
                 self.stats.count("vol_number")
                 return
-            self.pressed, self.press_at, self.inside = name, now, True
-            box = self._targets()["phone_qr" if name == "phone" and self._art_is_qr
-                                  and not _inside(TARGETS["phone"], ev.x, ev.y) else name]
-            self.press = Press(name, box)
+            self.press_at, self.inside = now, True
+            self.gesture = Gesture(ev.x, ev.y, now)
+            self.landed = name
             self.last_xy = self.down_xy = (ev.x, ev.y)
             self.gesture_vol0 = self._view().volume
             self.gesture_moves = 0
             self.gesture_regrip = False
             log.info("dotyk: %s na %d,%d", name, ev.x, ev.y)
-            if name == "vol":
-                self._drag_volume(ev.x)
-            elif name in VOL_BUTTONS:
-                lost, self.repeat_lost = self.repeat_lost, None
-                if lost and lost[0] == name and now - lost[1] <= REPEAT_REGRIP:
-                    # a glitch in the middle of a hold: carry on repeating
-                    self.stats.count("regrip")
-                    self.gesture_regrip = True
-                    self.repeat_steps, self.repeat_start = 1, lost[2]
-                    if self.hold_volume:
-                        self.hold_volume.until = math.inf
-                    self.repeat_at = now + REPEAT_INTERVAL
-                else:
-                    self.repeat_steps, self.repeat_start = 0, now
-                    self.repeat_at = now + REPEAT_DELAY
+            self._take(name, now, first=True)
         elif ev.kind == "move":
             if not self.pressed:
                 return
             self.last_xy = (ev.x, ev.y)
             self.gesture_moves += 1
-            if self.pressed == "vol":
+            g = self.gesture
+            if g is not None:
+                g.add(ev.x, ev.y, now)
+            if self.pressed == "vol" and self.vol_live:
                 self._drag_volume(ev.x)
-            else:
+                return
+            if self.pressed in VOL_BUTTONS and self.repeat_steps:
+                # repeating: the button is decided; sliding off stops it
                 self.inside = self.press.move(ev.x, ev.y) if self.press else False
                 if not self.inside and self.repeat_at is not None:
                     self.repeat_at = None  # slid off −/+: stop stepping for good
-                    if self.repeat_steps:
-                        self._finish_volume()
+                    self._finish_volume()
+                return
+            self.inside = self.press.move(ev.x, ev.y) if self.press else False
+            if g is None or not g.settled(now):
+                return
+            # after the pressure ramp: which button is the finger really on?
+            best = None if g.dragged() else self._hit(*g.robust())
+            if best is not None and best != self.pressed and not (best == "vol" and g.robust()[0] < VOL[0] + 50):
+                self.stats.count("retarget")
+                self._take(best, now)
+            if self.pressed == "vol" and not self.vol_live and not g.dragged():
+                self.vol_live = True  # the bar it is: from now on the finger sets the volume
+                self._drag_volume(ev.x)
         elif ev.kind == "up":
             name = self.pressed
             if not name:
                 return
-            if name == "vol":
+            if name == "vol" and self.vol_live:
                 self._end_gesture()
                 return
             if name in VOL_BUTTONS and self.repeat_steps:
@@ -933,10 +961,22 @@ class PanelApp:
                 self._end_gesture()
                 return
             self.repeat_at = None
-            # the press counts unless the finger clearly went away (touchpress):
-            # where exactly it was at the end doesn't matter — on resistive
-            # glass the last samples before a lift drift
-            inside = self.inside
+            # the button is decided from the whole press (touchpress.decide):
+            # where the finger rested after the pressure ramp, not where it
+            # landed or where the last samples before the lift drifted
+            final = decide(self._targets(), self.gesture, self.press) if self.gesture else None
+            if final == "phone_qr":
+                final = "phone"
+            if final is not None and final != name:
+                self.stats.count("retarget")
+                self._take(final, now)
+            name = final or name
+            if name == "vol" and final is not None:
+                # a tap on the bar: the volume at the finger (where it rested)
+                self._drag_volume(self.gesture.robust()[0] if self.gesture else self.down_xy[0])
+                self._end_gesture()
+                return
+            inside = final is not None
             long_enough = now - self.press_at >= MIN_PRESS
             self.pressed, self.inside = None, False
             if not inside:
@@ -963,6 +1003,31 @@ class PanelApp:
                 self._fire(name, now)
             else:
                 self.stats.count("offline")
+
+    def _take(self, name: str, now: float, first: bool = False) -> None:
+        """The press is (now) on this button: its ring, and for −/+ the hold-to-repeat."""
+        targets = self._targets()
+        box = targets.get(name) or targets.get("phone_qr")
+        if name == "phone" and self._art_is_qr and self.gesture is not None \
+                and not _inside(TARGETS["phone"], *self.gesture.robust()):
+            box = targets["phone_qr"]
+        self.pressed, self.inside = name, True
+        self.press = Press(name, box)
+        self.vol_live = False
+        self.repeat_at = None
+        if name in VOL_BUTTONS:
+            lost, self.repeat_lost = self.repeat_lost, None
+            if first and lost and lost[0] == name and now - lost[1] <= REPEAT_REGRIP:
+                # a glitch in the middle of a hold: carry on repeating
+                self.stats.count("regrip")
+                self.gesture_regrip = True
+                self.repeat_steps, self.repeat_start = 1, lost[2]
+                if self.hold_volume:
+                    self.hold_volume.until = math.inf
+                self.repeat_at = now + REPEAT_INTERVAL
+            else:
+                self.repeat_steps, self.repeat_start = 0, now
+                self.repeat_at = now + REPEAT_DELAY
 
     def _fire(self, name: str, now: float, source: str = "touch") -> None:
         if name in ("play", "next"):

@@ -69,6 +69,10 @@ STRINGS = {
         "next_up": "Pak: ",
         "wish_of": "přeje si {who}",
         "wish_by": "přeje si ",
+        "radio_from": "rádio podle přání {who}",
+        "radio_start": "rádio podle času a dne",
+        "radio_from_short": "podle přání {who}",
+        "radio_start_short": "podle času a dne",
         "more": "+{n} přání ›",
         "waiting_wishes": "Čeká {n} přání ›",
         "outage": "čekám na YouTube",
@@ -114,6 +118,10 @@ STRINGS = {
         "next_up": "Then: ",
         "wish_of": "{who}'s wish",
         "wish_by": "wish of ",
+        "radio_from": "radio after {who}'s wish",
+        "radio_start": "radio for the time and day",
+        "radio_from_short": "after {who}'s wish",
+        "radio_start_short": "for the time and day",
         "more": "+{n} wishes ›",
         "waiting_wishes": "{n} wishes waiting ›",
         "outage": "waiting for YouTube",
@@ -144,13 +152,13 @@ PHONE_W = 54
 STATUS = (0, 0, W - NET_W - WISH_W - PHONE_W, 32)
 NET_BTN = (W - NET_W, 0, W, 32)  # the network button's drawing, in the status strip
 # …and its touch target: taller than the strip it sits in, nothing else is there
-NET_TARGET = (W - NET_W - 6, 0, W, 48)
+NET_TARGET = (W - NET_W - 6, 0, W, 56)
 # the wish button ("Přání" → the screen for typing a wish), left of the network one
 WISH_BTN = (W - NET_W - WISH_W, 0, W - NET_W, 32)
-WISH_TARGET = (W - NET_W - WISH_W, 0, W - NET_W - 6, 48)
+WISH_TARGET = (W - NET_W - WISH_W, 0, W - NET_W - 6, 56)
 # the phone button (→ a full-screen QR code to the web: wishes from a phone)
 PHONE_BTN = (W - NET_W - WISH_W - PHONE_W, 0, W - NET_W - WISH_W, 32)
-PHONE_TARGET = (W - NET_W - WISH_W - PHONE_W - 8, 0, W - NET_W - WISH_W, 48)
+PHONE_TARGET = (W - NET_W - WISH_W - PHONE_W - 8, 0, W - NET_W - WISH_W, 56)
 # a banner over the whole strip for a few seconds when somebody wishes something
 TOAST = (0, 0, W, 32)
 # Cover art (or, in silence, the QR code for wishes from a phone) on the left;
@@ -160,7 +168,7 @@ ART_SIDE = 144
 ART_AT = (8, 6)  # the tile's top-left inside ART
 TRACK = (160, 34, W, 166)
 # ťuknutí na název/„Pak:“ otevře frontu přání (pod tlačítky v liště, bez překryvu)
-TRACK_TARGET = (160, 48, W, 166)
+TRACK_TARGET = (160, 56, W, 166)
 ELAPSED = (160, 166, 232, 198)
 BAR = (232, 166, 400, 198)
 TOTAL = (400, 166, 474, 198)
@@ -233,6 +241,10 @@ class View:
     next_artist: str = ""
     next_who: str = ""  # whose wish the next track is ("" = the DJ's own pick)
     now_who: str = ""  # whose wish plays now — in the status strip instead of the mood
+    # background radio (nobody's wish): whose wish set it ("rádio podle přání Robert"),
+    # or the start by time and day — plain muted text, never the name chip of a wish
+    now_from: str = ""
+    now_start: bool = False
     wishes: int = 0  # wishes waiting or playing — "Přání 3" on the button
     outage: bool = False  # YouTube / síť vypadly — nic nehraje, fronta čeká
     outage_reason: str = ""  # "network" | "dns" | "youtube_login" | "youtube_limit" | …
@@ -591,7 +603,17 @@ class Renderer:
 
     def _sig_status(self, v: View) -> tuple:
         return (v.online, v.connecting, v.has_track, v.running, v.loading, v.paused, v.mood, v.busy, v.note,
-                v.closed, v.now_who, v.outage, v.dj_offline)
+                v.closed, v.now_who, v.outage, v.dj_offline, v.now_from, v.now_start)
+
+    def _origin(self, v: View, short: bool = False) -> str:
+        """Where the background radio comes from — "" when it's just the DJ's pick."""
+        if not v.has_track or v.now_who:
+            return ""
+        if v.now_from.strip():
+            return self.s["radio_from_short" if short else "radio_from"].format(who=v.now_from.strip())
+        if v.now_start:
+            return self.s["radio_start_short" if short else "radio_start"]
+        return ""
 
     def _status_detail(self, v: View) -> tuple[str, tuple, str]:
         """The one thing said after the state: (text, colour, name for a tag)."""
@@ -606,6 +628,9 @@ class Renderer:
         if v.dj_offline:
             # the music plays on; only free-text wishes suffer — a warning, not an error
             return self.s["dj_offline"], WARN, ""
+        origin = self._origin(v)
+        if origin:
+            return origin, DIM, ""
         return v.mood, DIM, ""
 
     def _draw_status(self, d: ImageDraw.ImageDraw, size: tuple[int, int], v: View) -> None:
@@ -644,8 +669,16 @@ class Renderer:
         room = w - 8 - x - sep
         if not text or room < 40:
             return
+        origin = not (v.note or who) and text == self._origin(v) and bool(text)
+        if origin:
+            # longest that fits whole: with the mood, without it, without "rádio"
+            # (the name must stay readable — "rádio podle přání…" says nothing)
+            short = self._origin(v, short=True)
+            fits = [t for t in (f"{text} · {v.mood}" if v.mood else "", text, short)
+                    if t and f.getlength(t) <= room]
+            text = fits[0] if fits else short
         need = f.getlength(text) + (self.fonts.chip.getlength(who) + 14 if who else 0)
-        if need > room and not (v.note or who):
+        if need > room and not (v.note or who or origin):
             return  # the mood only when it fits whole — no "klidný v…" stubs
         d.text((x, cy), " · ", font=f, fill=FAINT, anchor="lm")
         x += sep

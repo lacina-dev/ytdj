@@ -84,6 +84,9 @@ WISH_STATES = {
 
 STATES = {
     "playing": PLAYING,
+    "radio-from-wish": replace(PLAYING, mood="veselý punk", now_from="Robert"),
+    "radio-from-wish-long": replace(PLAYING, now_from="Maximilián Veliký"),
+    "radio-start": replace(PLAYING, mood="ranní klid", now_start=True),
     "paused": replace(PLAYING, running=False, paused=True, elapsed=141),
     "connecting": View(target="127.0.0.1:8765"),
     "offline": View(connecting=False, target="127.0.0.1:8765"),

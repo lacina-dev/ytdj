@@ -17,7 +17,7 @@ from .hw import Box, TouchEvent
 from .net import Connected, NetBackend, NetError, NetStatus, WifiNet
 from .netui import ROWS, STRINGS, NetRenderer, NetView, targets
 from .stats import emit, scrub
-from .touchpress import Press, closest, nearest
+from .touchpress import Gesture, Press, centre_offset, closest, decide, nearest
 
 log = logging.getLogger(__name__)
 
@@ -85,7 +85,9 @@ class NetController:
         # gesture
         self.pressed: str | None = None
         self.press: Press | None = None  # the press in progress (touchpress rules)
+        self.gesture: Gesture | None = None  # its positions
         self.want_calib = False  # "Kalibrace dotyku" was tapped — the app opens the calibration
+        self.want_touchtest = False  # "Test dotyku" was tapped — the app opens the touch test
         self.press_at = 0.0
         self.last_xy = (0, 0)
         self.inside = False
@@ -337,6 +339,7 @@ class NetController:
             name, _ = nearest(tg, ev.x, ev.y)
             self.pressed, self.inside = name, name is not None
             self.press = Press(name, tg[name]) if name else None
+            self.gesture = Gesture(ev.x, ev.y, now) if name else None
             self.press_at = now
             self.last_xy = (ev.x, ev.y)
             if name is None:
@@ -350,15 +353,29 @@ class NetController:
             if not self.pressed:
                 return
             self.last_xy = (ev.x, ev.y)
-            box = self._targets().get(self.pressed)
+            tg = self._targets()
+            box = tg.get(self.pressed)
             self.inside = box is not None and self.press is not None and self.press.move(ev.x, ev.y, box)
+            g = self.gesture
+            if g is not None:
+                g.add(ev.x, ev.y, now)
+                if g.settled(now) and not g.dragged():
+                    best, _ = nearest(tg, *g.robust())
+                    if best is not None and best != self.pressed:
+                        # the finger rests on another button than it landed on: that one
+                        self.pressed, self.inside = best, True
+                        self.press = Press(best, tg[best])
         elif ev.kind == "up":
             name = self.pressed
             self.pressed = None
             if not name:
                 return
-            inside, self.inside = self.inside, False
-            box = self._targets().get(name)
+            self.inside = False
+            tg = self._targets()
+            # decided from the whole press: where the finger rested (touchpress.decide)
+            final = decide(tg, self.gesture, self.press) if self.gesture is not None else None
+            inside, name = final is not None, final or name
+            box = tg.get(name)
             # counts unless the finger clearly went away (touchpress) — the
             # last positions before a lift drift on resistive glass
             if box is None or not inside:
@@ -371,6 +388,7 @@ class NetController:
                 emit(
                     "panel.net_action", page=self.page, button=name,
                     press_ms=int((now - self.press_at) * 1000),
+                    off=list(centre_offset(box, *self.gesture.robust())) if self.gesture else None,
                 )
             self._fire(name, now)
 
@@ -385,6 +403,9 @@ class NetController:
                 # the app takes over: crosses over the whole screen (calib.py)
                 self.close()
                 self.want_calib = True
+            elif name == "touchtest":
+                self.close()
+                self.want_touchtest = True
         elif page == "list":
             if name == "back":
                 self._go("overview")

@@ -59,27 +59,31 @@ class SimTouch:
 
     # a calibration error to simulate (screen px → where the "glass" reports it),
     # and the correction a calibration from the panel put on top of it
+    # a calibration error to simulate: screen px → where the "glass" reports
+    # it (`offset`, or any `distort(x, y)`), and the calibration the panel's
+    # own calibration flow puts on top (the same code as on the Pi)
     offset: tuple[int, int] = (0, 0)
+    distort = None
     correction = None
+    last_calibration: dict = {}
 
     def feed(self, kind: str, x: int, y: int) -> None:
         x, y = x + self.offset[0], y + self.offset[1]
+        if self.distort is not None:
+            x, y = self.distort(x, y)
         if self.correction is not None:
-            ax, bx, cx, ay, by, cy = self.correction.coef
-            x, y = ax * x + bx * y + cx, ay * x + by * y + cy
+            x, y = self.correction.map_float(x, y)
         self.q.put(TouchEvent(kind, int(round(x)), int(round(y))))
 
     def apply_correction(self, pairs, path=None) -> float:
         """Like KedeiTouch.apply_correction, without the file (unless a path is given)."""
-        from .kedei import MAX_CAL_ERROR, screen_correction
+        from .kedei import Calibration, recalibrate
 
-        corr, err = screen_correction(pairs)
-        if err > MAX_CAL_ERROR:
-            raise ValueError(f"odchylka {err:.0f} px")
-        self.correction = corr if self.correction is None else self.correction.then(corr)
+        old = self.correction or Calibration(1, 0, 0, 0, 1, 0)
+        self.correction, self.last_calibration = recalibrate(old, pairs)
         if path is not None:
             self.correction.save(path)
-        return err
+        return self.last_calibration["error"]
 
     def tap(self, x: int, y: int, hold: float = 0.08) -> None:
         self.feed("down", x, y)

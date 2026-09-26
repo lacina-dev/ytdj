@@ -62,6 +62,7 @@ STRINGS = {
         "scan_qr": "naskenuj telefonem",
         "wifi_btn": "Wi-Fi sítě",
         "cal_btn": "Kalibrace\ndotyku",
+        "test_btn": "Test\ndotyku",
         "list_title": "Wi-Fi sítě",
         "rescan": "Hledat",
         "scanning": "hledám…",
@@ -110,6 +111,7 @@ STRINGS = {
         "scan_qr": "scan with a phone",
         "wifi_btn": "Wi-Fi networks",
         "cal_btn": "Touch\ncalibration",
+        "test_btn": "Touch\ntest",
         "list_title": "Wi-Fi networks",
         "rescan": "Scan",
         "scanning": "scanning…",
@@ -147,6 +149,11 @@ STRINGS = {
 # ---- layout ----
 
 BACK = (0, 0, 118, 44)
+# Touch areas of the header buttons reach the screen's top edge and a bit
+# lower than drawn: nothing is above them, and on the Pi (26. 9.) readings
+# on the top strip landed up to 16 px high.
+HEADER_REACH = 50
+BACK_TARGET = (0, 0, 128, HEADER_REACH)
 TITLE = (118, 0, W, 44)
 
 # overview
@@ -155,8 +162,9 @@ ROW_ETH = (0, 76, 324, 104)
 ROW_WIFI = (0, 104, 324, 156)
 URLS = (0, 158, 324, 254)
 QR = (324, 48, W, 254)
-WIFI_BTN = (8, 262, 300, 314)
-CAL_BTN = (308, 262, 472, 314)  # "Kalibrace dotyku" — when taps land off
+WIFI_BTN = (8, 262, 236, 314)
+CAL_BTN = (244, 262, 356, 314)  # "Kalibrace dotyku" — when taps land off
+TEST_BTN = (364, 262, 472, 314)  # "Test dotyku" — see where the panel reads the finger
 
 # list
 LIST_TITLE = (118, 0, W - 124, 44)
@@ -287,9 +295,9 @@ class NetView:
 def targets(v: NetView, lang: str = "cs") -> dict[str, Box]:
     """What can be touched on the current page."""
     if v.page == "overview":
-        return {"back": BACK, "wifi_list": WIFI_BTN, "calib": CAL_BTN}
+        return {"back": BACK_TARGET, "wifi_list": WIFI_BTN, "calib": CAL_BTN, "touchtest": TEST_BTN}
     if v.page == "list":
-        t = {"back": BACK, "rescan": RESCAN, "up": UP, "down": DOWN}
+        t = {"back": BACK_TARGET, "rescan": (RESCAN[0], 0, W, HEADER_REACH), "up": UP, "down": DOWN}
         for i in range(ROWS):
             if v.scroll + i < len(v.nets):
                 t[f"row{i}"] = list_row(i)
@@ -428,7 +436,9 @@ class NetRenderer:
                 ("urls", URLS, lambda v: (v.loaded, v.urls), self._draw_urls, False),
                 ("qr", QR, lambda v: (v.urls[:1],), self._draw_qr, False),
                 ("wifi_btn", WIFI_BTN, lambda v: (v.pressed == "wifi_list",), self._draw_wifi_btn, False),
-                ("cal_btn", CAL_BTN, lambda v: (v.pressed == "calib",), self._draw_cal_btn, False),
+                ("cal_btn", CAL_BTN, lambda v: (v.pressed == "calib",), self._small_btn("calib", "cal_btn"), False),
+                ("test_btn", TEST_BTN, lambda v: (v.pressed == "touchtest",), self._small_btn("touchtest", "test_btn"),
+                 False),
             ]
         if v.page == "list":
             regs: list[Region] = [
@@ -648,19 +658,21 @@ class NetRenderer:
         x = (w - (lw + 38)) / 2
         icon_wifi(d, x + 13, h / 2 + 8, 26, 4, color, color)
         d.text((x + 38, h / 2), label, font=self.f.button, fill=color, anchor="lm")
-        icon_back_right(d, w - 30, h / 2, 16, FAINT if v.pressed != "wifi_list" else color)
+        if w >= 260:  # no room for the arrow next to the calibration buttons
+            icon_back_right(d, w - 30, h / 2, 16, FAINT if v.pressed != "wifi_list" else color)
 
-    def _draw_cal_btn(self, d, size, v: NetView) -> None:
-        w, h = size
-        self._button(d, size, SURFACE, 14)
-        color = ACCENT_TEXT if v.pressed == "calib" else DIM
-        cx, cy = 26, h / 2
-        d.line((cx - 11, cy, cx + 11, cy), fill=color, width=3)
-        d.line((cx, cy - 11, cx, cy + 11), fill=color, width=3)
-        d.ellipse((cx - 5, cy - 5, cx + 5, cy + 5), outline=color, width=2)
-        lines = self.s["cal_btn"].split("\n")
-        for i, line in enumerate(lines):
-            d.text((48, h / 2 + (i - (len(lines) - 1) / 2) * 19), line, font=self.label, fill=color, anchor="lm")
+    def _small_btn(self, name: str, key: str):
+        """A two-line text button (touch calibration / test)."""
+        def draw(d, size, v: NetView) -> None:
+            w, h = size
+            pressed = v.pressed == name
+            self._button(d, size, SURFACE_HI if pressed else SURFACE, 14)
+            color = ACCENT_TEXT if pressed else DIM
+            lines = self.s[key].split("\n")
+            for i, line in enumerate(lines):
+                d.text((w / 2, h / 2 + (i - (len(lines) - 1) / 2) * 19), line, font=self.label, fill=color,
+                       anchor="mm")
+        return draw
 
     # ---- list ----
 

@@ -27,7 +27,7 @@ from .netapp import NetController
 from .netui import NetRenderer, NetView
 from .stats import PanelStats, emit
 from .touchpress import Gesture, Press, centre_offset, closest, decide, nearest
-from .ui import VOL, ART, ART_SIDE, STRINGS, TARGETS, QrRenderer, Renderer, View, merge_boxes, volume_at, vote_mark
+from .ui import VOL, VOL_TRACK_W, knob_x, ART, ART_SIDE, STRINGS, TARGETS, QrRenderer, Renderer, View, merge_boxes, volume_at, vote_mark
 from .wishapp import WishController
 from .wishui import WishRenderer, WishView
 
@@ -70,6 +70,13 @@ REPEAT_FAST_INTERVAL = 0.10
 # ovladače): nový dotyk na stejném tlačítku do té doby naváže na běžící opakování.
 REPEAT_REGRIP = 0.15
 VOL_BUTTONS = ("vol_up", "vol_down")
+# Hlasitost se z displeje nikdy nezmění skokem (vlastník 26. 9.: „jen hlasitost
+# při tom neměň" — na Pi ťuknutí na „+" / „Další" dalo 100). Lišta mění
+# hlasitost jen tažením: od knoflíku (drží se prstu), jinde o kolik se prst
+# posune. Ťuknutí na lištu = jeden krok k prstu, jako −/+. Do lišty se stisk
+# jiného tlačítka nikdy nepřesune.
+VOL_DRAG_START = 16  # px vodorovně od místa dotyku — teprve pak je to tažení
+KNOB_GRAB = 28  # px od knoflíku: prst drží knoflík, hlasitost jde s ním
 KEY_BURST_GAP = 1.0  # s — cvaknutí kolečka na repráku blíž u sebe jsou jedno otočení (jeden řádek logu)
 
 
@@ -157,7 +164,10 @@ class PanelApp:
         self.press: Press | None = None  # the press in progress (touchpress rules)
         self.gesture: Gesture | None = None  # its positions (the button is decided from all of them)
         self.landed: str | None = None  # the button it landed on (for the log)
-        self.vol_live = False  # a finger on the volume bar sets the volume (after the pressure ramp)
+        self.vol_live = False  # a finger drags along the volume bar (moved VOL_DRAG_START px)
+        self.vol_x0 = 0  # where on the bar the press started
+        self.vol_grab = False  # …on the knob: absolute, the knob follows the finger
+        self.vol_mode = ""  # "knob" | "relative" | "tap" — for the log
         self.press_at = 0.0
         self.last_xy = (0, 0)
         self.inside = False
@@ -863,6 +873,7 @@ class PanelApp:
                 x_end=self.last_xy[0], moves=self.gesture_moves,
                 vol_from=self.gesture_vol0, vol_to=self._view().volume,
                 press_ms=int((now - self.press_at) * 1000),
+                mode=self.vol_mode or "none", landed=self.landed,
             )
         elif name in VOL_BUTTONS and self.repeat_steps:
             self._log_action(
@@ -918,6 +929,9 @@ class PanelApp:
             self.gesture_regrip = False
             log.info("dotyk: %s na %d,%d", name, ev.x, ev.y)
             self._take(name, now, first=True)
+            self.vol_x0 = ev.x
+            self.vol_grab = name == "vol" and abs(ev.x - knob_x(self.gesture_vol0, self.vol_max)) <= KNOB_GRAB
+            self.vol_mode = ""
         elif ev.kind == "move":
             if not self.pressed:
                 return
@@ -926,9 +940,13 @@ class PanelApp:
             g = self.gesture
             if g is not None:
                 g.add(ev.x, ev.y, now)
-            if self.pressed == "vol" and self.vol_live:
-                self._drag_volume(ev.x)
-                return
+            if self.pressed == "vol":
+                if not self.vol_live and abs(ev.x - self.vol_x0) >= VOL_DRAG_START:
+                    self.vol_live = True  # a deliberate drag along the bar
+                    self.vol_mode = "knob" if self.vol_grab else "relative"
+                if self.vol_live:
+                    self._bar_drag(ev.x)
+                    return
             if self.pressed in VOL_BUTTONS and self.repeat_steps:
                 # repeating: the button is decided; sliding off stops it
                 self.inside = self.press.move(ev.x, ev.y) if self.press else False
@@ -941,12 +959,10 @@ class PanelApp:
                 return
             # after the pressure ramp: which button is the finger really on?
             best = None if g.dragged() else self._hit(*g.robust())
-            if best is not None and best != self.pressed and not (best == "vol" and g.robust()[0] < VOL[0] + 50):
+            # never INTO the volume bar: its ends mean 0 and 100 (Pi 26. 9.: "+" → 100)
+            if best is not None and best != self.pressed and best != "vol":
                 self.stats.count("retarget")
                 self._take(best, now)
-            if self.pressed == "vol" and not self.vol_live and not g.dragged():
-                self.vol_live = True  # the bar it is: from now on the finger sets the volume
-                self._drag_volume(ev.x)
         elif ev.kind == "up":
             name = self.pressed
             if not name:
@@ -967,17 +983,23 @@ class PanelApp:
             final = decide(self._targets(), self.gesture, self.press) if self.gesture else None
             if final == "phone_qr":
                 final = "phone"
+            if final == "vol" and name != "vol":
+                # a press on another button never becomes a volume change
+                final = name if self.press is not None and self.press.inside else None
             if final is not None and final != name:
                 self.stats.count("retarget")
                 self._take(final, now)
             name = final or name
+            long_enough = now - self.press_at >= MIN_PRESS
             if name == "vol" and final is not None:
-                # a tap on the bar: the volume at the finger (where it rested)
-                self._drag_volume(self.gesture.robust()[0] if self.gesture else self.down_xy[0])
+                # a tap on the bar: one step towards the finger, like −/+ — never a jump
+                if long_enough:
+                    self._bar_tap(self.gesture.robust()[0] if self.gesture else self.down_xy[0], now)
+                else:
+                    self.stats.count("too_short")
                 self._end_gesture()
                 return
             inside = final is not None
-            long_enough = now - self.press_at >= MIN_PRESS
             self.pressed, self.inside = None, False
             if not inside:
                 self.stats.count("slid_out")
@@ -1089,6 +1111,24 @@ class PanelApp:
 
     def _drag_volume(self, x: int) -> None:
         self._set_volume(volume_at(x, self.vol_max), math.inf)
+
+    def _bar_drag(self, x: int) -> None:
+        """A deliberate drag on the bar: the knob follows the finger that holds it;
+        a finger elsewhere on the bar moves the volume by as much as it moves."""
+        if self.vol_grab:
+            self._drag_volume(x)
+            return
+        delta = (x - self.vol_x0) * self.vol_max / VOL_TRACK_W
+        self._set_volume(max(0, min(self.vol_max, round(self.gesture_vol0 + delta))), math.inf)
+
+    def _bar_tap(self, x: int, now: float) -> None:
+        cur = self._view().volume
+        kx = knob_x(cur, self.vol_max)
+        self.vol_mode = "tap"
+        if abs(x - kx) <= KNOB_GRAB:
+            self.stats.count("vol_tap_knob")  # on the knob: nothing to do
+            return
+        self._vol_step("vol_up" if x > kx else "vol_down", now + HOLD)
 
     def _finish_volume(self) -> None:
         if self.hold_volume is None:

@@ -205,6 +205,15 @@ TARGETS: dict[str, Box] = {
 }
 
 
+VOL_TRACK_W = VOL_TRACK_X[1] - VOL_TRACK_X[0]  # px of the bar from 0 to vol_max
+
+
+def knob_x(volume: int, vol_max: int) -> int:
+    """Screen x of the volume knob."""
+    frac = min(1.0, max(0.0, volume / max(1, vol_max)))
+    return round(VOL[0] + VOL_TRACK_X[0] + VOL_TRACK_W * frac)
+
+
 def volume_at(x: int, vol_max: int) -> int:
     """Screen x on the volume bar → volume, clamped to 0..vol_max."""
     x0, x1 = VOL[0] + VOL_TRACK_X[0], VOL[0] + VOL_TRACK_X[1]

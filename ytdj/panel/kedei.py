@@ -20,6 +20,7 @@ import argparse
 import ctypes
 import json
 import logging
+import math
 import os
 import subprocess
 import sys
@@ -245,23 +246,57 @@ class Calibration:
 
     @classmethod
     def load(cls, path: Path = CALIBRATION) -> Calibration:
+        """Kalibrace ze souboru; cokoli špatně → výchozí (nebo bez mřížky), nikdy výjimka.
+
+        Poškozený soubor (výpadek proudu při zápisu, Pi hlásí podpětí) nesmí
+        panel shodit ani umrtvit dotyk — log a náhradní kalibrace.
+        """
         try:
             data = json.loads(path.read_text())
-            cal = cls(*data["coef"], grid=data.get("grid") or None)
-            cal.source = f"file:{path}"
-            return cal
+            coef = [float(c) for c in data["coef"]]
+            if len(coef) != 6 or not all(math.isfinite(c) for c in coef):
+                raise ValueError("coef musí být 6 konečných čísel")
         except FileNotFoundError:
             log.info("kalibrace dotyku %s neexistuje — používám výchozí", path)
             cal = cls.default()
             cal.source = "default"
             return cal
+        except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+            log.warning("kalibrace dotyku %s je poškozená (%s) — používám výchozí", path, exc)
+            cal = cls.default()
+            cal.source = "default:corrupt"
+            return cal
+        grid = data.get("grid") if isinstance(data, dict) else None
+        source = f"file:{path}"
+        if grid:
+            why = grid_problem(grid)
+            if why:
+                log.warning("mřížka kalibrace dotyku %s je vadná (%s) — beru jen afinní část", path, why)
+                grid, source = None, f"file:{path}:no-grid"
+        cal = cls(*coef, grid=grid or None)
+        cal.source = source
+        return cal
 
     def save(self, path: Path = CALIBRATION) -> None:
+        """Atomicky: dočasný soubor, fsync, přejmenování — výpadek proudu nenechá půl souboru."""
         path.parent.mkdir(parents=True, exist_ok=True)
-        data: dict = {"coef": self.coef}
+        data: dict = {"coef": list(self.coef)}
         if self.grid:
             data["grid"] = self.grid
-        path.write_text(json.dumps(data) + "\n")
+        tmp = path.with_name(f".{path.name}.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(json.dumps(data) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        try:  # the rename itself on disk too
+            fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except OSError:
+            pass
 
     @classmethod
     def default(cls) -> Calibration:
@@ -290,6 +325,27 @@ def screen_correction(pairs: list[tuple[tuple[int, int], tuple[int, int]]]) -> t
     if not (0.6 < ax < 1.6 and 0.6 < by < 1.6 and abs(bx) < 0.4 and abs(ay) < 0.4):
         raise ValueError(f"kalibrační body nedávají smysl ({ax:.2f}, {bx:.2f}, {ay:.2f}, {by:.2f})")
     return corr, err
+
+
+def grid_problem(grid: object) -> str:
+    """"" when the grid is usable: 3 strictly increasing xs and ys, 9 pairs of finite numbers."""
+    if not isinstance(grid, dict):
+        return "není slovník"
+    xs, ys, d = grid.get("xs"), grid.get("ys"), grid.get("d")
+    for name, axis in (("xs", xs), ("ys", ys)):
+        if not isinstance(axis, list) or len(axis) != 3:
+            return f"{name} nejsou 3 čísla"
+        if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in axis):
+            return f"{name} nejsou čísla"
+        if not axis[0] < axis[1] < axis[2]:
+            return f"{name} nerostou"
+    if not isinstance(d, list) or len(d) != 9:
+        return "d nemá 9 dvojic"
+    for v in d:
+        if not (isinstance(v, (list, tuple)) and len(v) == 2
+                and all(isinstance(c, (int, float)) and not isinstance(c, bool) and math.isfinite(c) for c in v)):
+            return "d nejsou dvojice čísel"
+    return ""
 
 
 MAX_GRID = 35  # px — větší zbytek v jednom z 9 bodů = sklouzlý prst, nic se neuloží

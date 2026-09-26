@@ -31,7 +31,7 @@ from ytdj.panel.app import PanelApp  # noqa: E402
 from ytdj.panel.calib import POINTS  # noqa: E402
 from ytdj.panel.sim import SimScreen, SimTouch  # noqa: E402
 from ytdj.panel.touchpress import CANCEL, GRAB, STICKY, Press, closest, nearest  # noqa: E402
-from ytdj.panel.ui import NEXT, PLAY, TARGETS, VOL_UP  # noqa: E402
+from ytdj.panel.ui import NEXT, PLAY, TARGETS, VOL_TRACK_W, VOL_UP, knob_x  # noqa: E402
 
 P = 4000  # pressure well above MIN_PRESSURE
 
@@ -146,8 +146,8 @@ class DriverReplayTest(unittest.TestCase):
         self.assertEqual(st.get("aborted_press"), 1)
 
 
-class AppTouchTest(unittest.TestCase):
-    """Real-looking event sequences through the whole panel."""
+class _AppBase(unittest.TestCase):
+    """The whole panel against a fake ytdj, fed with scripted touch events."""
 
     def setUp(self):
         self.log = EventLog()
@@ -179,6 +179,10 @@ class AppTouchTest(unittest.TestCase):
             self.touch.feed("move", *p)
         time.sleep(dt)
         self.touch.feed("up", *points[-1])
+
+
+class AppTouchTest(_AppBase):
+    """Real-looking event sequences through the whole panel."""
 
     def test_jittery_press_on_next_counts(self):
         before = self.fake.index
@@ -244,6 +248,123 @@ class AppTouchTest(unittest.TestCase):
         # centre of the vol_up *touch area* (it fills the gaps), not of the drawn button
         tx = (TARGETS["vol_up"][0] + TARGETS["vol_up"][2]) // 2
         self.assertEqual(e[0]["off"][0], x + 7 - tx)
+
+
+class VolumeNeverJumpsTest(_AppBase):
+    """P1 26. 9.: a touch on "+" or "Další" set the volume to 100 (Pi journal 20:35:29, 21:55:51).
+    The owner: the volume must never change by a jump from the display."""
+
+    def _volume_after(self, seconds=0.7):
+        time.sleep(seconds)
+        return self.fake.volume
+
+    def test_pi_20_35_29_next_press_sliding_onto_the_bar(self):
+        # dotyk: next na 333,252; panel.volume_drag x 333 y 252 x_end 405 moves 11 → was 35 → 100
+        vol = self.fake.volume
+        pts = [(333, 252), (336, 256), (340, 260), (346, 262), (352, 263), (360, 264),
+               (368, 264), (378, 265), (388, 265), (396, 266), (402, 266), (405, 266)]
+        self._gesture(pts, dt=0.318 / 11)
+        self.assertEqual(self._volume_after(), vol)
+        self.assertNotIn("volume", [c[0] for c in self.fake.controls])
+
+    def test_pi_21_55_51_49ms_tap_on_the_bar_top_edge(self):
+        # panel.volume_drag x 368 y 262 moves 0 press_ms 49 → was 45 → 100
+        vol = self.fake.volume
+        self.touch.feed("down", 368, 262)
+        time.sleep(0.049)
+        self.touch.feed("up", 368, 262)
+        after = self._volume_after()
+        self.assertLessEqual(abs(after - vol), 5)  # at most one step, like −/+
+        self.assertNotEqual(after, 100)
+        e = self.log.wait("panel.volume_drag")
+        self.assertTrue(e)
+        self.assertEqual(e[0]["mode"], "tap")
+
+    def test_plus_pressed_at_its_left_edge_is_plus(self):
+        vol = self.fake.volume
+        self._gesture([(401, 290), (393, 291), (391, 290), (392, 289), (390, 290), (391, 291)], dt=0.03)
+        self.assertEqual(self._volume_after(), vol + 5)
+
+    def test_minus_pressed_at_its_right_edge_is_minus(self):
+        vol = self.fake.volume
+        self._gesture([(82, 290), (90, 291), (92, 290), (91, 289), (93, 290), (91, 291)], dt=0.03)
+        self.assertEqual(self._volume_after(), vol - 5)
+
+    def test_a_tap_on_the_bar_is_one_step_towards_the_finger(self):
+        vol = self.fake.volume  # 65: the knob in the middle-right
+        self.touch.tap(380, 290)  # the right end of the bar (would have been 100)
+        self.assertEqual(self._volume_after(), vol + 5)
+        self.touch.tap(180, 290)
+        self.assertEqual(self._volume_after(), vol)
+
+    def test_drag_away_from_the_knob_is_relative(self):
+        vol = self.fake.volume
+        x0 = knob_x(vol, 100) - 100  # far left of the knob
+        self._gesture([(x0 + i * 5, 290) for i in range(9)], dt=0.03)  # 40 px to the right
+        after = self._volume_after()
+        self.assertGreater(after, vol)
+        self.assertLessEqual(after, vol + round(40 * 100 / VOL_TRACK_W) + 1)  # as much as the finger moved
+
+    def test_small_wobble_on_the_bar_changes_nothing_but_a_step(self):
+        vol = self.fake.volume
+        x = knob_x(vol, 100) + 60
+        self._gesture([(x, 290), (x + 6, 291), (x - 5, 289), (x + 4, 290), (x - 3, 290)], dt=0.03)
+        self.assertEqual(self._volume_after(), vol + 5)
+
+
+class CalibrationFileTest(unittest.TestCase):
+    """P2: a broken /etc/ytdj/panel-touch.json must not kill the panel or touch (Pi reports undervoltage)."""
+
+    def _load(self, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cal.json"
+            path.write_text(text)
+            return kedei.Calibration.load(path)
+
+    def test_broken_files_fall_back_to_the_default(self):
+        for text in ("", '{"coef": [1, 0, 0, 0,', "[]", '{"coef": [1, 2]}', '{"coef": ["x", 0, 0, 0, 1, 0]}',
+                     '{"coef": [1, 0, 0, 0, 1, NaN]}'):
+            cal = self._load(text)
+            self.assertEqual(cal.coef, kedei.Calibration.default().coef, text)
+            self.assertEqual(cal.source, "default:corrupt", text)
+            cal.map(2000, 2000)
+
+    def test_bad_grid_keeps_the_affine_part(self):
+        for grid in ('{"xs": [1, 2], "ys": [1, 2, 3], "d": []}',
+                     '{"xs": [5, 5, 5], "ys": [1, 150, 300], "d": [[0, 0]]}',
+                     '{"xs": [1, 200, 400], "ys": [1, 150, 300], "d": [[0, 0]]}',
+                     '{"xs": [1, 200, 400], "ys": [1, 150, 300], "d": [[0, "a"], [0, 0], [0, 0], [0, 0], '
+                     '[0, 0], [0, 0], [0, 0], [0, 0], [0, 0]]}',
+                     '"grid"'):
+            cal = self._load('{"coef": [1, 0, 3, 0, 1, 0], "grid": %s}' % grid)
+            self.assertEqual(cal.coef, (1, 0, 3, 0, 1, 0), grid)
+            self.assertIsNone(cal.grid, grid)
+            self.assertEqual(cal.map(100, 100), (103, 100))
+
+    def test_save_is_atomic_and_leaves_no_temp_file(self):
+        cal, _ = kedei.recalibrate(kedei.Calibration(1, 0, 0, 0, 1, 0),
+                                   [((round(bent_glass(x, y)[0]), round(bent_glass(x, y)[1])), (x, y))
+                                    for x, y in POINTS])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cal.json"
+            path.write_text("old")
+            cal.save(path)
+            self.assertEqual(sorted(p.name for p in Path(tmp).iterdir()), ["cal.json"])
+            back = kedei.Calibration.load(path)
+            self.assertTrue(back.source.startswith("file:"))
+            self.assertEqual(back.grid, cal.grid)
+
+    def test_touch_driver_starts_with_a_broken_file(self):
+        saved = kedei._Device._instance
+        try:
+            kedei._Device._instance = _FakeDevice([])
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "cal.json"
+                path.write_text("")
+                t = kedei.KedeiTouch(calibration=kedei.Calibration.load(path))
+                self.assertEqual(t.calibration_source, "default:corrupt")
+        finally:
+            kedei._Device._instance = saved
 
 
 class CalibrationTest(unittest.TestCase):

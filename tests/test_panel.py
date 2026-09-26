@@ -43,6 +43,7 @@ from ytdj.panel.ui import (  # noqa: E402
     Renderer,
     View,
     ellipsize,
+    knob_x,
     merge_boxes,
     volume_at,
     wrap,
@@ -212,7 +213,8 @@ class EndToEndTest(unittest.TestCase):
         self.touch.tap(*center(VOL_UP))  # 65 → 70
         self.assertTrue(wait_for(lambda: self.fake.volume == 70))
         y = center(VOL)[1]
-        self.touch.drag(VOL[0] + 90, y, VOL[2] - 30, y, steps=30, dt=0.02)
+        # the bar changes the volume only by a drag; one that holds the knob moves it with the finger
+        self.touch.drag(knob_x(70, 100), y, VOL[2] - 30, y, steps=30, dt=0.02)
         final = volume_at(VOL[2] - 30, 100)
         self.assertTrue(wait_for(lambda: self.fake.volume == final))
         sent = [c for c in self.fake.controls if c[0] == "volume"]
@@ -388,11 +390,13 @@ class PanelEventsTest(unittest.TestCase):
         self.assertLess(held[0]["vol_to"], held[0]["vol_from"])
 
         by = center(VOL)[1]
-        self.touch.drag(VOL[0] + 90, by, VOL[2] - 30, by, steps=10, dt=0.02)
+        kx = knob_x(self.app._view().volume, 100)
+        self.touch.drag(kx, by, VOL[2] - 30, by, steps=10, dt=0.02)
         drag = self.log.wait("panel.volume_drag")
         self.assertTrue(drag)
         self.assertEqual(drag[0]["vol_to"], volume_at(VOL[2] - 30, 100))
-        self.assertEqual(drag[0]["x"], VOL[0] + 90)
+        self.assertEqual(drag[0]["x"], kx)
+        self.assertEqual(drag[0]["mode"], "knob")
 
         # slid off a button and lifted: nothing fires, one count
         self.touch.feed("down", x, y)

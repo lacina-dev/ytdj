@@ -55,11 +55,14 @@ STRINGS = {
         "nothing": "nic nehraje",
         "idle_hint": "Ťukni na Hrát a DJ vybere hudbu podle času a dne.",
         "qr_caption": "‹ Přání z mobilu: naskenuj kód",
+        "voted_out": "vyřazená hlasováním",
+        "artist_voted_out": "interpret vyřazen hlasováním",
+        "next_voted_out": "vyřazená ",
         "toast_says": " si přeje: ",
         "toast_thinking": "DJ vybírá…",
         "toast_playing": "hraje",
         "qr_title": "Přání z mobilu",
-        "qr_steps": ("Naskenuj kód telefonem", "Napiš, co chceš slyšet", "DJ to zařadí do fronty"),
+        "qr_steps": ("Naskenuj kód telefonem", "Napiš, co chceš slyšet", "Hlasuj ▲ ▼ u písniček"),
         "qr_back": "Ťukni kamkoli pro návrat",
         "qr_none": "Síť zatím neznám — zkus to za chvíli.",
         "dj_picking": "DJ vybírá hudbu…",
@@ -97,11 +100,14 @@ STRINGS = {
         "nothing": "nothing playing",
         "idle_hint": "Tap Play and the DJ picks music for the time and day.",
         "qr_caption": "‹ Wishes from a phone: scan the code",
+        "voted_out": "voted out",
+        "artist_voted_out": "artist voted out",
+        "next_voted_out": "voted out ",
         "toast_says": " wishes: ",
         "toast_thinking": "DJ is picking…",
         "toast_playing": "playing",
         "qr_title": "Wishes from a phone",
-        "qr_steps": ("Scan the code with a phone", "Type what you want to hear", "The DJ queues it"),
+        "qr_steps": ("Scan the code with a phone", "Type what you want to hear", "Vote ▲ ▼ on the songs"),
         "qr_back": "Tap anywhere to go back",
         "qr_none": "The network isn't known yet — try again in a moment.",
         "dj_picking": "the DJ is picking music…",
@@ -229,6 +235,12 @@ class View:
     qr_url: str = ""  # the web on the LAN, for the QR code ("" = network not known yet)
     rest: bool = False  # nothing has happened for a while: the calm screen
     toast: tuple = ()  # (who, text, tail) — "Petr si přeje: …" for a few seconds
+    # office votes on the current track (current.votes): 👍/👎 counts and the verdict
+    vote_up: int = 0
+    vote_down: int = 0
+    vote_status: str = ""  # "favourite" | "downweighted" | "banned" | "neutral"
+    artist_banned: bool = False  # one of its artists is voted out
+    next_vote: str = ""  # queue[0]: "favourite" | "banned" | ""
 
 
 # ---- helpers ----
@@ -308,6 +320,18 @@ def _area(b: Box) -> int:
     return (b[2] - b[0]) * (b[3] - b[1])
 
 
+def vote_mark(votes: object) -> str:
+    """queue[].votes / current.votes → "banned" | "favourite" | "" (the small marker)."""
+    if not isinstance(votes, dict):
+        return ""
+    if votes.get("status") == "banned" or votes.get("artist_status") == "banned":
+        return "banned"
+    arts = votes.get("artists")
+    if isinstance(arts, list) and any(isinstance(a, dict) and a.get("status") == "banned" for a in arts):
+        return "banned"
+    return "favourite" if votes.get("status") == "favourite" else ""
+
+
 def who_color(name: str) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
     """A name → (fill, text) colours; the same person looks the same everywhere."""
     h = 0
@@ -345,6 +369,8 @@ class Fonts:
         self.hint = self._load("DejaVuSans.ttf", 18)
         self.chip = self._load("DejaVuSans-Bold.ttf", 14)
         self.initials = self._load("DejaVuSans-Bold.ttf", 52)
+        self.artist_b = self._load("DejaVuSans-Bold.ttf", 22)
+        self.artist_sm_b = self._load("DejaVuSans-Bold.ttf", 20)
         self.time = self._load("DejaVuSans.ttf", 17)
         self.button = self._load("DejaVuSans-Bold.ttf", 21)
         self.volume = self._load("DejaVuSans-Bold.ttf", 22)
@@ -748,7 +774,24 @@ class Renderer:
         if not v.has_track:
             return ("idle", v.busy, v.more_wishes, bool(v.qr_url))
         return ("track", v.title, v.artist, v.skipping, v.next_title, v.next_artist, v.next_who,
-                v.outage, v.outage_reason, v.more_wishes, self._shows_qr(v))
+                v.outage, v.outage_reason, v.more_wishes, self._shows_qr(v),
+                self._vote_badge(v), self._voted_out(v), v.now_who, v.next_vote)
+
+    def _voted_out(self, v: View) -> str:
+        """"vyřazená hlasováním" — a banned track plays only because somebody wished it."""
+        if v.vote_status == "banned":
+            return self.s["voted_out"]
+        return self.s["artist_voted_out"] if v.artist_banned else ""
+
+    @staticmethod
+    def _vote_badge(v: View) -> tuple[str, str]:
+        """(text, kind) after the artist: "♥ 3" for a favourite, "▲ 2  ▼ 1" otherwise, nothing without votes."""
+        if v.vote_status == "banned" or v.artist_banned:
+            return ("", "")
+        if v.vote_status == "favourite" and v.vote_up:
+            return (f"♥ {v.vote_up}", "fav")
+        parts = ([f"▲ {v.vote_up}"] if v.vote_up else []) + ([f"▼ {v.vote_down}"] if v.vote_down else [])
+        return ("  ".join(parts), "plain") if parts else ("", "")
 
     def _fit_title(self, title: str, max_w: float) -> tuple[list[str], ImageFont.FreeTypeFont]:
         """As big as fits: one line at 34 or 30 px, else two lines at 27 or 24 px."""
@@ -812,10 +855,18 @@ class Renderer:
             d.text((x, y), line, font=font, fill=title_color, anchor="la")
             y += step
         one = len(lines) == 1
+        af = fs.artist if one else fs.artist_sm
+        badge, kind = self._vote_badge(v)
+        badge_w = 0
+        if badge:
+            # right on the artist line, big enough to read from the door
+            bf = fs.artist_b if one else fs.artist_sm_b
+            badge_w = int(bf.getlength(badge)) + 14
+            by = (46 if one else y + 1) + af.size // 2 + 2
+            d.text((w - 12, by), badge, font=bf, fill=ACCENT_TEXT if kind == "fav" else DIM, anchor="rm")
         if sub:
-            af = fs.artist if one else fs.artist_sm
             y = 46 if one else y + 1
-            d.text((x, y), ellipsize(sub, af, max_w), font=af, fill=sub_color, anchor="la")
+            d.text((x, y), ellipsize(sub, af, max_w - badge_w), font=af, fill=sub_color, anchor="la")
         f = fs.status
         if v.outage:
             lines = wrap(self._outage_line(v), f, max_w, 2 if one else 1)
@@ -829,6 +880,19 @@ class Renderer:
             return
         if v.skipping:
             return
+        out = self._voted_out(v)
+        if out:
+            # the office voted it out — it plays only because somebody asked for it by name
+            cw = self._red_chip(d, x, cy, out)
+            who = v.now_who.strip()
+            if who and max_w - cw > 90:
+                lx = x + cw + 8
+                by = self.s["wish_by"]
+                if f.getlength(by) + 60 <= max_w - (lx - x):
+                    d.text((lx, cy), by, font=f, fill=DIM, anchor="lm")
+                    lx += f.getlength(by)
+                name_chip(d, lx, cy, who, fs.chip, max_w=max_w - (lx - x) - 14)
+            return
         right = w - 12
         if v.more_wishes:
             right -= self._more(d, w, cy, v.more_wishes) + 10
@@ -838,6 +902,12 @@ class Renderer:
         label = self.s["next_up"]
         d.text((x, cy), label, font=f, fill=FAINT, anchor="lm")
         lx = x + f.getlength(label)
+        if v.next_vote == "favourite":
+            d.text((lx, cy), "♥ ", font=fs.status_b, fill=ACCENT_TEXT, anchor="lm")
+            lx += fs.status_b.getlength("♥ ")
+        elif v.next_vote == "banned":
+            d.text((lx, cy), self.s["next_voted_out"], font=f, fill=ERR, anchor="lm")
+            lx += f.getlength(self.s["next_voted_out"])
         who = v.next_who.strip()
         if who:
             lx += name_chip(d, lx, cy, who, fs.chip, max_w=min(100, (right - lx) / 3)) + 6
@@ -846,6 +916,13 @@ class Renderer:
             nxt = v.next_title.strip() + (f" · {v.next_artist.strip()}" if v.next_artist.strip() else "")
         if right - lx > 30:
             d.text((lx, cy), ellipsize(nxt, f, right - lx), font=f, fill=DIM, anchor="lm")
+
+    def _red_chip(self, d: ImageDraw.ImageDraw, x: float, cy: float, text: str) -> float:
+        f = self.fonts.chip
+        tw = f.getlength(text)
+        d.rounded_rectangle((x, cy - 12, x + tw + 16, cy + 12), radius=12, fill=(92, 30, 30))
+        d.text((x + 8, cy), text, font=f, fill=(255, 196, 190), anchor="lm")
+        return tw + 16
 
     def _more(self, d: ImageDraw.ImageDraw, w: int, cy: int, n: int, alone: bool = False) -> int:
         """"+2 přání ›" at the right of the "Pak:" line — tapping there opens the queue."""

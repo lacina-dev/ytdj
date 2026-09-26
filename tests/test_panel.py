@@ -1089,6 +1089,102 @@ class NewLookTest(unittest.TestCase):
         self.assertEqual(r.frame.crop(STATUS).tobytes(), clean)  # a mood that doesn't fit isn't cut to "klidný v…"
 
 
+class VotesTest(unittest.TestCase):
+    """Office votes on the display: ♥ / ▲▼ after the artist, "vyřazená hlasováním", markers."""
+
+    BASE = replace(PlayerLookTest.BASE, title="Zastav mě", artist="Marek Ztracený",
+                   next_title="Pohoda", next_artist="Kabát")
+
+    def test_vote_mark(self):
+        from ytdj.panel.ui import vote_mark
+
+        self.assertEqual(vote_mark(None), "")
+        self.assertEqual(vote_mark({"up": 0, "down": 0, "status": "neutral"}), "")
+        self.assertEqual(vote_mark({"up": 3, "down": 0, "status": "favourite"}), "favourite")
+        self.assertEqual(vote_mark({"up": 0, "down": 2, "status": "banned"}), "banned")
+        self.assertEqual(vote_mark({"status": "neutral", "artist_status": "banned"}), "banned")
+        self.assertEqual(vote_mark({"status": "neutral", "artists": [{"name": "Oasis", "status": "banned"}]}), "banned")
+        self.assertEqual(vote_mark({"status": "neutral", "artist_status": "pending"}), "")
+
+    def test_badge_texts(self):
+        r = Renderer()
+        self.assertEqual(r._vote_badge(self.BASE), ("", ""))  # no votes, nothing shown
+        self.assertEqual(r._vote_badge(replace(self.BASE, vote_up=3, vote_status="favourite")), ("♥ 3", "fav"))
+        self.assertEqual(r._vote_badge(replace(self.BASE, vote_up=2, vote_down=1, vote_status="neutral")),
+                         ("▲ 2  ▼ 1", "plain"))
+        banned = replace(self.BASE, vote_down=2, vote_status="banned")
+        self.assertEqual(r._vote_badge(banned), ("", ""))
+        self.assertEqual(r._voted_out(banned), "vyřazená hlasováním")
+        self.assertEqual(r._voted_out(replace(self.BASE, artist_banned=True)), "interpret vyřazen hlasováním")
+
+    def test_no_votes_draws_exactly_as_before(self):
+        r1, r2 = Renderer(), Renderer()
+        r1.render(self.BASE, full=True)
+        r2.render(replace(self.BASE, vote_status="neutral"), full=True)
+        self.assertEqual(r1.frame.tobytes(), r2.frame.tobytes())
+
+    def test_a_vote_redraws_only_the_text_block(self):
+        from ytdj.panel.ui import TRACK
+
+        r = Renderer()
+        r.render(self.BASE, full=True)
+        boxes = r.render(replace(self.BASE, vote_up=1, vote_status="favourite"))
+        self.assertTrue(boxes)
+        for b in boxes:
+            self.assertTrue(TRACK[0] <= b[0] and b[2] <= TRACK[2] and TRACK[1] <= b[1] and b[3] <= TRACK[3], b)
+        px = sum((b[2] - b[0]) * (b[3] - b[1]) for b in boxes)
+        self.assertLess(px, 3000)
+
+    def test_queue_rows_carry_the_verdict_of_their_track(self):
+        from ytdj.panel.wishapp import wish_votes
+
+        state = {
+            "current": {"id": "a", "reason": {"kind": "wish", "id": "w1", "who": "Petr"},
+                        "votes": {"up": 0, "down": 2, "status": "banned"}},
+            "queue": [{"id": "b", "req": {"id": "w2", "who": "Jana"}, "votes": {"up": 2, "status": "favourite"}},
+                      {"id": "c", "req": {"id": "w1", "who": "Petr"}, "votes": {"up": 5, "status": "favourite"}},
+                      {"id": "d", "req": {"id": "w3", "who": "Karel"}}],
+        }
+        self.assertEqual(wish_votes(state), {"w1": "banned", "w2": "favourite"})
+
+
+class VotesEndToEndTest(unittest.TestCase):
+    def setUp(self):
+        self.server, self.fake = make_server(0)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.app = PanelApp(SimScreen(Path(self.tmp.name) / "p.png"), SimTouch(io.StringIO("")),
+                            f"http://127.0.0.1:{self.server.server_address[1]}", net_backend=_NoNet())
+        self.thread = threading.Thread(target=self.app.run, daemon=True)
+        self.thread.start()
+        self.assertTrue(wait_for(lambda: self.app.online and self.app._view().has_track))
+
+    def tearDown(self):
+        self.app.shutdown()
+        self.thread.join(3)
+        self.server.closing = True
+        self.server.shutdown()
+        self.server.server_close()
+        self.tmp.cleanup()
+
+    def _vote(self, cid, vote):
+        v = self.app._view()
+        key = self.fake.song_key(v.artist, v.title)
+        with self.fake.lock:
+            self.fake.votes.setdefault(("song", key), {})[cid] = {
+                "vote": vote, "who": cid, "at": time.time(), "artist": v.artist, "title": v.title, "video_id": ""}
+
+    def test_votes_of_the_current_track_reach_the_player(self):
+        self.assertEqual(self.app._view().vote_status, "neutral")
+        self._vote("web-a", 1)
+        self._vote("web-b", 1)
+        self.assertTrue(wait_for(lambda: (self.app._view().vote_up, self.app._view().vote_status) == (2, "favourite")))
+        self.assertTrue(wait_for(lambda: "♥ 2" in str(self.app.renderer._sigs.get("track"))))
+        self._vote("web-a", -1)
+        self._vote("web-b", -1)
+        self.assertTrue(wait_for(lambda: self.app._view().vote_status == "banned"))
+
+
 class WishLayoutTest(unittest.TestCase):
     def test_keyboard_keys_fit_and_do_not_overlap(self):
         from ytdj.panel.netui import kb_keys

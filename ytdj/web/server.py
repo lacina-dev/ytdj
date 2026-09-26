@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import gzip
 import hashlib
 import json
 import logging
@@ -531,10 +532,24 @@ class WebServer:
     async def _index(self, request: Request) -> Response:
         if not INDEX_FILE.is_file():
             return HTMLResponse(NO_INDEX_HTML, status_code=503)
-        # no-cache + ETag (FileResponse): prohlížeč se vždycky zeptá, jestli
-        # se stránka nezměnila, a starou verzi z cache nepoužije
-        return FileResponse(INDEX_FILE, headers={"Cache-Control": "no-cache",
-                                                 "X-Ytdj-Build": self.build["ui"]})
+        # no-cache + ETag: prohlížeč se vždycky zeptá, jestli se stránka
+        # nezměnila (304), a starou verzi z cache nepoužije. Gzip jednou
+        # v paměti: 110 kB → ~25 kB pro každý telefon v kanceláři.
+        st = INDEX_FILE.stat()
+        stamp = (st.st_mtime_ns, st.st_size)
+        if getattr(self, "_index_cache", (None,))[0] != stamp:
+            raw = INDEX_FILE.read_bytes()
+            etag = '"%s"' % hashlib.sha1(raw).hexdigest()[:16]
+            self._index_cache = (stamp, raw, gzip.compress(raw, 6), etag)
+        _, raw, packed, etag = self._index_cache
+        headers = {"Cache-Control": "no-cache", "ETag": etag, "Vary": "Accept-Encoding",
+                   "X-Ytdj-Build": self.build["ui"]}
+        if etag in request.headers.get("if-none-match", ""):
+            return Response(status_code=304, headers=headers)
+        if "gzip" in request.headers.get("accept-encoding", ""):
+            headers["Content-Encoding"] = "gzip"
+            return Response(packed, media_type="text/html; charset=utf-8", headers=headers)
+        return Response(raw, media_type="text/html; charset=utf-8", headers=headers)
 
     async def _static_fallback(self, request: Request) -> Response:
         rel = request.path_params.get("path", "")

@@ -79,6 +79,7 @@ Stav k 26. 9. 2026 12:00 (na Pi běží 448fb41).
 | 39 | Tvrdit jen to, co doloží data | ✅ pravidlo | |
 | 40 | Neposílat testovací přání do fronty, když se poslouchá; po testu uklidit | ✅ pravidlo (od 26. 9.) | |
 | 41 | Bezpečnost a přihlášení vyřešit na konec a připomenout | 📋 | viz níž |
+| 42 | „Aby to, co aplikace už umí, zůstávalo" — jasné funkce, žádný další požadavek je potichu nezmění | 🔄 | `CLAUDE.md` (pravidlo pro každého, kdo mění kód) ✅; `docs/FUNKCE.md` + test ke každé funkci 🔄 |
 
 ## Na konec: bezpečnost a přihlášení (připomenout)
 

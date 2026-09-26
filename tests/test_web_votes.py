@@ -94,5 +94,36 @@ class Page(unittest.TestCase):
             self.assertIn(needle, html)
 
 
+class IndexServing(unittest.TestCase):
+    """Stránka jde do telefonů zabalená (110 kB → ~25 kB) a nezměněná jen jako 304."""
+
+    def _get(self, h, **headers):
+        import asyncio
+
+        from starlette.requests import Request
+        scope = {"type": "http", "method": "GET", "path": "/", "query_string": b"",
+                 "headers": [(k.replace("_", "-").encode(), v.encode()) for k, v in headers.items()]}
+        return asyncio.run(h[("/", "GET")](Request(scope)))
+
+    def test_gzip_etag_and_304(self):
+        import gzip
+
+        srv, app, h = make()
+        raw = INDEX.read_bytes()
+        plain = self._get(h)
+        self.assertEqual(plain.body, raw)
+        self.assertNotIn("content-encoding", plain.headers)
+        packed = self._get(h, accept_encoding="gzip, deflate")
+        self.assertEqual(packed.headers["content-encoding"], "gzip")
+        self.assertEqual(gzip.decompress(packed.body), raw)
+        self.assertLess(len(packed.body), len(raw) // 3)
+        etag = packed.headers["etag"]
+        self.assertEqual(etag, plain.headers["etag"])
+        again = self._get(h, if_none_match=etag, accept_encoding="gzip")
+        self.assertEqual(again.status_code, 304)
+        self.assertEqual(again.body, b"")
+        self.assertIn('rel="icon"', raw.decode())  # bez /favicon.ico → žádná 404
+
+
 if __name__ == "__main__":
     unittest.main()

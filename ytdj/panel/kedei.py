@@ -17,6 +17,7 @@ navázaný, odpojíme ho sami. Natrvalo patří do config.txt `dtparam=spi=off`.
 from __future__ import annotations
 
 import argparse
+import bisect
 import ctypes
 import hashlib
 import json
@@ -205,14 +206,15 @@ class Calibration:
         if not g:
             return 0.0, 0.0
         xs, ys, d = g["xs"], g["ys"], g["d"]
-        i = 0 if x < xs[1] else 1
-        j = 0 if y < ys[1] else 1
-        # za krajními uzly jen mírně dál (prodloužení krajní buňky), ne do nekonečna
-        tx = min(max((x - xs[i]) / (xs[i + 1] - xs[i]), -0.3), 1.3)
-        ty = min(max((y - ys[j]) / (ys[j + 1] - ys[j]), -0.3), 1.3)
+        nx = len(xs)
+        i = min(max(bisect.bisect_right(xs, x) - 1, 0), nx - 2)
+        j = min(max(bisect.bisect_right(ys, y) - 1, 0), len(ys) - 2)
+        # za krajními uzly platí oprava krajních uzlů (žádné divoké prodlužování)
+        tx = min(max((x - xs[i]) / (xs[i + 1] - xs[i]), 0.0), 1.0)
+        ty = min(max((y - ys[j]) / (ys[j + 1] - ys[j]), 0.0), 1.0)
 
         def node(a: int, b: int) -> list[float]:
-            return d[b * 3 + a]
+            return d[b * nx + a]
 
         out = []
         for k in (0, 1):
@@ -352,19 +354,19 @@ def screen_correction(pairs: list[tuple[tuple[int, int], tuple[int, int]]]) -> t
 
 
 def grid_problem(grid: object) -> str:
-    """"" when the grid is usable: 3 strictly increasing xs and ys, 9 pairs of finite numbers."""
+    """"" when the grid is usable: 2–8 strictly increasing xs and ys, len(xs)·len(ys) pairs of finite numbers."""
     if not isinstance(grid, dict):
         return "není slovník"
     xs, ys, d = grid.get("xs"), grid.get("ys"), grid.get("d")
     for name, axis in (("xs", xs), ("ys", ys)):
-        if not isinstance(axis, list) or len(axis) != 3:
-            return f"{name} nejsou 3 čísla"
+        if not isinstance(axis, list) or not 2 <= len(axis) <= 8:
+            return f"{name} nejsou 2–8 čísel"
         if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in axis):
             return f"{name} nejsou čísla"
-        if not axis[0] < axis[1] < axis[2]:
+        if not all(a < b for a, b in zip(axis, axis[1:])):
             return f"{name} nerostou"
-    if not isinstance(d, list) or len(d) != 9:
-        return "d nemá 9 dvojic"
+    if not isinstance(d, list) or len(d) != len(xs) * len(ys):
+        return f"d nemá {len(xs) * len(ys)} dvojic"
     for v in d:
         if not (isinstance(v, (list, tuple)) and len(v) == 2
                 and all(isinstance(c, (int, float)) and not isinstance(c, bool) and math.isfinite(c) for c in v)):
@@ -372,15 +374,19 @@ def grid_problem(grid: object) -> str:
     return ""
 
 
-MAX_GRID = 35  # px — větší zbytek v jednom z 9 bodů = sklouzlý prst, nic se neuloží
+MAX_GRID = 35  # px — větší zbytek uvnitř mřížky = sklouzlý prst, nic se neuloží
+# U samého okraje prst tlačí slabě a displej ho čte k středu (Test prstem 27. 9.:
+# nahoře o 23–54 px níž) — tam je větší zbytek skutečnost, ne sklouznutí.
+MAX_GRID_EDGE = 70
 
 
 def recalibrate(old: Calibration, pairs: list[tuple[tuple[int, int], tuple[int, int]]]) -> tuple[Calibration, dict]:
     """Nová kalibrace z párů (kam dotyk padl se starou kalibrací, kde byl křížek).
 
-    Nejdřív afinní oprava navrch té staré (5 i 9 bodů); z 9 bodů v mřížce 3×3
-    navíc mřížka zbytků, takže sedí i tam, kde se vrstva prohýbá jinak.
-    ValueError, když body nedávají smysl — pak se nic nemění.
+    Nejdřív afinní oprava navrch té staré (5 i víc bodů); z bodů v mřížce
+    (3×3, nebo 3×4 s řádky u horního a dolního okraje) navíc mřížka zbytků,
+    takže sedí i tam, kde se vrstva prohýbá jinak nebo kde prst u okraje čte
+    k středu. ValueError, když body nedávají smysl — pak se nic nemění.
     """
     # co naměřila stará kalibrace bez své mřížky (mřížka je hladká: stačí odečíst)
     base = [((m[0] - old.offset(*m)[0], m[1] - old.offset(*m)[1]), t) for m, t in pairs]
@@ -389,24 +395,35 @@ def recalibrate(old: Calibration, pairs: list[tuple[tuple[int, int], tuple[int, 
     txs = sorted({t[0] for _, t in pairs})
     tys = sorted({t[1] for _, t in pairs})
     info = {"points": len(pairs), "affine_error": round(affine_err, 1)}
-    if len(pairs) < 9 or len(txs) != 3 or len(tys) != 3:
+    nx, ny = len(txs), len(tys)
+    if nx < 3 or ny < 3 or len(pairs) != nx * ny or len({t for _, t in pairs}) != nx * ny:
         if affine_err > MAX_CAL_ERROR:
             raise ValueError(f"odchylka {affine_err:.0f} px")
         info["error"] = round(affine_err, 1)
         return affine, info
     # zbytky po afinní části v uzlech mřížky; pár kol, ať sedí i s interpolací
     after = [(corr.affine(*m), t) for m, t in base]
-    d = [[0.0, 0.0] for _ in range(9)]
+    d = [[0.0, 0.0] for _ in range(nx * ny)]
     new = Calibration(*affine.coef, grid={"xs": txs, "ys": tys, "d": d})
-    for _ in range(6):
+    for _ in range(30):
+        worst_step = 0.0
         for (a, t) in after:
-            k = tys.index(t[1]) * 3 + txs.index(t[0])
+            k = tys.index(t[1]) * nx + txs.index(t[0])
             ox, oy = new.offset(*a)
-            d[k][0] += t[0] - (a[0] + ox)
-            d[k][1] += t[1] - (a[1] + oy)
-    worst = max(max(abs(v[0]), abs(v[1])) for v in d)
-    if worst > MAX_GRID:
-        raise ValueError(f"jeden bod je mimo o {worst:.0f} px")
+            ex, ey = t[0] - (a[0] + ox), t[1] - (a[1] + oy)
+            d[k][0] += ex
+            d[k][1] += ey
+            worst_step = max(worst_step, abs(ex), abs(ey))
+        if worst_step < 0.2:
+            break
+    worst = 0.0
+    for (a, t) in after:
+        k = tys.index(t[1]) * nx + txs.index(t[0])
+        edge = t[0] in (txs[0], txs[-1]) and nx > 3 or t[1] in (tys[0], tys[-1]) and ny > 3
+        size = max(abs(d[k][0]), abs(d[k][1]))
+        worst = max(worst, size)
+        if size > (MAX_GRID_EDGE if edge else MAX_GRID):
+            raise ValueError(f"bod {t[0]},{t[1]} je mimo o {size:.0f} px")
     new.grid = {"xs": txs, "ys": tys, "d": [[round(v[0], 2), round(v[1], 2)] for v in d]}
     err = 0.0
     for a, t in after:

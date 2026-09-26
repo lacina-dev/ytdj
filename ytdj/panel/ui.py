@@ -150,11 +150,11 @@ STRINGS = {
 NET_W = 58
 WISH_W = 112
 PHONE_W = 54
-# The top strip. Návrh (26. 9., zatím VYPNUTÝ, čeká na souhlas vlastníka):
-# prst úplně u horního okraje čte displej o 50–100 px níž, tlačítka Síť,
-# Přání a Mobil se proto dají posunout o 14 px dolů do vyšší lišty —
-# YTDJ_PANEL_TALL_STRIP=1 pro službu panelu. Výchozí vzhled se nemění.
-STRIP_H = 46 if os.environ.get("YTDJ_PANEL_TALL_STRIP", "") not in ("", "0") else 32
+# The top strip, 46 px: Síť, Přání a Mobil jsou nakreslené o 14 px níž, dál
+# od rámečku (Test prstem 27. 9.: prst úplně u horního okraje čte displej
+# o 23–54 px níž). Výchozí od 27. 9. se souhlasem vlastníka; zpět na starou
+# 32px lištu YTDJ_PANEL_TALL_STRIP=0 pro službu panelu.
+STRIP_H = 32 if os.environ.get("YTDJ_PANEL_TALL_STRIP", "1") == "0" else 46
 STATUS = (0, 0, W - NET_W - WISH_W - PHONE_W, STRIP_H)
 NET_BTN = (W - NET_W, 0, W, STRIP_H)  # the network button's drawing, in the status strip
 # …and its touch target: taller than the strip it sits in, nothing else is there

@@ -16,6 +16,14 @@ a skončilo chybou; podle rozboru provozu (dj.turn) studený start ~9 s + model
 ~14 s. Volná paměť na Pi podle telemetrie ze zadání: medián 590 MB, minimum
 383 MB (nevím, zda app-server v tu chvíli běžel).
 
+Náhradní vlákno (Pi 26. 9., log Codexu ~/.codex/logs_2.sqlite, 29 tahů):
+nové vlákno čekalo na začátek uvažování modelu 2,0–5,2 s (medián 3,6 s),
+tah v už rozjetém vlákně 1,0–2,5 s (medián 1,35 s) — `thread/start` si
+otevírá websocket a posílá zahřívací dotaz (startup_prewarm) a ten se
+dořešuje až v prvním tahu; k tomu `thread/start` sám 0,1–2,7 s (zastaralý
+katalog modelů se stahuje znovu, 522 kB). Proto se po tahu, který vlákno
+vyčerpal, další vlákno založí hned na pozadí — příští přání ho má hotové.
+
 Hlídka paměti: mimo tah se každých MEM_CHECK s (60) čte MemAvailable
 z /proc/meminfo — měřeno i s běžícím app-serverem (jeho ~165 MB už jsou
 v tom čísle započtené jako obsazené). Klesne-li pod WARM_MIN_FREE_MB (250),
@@ -122,6 +130,7 @@ class TurnResult:
     startup_ms: int  # 0 = proces už běžel
     model_ms: int  # turn/start → turn/completed
     new_thread: bool
+    premade: bool = False  # vlákno bylo založené dopředu (náhradní / předstart)
 
 
 class AppServer:
@@ -142,11 +151,14 @@ class AppServer:
         keep_warm: Any = None,
         mem_check: float = MEM_CHECK,
         mem_free: Any = None,
+        effort: str = "",
     ) -> None:
         self.binary = binary
         self.cwd = cwd
         self.model = model
         self.max_turns = max_turns_per_thread
+        # úsilí uvažování pro turn/start ("" = výchozí z konfigurace Codexu)
+        self.effort = effort
         self.idle_ttl = idle_ttl
         self.extra_args = extra_args or []
         # () -> bool: True = po IDLE_TTL nečinnosti proces neukončovat (office_warm)
@@ -204,6 +216,8 @@ class AppServer:
     async def close(self) -> None:
         proc, self.proc = self.proc, None
         self.thread_id = None
+        if self._prewarm and not self._prewarm.done() and self._prewarm is not asyncio.current_task():
+            self._prewarm.cancel()  # jinak by předstart po zavření spustil proces znovu
         if self._idle and self._idle is not asyncio.current_task():
             self._idle.cancel()
         if proc is not None and proc.returncode is None:
@@ -328,15 +342,18 @@ class AppServer:
 
     # ---- tah ----
 
-    async def warm(self) -> bool:
+    async def warm(self, spawn: bool = True) -> bool:
         """Proces a vlákno připravené k tahu; True = vlákno je nové.
 
         Volá se i dopředu (při příchodu přání, souběžně s rychlou cestou),
         ať start procesu (na Pi 2–8 s) neplatí posluchač. Souběžná volání
-        se počkají na jeden start.
+        se počkají na jeden start. `spawn=False` = proces nestartovat
+        (náhradní vlákno jen do běžícího procesu).
         """
         async with self._warm_lock:
             if not self.alive:
+                if not spawn:
+                    return False
                 await self._start()
             if self.thread_id is not None and self.thread_turns < self.max_turns:
                 return self._fresh_thread
@@ -358,16 +375,21 @@ class AppServer:
             self._touch()
             return True
 
-    def prewarm(self) -> None:
-        """Nastartuje na pozadí (bez čekání); chyby jen do logu."""
+    def prewarm(self, spawn: bool = True) -> None:
+        """Nastartuje na pozadí (bez čekání); chyby jen do logu.
+
+        `spawn=False` = jen nové vlákno do běžícího procesu (náhradní vlákno).
+        """
         if self.alive and self.thread_id is not None and self.thread_turns < self.max_turns:
+            return
+        if not spawn and not self.alive:
             return
         if self._prewarm and not self._prewarm.done():
             return
 
         async def go() -> None:
             try:
-                await self.warm()
+                await self.warm(spawn=spawn)
             except Exception as exc:
                 log.info("předstart app-serveru selhal: %s", exc)
                 await self.close()
@@ -383,6 +405,8 @@ class AppServer:
             self._turning -= 1
 
     async def _turn(self, prompt: str, schema: dict, timeout: float) -> TurnResult:
+        # vlákno už čeká hotové (náhradní po minulém tahu, nebo předstart)
+        premade = self.ready and self._fresh_thread
         t0 = time.monotonic()
         new_thread = await self.warm()
         startup_ms = int((time.monotonic() - t0) * 1000)  # ~0, když byl předstartovaný
@@ -394,11 +418,14 @@ class AppServer:
         if self.auth_dead:  # nahlásil to už při startu
             raise AppServerFatal(LOGIN, "Codex není přihlášen (token zneplatněný)")
         t_turn = time.monotonic()
-        res = await self._request("turn/start", {
+        params: dict[str, Any] = {
             "threadId": self.thread_id,
             "input": [{"type": "text", "text": prompt}],
             "outputSchema": schema,
-        })
+        }
+        if self.effort:
+            params["effort"] = self.effort
+        res = await self._request("turn/start", params)
         turn_id = ((res or {}).get("turn") or {}).get("id")
         text = ""
         try:
@@ -443,16 +470,21 @@ class AppServer:
                     "params": {"threadId": self.thread_id, "turnId": turn_id},
                 })
             raise
+        model_ms = int((time.monotonic() - t_turn) * 1000)
         self.thread_turns += 1
         self._fresh_thread = False
         self._touch()
+        if self.thread_turns >= self.max_turns:
+            # [spare] vlákno je vyčerpané — další založit hned, ne až s přáním
+            self.prewarm(spawn=False)
         if not text.strip():
             raise AppServerError("tah bez odpovědi")
         return TurnResult(
             text=text,
             startup_ms=startup_ms,
-            model_ms=int((time.monotonic() - t_turn) * 1000),
+            model_ms=model_ms,
             new_thread=new_thread,
+            premade=premade,
         )
 
 
@@ -480,6 +512,14 @@ def office_warm(now: Any = None, free_mb: int | None = -1) -> bool:
         return False
     free = mem_available_mb() if free_mb == -1 else free_mb
     return free is None or free >= WARM_MIN_FREE_MB
+
+
+def effort_from_env() -> str:
+    """YTDJ_CODEX_EFFORT=low|medium|high… — úsilí uvažování DJe; "" = výchozí
+    Codexu (na Pi `model_reasoning_effort` v ~/.codex/config.toml, 26. 9.:
+    medium). Přepínač pro měření A/B, výchozí chování se jím nemění."""
+    value = os.environ.get("YTDJ_CODEX_EFFORT", "").strip().lower()
+    return value if re.fullmatch(r"[a-z]{1,12}", value) else ""
 
 
 def app_server_enabled() -> bool:

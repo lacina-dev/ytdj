@@ -27,6 +27,8 @@ os.environ.setdefault("XDG_DATA_HOME", _TMP)
 os.environ.setdefault("XDG_CONFIG_HOME", _TMP)
 os.environ.setdefault("XDG_RUNTIME_DIR", _TMP)
 os.environ.setdefault("YTDJ_EVENTS_FILE", str(Path(_TMP) / "events.jsonl"))
+# v pracovní době se Codex po startu nahřívá (CodexDJ.warm_ahead) — ne v testech
+os.environ["YTDJ_CODEX_APP_SERVER"] = "0"
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))

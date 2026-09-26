@@ -1617,7 +1617,17 @@
     el.prompt.style.height = "auto";
     el.prompt.style.height = Math.min(el.prompt.scrollHeight, 160) + "px";
   }
-  el.prompt.addEventListener("input", function () { autosize(); el.btnSend.disabled = S.sending || !el.prompt.value.trim(); });
+  el.prompt.addEventListener("input", function () { autosize(); el.btnSend.disabled = S.sending || !el.prompt.value.trim(); warmDJ(); });
+  el.prompt.addEventListener("focus", warmDJ);
+  // Someone is writing a wish: let the DJ's brain (Codex) start now, not when
+  // it is sent — a cold start cost 5–12 s on the Pi. At most once a minute.
+  var warmedAt = 0;
+  function warmDJ() {
+    var now = Date.now();
+    if (now - warmedAt < 60000) return;
+    warmedAt = now;
+    fetch("/api/dj/warm", { method: "POST" }).catch(function () { /* only a hint */ });
+  }
   el.prompt.addEventListener("keydown", function (ev) {
     if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); send(); }
   });

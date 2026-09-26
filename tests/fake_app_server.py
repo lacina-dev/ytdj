@@ -39,6 +39,8 @@ for line in sys.stdin:
     if method == "initialize":
         out({"id": rid, "result": {"userAgent": "fake"}})
     elif method == "thread/start":
+        if os.environ.get("FAKE_THREAD_DELAY"):  # Pi: thread/start + websocket 2–5 s
+            time.sleep(float(os.environ["FAKE_THREAD_DELAY"]))
         threads += 1
         out({"id": rid, "result": {"thread": {"id": f"thread-{threads}"}}})
     elif method == "turn/start":

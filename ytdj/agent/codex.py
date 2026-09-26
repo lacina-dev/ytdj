@@ -38,11 +38,14 @@ from ..player.base import Player, queue_transaction
 from ..state import Store
 from .. import telemetry
 from .appserver import (
+    WARM_MIN_FREE_MB,
     AppServer,
     AppServerFatal,
     app_server_enabled,
     default_binary,
+    effort_from_env,
     feature_args,
+    mem_available_mb,
     office_warm,
 )
 from .offline import (
@@ -352,6 +355,8 @@ class CodexDJ:
         ]
         if self.cfg.codex_model:
             args += ["-m", self.cfg.codex_model]
+        if effort := effort_from_env():
+            args += ["-c", f"model_reasoning_effort={effort}"]
         return args
 
     async def _run(self, args: list[str], prompt: str) -> dict:
@@ -924,6 +929,7 @@ class CodexDJ:
                 self._binary, str(self._dir), model=self.cfg.codex_model,
                 max_turns_per_thread=self.MAX_RESUMED_TURNS,
                 keep_warm=office_warm,  # v pracovní době bez studeného startu
+                effort=effort_from_env(),
             )
         return self.app
 
@@ -936,7 +942,31 @@ class CodexDJ:
             if app := await self._app():
                 app.prewarm()
 
-        asyncio.create_task(go())
+        self._prewarm_task = asyncio.create_task(go())
+
+    def warm_ahead(self, source: str) -> bool:
+        """Nahřát Codex dřív, než přání přijde; True = nahřívá se / už je teplý.
+
+        Studený start (proces + vlákno) platilo na Pi 26. 9. 9 z 18 tahů
+        posluchačů, 4,8–12,4 s (dj.turn startup_ms, medián 8,4 s). Proto:
+          - "web": někdo začal psát přání (web to pošle při psaní),
+          - "start": po startu služby, jen v pracovní době (office_warm).
+        Jen s dost volnou pamětí (WARM_MIN_FREE_MB) a když mozek jede (jistič).
+        Mimo pracovní dobu proces zase skončí po IDLE_TTL bez tahu.
+        """
+        if not app_server_enabled() or not self.breaker.allow():
+            return False
+        if source == "start" and not office_warm():
+            return False
+        free = mem_available_mb()
+        if free is not None and free < WARM_MIN_FREE_MB:
+            return False
+        if self.app is not None and self.app.ready:
+            return True
+        telemetry.event("dj.warm", source=source, free_mb=free,
+                        alive=bool(self.app is not None and self.app.alive) or None)
+        self.prewarm()
+        return True
 
     async def _via_app_server(self, prompt: str, auto: bool) -> dict | None:
         """Tah přes trvale běžící Codex; None = selhalo, ať to vezme `codex exec`.
@@ -973,6 +1003,7 @@ class CodexDJ:
             return None
         telemetry.event(
             "dj.turn", how="app_server", auto=auto, ok=True, new_thread=res.new_thread,
+            premade=res.premade or None, effort=app.effort or None,
             startup_ms=res.startup_ms, model_ms=res.model_ms,
             took_ms=int((time.monotonic() - t0) * 1000),
         )
@@ -980,6 +1011,9 @@ class CodexDJ:
 
     async def close(self) -> None:
         """Ukončí trvale běžící Codex (při vypínání ytdj)."""
+        task = getattr(self, "_prewarm_task", None)
+        if task is not None and not task.done():
+            task.cancel()  # předstart po vypnutí už nespouštět
         if self.app is not None:
             await self.app.close()
 

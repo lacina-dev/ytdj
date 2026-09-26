@@ -581,6 +581,7 @@ class WebServer:
             Route("/api/requests", _safe(self._requests), methods=["GET"]),
             Route("/api/requests/{rid}", _safe(self._request_action), methods=["POST", "DELETE"]),
             Route("/api/control", _safe(self._control), methods=["POST"]),
+            Route("/api/dj/warm", _safe(self._dj_warm), methods=["POST"]),
             Route("/api/me", _safe(self._me_get), methods=["GET"]),
             Route("/api/me", _safe(self._me_post), methods=["POST"]),
             Route("/api/config", _safe(self._config_get), methods=["GET"]),
@@ -1101,6 +1102,16 @@ class WebServer:
             return _json_error(str(exc), 400)
         self.poke()
         return JSONResponse(out)
+
+    async def _dj_warm(self, request: Request) -> Response:
+        """Někdo začal psát přání — ať Codex startuje už teď (CodexDJ.warm_ahead).
+
+        Nic nepřehrává ani nezařazuje; tělo požadavku se nečte. Displej (panel)
+        může volat totéž při otevření obrazovky přání.
+        """
+        warm = getattr(self.app.dj, "warm_ahead", None)
+        ok = bool(warm("web")) if warm is not None else False
+        return JSONResponse({"ok": ok})
 
     async def _control(self, request: Request) -> Response:
         t0 = time.monotonic()

@@ -48,6 +48,7 @@ Stav k 26. 9. 2026 17:00 (na Pi běží 5d7e1ca).
 | 23 | Otázky a stížnosti („proč nehraje moje…", „to není demokracie") zodpovědět podle skutečnosti | ✅ | přání uvnitř stížnosti („nefér, chci Olympic") se zařadí (15:42) |
 | 24 | „Chci oboje" / střídání dvou interpretů | ✅ nasazeno 11:29 | |
 | 25 | „Ať to není ostuda": sprostá jména a texty se na displeji a webu neukážou | ✅ | `ytdj/display.py` |
+| 46 | Volná přání přes model rychleji („zahraj mi něco veselého k práci" ~10–12 s, po pauze 23–33 s) | ☑️ v kódu, čeká na nasazení | rozbor Pi 26. 9.: studený start 4,8–12,4 s (9 z 18 tahů), nové vlákno +2,3 s, uvažování modelu 1,6–8,4 s, výpis odpovědi ~2,3 s, dohledání semínek ~1,4 s, rádio ~1,5 s, příprava první skladby ~7 s. Nahřátí při psaní přání a po startu (F-PROVOZ-08), náhradní vlákno (F-PROVOZ-09); úsilí modelu jen přepínač pro měření (`YTDJ_CODEX_EFFORT`) |
 
 ## Víc lidí v kanceláři
 

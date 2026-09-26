@@ -34,12 +34,23 @@ from .base import EventHandler, Player, PlayerEvent, PlayerStatus
 log = logging.getLogger(__name__)
 
 WATCH_URL = "https://music.youtube.com/watch?v={}"
-# Kolik skladeb z fronty mít vyřešených dopředu jako klouzavé okno. Výsledek
-# resolveru je ~90 kB JSONu, paměť to nestojí; cena je čas CPU (~7–8 s na
-# skladbu na Pi 3, jedna po druhé). Šest pokryje i sérii rychlých "Další":
-# při mezeře 5 s se skladba spotřebuje za 5 s a vyrobí za ~7,5 s, takže
-# deset přeskočení za sebou vyčerpá ~3–4 připravené.
-PREFETCH_AHEAD = 6
+# Kolik skladeb z fronty mít vyřešených dopředu jako klouzavé okno (výchozí
+# hodnoty configu prefetch_first / prefetch_max). Postupně (návrh vlastníka
+# 26. 9.): nejdřív PREFETCH_FIRST nejbližších, pak se okno po jedné rozšiřuje
+# až na PREFETCH_MAX — vždy až po všem naléhavém (mpv čeká, přání, Další) a
+# jen hlavním vláknem resolveru. Výsledek resolveru je ~90 kB JSONu, paměť to
+# nestojí; cena je čas CPU (~7–8 s na skladbu na Pi 3), a ten se utratí jen
+# jednou za skladbu, kterou fronta přinese (okno se posouvá o jednu).
+# Deset pokryje deset rychlých "Další" za sebou.
+PREFETCH_FIRST = 3
+PREFETCH_MAX = 10
+PREFETCH_AHEAD = PREFETCH_MAX  # starší jméno (testy, okno chytrého Další)
+# Kolik skladeb chce přehrávač od plniče fronty (prefetch_depth → queue_low /
+# queue_target v ytdj a přáních). Zůstává 6 jako před postupnou přípravou:
+# hlubší fronta mění, co plnič vybírá (malé pooly, režim interpreta). Okno
+# přípravy sahá až na prefetch_max skladeb, kolik jich fronta má — na Pi
+# rozhoduje queue_target (config).
+FILL_DEPTH = 6
 PREFETCH_SETTLE = 0.2  # s — dávka změn fronty se sejde, než se pošle resolveru
 KEEP_HISTORY = 5  # kolik dohraných položek nechat v playlistu mpv před hrající
 VIDEO_ID = re.compile(r"[?&]v=([\w-]{11})")
@@ -53,6 +64,16 @@ MPV_NICE = -11
 # 26. 9. 11:29 po restartu (souběžně start Codexu) trvala přednostní skladba
 # 21 s místo ~7 s a posluchač čekal 27 s na zvuk. Zvuk chrání přednost mpv.
 RESOLVER_NICE = 5
+# Zásoba zvuku v mpv (s). Na konci skladby (gapless) mpv hraje z ní konec
+# skladby a mezitím otevírá další; když otevření trvá déle než zásoba, výstup
+# běží naprázdno a PipeWire za každý cyklus (2048 vzorků = 42,7 ms) hlásí
+# xrun uzlu mpv. Pi 25.–26. 9.: 80 konců skladby — všech 7 s načtením
+# ≥ 1,02 s mělo xruny (≈ (načtení − 1 s) / 42,7 ms, 1 až 256), všech 73
+# s načtením ≤ 0,93 s žádný; 300 přeskočení (mpv výstup vynuluje) 2 xruny.
+# Formát za to nemůže (vše opus 48 kHz = graf PipeWire). 2 s skryjí i
+# pomalejší otevření; hlasitost se tím nezpožďuje (mpv ji násobí až při
+# čtení ze zásoby), Další a pauza zásobu zahazují hned.
+AUDIO_BUFFER = 2.0
 SOCKET_POLL = 0.01  # s — jak často se po spuštění mpv dívat po jeho IPC socketu
 SOCKET_TIMEOUT = 20.0  # s — při bootu Pi 3 startuje všechno naráz
 
@@ -223,7 +244,24 @@ def _ok(res: Any) -> bool:
 
 
 class MpvPlayer(Player):
-    prefetch_depth = PREFETCH_AHEAD
+    @property
+    def prefetch_depth(self) -> int:
+        """Kolik skladeb chce přehrávač mít ve frontě od plniče (viz FILL_DEPTH)."""
+        return min(FILL_DEPTH, self._prefetch_limits()[1])
+
+    @property
+    def prefetch_window(self) -> int:
+        """Kolik skladeb fronty se nejvýš chystá dopředu (prefetch_max)."""
+        return self._prefetch_limits()[1]
+
+    def _prefetch_limits(self) -> tuple[int, int]:
+        """(nejbližší přednostně, celé okno) z configu — mění se za běhu z webu."""
+        try:
+            top = max(1, int(getattr(self.cfg, "prefetch_max", PREFETCH_MAX)))
+            near = max(1, int(getattr(self.cfg, "prefetch_first", PREFETCH_FIRST)))
+        except (TypeError, ValueError):
+            top, near = PREFETCH_MAX, PREFETCH_FIRST
+        return min(near, top), top
 
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
@@ -317,6 +355,10 @@ class MpvPlayer(Player):
         # wait_ready: tyhle se řeší první, i když běží Codex (vid → kolik čekajících)
         self._first: dict[str, int] = {}
         self._res_busy: str | None = None
+        self._res_busy2: str | None = None  # druhé (urgentní) vlákno resolveru
+        # co mpv hlásí o zvuku (dekodér → výstup) — do track.start
+        self._audio_params: dict | None = None
+        self._ao_params: dict | None = None
         self._res_urgent: list[str] = []
         self._res_gets: dict[str, tuple[float, dict]] = {}  # vid → (kdy, resolver.get)
         self._enqueued_at: dict[str, float] = {}  # vid → kdy přišel do fronty
@@ -355,9 +397,10 @@ class MpvPlayer(Player):
             "--prefetch-playlist=no",
             "--gapless-audio=weak",
             "--cache=yes",
-            # Vteřina zvuku v zásobě: na slabém stroji, kde vedle hraje yt-dlp
-            # s node, by 0,2 s (výchozí) občas nestačilo a v repráku by lupnulo.
-            "--audio-buffer=1",
+            # Zvuk v zásobě (viz AUDIO_BUFFER): na slabém stroji, kde vedle
+            # hraje yt-dlp s node, by 0,2 s (výchozí) nestačilo, a na konci
+            # skladby kryje otevírání další (jinak xruny v tichu mezi nimi).
+            f"--audio-buffer={AUDIO_BUFFER:g}",
             # Začít hrát, až jsou v cache aspoň dvě vteřiny proudu. Bez toho
             # mpv na Pi rozjelo skladbu s prvními bajty ze sítě a za zlomek
             # vteřiny mu data došla — PipeWire hlásil výpadky přesně při
@@ -507,7 +550,7 @@ class MpvPlayer(Player):
     async def _observe(self) -> None:
         for i, prop in enumerate(
             ("playlist-pos", "playlist-count", "pause", "volume", "time-pos", "core-idle",
-             "playlist"), 1
+             "playlist", "audio-params", "audio-out-params"), 1
         ):
             await self._send({"command": ["observe_property", i, prop]}, wait=False)
         await self._sync()
@@ -645,6 +688,12 @@ class MpvPlayer(Player):
                 self._volume = int(data)
             elif name == "time-pos" and isinstance(data, (int, float)):
                 self._time_pos = float(data)
+            elif name == "audio-params":
+                if isinstance(data, dict) and data:
+                    self._audio_params = data
+            elif name == "audio-out-params":
+                if isinstance(data, dict) and data:
+                    self._ao_params = data
             elif name == "core-idle" and isinstance(data, bool):
                 self._core_idle = data
                 self._t_core_idle(data)
@@ -942,13 +991,13 @@ class MpvPlayer(Player):
             upcoming = self.upcoming_ids()
             nxt = upcoming[0] if upcoming else None
             self._req = {"why": why, "t0": now, "next": nxt}
-            window = upcoming[:PREFETCH_AHEAD]
+            window = upcoming[:self.prefetch_window]
             telemetry.event(
                 "track.request", why=why, from_id=self._current_id,
                 played_s=round(self._time_pos, 1) if self._current_id else None,
                 next_id=nxt,
                 next_ready=nxt in self._res_ready if nxt else None,
-                next_resolving=(nxt == self._res_busy) if nxt else None,
+                next_resolving=(nxt in (self._res_busy, self._res_busy2)) if nxt else None,
                 ready_ahead=sum(1 for v in window if v in self._res_ready),
                 queue=len(upcoming),
                 **extra,
@@ -1048,12 +1097,32 @@ class MpvPlayer(Player):
                 fields["expected_id"] = req["next"]
             if load["paused"]:
                 fields["paused"] = True  # čekání zahrnuje pauzu — do latencí nepočítat
+            fields.update(self._audio_fields())
+            if req and req["why"] == "eof" and fields["wait_ms"] is not None:
+                # Konec skladby: konec staré hraje ze zásoby (AUDIO_BUFFER) a
+                # mezitím se otevírá nová. Co čekání přesáhne zásobu, je ticho
+                # s prázdným výstupem — tam PipeWire hlásí xruny uzlu mpv.
+                fields["gap_ms"] = max(0, fields["wait_ms"] - int(AUDIO_BUFFER * 1000))
             telemetry.event("track.start", **fields)
         except Exception:
             pass
         # první zvuk skladby — fronta přání z toho měří čekání přání → zvuk
         if isinstance(load.get("entry"), int):
             self._events.put_nowait(("sound", load["entry"], ""))
+
+    def _audio_fields(self) -> dict[str, Any]:
+        """Formát zvuku skladby (dekodér) a výstupu do PipeWire — změna
+        formátu by znamenala nové otevření výstupu (gapless-audio=weak)."""
+        out: dict[str, Any] = {}
+        for prefix, p in (("audio", self._audio_params), ("ao", self._ao_params)):
+            if isinstance(p, dict):
+                if p.get("samplerate"):
+                    out[f"{prefix}_hz"] = p.get("samplerate")
+                if p.get("format"):
+                    out[f"{prefix}_fmt"] = p.get("format")
+                if p.get("channel-count"):
+                    out[f"{prefix}_ch"] = p.get("channel-count")
+        return out
 
     def _t_end_file(self, kind: str, msg: dict, premature: bool) -> None:
         try:
@@ -1098,6 +1167,8 @@ class MpvPlayer(Player):
             "resolver_wait": len(self._res_urgent),  # na kolik skladeb čeká mpv
             "ready": len(self._res_ready),
         }
+        if self._res_busy2:
+            ctx["resolving2"] = self._res_busy2  # druhé (urgentní) vlákno resolveru
         if self._load and self._load["t_play"] is None:
             ctx["loading"] = True
         with suppress(Exception):
@@ -1118,6 +1189,7 @@ class MpvPlayer(Player):
         if kind == "_state":
             self._res_ready = set(fields.get("ready") or ())
             self._res_busy = fields.get("busy")
+            self._res_busy2 = fields.get("busy2")
             self._res_urgent = list(fields.get("urgent") or ())
             self._res_changed.set()
             return
@@ -1460,7 +1532,7 @@ class MpvPlayer(Player):
         up = self.upcoming_ids()
         if not up or up[0] in self._res_ready:
             return None
-        for k, vid in enumerate(up[:PREFETCH_AHEAD]):
+        for k, vid in enumerate(up[:self.prefetch_window]):
             if self._protected(vid):
                 return None
             if vid in self._res_ready:
@@ -1642,6 +1714,7 @@ class MpvPlayer(Player):
                     self._on_resolver_event(*parsed)
         code = await proc.wait()
         self._res_ready, self._res_busy, self._res_urgent = set(), None, []
+        self._res_busy2 = None
         if not self._stopping:
             self._resolver_restarts += 1
             telemetry.event("resolver.exit", code=code, restarts=self._resolver_restarts,
@@ -1875,17 +1948,18 @@ class MpvPlayer(Player):
                 self._schedule_prefetch()
 
     def prefetch_ids(self) -> list[str]:
-        """Okno pro resolver: dalších PREFETCH_AHEAD skladeb v pořadí mpv."""
+        """Okno pro resolver: dalších prefetch_max skladeb v pořadí mpv."""
         out: list[str] = []
+        top = self.prefetch_window
         for vid in self.upcoming_ids():
             if vid not in out and vid != self._current_id:
                 out.append(vid)
-            if len(out) >= PREFETCH_AHEAD:
+            if len(out) >= top:
                 break
         return out
 
     async def _prefetch_loop(self) -> None:
-        sent: tuple[list[str], bool, list[str], list[str]] | None = None
+        sent: tuple | None = None
         while True:
             try:
                 await asyncio.wait_for(self._prefetch_wake.wait(), 5.0)
@@ -1911,17 +1985,21 @@ class MpvPlayer(Player):
             # vyhodil těsně předtím (Pi 25. 9.: "připravená" a přesto 14 s).
             cur = self._playlist[self._cur_index()][1] if self._cur_index() >= 0 else None
             keep = [cur] if cur else []
-            if (ahead, held, first, keep) == sent:
+            # ids[:near] přednostně, zbytek okna je postupné rozšiřování (resolver
+            # ho dělá až bez naléhavé práce a ne hned po začátku skladby)
+            near = self._prefetch_limits()[0]
+            if (ahead, held, first, keep, near) == sent:
                 continue
             resp = await self._resolver_call(
-                {"op": "ahead", "ids": ahead, "hold": held, "first": first, "keep": keep}
+                {"op": "ahead", "ids": ahead, "hold": held, "first": first, "keep": keep,
+                 "near": near}
             )
             ok = bool(resp and resp.get("ok"))
-            telemetry.event("prefetch.ahead", n=len(ahead), codex_hold=held, ok=ok,
+            telemetry.event("prefetch.ahead", n=len(ahead), near=near, codex_hold=held, ok=ok,
                             first=len(first) or None,
                             ready=sum(1 for v in ahead if v in self._res_ready))
             if ok:
-                sent = (ahead, held, first, keep)
+                sent = (ahead, held, first, keep, near)
             else:
                 sent = None  # resolver nežije — zkusit znovu při dalším kole
 

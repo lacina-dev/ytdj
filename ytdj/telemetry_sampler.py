@@ -106,6 +106,15 @@ def _proc(pid: int) -> tuple[int, int] | None:
         return None
 
 
+def pwtop_argv() -> list[str]:
+    """pw-top do roury po řádcích. Bez stdbuf ho stdio bufferuje po ~4 kB:
+    tabulky chodí po pěti (Pi 26. 9.: po ~5 s) a `audio.xrun` dostal čas
+    i kontext (pozici, skladbu) o až 5 s pozdější — xruny v tichu mezi
+    skladbami vypadaly jako „@0–2 s nové skladby"."""
+    stdbuf = shutil.which("stdbuf")
+    return [stdbuf, "-oL", "pw-top", "-b"] if stdbuf else ["pw-top", "-b"]
+
+
 def parse_pwtop_frame(lines: list[str]) -> dict[str, int]:
     """Řádky jedné tabulky `pw-top -b` → {"<id> <jméno>": ERR}.
 
@@ -307,7 +316,7 @@ class SystemSampler:
 
     async def _run_pwtop(self) -> None:
         self._pwtop = await asyncio.create_subprocess_exec(
-            "pw-top", "-b",
+            *pwtop_argv(),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
             preexec_fn=lambda: os.nice(10),
         )

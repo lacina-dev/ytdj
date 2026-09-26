@@ -63,6 +63,8 @@ class FakeYtdj:
         self.pos = 12.0
         self.pos_at = time.monotonic()
         self.mood = "klidný večer, český rock"
+        # podkres po přání: {"from_who", "from_key"} jde do důvodu rádia (jako ytdj)
+        self.radio_from: dict = {}
         self.busy = False
         self.idle = False  # nothing loaded (after a restart, after Stop)
         self.starting = False
@@ -167,7 +169,7 @@ class FakeYtdj:
                 cur["reason"] = {"kind": "wish", "who": r["who"], "text": r["text"], "id": r["id"],
                                  "who_key": self._key(r)}
             else:
-                cur["reason"] = {"kind": "radio", "who": "", "text": self.mood}
+                cur["reason"] = {"kind": "radio", "who": "", "text": self.mood, **self.radio_from}
             queue = []
             for r in self._queued():
                 queue.append({**r["track"], "req": {"id": r["id"], "who": r["who"], "who_key": self._key(r)}})

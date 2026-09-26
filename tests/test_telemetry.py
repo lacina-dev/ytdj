@@ -201,6 +201,61 @@ class ResolverEventTest(unittest.TestCase):
         self.assertIn("z cache dQw4w9WgXcQ", err.getvalue())
 
 
+class AudioGapTest(_LogCase):
+    """F-ZVUK-19: mezi skladbami zásoba 2 s; track.start nese formát zvuku
+    a odhad ticha po konci skladby (gap_ms), xruny mají přesný čas."""
+
+    def test_mpv_keeps_two_seconds_of_audio_gapless(self) -> None:
+        from ytdj.config import DEFAULTS, Config
+        from ytdj.player.mpv import AUDIO_BUFFER, MpvPlayer
+
+        p = MpvPlayer(Config(**DEFAULTS))
+        with mock.patch.object(p, "_ytdl_shim", lambda: "yt-dlp"):
+            args = p._args()
+        self.assertEqual(AUDIO_BUFFER, 2.0)
+        self.assertIn("--audio-buffer=2", args)
+        self.assertIn("--gapless-audio=weak", args)
+
+    def test_track_start_has_audio_format_and_gap(self) -> None:
+        async def run():
+            p = PlayerLifecycleTest.make_player(self)  # type: ignore[arg-type]
+            p._handle_event({"event": "start-file", "playlist_entry_id": 1})
+            p._current_id = "aaaaaaaaaaa"
+            p._handle_event({"event": "property-change", "name": "audio-params",
+                             "data": {"samplerate": 48000, "format": "floatp",
+                                      "channel-count": 2}})
+            p._handle_event({"event": "property-change", "name": "audio-out-params",
+                             "data": {"samplerate": 48000, "format": "floatp",
+                                      "channel-count": 2}})
+            p._handle_event({"event": "property-change", "name": "core-idle", "data": False})
+            # konec skladby; další se otevírá 3 s (zásoba 2 s → ~1 s ticha)
+            p._handle_event({"event": "end-file", "reason": "eof", "playlist_entry_id": 1})
+            p._req["t0"] -= 3.0
+            p._handle_event({"event": "property-change", "name": "audio-params", "data": None})
+            p._handle_event({"event": "start-file", "playlist_entry_id": 2})
+            p._handle_event({"event": "property-change", "name": "core-idle", "data": False})
+            for t in asyncio.all_tasks() - {asyncio.current_task()}:
+                t.cancel()
+
+        asyncio.run(run())
+        starts = [r for r in self.lines() if r["kind"] == "track.start"]
+        self.assertEqual((starts[0]["audio_hz"], starts[0]["audio_fmt"], starts[0]["audio_ch"]),
+                         (48000, "floatp", 2))
+        self.assertEqual((starts[0]["ao_hz"], starts[0]["ao_fmt"]), (48000, "floatp"))
+        self.assertNotIn("gap_ms", starts[0])  # první skladba — žádný konec před ní
+        self.assertEqual(starts[1]["why"], "eof")
+        self.assertGreaterEqual(starts[1]["gap_ms"], 950)
+        self.assertLess(starts[1]["gap_ms"], 1500)
+
+    def test_pwtop_is_line_buffered(self) -> None:
+        from ytdj import telemetry_sampler as ts
+
+        with mock.patch.object(ts.shutil, "which", lambda n: f"/usr/bin/{n}"):
+            self.assertEqual(ts.pwtop_argv(), ["/usr/bin/stdbuf", "-oL", "pw-top", "-b"])
+        with mock.patch.object(ts.shutil, "which", lambda n: None):
+            self.assertEqual(ts.pwtop_argv(), ["pw-top", "-b"])
+
+
 class PlayerLifecycleTest(_LogCase):
     """Události mpv → track.request / track.start / track.end s časy."""
 

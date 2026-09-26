@@ -32,8 +32,9 @@ Tohle je seznam všeho, co aplikace umí (stav 26. 9. 2026, commit e713074).
   Testy: `tests/test_funkce_guards.py::StartsWithBufferedStream::test_cache_pause_wait`
 - **F-ZVUK-04** Dokud skladba opravdu nehraje (načítá se), čas stojí a web i displej píšou „načítám…"; pauza není načítání.
   Testy: `tests/test_funkce_guards.py::TimeStandsWhileLoading::test_status_reports_buffering_only_while_really_waiting`, `tests/test_funkce_guards.py::TimeStandsWhileLoading::test_web_page_holds_the_clock_while_loading`
-- **F-ZVUK-05** Dopředu se připravuje 6 dalších skladeb v pořadí fronty; po každém přeskočení hned nový seznam.
-  Testy: `tests/test_player_queue.py::Prefetch::test_ahead_is_next_n_in_mpv_order`, `tests/test_player_queue.py::Prefetch::test_skip_resends_window_immediately`
+- **F-ZVUK-05** Dopředu se připravují skladby v pořadí fronty postupně: nejdřív 3 nejbližší, pak po jedné až 10, kolik jich fronta má (nastavení `prefetch_first`, `prefetch_max`; hloubku fronty dál určuje `queue_target`), vždy až po naléhavých (skladba, na kterou se čeká, Další, první skladby přání) a jen hlavním vláknem resolveru; po každém přeskočení hned nový seznam.
+  Změněno 26. 9. 2026 se souhlasem vlastníka: postupná příprava — nejdřív 3 nejbližší, pak po jedné až 10, nikdy na úkor naléhavé skladby (návrh vlastníka)
+  Testy: `tests/test_player_queue.py::Prefetch::test_ahead_is_next_n_in_mpv_order`, `tests/test_player_queue.py::Prefetch::test_skip_resends_window_immediately`, `tests/test_player_queue.py::ProgressivePrefetch::test_player_sends_window_of_ten_with_near_three`, `tests/test_player_queue.py::ProgressivePrefetch::test_nearest_three_first_then_extends_to_ten_when_idle`, `tests/test_player_queue.py::ProgressivePrefetch::test_urgent_and_wish_preempt_extension`, `tests/test_player_queue.py::ProgressivePrefetch::test_window_reshuffles_when_a_wish_is_inserted`, `tests/test_player_queue.py::ProgressivePrefetch::test_ten_skips_in_a_row_all_land_on_prepared`
 - **F-ZVUK-06** V podkresu nejvýš 2 skladby téhož interpreta na jedno doplnění (ne v režimu interpreta, kde je to smysl).
   Testy: `tests/test_funkce_guards.py::ArtistCapInBackground::test_two_per_artist_unless_artist_mode`
 - **F-ZVUK-07** Když se o nic nežádá, hraje se kanonická nahrávka (studiová, oficiální), ne cover, live, remix ani výběrová kompilace; mezi platnými rozhoduje počet přehrání.
@@ -60,6 +61,8 @@ Tohle je seznam všeho, co aplikace umí (stav 26. 9. 2026, commit e713074).
   Testy: `tests/test_dj_fastpath.py::Switch::test_old_track_plays_until_new_is_ready`, `tests/test_dj_fastpath.py::Switch::test_no_double_skip_when_track_ended_meanwhile`
 - **F-ZVUK-18** Režim interpreta hraje nejdřív jeho dosud nepřehrané skladby (i přes restarty), bez opakování, a po projetí všech začne těmi nejdéle nehranými.
   Testy: `tests/test_radio_artist.py::ArtistRotation::test_new_turn_continues_where_the_last_one_stopped`, `tests/test_radio_artist.py::ArtistRotation::test_after_whole_pool_the_least_recent_comes_first`, `tests/test_radio_artist.py::ArtistRotation::test_restart_inside_session_also_rotates`, `tests/test_radio_artist.py::ArtistRotation::test_given_back_tracks_are_not_lost`
+- **F-ZVUK-19** Na konci skladby drží přehrávač 2 s zvuku v zásobě, takže otevření další skladby do 2 s neudělá ticho s výpadky (xruny) mezi skladbami. Začátek skladby hlásí formát zvuku a odhad ticha (`gap_ms`), xruny se hlásí s přesným časem (pw-top po řádcích).
+  Testy: `tests/test_telemetry.py::AudioGapTest::test_mpv_keeps_two_seconds_of_audio_gapless`, `tests/test_telemetry.py::AudioGapTest::test_track_start_has_audio_format_and_gap`, `tests/test_telemetry.py::AudioGapTest::test_pwtop_is_line_buffered`
 
 ## Hlasitost
 
@@ -97,6 +100,8 @@ Tohle je seznam všeho, co aplikace umí (stav 26. 9. 2026, commit e713074).
   Testy: `tests/test_review2.py::Skips::test_dj_decided_skip_does_not_count`, `tests/test_review2.py::Skips::test_skip_during_outage_does_not_count`
 - **F-PRESKOK-08** Další, když nic nehraje, není požadavek na skladbu.
   Testy: `tests/test_player_queue.py::SkipBurst::test_skip_with_nothing_playing_is_not_a_request`
+- **F-PRESKOK-09** Další na skladbu, která ještě není připravená, nečeká na skladbu, kterou resolver zrovna chystá dopředu: tu vyřeší druhé vlákno (jen skladby, na které přehrávač čeká; dopředu dál jen jedno).
+  Testy: `tests/test_player_queue.py::ResolverQueue::test_urgent_does_not_wait_for_track_being_prepared`, `tests/test_player_queue.py::ResolverQueue::test_second_lane_never_prepares_ahead`
 
 ## Přání a jejich výklad (DJ)
 
@@ -173,6 +178,10 @@ Tohle je seznam všeho, co aplikace umí (stav 26. 9. 2026, commit e713074).
   Testy: `tests/test_review.py::Texts::test_artist_reply_mentions_turns_only_when_others_wait`, `tests/test_nicks.py::HonestNext::test_play_next_says_it_waits_for_someone_elses_wish`
 - **F-FRONTA-17** Během rozhodování DJe má první skladba přání přednost v přípravě.
   Testy: `tests/test_wishes.py::Supersede::test_first_track_is_prioritised_while_deciding`, `tests/test_player_queue.py::Prefetch::test_codex_hold_keeps_list_and_first`
+- **F-FRONTA-18** Počty skladeb přání jdou změnit v nastavení jukeboxu, platí hned: kolo (`wish_block`, i blok přání nálady), kolo, když čekají jiní (`wish_shared_block`, nejvýš jako kolo), rozpočet z webu / z displeje (`wish_budget`, `wish_budget_panel`), skladby interpreta v přání (`wish_artist_max`); výchozí hodnoty jsou ty z F-FRONTA-01 a F-FRONTA-02 (3 / 2, 4 / 3) a 12; odpovědi DJe říkají nastavená čísla. (Přidáno 26. 9. 2026 na přání vlastníka: „Proč jen tři? Jde to nastavit v nastavení?")
+  Testy: `tests/test_wish_settings.py::WishAmounts::test_defaults_are_the_rules`, `tests/test_wish_settings.py::WishAmounts::test_bad_values_are_clamped`, `tests/test_wish_settings.py::WishAmounts::test_fair_order_follows_the_amounts`, `tests/test_wish_settings.py::WishAmounts::test_settings_change_the_queue_live`, `tests/test_wish_settings.py::WishAmounts::test_settings_form_offers_the_keys_with_bounds`
+- **F-FRONTA-19** Rádio (podkres) řekne, odkud je: po přání „Rádio podle přání Robert · nálada" (na webu i na displeji, tlumeným textem, ne jmenovkou přání — ničí přání to není), po rozjezdu „Rádio podle času a dne", jinak „Rádio · vybral DJ"; jméno jde přes kancelářský filtr. (Přidáno 26. 9. 2026 na přání vlastníka: „Co je to, co hraje dál a nemá to už u sebe moje jméno?")
+  Testy: `tests/test_wish_settings.py::RadioOrigin::test_radio_after_a_wish_says_whose_wish_it_follows`, `tests/test_wish_settings.py::RadioOrigin::test_background_nobody_asked_for_has_no_name`, `tests/test_wish_settings.py::RadioOrigin::test_name_goes_through_the_office_filter`, `tests/test_wish_settings.py::WebShowsRadioOrigin::test_radio_after_a_wish`, `tests/test_wish_settings.py::WebShowsRadioOrigin::test_other_origins`, `tests/test_panel.py::RadioOriginTest::test_status_strip_says_whose_wish_the_radio_follows`, `tests/test_panel.py::RadioOriginTest::test_panel_reads_the_origin_from_the_status`
 
 ## Přezdívky a identita
 
@@ -309,6 +318,8 @@ Tohle je seznam všeho, co aplikace umí (stav 26. 9. 2026, commit e713074).
   Testy: `tests/test_resume_cache.py::DiskCacheTest::test_round_trip`, `tests/test_resume_cache.py::DiskCacheTest::test_expiry_and_age`, `tests/test_resume_cache.py::DiskCacheTest::test_young_disk_entry_served_without_probe`, `tests/test_resume_cache.py::DiskCacheTest::test_other_template_drops_disk`, `tests/test_resume_cache.py::DiskCacheTest::test_dead_cached_url_is_resolved_fresh`, `tests/test_resume_cache.py::PlayerResumeTest::test_dead_disk_url_replays_same_entry`, `tests/test_resume_cache.py::PlayerResumeTest::test_disk_retry_only_once`
 - **F-RESTART-07** Start přehrávače: mpv před resolverem, čekání na socket, zastaralý socket se nepoužije, mpv, které hned skončí, se ohlásí hned; když resolver nejede, mpv jede přes yt-dlp.
   Testy: `tests/test_player_start.py::StartTest::test_start_breakdown_priority_and_resolver_first`, `tests/test_player_start.py::StartTest::test_stale_socket_is_reported_and_not_connected_to`, `tests/test_player_start.py::StartTest::test_mpv_that_exits_fails_fast`, `tests/test_resume_cache.py::ShimTest::test_waits_for_socket_that_appears_later`, `tests/test_resume_cache.py::ShimTest::test_startup_error_falls_back_to_real_ytdlp`
+- **F-RESTART-08** Po startu služby se přehrávač (mpv a resolver) spustí hned po načtení konfigurace, souběžně s načítáním zbytku aplikace; navázání přerušené skladby nečeká na web, terminál ani katalog YouTube Music (ytmusicapi), ty se načtou až po něm.
+  Testy: `tests/test_startup.py::StartOrder::test_player_starts_before_the_rest_of_the_app_and_resumes`, `tests/test_startup.py::StartOrder::test_failed_import_stops_the_started_player`, `tests/test_startup.py::LightStart::test_player_path_does_not_import_the_heavy_parts`, `tests/test_startup.py::LightStart::test_lazy_ytmusic_is_created_once_in_the_calling_thread`
 
 ## Chytrý start
 
@@ -342,6 +353,8 @@ Tohle je seznam všeho, co aplikace umí (stav 26. 9. 2026, commit e713074).
   Testy: `tests/test_dj_appserver.py::Fake::test_warm_turns_reuse_process_and_rotate_threads`, `tests/test_dj_appserver.py::Fake::test_prewarm_hides_startup_and_disables_plugins`, `tests/test_dj_appserver.py::Fake::test_idle_process_is_closed`, `tests/test_dj_appserver.py::KeepWarm::test_office_hours_policy`, `tests/test_dj_appserver.py::KeepWarm::test_kept_warm_while_policy_says_so`, `tests/test_review2.py::AppServerMemory::test_low_memory_closes_it_long_before_idle_ttl`, `tests/test_review2.py::AppServerMemory::test_docstring_says_what_is_measured`, `tests/test_dj_appserver.py::NativeBinary::test_finds_vendor_binary_next_to_npm_wrapper`
 - **F-PROVOZ-06** Historie v playlistu mpv se prořezává (nejvýš 5 dohraných před hrající).
   Testy: `tests/test_player_queue.py::TrueOrder::test_history_is_pruned`
+- **F-PROVOZ-07** Každý start služby zapíše do provozního logu událost `app.start` s časy fází od spuštění procesu (načtení, konfigurace, start přehrávače, aplikace, navázání, web) a časem spuštění procesu, aby šlo změřit ticho po restartu.
+  Testy: `tests/test_startup.py::StartOrder::test_player_starts_before_the_rest_of_the_app_and_resumes`, `tests/test_startup.py::StartEvent::test_clock_measures_from_process_start`
 
 ## Bezpečnost (současný stav — k rozhodnutí)
 
@@ -384,3 +397,4 @@ Opraveno v dokumentaci (kód se neměnil):
 | 26. 9. 2026 | F-DISPLEJ-01 | Mezera mezi tlačítky (do 10 px) stiskne nejbližší tlačítko — ráno se trefovalo jen ~40 % dotyků. |
 | 26. 9. 2026 | F-HLAS-04, F-DISPLEJ-12 | Stisk ruší jen zřetelné sjetí prstu (2× dál než 44 px), šum převodníku ho nepřeruší. |
 | 26. 9. 2026 | F-DISPLEJ-14 (nové) | Kalibrace dotyku z displeje, 5 křížků. |
+| 26. 9. 2026 | F-ZVUK-05 | Postupná příprava: nejdřív 3 nejbližší, pak po jedné až 10 (dřív pevně 6), nikdy na úkor naléhavé skladby — návrh vlastníka („vždy udělat třeba tři hned a pak jich postupně přidávat"). |

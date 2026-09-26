@@ -141,6 +141,13 @@ LIVE_KEYS = (
     "ban_song_votes",
     "ban_artist_votes",
     "favourite_artist_votes",
+    "wish_block",
+    "wish_shared_block",
+    "wish_budget",
+    "wish_budget_panel",
+    "wish_artist_max",
+    "prefetch_first",
+    "prefetch_max",
 )
 
 CODEX_MODELS = [
@@ -185,6 +192,17 @@ FIELD_META: dict[str, tuple[str, str, tuple[int, int] | None]] = {
         "Země katalogu",
         "Dvoupísmenný kód země, podle které se vybírají dostupné skladby (např. CZ).",
         None,
+    ),
+    "prefetch_first": (
+        "Připravit hned",
+        "Kolik nejbližších skladeb fronty se připraví (adresa streamu) přednostně.",
+        (1, 6),
+    ),
+    "prefetch_max": (
+        "Připravit postupně až",
+        "Po nejbližších se dopředu přidává po jedné až do tolika skladeb "
+        "(rychlé série Další); vždy až po skladbách, na které se čeká.",
+        (3, 15),
     ),
     "queue_target": (
         "Cílová hloubka fronty",
@@ -291,6 +309,34 @@ FIELD_META: dict[str, tuple[str, str, tuple[int, int] | None]] = {
         "lidí a 👍 je víc než 👎. Písničce stačí jeden 👍.",
         (1, 50),
     ),
+    "wish_block": (
+        "Přání: skladeb v jednom kole",
+        "Kolik skladeb jednoho přání zazní za sebou, když nikdo jiný nečeká. "
+        "Tolik skladeb má i přání nálady. Výchozí 3.",
+        (1, 10),
+    ),
+    "wish_shared_block": (
+        "Přání: skladeb v kole, když čekají jiní",
+        "Po kolika skladbách se přání střídají, když čekají i kolegové. "
+        "Nesmí být víc než skladeb v jednom kole. Výchozí 2.",
+        (1, 10),
+    ),
+    "wish_budget": (
+        "Přání z webu: skladeb celkem, když čekají jiní",
+        "Přání s víc skladbami (třeba interpret) zahraje, dokud mají jiní co hrát, "
+        "nejvýš tolik skladeb; pak jde za ostatní a pokračuje, až nikdo nečeká. Výchozí 4.",
+        (1, 10),
+    ),
+    "wish_budget_panel": (
+        "Přání z displeje: skladeb celkem, když čekají jiní",
+        "Totéž pro přání z dotykového displeje. Výchozí 3.",
+        (1, 10),
+    ),
+    "wish_artist_max": (
+        "Přání interpreta: skladeb v přání",
+        "Kolik skladeb interpreta patří k přání; zbytek hraje podkres (rádio). Výchozí 12.",
+        (1, 50),
+    ),
     "mpv_extra_args": (
         "Další argumenty mpv",
         "Volitelné přepínače navíc, zapsané jako na příkazové řádce.",
@@ -391,6 +437,22 @@ def coerce_value(key: str, raw: Any) -> Any:
     if not isinstance(raw, str):
         raise BadValue(f"{label}: očekávám text, přišlo {raw!r}")
     return raw
+
+
+def check_together(changes: dict[str, Any], cfg: Any) -> None:
+    """Pravidla mezi klíči: kolo, když čekají jiní, nesmí být delší než kolo."""
+    if not {"wish_block", "wish_shared_block"} & set(changes):
+        return
+
+    def val(key: str) -> Any:
+        return changes.get(key, getattr(cfg, key, cfgmod.DEFAULTS[key]))
+
+    block, shared = val("wish_block"), val("wish_shared_block")
+    if isinstance(block, int) and isinstance(shared, int) and shared > block:
+        raise BadValue(
+            f"{FIELD_META['wish_shared_block'][0]}: nejvýš {block} "
+            f"(tolik je skladeb v jednom kole), přišlo {shared}"
+        )
 
 
 # --------------------------------------------------------------------------
@@ -1213,6 +1275,7 @@ class WebServer:
 
         try:
             changes = {key: coerce_value(key, raw) for key, raw in data.items()}
+            check_together(changes, self.app.cfg)
         except BadValue as exc:
             return _json_error(str(exc), 400)
 

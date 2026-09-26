@@ -10,11 +10,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import threading
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Any
-
-from ytmusicapi import YTMusic
+from typing import Any, Callable
 
 from .. import telemetry
 from ..config import BROWSER_AUTH, Config
@@ -130,8 +129,6 @@ def _patch_watch_explicit() -> None:
     watch.parse_watch_track = parse_watch_track
 
 
-_patch_watch_explicit()
-
 
 # Viz Catalog.__init__ — proč ne `cfg.language`.
 SEARCH_LANGUAGE = "en"
@@ -148,6 +145,37 @@ def _candidate(t: Track, rank: int = 0) -> match.Candidate:
     return match.Candidate(
         t.id, t.title, artists, album=t.album, duration=t.duration, rank=rank
     )
+
+
+class LazyYT:
+    """YTMusic, který se vytvoří až při prvním volání — ve vlákně toho volání.
+
+    Import ytmusicapi (s requests) trvá na Pi ~0,8 s a při startu služby by
+    oddálil zvuk (FUNKCE F-RESTART-08). `ytdj` ho proto vytvoří na pozadí
+    (`Catalog.warm`) až po rozjezdu přehrávače. Atribut, na který se sáhne
+    v event loopu (`self.yt.search`), YTMusic nevytváří: vrací funkci, která
+    to udělá až ve vlákně `_call`.
+    """
+
+    def __init__(self, factory: Callable[[], Any]) -> None:
+        self._factory = factory
+        self._real: Any = None
+        self._lock = threading.Lock()
+
+    def get(self) -> Any:
+        if self._real is None:
+            with self._lock:
+                if self._real is None:
+                    self._real = self._factory()
+        return self._real
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        real = self._real
+        if real is not None:
+            return getattr(real, name)
+        return lambda *a, **kw: getattr(self.get(), name)(*a, **kw)
 
 
 class Catalog:
@@ -167,10 +195,24 @@ class Catalog:
         # na 'en'") a stála jeden zbytečný dotaz. Na datech jazyk nic nemění:
         # názvy a jména jsou od vydavatele, ne přeložené; region hledání dává
         # `location`, a ten zůstává.
-        self.yt = YTMusic(auth, language=SEARCH_LANGUAGE, location=cfg.location)
+        location = cfg.location
+
+        def make() -> Any:
+            from ytmusicapi import YTMusic  # ~0,8 s na Pi — až mimo start
+
+            _patch_watch_explicit()  # dřív při importu modulu; teď s ytmusicapi
+            return YTMusic(auth, language=SEARCH_LANGUAGE, location=location)
+
+        self.yt: Any = LazyYT(make)
         self.authenticated = auth is not None
         self._cfg = cfg
         self._auth = auth
+
+    def warm(self) -> None:
+        """Vytvoří YTMusic hned (volá se ve vlákně po startu přehrávače),
+        ať první přání nečeká na import ytmusicapi."""
+        if isinstance(self.yt, LazyYT):
+            self.yt.get()
 
     async def _call(self, fn, *args, **kwargs) -> Any:
         return await asyncio.to_thread(fn, *args, **kwargs)

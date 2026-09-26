@@ -148,6 +148,7 @@ def render_state(
     requested: list[str] | None = None,
     intent: str = "",
     focus: str = "",
+    office: str = "",
 ) -> str:
     """Player state attached to every request.
 
@@ -168,6 +169,11 @@ def render_state(
         lines.append(f"Režim interpreta: hraje se jen {focus}")
     if intent:
         lines.append(f"Poslední výslovné přání posluchače: {intent}")
+
+    if office:
+        # hlasování kanceláře (ytdj/votes.py) — pár řádků, ne celý seznam
+        lines.append("")
+        lines.append(office)
 
     if history:
         lines.append("")

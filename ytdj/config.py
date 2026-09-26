@@ -64,6 +64,10 @@ DEFAULTS: dict = {
     # nezobrazí (DJ je dostane beze změny). Seznam = kořeny slov navíc.
     "display_filter": True,
     "display_blocklist": [],
+    # Hlasování kanceláře (ytdj/votes.py): kolik různých lidí musí dát 👎,
+    # než se skladba (a zároveň víc 👎 než 👍) / interpret vyřadí z nabídky.
+    "ban_song_votes": 2,
+    "ban_artist_votes": 3,
     # Last set volume. mpv starts at it, so a restarted service picks up where
     # it left off instead of coming back at full blast.
     "volume": 100,
@@ -172,6 +176,8 @@ class Config:
     mpv_extra_args: list[str] = field(default_factory=list)
     display_filter: bool = True
     display_blocklist: list[str] = field(default_factory=list)
+    ban_song_votes: int = 2
+    ban_artist_votes: int = 3
 
     yt_dlp_path: str = ""
     node_bin: str | None = None

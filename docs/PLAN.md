@@ -85,6 +85,21 @@ Pravidla při rozhodování (v tomhle pořadí):
 | G3 | Heslo Wi-Fi ne v argumentech procesu; panel jako root; úklid SSH tunelu | 📋 |
 | G4 | Jednoduchá obnova přihlášení (skripty + návod) | ✅ skripty, 📋 ověřit |
 
+### H. Hlasování, oblíbené a vyřazené
+Přání vlastníka: černá listina na interpreta i konkrétní píseň, vždy s tím, kdo ji přidal; přidat
+hrající skladbu / interpreta přímo z webu; seznam oblíbených; o vyřazení rozhoduje víc lidí.
+Hlasy bez stavu navíc — stav se počítá z hlasů (`ytdj/votes.py`, tabulka `votes` ve state.db).
+
+| ID | Požadavek | Stav |
+|---|---|---|
+| H1 | 👍/👎 skladbě, 👎 interpretovi; jeden hlas na člověka (id klienta, jméno = přezdívka přes kancelářský filtr), změna i stažení kdykoli; u každého hlasu kdo a kdy | ✅ backend (`/api/votes`), 📋 UI webu |
+| H2 | Jiné nahrání / verze téže písně = tatáž píseň; interpret sedí na každého uvedeného („A, B & C", „feat.") | ✅ |
+| H3 | Skladba vyřazená: ≥ `ban_song_votes` (2) lidí 👎 a víc 👎 než 👍; jeden 👎 = upozaděná; 👍 a víc 👍 než 👎 = oblíbená. Interpret vyřazený: ≥ `ban_artist_votes` (3) lidí 👎. Hlasy nestárnou, změnou hlasů se položka sama vrátí | ✅ |
+| H4 | Podkres a DJ vyřazené nenabízí, upozaděné méně, oblíbené i dřív než po `repeat_days`; při vyřazení zmizí z fronty podkres (přání nikdy) a hrající podkres se přeskočí | ✅ |
+| H5 | Výslovné přání vyřazené skladby / interpreta se splní — s poctivou poznámkou „(pozn.: vyřazená hlasováním — Petr, Jana)"; ze sady (interpret, oblíbené) vyřazené skladby vypadnou | ✅ |
+| H6 | „Pusť oblíbené" / „oblíbené kanceláře" / „pusť moje oblíbené" bez modelu; DJ a rozjezd (C7) znají oblíbené a vyřazené kanceláře | ✅ backend, 📋 čip na webu |
+| H7 | Ochrana: jeden hlas na klienta, nejvýš 30 hlasů / 10 min; telemetrie `vote.*` | ✅ |
+
 ## Fáze
 
 | Fáze | Obsah | Výstup / akceptace |

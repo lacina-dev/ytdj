@@ -31,6 +31,7 @@ from .ui import Repl
 from .web import WebServer
 from .config import DATA_DIR
 from .wishes import WishQueue
+from .votes import aload_quietly, wire as wire_votes
 from .loopwatch import LoopWatch
 
 log = logging.getLogger("ytdj")
@@ -112,6 +113,10 @@ class App:
             on_listener=self._listener_spoke,
             catalog=self.catalog,
         )
+        # ---- hlasování kanceláře (PLAN H, ytdj/votes.py) ----
+        # 👍/👎 skladbám a 👎 interpretům; podkres a DJ je respektují, výslovné
+        # přání se splní vždy. Hlasy se načtou v run() mimo event loop.
+        self.votes = wire_votes(self)
         self._start_task: asyncio.Task | None = None
 
     def _poke_web(self) -> None:
@@ -404,6 +409,7 @@ class App:
         # chytré Další přeskakuje jen podkres, přání nikdy
         if hasattr(self.player, "is_protected"):
             self.player.is_protected = self.wishes.is_request_track
+        await aload_quietly(self.votes)  # state.db ve vlákně, ne v event loopu
         await self.player.start()
         self.wishes.start()
         # hlídač zaseknutého event loopu (sys.loop_lag se zásobníkem)

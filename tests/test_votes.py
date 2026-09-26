@@ -116,7 +116,13 @@ class Thresholds(unittest.TestCase):
     def test_artist_thumbs_up_and_down(self):
         b = book()
         r = b.cast(ARTIST, PETR, 1, artist="Kabát")
-        self.assertEqual((r.after, r.item["up"]), (FAVOURITE, 1))
+        # jeden 👍 celého interpreta z něj oblíbeného neudělá (favourite_artist_votes 2)
+        self.assertEqual((r.after, r.item["up"]), (NEUTRAL, 1))
+        self.assertFalse(b.is_favourite(POHODA))
+        r = b.cast(ARTIST, KAREL, 1, artist="Kabát")
+        self.assertEqual((r.after, r.item["up"]), (FAVOURITE, 2))
+        b.cast(ARTIST, KAREL, 0, artist="Kabát")  # jako předtím: jen Petr
+        b.cast(ARTIST, EVA, 1, artist="Kabát")
         self.assertTrue(b.is_favourite(POHODA))  # skladba oblíbeného interpreta
         self.assertTrue(b.is_favourite(Track("x1", "Song", "Tomáš Klus feat. Kabát")))
         for v in (JANA, KAREL):
@@ -249,6 +255,7 @@ class FavouriteArtists(unittest.TestCase):
         kab = Track("kab0000000x", "Burlaci", "Kabát", duration=200)
         tracks = radio[:15] + [kab] + radio[15:]
         b.cast(ARTIST, PETR, 1, artist="Kabát")
+        b.cast(ARTIST, JANA, 1, artist="Kabát")  # oblíbený až od dvou lidí
         pools = Pools._pools(self, tracks, b, recent={kab.id})
         b.pools = pools  # jako wire(): pool_reject posune oblíbené dopředu
 
@@ -269,7 +276,9 @@ class FavouriteArtists(unittest.TestCase):
         fav_song = Track("fav00000001", "Fav", "Nobody")
         b.cast(SONG, JANA, 1, track=fav_song)
         b.cast(ARTIST, JANA, 1, artist="Olympic")
+        b.cast(ARTIST, EVA, 1, artist="Olympic")
         b.cast(ARTIST, PETR, 1, artist="Kabát")
+        b.cast(ARTIST, EVA, 1, artist="Kabát")
         for v in (PETR, KAREL):  # vyřazená skladba oblíbeného interpreta se nepustí
             b.cast(SONG, v, -1, track=tw.OLYMPIC[0])
 
@@ -285,6 +294,10 @@ class FavouriteArtists(unittest.TestCase):
         self.assertNotIn(tw.OLYMPIC[0].id, [t.id for t in office])
         mine = asyncio.run(b.favourite_mix(Cat(), PETR))  # Petr: jen Kabát
         self.assertEqual({t.artist for t in mine}, {"Kabát"})
+        # jeden 👍 ("moje oblíbené" ano, oblíbené kanceláře ne)
+        b.cast(ARTIST, KAREL, 1, artist="Queen")
+        self.assertNotIn("Queen", b.favourite_artists())
+        self.assertEqual(b.favourite_artists(KAREL), ["Queen"])
 
         class Slow:
             async def artist_tracks(self, name, limit=50):
@@ -297,6 +310,8 @@ class FavouriteArtists(unittest.TestCase):
     def test_dj_context_names_favourite_artists(self):
         b = book()
         b.cast(ARTIST, PETR, 1, artist="Olympic")
+        self.assertNotIn("Oblíbení interpreti kanceláře", b.describe())  # jeden 👍 nestačí
+        b.cast(ARTIST, JANA, 1, artist="Olympic")
         self.assertIn("Oblíbení interpreti kanceláře (👍): Olympic", b.describe())
         self.assertIn("interpret Olympic", b.summary()[0])
 
@@ -450,6 +465,7 @@ class WithQueue(unittest.TestCase):
                 self.assertIn(fav[2].id, {t.id for t in m.tracks})
                 # oblíbený interpret: "pusť oblíbené" hraje i jeho známé skladby
                 b.cast(ARTIST, EVA, 1, "Eva", artist="Olympic")
+                b.cast(ARTIST, JANA, 1, "Jana", artist="Olympic")  # oblíbený od dvou lidí
                 o = rig.wq.submit("pusť oblíbené", "Jana")
                 await rig.until(lambda: o.state in ("queued", "playing") and o.reply)
                 self.assertTrue(any(t.artist == "Olympic" for t in o.tracks), o.tracks)
@@ -539,8 +555,16 @@ class Api(unittest.TestCase):
             resp = await post(request({"target": "artist", "vote": 1, "client": PETR}))
             out = json.loads(resp.body)
             self.assertEqual((out["item"]["key"], out["item"]["status"], out["item"]["up"]),
-                             ("kabat", FAVOURITE, 1))
+                             ("kabat", NEUTRAL, 1))  # jeden 👍 celého interpreta nestačí
+            self.assertIn("až mu 👍 dají aspoň 2 lidé", out["message"])
+            resp = await post(request({"target": "artist", "vote": 1, "client": JANA,
+                                       "artist": "Kabát"}))
+            out = json.loads(resp.body)
+            self.assertEqual((out["item"]["key"], out["item"]["status"], out["item"]["up"]),
+                             ("kabat", FAVOURITE, 2))
             self.assertIn("oblíbenými interprety", out["message"])
+            resp = await post(request({"target": "artist", "vote": 1, "client": PETR,
+                                       "artist": "Olympic"}))
             resp = await post(request({"target": "artist", "vote": 1, "client": JANA,
                                        "artist": "Olympic"}))
             self.assertEqual(json.loads(resp.body)["item"]["status"], FAVOURITE)
@@ -554,14 +578,15 @@ class Api(unittest.TestCase):
             self.assertEqual({i["target"] for i in lists["favourites"]}, {ARTIST})
             self.assertEqual(lists["banned"][0]["mine"], -1)
             self.assertEqual([i["key"] for i in lists["pending"]], ["tomasklus"])
-            self.assertEqual(lists["rules"], {"ban_song_votes": 2, "ban_artist_votes": 3})
-            self.assertEqual(len(lists["mine"]), 2)  # Mala dáma 👎, Olympic 👍
+            self.assertEqual(lists["rules"], {"ban_song_votes": 2, "ban_artist_votes": 3,
+                                              "favourite_artist_votes": 2})
+            self.assertEqual(len(lists["mine"]), 3)  # Mala dáma 👎, Kabát 👍, Olympic 👍
             # detail hrající skladby: skladba + každý uvedený interpret
             det = json.loads((await h[("/api/votes/track", "GET")](
                 request(query={"client": PETR}))).body)
             self.assertEqual([a["name"] for a in det["artists"]], ["Kabát", "Tomáš Klus"])
             self.assertEqual(det["artists"][1]["mine"], -1)
-            self.assertEqual((det["artists"][0]["mine"], det["artists"][0]["up"]), (1, 1))
+            self.assertEqual((det["artists"][0]["mine"], det["artists"][0]["up"]), (1, 2))
             # stavový snímek: malý blok, značky místo jmen
             snap = await srv._snapshot()
             cur = snap["current"]["votes"]
@@ -571,7 +596,8 @@ class Api(unittest.TestCase):
             self.assertEqual(cur["artists"][1]["by"], [tag_of(PETR)])  # starší čtenáři: "by" = 👎
             self.assertEqual(cur["artists"][1]["down_by"], [tag_of(PETR)])
             k = cur["artists"][0]
-            self.assertEqual((k["status"], k["up"], k["up_by"]), (FAVOURITE, 1, [tag_of(PETR)]))
+            self.assertEqual((k["status"], k["up"], set(k["up_by"])),
+                             (FAVOURITE, 2, {tag_of(PETR), tag_of(JANA)}))
             self.assertNotIn("by", k)
             # Jasná zpráva: o skladbě se nehlasovalo, ale Olympic je oblíbený
             qv = snap["queue"][0]["votes"]

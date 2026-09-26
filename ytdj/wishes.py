@@ -61,7 +61,7 @@ from typing import Any, Callable
 
 from . import telemetry
 from .nicks import NickError, Nicks, clean_nick, tag_of
-from .agent.intent import corrects, local_command, meta_kind, near_same, norm
+from .agent.intent import complaint_in, corrects, local_command, meta_kind, near_same, norm
 from .music.catalog import RE_URL, Track
 from .player.base import queue_transaction
 
@@ -81,6 +81,7 @@ PANEL_BUDGET = 3
 # zavřením přání, takže by jinak byl pokaždé "nováček" a předběhl všechny.
 PANEL_SEAT = "panel"
 SKIPS_TO_END = 2  # cizí přeskočení skladeb přání, po kterých přání končí
+SKIP_REPEAT = 1.5  # s — Další od téhož člověka na tutéž skladbu = jedno přeskočení
 STARVED = 10 * 60  # s — kdo tak dlouho nic svého neslyšel, na stížnost dostane přednost
 # podkres po přání v režimu interpreta: nejvýš tolik skladeb / minut, pak
 # "<interpret> a podobné" (Pi 26. 9.: Parni Valjak v podkresu i po restartu)
@@ -169,6 +170,11 @@ def replaces(text: str) -> bool:
 DJ_OFFLINE_TEXT = ("DJ teď nerozumí volnému textu — funguje „pusť <interpret>“, "
                    "název písničky nebo odkaz z YouTube.")
 DJ_FAILED_TEXT = "DJ teď neodpověděl — zkus to prosím za chvíli znovu. Hudba hraje dál."
+
+
+# stížnost, ve které je i přání ("nefér, chci Olympic") — přání se zařadí a
+# odpověď to poctivě řekne (pravidla fronty řeší otázka bez přání)
+META_LEAD = "Beru to jako přání."
 
 
 class TooMany(Exception):
@@ -293,9 +299,12 @@ class Wish:
     chip: str = ""  # tlačítko nálady (calmer, livelier…) — DJ ho zvládne i bez modelu
     skipped_by: str = ""  # kdo přeskočil jeho skladbu
     restored: bool = False  # obnoveno po restartu ytdj
+    was_current: str | None = None  # obnoveno: co z něj hrálo, když se stav ukládal
+    lead: str = ""  # věta před potvrzením (stížnost s přáním)
     last_end: str = ""  # jak skončila poslední jeho skladba (finished/skipped/…)
     order: float = 0.0  # pořadí mezi přáními téhož člověka (menší = dřív); 0 = mono
     skips_others: int = 0  # kolikrát jeho skladbu přeskočil někdo jiný
+    skip_counted: set[str] = field(default_factory=set)  # videoId už započtených cizích přeskočení
     yielded: bool = False  # cizí přeskočení ukončilo jeho kolo (další položka nezůstává)
     client: dict = field(default_factory=dict)  # ip, ua (zkrácený) — jen do logu
     settled: asyncio.Event | None = field(default=None, repr=False, compare=False)
@@ -379,6 +388,7 @@ class Wish:
             "handed": self.handed, "cid": self.cid,
             "order_age": round(self.mono - self.rank, 3) if self.order else None,
             "skips_others": self.skips_others,
+            "current": self.current,
             "tracks": [_track_json(t) for t in self.tracks],
             "rest": [_track_json(t) for t in self.rest[:100]],
             "done": sorted(self.done_ids),
@@ -408,6 +418,8 @@ class Wish:
         w.tracks = [t for t in (_track_from(x) for x in d.get("tracks") or []) if t]
         w.rest = [t for t in (_track_from(x) for x in d.get("rest") or []) if t]
         w.done_ids = {str(x) for x in d.get("done") or []}
+        if isinstance(d.get("current"), str):
+            w.was_current = d["current"]
         return w
 
 
@@ -639,6 +651,7 @@ class WishQueue:
         self.owner: dict[str, str] = {}  # videoId zhmotněné položky → id přání
         # proč hraje podkres: start (chytrý rozjezd) | radio; kdo ho naposledy určil
         self.bg_reason: dict[str, str] = {"kind": "radio", "who": "", "text": ""}
+        self._bg_at = 0.0  # epoch — kdy se podkres naposledy změnil (_set_background)
         self.starting = False
         self._inflight: dict[str, asyncio.Task] = {}
         # Na Codex se čeká v pořadí příchodu přání — i když se to dřívější
@@ -667,7 +680,9 @@ class WishQueue:
         self._paused_at: float | None = None  # kdy někdo úmyslně dal pauzu
         # (vid, kdo, id klienta, kdy, už započteno skip_current)
         self._skip_note: tuple | None = None
-        self.last_heard: dict[str, float] = {}  # Wish.key → kdy mu naposledy začala skladba
+        # poslední Další (vid, kdo, id klienta, kdy) — dvojí ťuknutí = jedno přeskočení
+        self._last_skip: tuple | None = None
+        self.last_heard: dict[str, float] = {}  # Wish.seat → kdy mu naposledy začala skladba
         self._bg_tasks: set[asyncio.Task] = set()
         self._boot = boot_id()
         self._pause_note = False
@@ -883,7 +898,7 @@ class WishQueue:
         w.client = {k: str(v)[:60] for k, v in (client or {}).items() if k in ("ip", "ua")}
         if cid:
             w.client["cid"] = cid[-6:]
-        if play_next and self._has_play_next(w.key, exclude=w):
+        if play_next and self._has_play_next(w.seat, exclude=w):
             w.play_next = False
             w.note = "Jedno „hned“ na člověka — tohle jde do fronty normálně."
         self.wishes.append(w)
@@ -905,9 +920,10 @@ class WishQueue:
         self._changed()
         return w
 
-    def _has_play_next(self, key: str, exclude: Wish | None = None) -> bool:
+    def _has_play_next(self, seat: str, exclude: Wish | None = None) -> bool:
+        """Má už člověk (místo v kole — displej je jeden) přání "hned"?"""
         return any(
-            x.key == key and x.play_next and x.active and not x.started and x is not exclude
+            x.seat == seat and x.play_next and x.active and not x.started and x is not exclude
             for x in self.wishes
         )
 
@@ -979,7 +995,7 @@ class WishQueue:
             return False, "Tohle přání už hraje nebo je vyřízené."
         if w.play_next:
             return True, "Už je zařazené hned po téhle."
-        if self._has_play_next(w.key, exclude=w):
+        if self._has_play_next(w.seat, exclude=w):
             return False, "Jedno „hned“ na člověka — tvoje předchozí ještě nezačalo."
         w.play_next = True
         telemetry.event("request.play_next", id=w.id, who=w.who, source=w.source, state=w.state)
@@ -1120,19 +1136,37 @@ class WishQueue:
             w.reply = await self.local(cmd, w.who, w.cid)
             self._finish(w, "done", t0)
             return
-        if (meta := meta_kind(w.text)) is not None:
-            # otázka / stížnost na frontu: odpověď ze skutečného stavu, žádná
-            # náhodná hudba (Pi 26. 9. 9:47 "Proč to vůbec nehraje moje písničky?")
-            self._codex_done(w.id)
-            w.via, w.kind = "local", "meta"
-            async with self._apply_lock:
-                w.reply = await self._answer_meta(w, meta)
-            self._finish(w, "done", t0)
-            self._changed()
-            return
-
         plan = None
-        if RE_URL.search(w.text):
+        if (meta := meta_kind(w.text)) is not None:
+            # "proč nehraješ Kabát?", "kdy bude Bohemian Rhapsody": když je
+            # v otázce jméno, které katalog zná, je to přání (nebo se ptá,
+            # kdy přijde, co už ve frontě je)
+            found = await self._meta_music(w)
+            if isinstance(found, str):
+                self._codex_done(w.id)
+                w.via, w.kind = "local", "meta"
+                w.reply = found
+                telemetry.event("request.meta", id=w.id, who=w.who, source=w.source, meta=meta,
+                                text=telemetry.clip(w.text, 200), eta=True)
+                self._finish(w, "done", t0)
+                self._changed()
+                return
+            if found is None:
+                # otázka / stížnost na frontu: odpověď ze skutečného stavu, žádná
+                # náhodná hudba (Pi 26. 9. 9:47 "Proč to vůbec nehraje moje písničky?")
+                self._codex_done(w.id)
+                w.via, w.kind = "local", "meta"
+                async with self._apply_lock:
+                    w.reply = await self._answer_meta(w, meta)
+                self._finish(w, "done", t0)
+                self._changed()
+                return
+            plan, w.via = found, "fast"
+            telemetry.event("request.meta_wish", id=w.id, who=w.who, source=w.source, meta=meta,
+                            text=telemetry.clip(w.text, 200))
+        if complaint_in(w.text):
+            w.lead = META_LEAD  # stížnost s přáním: poctivě, co s tím děláme
+        if plan is None and RE_URL.search(w.text):
             plan = await self._link_plan(w)
         favourites = getattr(self.dj, "favourites_plan", None)
         if plan is None and favourites is not None:  # "pusť (moje) oblíbené" (votes.py)
@@ -1493,8 +1527,11 @@ class WishQueue:
         self._changed()
 
     def _confirm(self, w: Wish, intent: Any, notes: list[str], when: str) -> str:
-        """Pravdivé potvrzení: vyjmenuje, co se skutečně zařadilo."""
-        ts = w.pending()
+        """Pravdivé potvrzení: vyjmenuje, co se skutečně zařadilo.
+
+        I skladbu, která mezitím začala hrát (w.pending() ji už nemá — Pi:
+        "Zařadil jsem: . Hraje hned.")."""
+        ts = [t for t in w.tracks if t.id not in w.done_ids]
         shown = ", ".join(_label(t) for t in ts[:3])
         more = f" a další ({len(ts) - 3})" if len(ts) > 3 else ""
         if w.kind == "artist":
@@ -1508,7 +1545,8 @@ class WishQueue:
             head = f"Zařadil jsem {intent.mood.removesuffix(' a podobné')}: "
         else:
             head = "Zařadil jsem: "
-        parts = [head + shown + more + ".", *notes]
+        # nikdy prázdný výčet "Zařadil jsem: ."
+        parts = [w.lead, (head + shown + more if shown else head.rstrip(": ")) + ".", *notes]
         others = any(x.seat != w.seat and x.active for x in self.wishes)
         if others and len(ts) > w.budget:
             parts.append(f"Čekají i další, tak se střídáme: z tohohle přání teď zazní nejvýš "
@@ -1535,6 +1573,9 @@ class WishQueue:
     async def _control(self, intent: Any) -> None:
         p = self.player
         if intent.control == "skip":
+            # přeskočení, o kterém rozhodl DJ (model): "DJ", do cizích
+            # přeskočení se nepočítá (kolo ani přání tím nekončí)
+            self._skip_note = (self.current_vid, "DJ", None, time.monotonic(), True)
             await p.skip()
         elif intent.control in ("pause", "stop"):
             # "stop" z přání = pauza; cizí přání se kvůli tomu nemažou
@@ -1633,6 +1674,7 @@ class WishQueue:
         with contextlib.suppress(AttributeError):
             self.dj._focus_artists = focus
         self.bg_reason = {"kind": kind, "who": who, "text": mood or artist, "id": wid}
+        self._bg_at = time.time()
         telemetry.event("request.background", reason=kind, who=who or None,
                         mood=telemetry.clip(mood or artist, 120),
                         artist=artist or None, requests=len(self.active()))
@@ -1642,9 +1684,7 @@ class WishQueue:
     # ---- podkres po skončeném přání ----
 
     def _after_finish(self, w: Wish) -> None:
-        """Přání skončilo — podkres se podle toho možná přeladí (na pozadí)."""
-        if w.state not in ("done", "skipped", "removed") or w.kind == "meta":
-            return
+        """Přání skončilo (jakkoli) — podkres se podle toho možná přeladí (na pozadí)."""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -1653,29 +1693,32 @@ class WishQueue:
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
 
+    def _music_waiting(self, but: Wish | None = None) -> bool:
+        """Má jiné přání ve frontě co hrát? (Čekající na DJe, otázky a přání
+        bez skladeb se nepočítají — až skončí, rozhodne se znovu.)"""
+        return any(x is not but and x.state in ("queued", "playing") and (x.pending() or x.current)
+                   for x in self.wishes)
+
     async def _background_after(self, w: Wish) -> None:
         """Podkres jde za naposledy SPLNĚNÝM přáním, ne za starým.
 
         Pi 26. 9. 9:56: po Robertově přání jel podkres znovu Parni Valjak —
         režim interpreta z přání displeje, které skončilo o 50 minut dřív.
-          - splněné přání (dohrálo) a nikdo jiný nic nechce → podkres v jeho duchu
-            (interpret = omezený režim interpreta, skladba = "… a podobné");
           - přání, které lidé přeskočili nebo autor odebral, bere svůj podkres
-            s sebou → podkres podle posledního jiného přání, jinak historie.
+            s sebou → podkres podle posledního jiného přání, jinak historie;
+          - jinak, když už žádné jiné přání nemá co hrát (ať to skončilo
+            splněním, "nenašel", chybou nebo to byla otázka) → podkres v duchu
+            naposledy splněného přání (interpret = omezený režim interpreta,
+            skladba = "… a podobné"), pokud splnilo až po poslední změně podkresu.
         """
         async with self._apply_lock:
             try:
                 src = self.bg_reason.get("id", "")
-                if w.state == "done" and w.played > 0 and w.kind in ("artist", "song", "songs") \
-                        and src != w.id:
-                    if any(x.active for x in self.wishes):
-                        return  # rozhodne to, až skončí poslední z nich
-                    await self._follow(w, "fulfilled")
-                elif w.state in ("skipped", "removed") and src == w.id:
+                if w.state in ("skipped", "removed") and src == w.id:
                     others = [x for x in self.wishes if x is not w and x.played > 0
                               and x.kind in ("artist", "song", "songs", "mood")
                               and (x.active or time.time() - (x.done_at or 0) < DONE_TTL)]
-                    nxt = max(others, key=lambda x: self.last_heard.get(x.key, 0.0), default=None)
+                    nxt = max(others, key=lambda x: self.last_heard.get(x.seat, 0.0), default=None)
                     if nxt is not None:
                         await self._follow(nxt, "rejected")
                         return
@@ -1685,8 +1728,20 @@ class WishQueue:
                     elif getattr(self.pools, "artist", ""):
                         await self.pools.soften_artist("rejected")
                         self.bg_reason = {"kind": "radio", "who": "", "text": self.pools.mood, "id": ""}
+                        self._bg_at = time.time()
                     telemetry.event("request.background_follow", id=w.id, why="rejected",
                                     to="history" if seeds else "similar")
+                    return
+                if self._music_waiting():
+                    return  # rozhodne to, až skončí poslední z nich
+                now = time.time()
+                done = [x for x in self.wishes if x.state == "done" and x.played > 0
+                        and x.kind in ("artist", "song", "songs", "mood")
+                        and now - (x.done_at or 0) < DONE_TTL]
+                latest = max(done, key=lambda x: x.done_at, default=None)
+                if latest is None or latest.id == src or latest.done_at < self._bg_at:
+                    return  # podkres už je jeho, nebo se od té doby změnil jinak
+                await self._follow(latest, "fulfilled" if latest is w else "fulfilled_last")
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -1716,6 +1771,59 @@ class WishQueue:
 
     # ---- otázky a stížnosti na frontu ----
 
+    async def _meta_music(self, w: Wish) -> Any:
+        """Přání schované v otázce ("proč nehraješ Kabát?", "kdy bude Kometa").
+
+        Vrací plán (zařadit), text (to, na co se ptá, už ve frontě je nebo
+        hraje — kdy přijde) nebo None (čistá otázka). Jméno musí potvrdit
+        katalog (rychlá cesta interpreta / skladby, pak název skladby).
+        """
+        from .agent.fastpath import meta_candidates
+
+        cands = meta_candidates(w.text)
+        if not cands:
+            return None
+        where = await self._queued_answer(cands)
+        if where:
+            return where
+        fast = getattr(self.dj, "fast_plan", None)
+        title = getattr(self.dj, "title_plan", None)
+        for c in cands:
+            plan = None
+            with contextlib.suppress(Exception):
+                if fast is not None:
+                    plan = await fast(c)
+                if plan is None and title is not None and " od " not in f" {c} ":
+                    plan = await title(c)
+            if plan is not None and not getattr(plan, "failed", ""):
+                plan.intent.text = w.text
+                return plan
+        return None
+
+    async def _queued_answer(self, cands: list[str]) -> str | None:
+        """Hraje / čeká to, na co se ptá, už ve frontě přání? Kdy přijde."""
+        from .agent.fastpath import name_matches, title_strong
+
+        def hit(c: str, t: Track) -> bool:
+            toks = norm(c).split()
+            return bool(toks) and (name_matches(toks, t.artist or "") or title_strong(c, t.title))
+
+        cur = None
+        with contextlib.suppress(Exception):
+            cur = (await self.player.status()).current
+        c = self.censor
+        for cand in cands:
+            if cur is not None and hit(cand, cur):
+                owner = self._owner_of(cur.id) or next(
+                    (x for x in self.wishes if x.active and x.current == cur.id), None)
+                whose = f" — přání {c.clean(owner.who)}" if owner is not None else ""
+                return f"„{_label(cur)}“ právě hraje{whose}."
+            for i, (x, t) in enumerate(self._order):
+                if hit(cand, t):
+                    return (f"„{_label(t)}“ je ve frontě (přání {c.clean(x.who)}) — "
+                            f"na řadě {eta_text(i, self.eta_seconds(i))}.")
+        return None
+
     async def _answer_meta(self, w: Wish, meta: str) -> str:
         """Pravdivá odpověď ze skutečného stavu: co hraje a proč, kde jsou
         tazatelova přání a kdy přijdou. Když to dává smysl, i něco udělá:
@@ -1730,7 +1838,7 @@ class WishQueue:
         if owner is None and cur is not None:
             owner = next((x for x in self.wishes if x.active and x.current == cur.id), None)
         if cur is not None:
-            if owner is not None and owner.key == w.key:
+            if owner is not None and owner.seat == w.seat:
                 why = "tvoje přání"
             elif owner is not None:
                 why = f"přání {c.clean(owner.who)} ({owner.played}. skladba z něj)"
@@ -1740,7 +1848,9 @@ class WishQueue:
                 if not any(x.state in ("queued", "playing") for x in self.wishes):
                     why += " — nikdo teď nic nečeká"
             parts.append(f"Teď hraje {_label(cur)} — {why}.")
-        mine = sorted((x for x in self.wishes if x.key == w.key and x.active and x is not w
+        # kdo se ptá = místo v kole: displej dostává s každým přáním novou
+        # relaci (id klienta), jeho přání jsou ale všechna "moje"
+        mine = sorted((x for x in self.wishes if x.seat == w.seat and x.active and x is not w
                        and x.kind != "meta"), key=lambda x: x.rank)
         bumped = yielded = False
         if mine:
@@ -1755,19 +1865,19 @@ class WishQueue:
                 else:
                     state = "ve frontě"
                 parts.append(f"Tvoje „{c.clean(telemetry.clip(x.text, 40))}“: {state}.")
-            heard = self.last_heard.get(w.key, 0.0)
+            heard = self.last_heard.get(w.seat, 0.0)
             since = max(heard, min(x.mono for x in mine))
             cand = next((x for x in mine if x.state == "queued" and not x.started
                          and not x.play_next), None)
             if cand is not None and time.monotonic() - since >= STARVED \
-                    and not self._has_play_next(w.key):
+                    and not self._has_play_next(w.seat):
                 cand.play_next = True
                 bumped = True
                 telemetry.event("request.play_next", id=cand.id, who=cand.who, source=cand.source,
                                 state=cand.state, by="starved")
                 parts.append("Dlouho jsi nic svého neslyšel, tak ho dávám hned po téhle skladbě.")
         else:
-            last = max((x for x in self.wishes if x.key == w.key and not x.active and x is not w
+            last = max((x for x in self.wishes if x.seat == w.seat and not x.active and x is not w
                         and x.kind != "meta"), key=lambda x: x.done_at, default=None)
             if last is not None:
                 how = STATE_CS.get(last.state, last.state)
@@ -2041,7 +2151,7 @@ class WishQueue:
                     if not x.started:
                         x.started = True
                         x.play_next = False
-                    self.last_heard[x.key] = time.monotonic()
+                    self.last_heard[x.seat] = time.monotonic()
                 w.play_next = False
                 if new_turn:
                     for x in self.wishes:
@@ -2127,7 +2237,14 @@ class WishQueue:
     async def _skipped_by_other(self, w: Wish, vid: str | None, by: str) -> None:
         """Skladbu přání přeskočil někdo jiný: kolo přání končí hned, druhé
         cizí přeskočení končí celé přání (Pi 26. 9.: Robert přeskočil Parni
-        Valjak pětkrát a pokaždé naskočila další skladba téhož přání)."""
+        Valjak pětkrát a pokaždé naskočila další skladba téhož přání).
+
+        Jedna skladba se počítá jednou, i když Další přijde víckrát (dvojí
+        ťuknutí, dva lidé naráz)."""
+        mark = vid or ""
+        if mark in w.skip_counted:
+            return
+        w.skip_counted.add(mark)
         w.skips_others += 1
         if self.turns.block and self.turns.block[0] == w.seat:
             self.turns.block = None
@@ -2148,12 +2265,28 @@ class WishQueue:
     async def skip_current(self, by: str = "", client: Any = None) -> None:
         """Tlačítko Další (web, displej): zapsat kdo, a když přeskakuje cizí
         přání, přeplánovat DŘÍV, než mpv skočí na další položku — jinak by
-        naskočila další skladba téhož přání."""
+        naskočila další skladba téhož přání.
+
+        Dvojí ťuknutí (dva požadavky od téhož člověka dřív, než mpv ohlásí
+        další skladbu) je jedno přeskočení — jinak by přeskočilo i další
+        skladbu a u cizího přání se počítalo dvakrát a přání ukončilo."""
         key = clean_cid(client) or None
+        vid = self.current_vid
+        now = time.monotonic()
+        last = self._last_skip
+        if last is not None and now - last[3] < SKIP_REPEAT and last[1:3] == (by or "někdo", key) \
+                and (last[0] == vid or vid is None):
+            telemetry.event("request.skip_repeat", video_id=vid, by=by or None,
+                            after_ms=int((now - last[3]) * 1000))
+            return
+        self._last_skip = (vid, by or "někdo", key, now)
         self.note_skip(by, client)
-        w = self._owner_of(self.current_vid)
-        if w is not None and not self._is_owner(w, by, key):
-            await self._skipped_by_other(w, self.current_vid, by)
+        w = self._owner_of(vid)
+        # Při výpadku Další jen posune místo, odkud se naváže — skladba se
+        # nepřeskočila, takže se nepočítá (a kolo přání nekončí).
+        outage = getattr(self.player, "_outage", None) is not None
+        if w is not None and not outage and not self._is_owner(w, by, key):
+            await self._skipped_by_other(w, vid, by)
             self._skip_note = self._skip_note[:4] + (True,) if self._skip_note else None
             with contextlib.suppress(Exception):
                 await self.replan()
@@ -2355,6 +2488,67 @@ class WishQueue:
         seeds = [t for t in _dedup(tracks)][:3]
         await self._set_background(seeds=seeds, mood=f"{artist} a podobné")
 
+    def _playback_snapshot(self) -> tuple[str, float] | None:
+        """(videoId, kdy uloženo) z playback.json přehrávače, nebo None."""
+        path = getattr(self.player, "playback_file", None)
+        if path is None:
+            return None
+        try:
+            data = json.loads(Path(path).read_text())
+            return str(data["track"]["id"]), float(data["saved"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    def _history_ended(self, saved_at: float, playing_then: set[str]) -> set[str]:
+        """Skladby, které podle historie (state.db) po uložení stavu skončily:
+        začaly až po něm, nebo tehdy hrály — a mají výsledek (dohrála,
+        přeskočená, chyba)."""
+        plays_in = getattr(self.store, "plays_in", None)
+        if plays_in is None or saved_at <= 0:
+            return set()
+        try:
+            rows = plays_in([(saved_at - 3 * 3600, time.time() + 60)],
+                            ("started", "finished", "skipped", "replaced", "error"))
+        except Exception:
+            log.debug("historie pro obnovu přání nejde přečíst", exc_info=True)
+            return set()
+        latest: dict[str, Any] = {}
+        for r in rows:  # od nejstarší — poslední záznam skladby vyhrává
+            latest[r.video_id] = r
+        return {v for v, r in latest.items() if r.outcome in ("finished", "skipped", "error")
+                and (r.ts >= saved_at or v in playing_then)}
+
+    async def _ended_since(self, saved: dict) -> set[str]:
+        """Co z uložených přání mezitím dohrálo, ač to session.json neví.
+
+        session.json a playback.json se píšou v jiných chvílích (každých 5 s,
+        při ukončení); skladba, která mezi nimi skončila, by po restartu
+        zazněla znovu. Pozná se z historie, a když je playback.json novější
+        než stav přání a hraje v něm jiná skladba, skončila i ta, která hrála
+        při uložení stavu.
+        """
+        saved_at = float(saved.get("saved") or 0)
+        playing_then = {str(d["current"]) for d in saved.get("wishes") or []
+                        if isinstance(d, dict) and isinstance(d.get("current"), str)}
+        ended = await asyncio.to_thread(self._history_ended, saved_at, playing_then)
+        snap = self._playback_snapshot()
+        if snap is not None:
+            vid, at = snap
+            if at >= saved_at:
+                ended |= playing_then - {vid}
+            ended.discard(vid)  # co hraje teď (naváže se), neskončilo
+        return ended
+
+    def _reconcile(self, w: Wish, ended: set[str]) -> None:
+        mine = {t.id for t in w.tracks} - w.done_ids
+        gone = mine & ended
+        if not gone:
+            return
+        w.done_ids |= gone
+        w.played += len(gone - {w.was_current})  # začaly až po uložení stavu
+        telemetry.event("request.resume_reconciled", id=w.id, who=w.who, done=sorted(gone))
+        log.info("přání %s: po restartu už dohrálo %d skladeb", w.id, len(gone))
+
     async def resume(self, saved: dict | None = None, now: datetime | None = None,
                      wall: float | None = None) -> str:
         """Po startu ytdj: přání obnovit vždy, když je stav čerstvý a Pi se
@@ -2375,9 +2569,15 @@ class WishQueue:
             await self.player.toggle_pause(True)
         turns = saved.get("turns") or {}
         with contextlib.suppress(TypeError, ValueError):
-            self.turns = Turns(int(turns.get("turn_no") or 0),
-                               {str(k): int(v) for k, v in (turns.get("last") or {}).items()})
+            last: dict[str, int] = {}
+            for k, v in (turns.get("last") or {}).items():
+                # stav z doby před místy v kole: displej pod relací "panel-…"
+                # (jinak by byl po restartu "nováček" a předběhl všechny)
+                seat = PANEL_SEAT if str(k).startswith(PANEL_SEAT) else str(k)
+                last[seat] = max(last.get(seat, 0), int(v))
+            self.turns = Turns(int(turns.get("turn_no") or 0), last)
         rethink = False
+        ended = await self._ended_since(saved)
         for d in saved.get("wishes") or []:
             w = Wish.from_json(d) if isinstance(d, dict) else None
             if w is None:
@@ -2393,6 +2593,7 @@ class WishQueue:
                 self._codex_order.append(w.id)
                 rethink = True
                 continue
+            self._reconcile(w, ended)
             w.state = "queued" if w.pending() else "done"
             if w.state == "queued":
                 self.wishes.append(w)

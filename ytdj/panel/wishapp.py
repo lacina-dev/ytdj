@@ -24,6 +24,7 @@ from typing import Callable
 from .hw import Box, TouchEvent
 from .netui import ROWS
 from .stats import emit
+from .touchpress import Press, closest, nearest
 from .ui import vote_mark
 from .wishui import ACTIVE, CHIPS, STRINGS, QueueRow, WishRenderer, WishView, targets
 
@@ -36,8 +37,6 @@ ERROR_CLOSE = 60.0
 QUEUE_CLOSE = 60.0
 PROMPT_TIMEOUT = 240.0  # the server answers at once (202); an older one only after the turn
 CAPS_TAP = 0.45
-TOUCH_SLOP = 14
-TOUCH_GRAB = 4
 MIN_PRESS = 0.02
 SOURCE = "panel"
 PANEL_WHO = "displej"  # the name on wishes typed here, unless somebody picks theirs
@@ -155,6 +154,7 @@ class WishController:
         self.note = ""
         # gesture
         self.pressed: str | None = None
+        self.press: Press | None = None  # the press in progress (touchpress rules)
         self.press_at = 0.0
         self.last_xy = (0, 0)
         self.inside = False
@@ -428,44 +428,36 @@ class WishController:
     def _targets(self) -> dict[str, Box]:
         return targets(self.view(time.monotonic()), self.lang)
 
-    def _hit(self, x: int, y: int, slop: int) -> str | None:
-        best, best_d = None, None
-        for name, (l, t, r, b) in self._targets().items():
-            if l - slop <= x < r + slop and t - slop <= y < b + slop:
-                dx = max(l - x, 0, x - (r - 1))
-                dy = max(t - y, 0, y - (b - 1))
-                dist = dx * dx + dy * dy
-                if best_d is None or dist < best_d:
-                    best, best_d = name, dist
-        return best
-
-    @staticmethod
-    def _in(box: Box, x: int, y: int, slop: int) -> bool:
-        return box[0] - slop <= x < box[2] + slop and box[1] - slop <= y < box[3] + slop
-
     def touch(self, ev: TouchEvent, now: float) -> None:
         self.last_touch = now
         if ev.kind == "down":
-            name = self._hit(ev.x, ev.y, TOUCH_GRAB)
+            tg = self._targets()
+            name, _ = nearest(tg, ev.x, ev.y)
             self.pressed, self.inside = name, name is not None
+            self.press = Press(name, tg[name]) if name else None
             self.press_at = now
             self.last_xy = (ev.x, ev.y)
             if name is None:
                 self.count("wish_miss")
+                cn, dist, dx, dy = closest(tg, ev.x, ev.y)
+                emit("panel.touch_miss", page=f"wish:{self.page}", x=ev.x, y=ev.y, near=cn, dist=dist,
+                     dx=dx, dy=dy)
         elif ev.kind == "move":
             if not self.pressed:
                 return
             self.last_xy = (ev.x, ev.y)
             box = self._targets().get(self.pressed)
-            self.inside = box is not None and self._in(box, ev.x, ev.y, TOUCH_SLOP)
+            self.inside = box is not None and self.press is not None and self.press.move(ev.x, ev.y, box)
         elif ev.kind == "up":
             name = self.pressed
-            self.pressed, self.inside = None, False
+            self.pressed = None
             if not name:
                 return
-            x, y = self.last_xy  # release coordinates on resistive glass are junk
+            inside, self.inside = self.inside, False
             box = self._targets().get(name)
-            if box is None or not self._in(box, x, y, TOUCH_SLOP):
+            # counts unless the finger clearly went away (touchpress) — the
+            # last positions before a lift drift on resistive glass
+            if box is None or not inside:
                 self.count("wish_slid_out")
                 return
             if now - self.press_at < MIN_PRESS:

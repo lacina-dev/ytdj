@@ -131,7 +131,7 @@ KNOWN = {
     "resolver.template", "resolver.exit", "resolver.fallback", "prefetch.ahead",
     "resolver.listen", "resolver.disk", "resolver.drop", "resolver.import_failed",
     "resolver.cancel", "player.resume_track",
-    "player.start", "player.priority", "player.died", "player.fail",
+    "player.start", "player.priority", "player.died", "player.fail", "player.retry",
     "sys.sample", "sys.throttle", "audio.xrun",
     "web.prompt", "web.control", "web.sse_open", "web.sse_close", "web.restart",
     "web.config", "web.error",

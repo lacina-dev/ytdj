@@ -515,10 +515,13 @@ _META = re.compile(
     r"|\bignoruj\w*|\bco (to )?(ted )?hraje\b|\bkdo (to )?(pustil|chtel|si preje|vybral)\b"
     r"|\bjak dlouho (budu|jeste|to)\b|\bkolik (je|mam) (prede mnou|pred mnou)\b"
 )
-# kde je v textu i jasné přání hudby, jde o přání (i se stížností kolem)
+# kde je v textu i jasné přání hudby, jde o přání (i se stížností kolem):
+# "nefér, chci Olympic", "kdo chtěl tohle? dej něco od Olympicu", "proč ne Kabát"
+# ("proč ne" samo je otázka; "chci vědět, proč…" taky)
 _MUSIC_VERB = re.compile(
     r"\b(pust\w*|zahraj\w*|zahrej\w*|hraj|hrajte|hrej|dej mi|dejte|chci slyset|chci poslouchat"
     r"|pridej\w*|zarad\w*|stridej\w*|prokladej|play|put on)\b"
+    r"|\b(chci|dej)\b(?! vedet| vedel| vedela)|\bproc ne\b(?=\s+\S)"
 )
 _COMPLAINT = re.compile(
     r"\b(demokraci\w*|nefer|neni to fer|nespravedl\w*|porad|furt|nestrid\w*|zadne|nenastavil\w*"
@@ -527,11 +530,36 @@ _COMPLAINT = re.compile(
 
 
 def meta_kind(text: str) -> str | None:
-    """ "question" / "complaint" o frontě a o tom, proč hraje, co hraje; None = přání."""
+    """ "question" / "complaint" o frontě a o tom, proč hraje, co hraje; None = přání.
+
+    Jen podle textu. Otázka, ve které je i jméno ("proč nehraješ Kabát?",
+    "kdy bude Bohemian Rhapsody"), je tu pořád "question" — jestli jde
+    o skutečné přání, rozhodne fronta s katalogem (fastpath.meta_candidates).
+    """
     t = norm(text)
     if not t or not _META.search(t) or _MUSIC_VERB.search(t):
         return None
     return "complaint" if _COMPLAINT.search(t) else "question"
+
+
+def complaint_in(text: str) -> bool:
+    """Stížnost na frontu, i když je v textu zároveň přání ("nefér, chci Olympic")."""
+    t = norm(text)
+    return bool(t and _META.search(t) and _COMPLAINT.search(t))
+
+
+# Otázka, která si ve skutečnosti o hudbu říká: zápor slovesa hraní ("proč
+# nehraješ Kabát", "proč jsi nepustil Beatles"), "kdy bude / přijde X",
+# "ignoruj předchozí, X", "mám rád X, proč to nehraje", "Píseň (Interpret)".
+# "Proč hraje pořád X?" ne — to je stížnost na X.
+_META_WANTS = re.compile(
+    r"\bne(hraj|hral|pust|pous|zahr|dal)\w*|\bproc ne\b|\bignoruj\w*|\bmam (rad|rada)\b"
+    r"|\bkdy (uz )?(bude|budou|prijde|prijdou|zahrajes|zahraje|hraje|pustis|dojde)\b"
+)
+
+
+def meta_wants_music(text: str) -> bool:
+    return bool(_META_WANTS.search(norm(text))) or bool(re.search(r"\([^()]{2,40}\)\s*[?!.]*$", text))
 
 
 # ---- oprava vs. další přání téhož člověka ----

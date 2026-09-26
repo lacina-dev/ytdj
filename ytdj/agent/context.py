@@ -208,6 +208,9 @@ class StartContext:
     office: bool  # hraje lidem v práci (cfg.office, výchozí True)
     rule: EnergyRule
     history: SlotHistory
+    # hlasování kanceláře (ytdj/votes.py): oblíbené skladby a vyřazené
+    favourites: list[str] = field(default_factory=list)
+    banned: list[str] = field(default_factory=list)
 
     @property
     def energy_word(self) -> str:
@@ -417,7 +420,11 @@ def start_context(store: Any, now: datetime | None = None, cfg: Any = None) -> S
         except Exception:
             log.exception("historie pro rozjezd se nenačetla")
 
+    favourites, banned = _office_votes(store, cfg)
+
     ctx = StartContext(
+        favourites=favourites,
+        banned=banned,
         now=now,
         weekday=today.weekday(),
         weekday_name=WEEKDAYS[today.weekday()],
@@ -445,9 +452,33 @@ def start_context(store: Any, now: datetime | None = None, cfg: Any = None) -> S
         worked_moods=history.worked_moods,
         overplayed=history.overplayed,
         last_mood=history.last_mood,
+        favourites=len(favourites) or None,
+        banned=len(banned) or None,
         took_ms=int((time.monotonic() - t0) * 1000),
     )
     return ctx
+
+
+MAX_FAV = 4  # oblíbených kanceláře v instrukci
+MAX_BANNED = 4
+
+
+def _office_votes(store: Any, cfg: Any) -> tuple[list[str], list[str]]:
+    """(oblíbené, vyřazené) z hlasování kanceláře — prahy podle `cfg`."""
+    if store is None:
+        return [], []
+    try:
+        rows = getattr(store, "all_votes", None)
+        if rows is None:
+            return [], []
+        from ..votes import VoteBook
+
+        favs, arts, songs = VoteBook(cfg=cfg).load(rows()).summary(MAX_FAV, MAX_BANNED)
+    except Exception:
+        log.exception("hlasy pro rozjezd se nenačetly")
+        return [], []
+    return ([_clip(f, 2 * MAX_NAME) for f in favs],
+            [_clip(b, 2 * MAX_NAME) for b in (arts + songs)[:MAX_BANNED]])
 
 
 def _age(hours: float) -> str:
@@ -482,15 +513,18 @@ _BUDGETS: tuple[tuple[int, int, int, int, int, bool], ...] = (
 def start_instruction(ctx: StartContext) -> str:
     """Česká instrukce pro DJ, nejvýš MAX_CHARS znaků. Deterministická vůči `ctx`."""
     text = ""
-    for budget in _BUDGETS:
-        text = _render(ctx, *budget)
-        if len(text) <= MAX_CHARS:
-            break
+    # hlasování kanceláře má přednost před statistikami historie — ubírá
+    # se z něj, až když se nevejde ani nejmenší rozpočet historie
+    for n_fav in range(MAX_FAV, -1, -1):
+        for budget in _BUDGETS:
+            text = _render(ctx, *budget, n_fav=n_fav)
+            if len(text) <= MAX_CHARS:
+                return text
     return text
 
 
 def _render(ctx: StartContext, n_worked: int, n_wmood: int, n_skipped: int,
-            n_smood: int, n_over: int, last: bool) -> str:
+            n_smood: int, n_over: int, last: bool, n_fav: int = MAX_FAV) -> str:
     h = ctx.history
     n = ctx.now
     day = f"svátek ({ctx.holiday})" if ctx.holiday else ctx.day_type
@@ -521,6 +555,12 @@ def _render(ctx: StartContext, n_worked: int, n_wmood: int, n_skipped: int,
             lines.append(f"V tuhle dobu se tu dohrávalo: {good} — můžeš z toho vyjít.")
         if bad := clause(h.skipped_artists[:n_skipped], h.skipped_moods[:n_smood]):
             lines.append(f"Přeskakovalo se: {bad}.")
+    if ctx.favourites[:n_fav]:
+        lines.append("Oblíbené kanceláře (hlasování 👍): " + "; ".join(ctx.favourites[:n_fav])
+                     + " — 1–2 z nich dej mezi seedy.")
+    if ctx.banned[:n_fav]:
+        lines.append("Vyřazené hlasováním (nehraj, ani jako seed): "
+                     + "; ".join(ctx.banned[:n_fav]) + ".")
     if h.overplayed[:n_over]:
         lines.append("Poslední dny hrálo až moc: " + ", ".join(h.overplayed[:n_over])
                      + " — vynech je.")

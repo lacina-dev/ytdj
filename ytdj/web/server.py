@@ -38,6 +38,7 @@ import uvicorn
 
 from .. import config as cfgmod
 from .. import telemetry
+from . import votes_api
 
 if TYPE_CHECKING:  # circular import — we pull in App for typing only
     from ..__main__ import App
@@ -136,6 +137,8 @@ LIVE_KEYS = (
     "artist_window",
     "display_filter",
     "display_blocklist",
+    "ban_song_votes",
+    "ban_artist_votes",
 )
 
 CODEX_MODELS = [
@@ -268,6 +271,17 @@ FIELD_META: dict[str, tuple[str, str, tuple[int, int] | None]] = {
         "Slova navíc ke skrytí",
         "Kořeny slov oddělené mezerou, např. „blbec trouba“ — skryje se každé slovo, které jimi začíná.",
         None,
+    ),
+    "ban_song_votes": (
+        "Vyřazení skladby: kolik lidí 👎",
+        "Skladba zmizí z podkresu, když jí dá 👎 aspoň tolik lidí a 👎 je víc než 👍. "
+        "Na výslovné přání hraje dál.",
+        (1, 50),
+    ),
+    "ban_artist_votes": (
+        "Vyřazení interpreta: kolik lidí 👎",
+        "Interpret zmizí z podkresu, když mu dá 👎 aspoň tolik lidí.",
+        (1, 50),
     ),
     "mpv_extra_args": (
         "Další argumenty mpv",
@@ -503,6 +517,7 @@ class WebServer:
             Route("/api/config", _safe(self._config_post), methods=["POST"]),
             Route("/api/about", _safe(self._about), methods=["GET"]),
             Route("/api/restart", _safe(self._restart), methods=["POST"]),
+            *votes_api.routes(self),  # hlasování kanceláře (PLAN H)
             Mount(
                 "/static",
                 StaticFiles(directory=str(STATIC_DIR), check_dir=False),
@@ -582,6 +597,10 @@ class WebServer:
                         item["req"] = tag
             except Exception:
                 log.debug("přání ke frontě se nepodařilo přiřadit", exc_info=True)
+        try:
+            votes_api.annotate(self.app, current, queue)  # 👍/👎 u skladeb (PLAN H)
+        except Exception:
+            log.debug("hlasy ke skladbám se nepodařilo přiřadit", exc_info=True)
 
         history: list[dict] = []
         try:

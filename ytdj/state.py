@@ -57,6 +57,23 @@ CREATE TABLE IF NOT EXISTS requests (
     ts       REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS requests_video ON requests(video_id);
+
+-- Hlasování kanceláře (PLAN H, ytdj/votes.py): jeden řádek na hlasujícího
+-- a cíl — změna hlasu řádek přepíše, stažení nechá vote=0 (kdo a kdy zůstane).
+-- Stav (oblíbená / vyřazená) se neukládá, počítá se z hlasů. Odděleně od
+-- `feedback` (bez hlasujícího) i od technického `blacklist` (nepřehratelné).
+CREATE TABLE IF NOT EXISTS votes (
+    target   TEXT NOT NULL,                    -- song|artist
+    key      TEXT NOT NULL,                    -- kanonický klíč (votes.song_key / artist_key)
+    voter    TEXT NOT NULL,                    -- id klienta (Wish.key)
+    vote     INTEGER NOT NULL,                 -- 1|-1|0 (staženo)
+    who      TEXT,                             -- přezdívka v době hlasu
+    video_id TEXT,
+    artist   TEXT,
+    title    TEXT,
+    ts       REAL NOT NULL,
+    PRIMARY KEY (target, key, voter)
+);
 """
 
 
@@ -226,6 +243,15 @@ class Store:
             (video_id, title, artist, time.time()),
         )
 
+    def save_vote(self, target: str, key: str, voter: str, vote: int, who: str,
+                  video_id: str, artist: str, title: str, ts: float) -> None:
+        """Hlas kanceláře (přepíše předchozí hlas téhož člověka na týž cíl)."""
+        self._write(
+            """INSERT OR REPLACE INTO votes(target,key,voter,vote,who,video_id,artist,title,ts)
+               VALUES(?,?,?,?,?,?,?,?,?)""",
+            (target, key, voter, int(vote), who, video_id, artist, title, ts),
+        )
+
     def _migrate_blacklist(self) -> None:
         """Sloupec `until` (platnost záznamu). Staré záznamy bez něj vznikaly
         i z výpadků sítě ("nepřehratelné" u všeho, co mpv zkusilo) — dostanou
@@ -331,6 +357,14 @@ class Store:
                 WHERE ts >= ? AND ts < ? AND outcome != 'error'
                 GROUP BY artist""",
             (since, until),
+        )
+
+    def all_votes(self) -> list[tuple]:
+        """Všechny hlasy (i stažené), nejstarší první — pár set řádků, čte se při startu."""
+        return self._read(
+            """SELECT target, key, voter, vote, COALESCE(who,''), COALESCE(video_id,''),
+                      COALESCE(artist,''), COALESCE(title,''), ts
+                 FROM votes ORDER BY ts"""
         )
 
     def ratings(self) -> dict[str, str]:

@@ -246,6 +246,9 @@ def parse_output(raw: str) -> dict:
     return data
 
 
+FAVOURITES_MAX = 8  # kolik oblíbených zahrát jako přání (podkres pak jede rádio z prvních čtyř)
+
+
 class CodexDJ:
     def __init__(
         self,
@@ -293,6 +296,8 @@ class CodexDJ:
         self.wish = ListenerIntent.load(self._wish_file)
         # čekání na připravenost první nové skladby, než se utne stará
         self._switch_task: asyncio.Task | None = None
+        # hlasování kanceláře (ytdj/votes.py, zapojí App) — None = bez něj
+        self.votes = None
 
     # ---- calling Codex ----
 
@@ -311,6 +316,7 @@ class CodexDJ:
             requested=[r.label() for r in top],
             intent=self.wish.describe(),
             focus=self.focus,
+            office=self.votes.describe() if self.votes is not None else "",
         )
         return f"{ROLE}\n\n{state}\n\nUživatel říká: {user_input}"
 
@@ -478,7 +484,7 @@ class CodexDJ:
         přehrávání nemá měnit a posluchač má slyšet proč.
         """
         with telemetry.timer("dj.resolve", intent_kind=intent.kind) as ev:
-            plan = await self._resolve(intent)
+            plan = self._office_votes(await self._resolve(intent))
             ev.update(
                 asked_tracks=[f"{a} — {t}" for a, t in intent.tracks] or None,
                 resolved_tracks=[t.label() for t in plan.requested] or None,
@@ -780,14 +786,81 @@ class CodexDJ:
         )
         if res.reason:
             log.info("rychlá cesta ne (%s): %s", res.reason, text)
-            return await self._fast_song_plan(text)  # [fast-song] konkrétní skladba
+            song = await self._fast_song_plan(text)  # [fast-song] konkrétní skladba
+            return self._office_votes(song) if song is not None else None
         label = ", ".join(res.artists)
         intent = Intent(kind="artist", text=text, artists=res.artists, mood=label,
                         note="fast_path")
         log.info("rychlá cesta: %s → %s", text, label)
         telemetry.event("dj.intent", intent_kind="artist", auto=False,
                         artists=res.artists, repaired="fast_path")
-        return Plan(intent=intent, artist_tracks=interleave(res.tracks))
+        return self._office_votes(Plan(intent=intent, artist_tracks=interleave(res.tracks)))
+
+    # ---- hlasování kanceláře (ytdj/votes.py) ----
+
+    def _office_votes(self, plan: Plan) -> Plan:
+        """Výslovné přání vyřazené skladby / interpreta se splní — s poctivou
+        poznámkou, kdo ji vyřadil. Ze sady (interpret, oblíbené) vyřazené
+        skladby vypadnou, dokud zbude co hrát; jmenovaný interpret zůstává."""
+        votes = self.votes
+        intent = plan.intent
+        if votes is None or plan.failed or intent.auto or not getattr(votes, "items", None):
+            return plan
+        notes: list[str] = []
+        if intent.kind in ("song", "songs"):
+            for t in plan.requested:
+                note = votes.ban_note(t)
+                if note:
+                    if len(plan.requested) > 1:
+                        note = note.replace("(pozn.: ", f"(pozn.: {t.label()} — ", 1)
+                    notes.append(note)
+        elif intent.kind == "artist" and plan.artist_tracks:
+            asked = list(intent.artists)
+            keep = [t for t in plan.artist_tracks
+                    if not votes.banned_song(t) and not votes.banned_artists_of(t, asked)]
+            if keep and len(keep) < len(plan.artist_tracks):
+                telemetry.event("vote.filtered", intent_kind="artist", artists=asked,
+                                dropped=len(plan.artist_tracks) - len(keep))
+                plan.artist_tracks = keep
+            for t in plan.artist_tracks[:30]:
+                note = votes.ban_note(t, asked)
+                if note and "je vyřazený" in note:
+                    notes.append(note)
+                    break
+        if notes:
+            telemetry.event("vote.honoured", intent_kind=intent.kind, notes=notes[:3])
+            plan.notes.extend(notes[:3])
+        return plan
+
+    async def favourites_plan(self, text: str, voter: str = "") -> Plan | None:
+        """ "pusť oblíbené" / "pusť moje oblíbené" bez modelu; None = není to ono."""
+        from .intent import favourites_request
+
+        which = favourites_request(text)
+        if which is None or self.votes is None:
+            return None
+        mine = which == "mine"
+        own = voter if mine and voter and not voter.startswith("wish:") else ""
+        tracks = self.votes.favourite_tracks(own) if (own or not mine) else []
+        label = "tvoje oblíbené" if mine else "oblíbené kanceláře"
+        telemetry.event("dj.fast_path", text=text[:300], what="favourites", which=which,
+                        accepted=bool(tracks), n=len(tracks))
+        intent = Intent(kind="song", text=text, mood=f"{label} a podobné", note="favourites",
+                        tracks=[(t.artist, t.title) for t in tracks[:FAVOURITES_MAX]])
+        plan = Plan(intent=intent)
+        if not tracks:
+            if mine and not own:
+                plan.failed = ("Nevím, kdo jsi — oblíbené patří k prohlížeči. "
+                               "Zkus to z webu, kde máš přezdívku.")
+            elif mine:
+                plan.failed = "Zatím nemáš žádné oblíbené — dej 👍 skladbě, která se ti líbí."
+            else:
+                plan.failed = "Kancelář zatím nemá oblíbené — dejte 👍 skladbám, které se líbí."
+            return plan
+        plan.requested = tracks[:FAVOURITES_MAX]
+        plan.seeds = tracks[:4]
+        intent.reply = f"Hraju {label} ({len(plan.requested)}), pak podobné."
+        return plan
 
     # [fast-song] — "pusť Jasnou zprávu od Olympicu" bez Codexu
     async def _fast_song_plan(self, text: str) -> Plan | None:

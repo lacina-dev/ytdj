@@ -1012,6 +1012,10 @@ class WishQueue:
         plan = None
         if RE_URL.search(w.text):
             plan = await self._link_plan(w)
+        favourites = getattr(self.dj, "favourites_plan", None)
+        if plan is None and favourites is not None:  # "pusť (moje) oblíbené" (votes.py)
+            plan = await favourites(w.text, w.key)
+            w.via = "fast" if plan is not None else w.via
         if plan is None:
             fast = getattr(self.dj, "fast_plan", None)
             if fast is not None:
@@ -1294,7 +1298,7 @@ class WishQueue:
             return
 
         record = getattr(dj, "_record_requests", None)
-        if record is not None and intent.kind in ("songs", "song"):
+        if record is not None and intent.kind in ("songs", "song") and intent.note != "favourites":
             record(w.tracks)  # vyžádané jménem → evidence + nehrát znovu z poolů
         else:
             self.pools.remember_tracks(w.tracks)

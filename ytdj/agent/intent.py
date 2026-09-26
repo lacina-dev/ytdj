@@ -371,6 +371,34 @@ class ListenerIntent:
             pass
 
 
+# ---- oblíbené (hlasování kanceláře, ytdj/votes.py) ----
+
+# "pusť oblíbené", "hraj oblíbené kanceláře", "dej naše oblíbené písničky",
+# "pusť moje oblíbené", "něco z mých oblíbených" — celé zadání, nic navíc:
+# "pusť oblíbené od Kabátu" je jiné přání a jde k modelu.
+_FAV_LEAD = (r"(?:(?:pust|pustte|pustit|pusti|hraj|hrajte|zahraj|zahrajte|dej|dejte|chci|chceme"
+             r"|prosim|neco|nejake|z|ze|ty|nam|mi|si|play)\s+)*")
+_FAV_MINE = r"(?P<mine>moje|me|moji|mych|mym|mou|muj|svoje|sve|svych|my)\s+"
+_FAV_OFFICE = r"(?:(?:nase|nasi|nasich|kancelarske|kancelarsky|kancelarskych|spolecne|the)\s+)?"
+_FAV_WORD = r"(?:oblib\w*|favou?rites?|favs?)"
+_FAV_TAIL = (r"(?:\s+(?:kancelare|kanclu|kancl|z kancelare|v kancelari|kancelar|office"
+             r"|pisnicky|pisnicek|pisne|pisni|skladby|skladeb|songy|songs|veci|kousky|hudbu|hudby"
+             r"|prosim|please))*")
+_FAVOURITES = re.compile(
+    rf"^{_FAV_LEAD}(?:{_FAV_MINE}|{_FAV_OFFICE}){_FAV_WORD}{_FAV_TAIL}$")
+
+
+def favourites_request(text: str) -> str | None:
+    """ "mine" (moje oblíbené) / "office" (oblíbené kanceláře) / None."""
+    t = norm(text)
+    if not t or len(t) > 80:
+        return None
+    m = _FAVOURITES.match(t)
+    if m is None:
+        return None
+    return "mine" if m.group("mine") else "office"
+
+
 # ---- povely, na které model není potřeba ----
 
 _COMMANDS: list[tuple[re.Pattern, str]] = [

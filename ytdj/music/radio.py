@@ -66,6 +66,9 @@ class RadioPools:
         # běžná rádia ze seedů.
         self.artist: str = ""
         self._artist_all: list[Track] = []
+        # hlasování kanceláře (ytdj/votes.py, zapojí App): vyřazené ne,
+        # upozaděné napůl, oblíbené i dřív než po repeat_days
+        self.votes = None
         # poslední zapsaný stav radio.pool — prázdné dávky se stejným stavem
         # (plnič se ptá každou vteřinu) se do logu nepíšou znovu
         self._last_pool_sig: tuple | None = None
@@ -299,6 +302,9 @@ class RadioPools:
         self._last_pool_sig = None if out else sig
         return out
 
+    def _focus_names(self) -> list[str]:
+        return [a.strip() for a in self.artist.split(",") if a.strip()] if self.artist else []
+
     def _long_limit(self) -> int:
         """Strop pro vyžádaného interpreta — nikdy pod tím obvyklým."""
         return max(self.cfg.max_duration, self.cfg.max_duration_request)
@@ -328,13 +334,20 @@ class RadioPools:
         """Proč skladba do fronty nejde (klíč do statistiky radio.pool), None = jde."""
         if track.id in blocked:
             return "blacklisted"
+        votes = getattr(self, "votes", None)
+        if votes is not None:
+            # v režimu interpreta si ho někdo vyžádal jménem — jeho vlastní
+            # vyřazení neplatí, vyřazené skladby ano
+            why = votes.pool_reject(track, self._focus_names())
+            if why:
+                return why
         if track.explicit and not self.artist and not self.allow_explicit:
             # vulgární texty do podkresu ne; vyžádaný interpret / skladba jménem ano
             return "explicit"
         if track.id in self.session_seen:
             return "session_seen"
-        if track.id in recent:
-            return "recent"
+        if track.id in recent and not (votes is not None and votes.is_favourite(track)):
+            return "recent"  # oblíbená kanceláře smí zase (v jednom běhu hlídá session_seen)
         if any(t.id == track.id for t in pending):
             return "duplicate"
         if track.duration is not None:

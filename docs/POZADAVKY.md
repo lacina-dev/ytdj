@@ -79,7 +79,7 @@ Stav k 26. 9. 2026 15:45 (na Pi běží e713074).
 | 39 | Tvrdit jen to, co doloží data | ✅ pravidlo | |
 | 40 | Neposílat testovací přání do fronty, když se poslouchá; po testu uklidit | ✅ pravidlo (od 26. 9.) | |
 | 41 | Bezpečnost a přihlášení vyřešit na konec a připomenout | 📋 | viz níž |
-| 42 | „Aby to, co aplikace už umí, zůstávalo" — jasné funkce, žádný další požadavek je potichu nezmění | 🔄 | `CLAUDE.md` (pravidlo pro každého, kdo mění kód) ✅; `docs/FUNKCE.md` + test ke každé funkci 🔄 |
+| 42 | „Aby to, co aplikace už umí, zůstávalo" — jasné funkce, žádný další požadavek je potichu nezmění | ✅ | `docs/FUNKCE.md`: 139 pravidel v 16 oblastech, každé s testem; `tests/test_funkce.py` hlídá, že žádné nezůstane bez testu; `CLAUDE.md`: změna jen se souhlasem vlastníka |
 | 43 | Nápověda v poli přání ne „Olympic", ale např. „Zahraj mi něco veselého k práci" | ✅ | web i displej (15:42) |
 
 ## Na konec: bezpečnost a přihlášení (připomenout)

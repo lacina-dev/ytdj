@@ -7,7 +7,7 @@ v [PLAN.md](PLAN.md); tady je jen „na nic nezapomenout".
 Stav: ✅ hotovo a ověřeno na Pi · ☑️ hotovo v kódu, čeká na nasazení ·
 🔄 rozpracováno · 📋 čeká · ⚠️ známý problém
 
-Stav k 26. 9. 2026 17:00 (na Pi běží 5d7e1ca).
+Stav k 26. 9. 2026 22:25 (na Pi běží 4611b3c).
 
 ## Zařízení a systém
 
@@ -31,7 +31,7 @@ Stav k 26. 9. 2026 17:00 (na Pi běží 5d7e1ca).
 | 11 | Podržené −/+ na displeji mění hlasitost plynule | ✅ | |
 | 12 | Bez zpoždění a „přepínání", začátek skladby bez divností, čas od nuly | ✅ | |
 | 13 | Teploměr hlasitosti se kreslí správně | ✅ | |
-| 14 | Rychle přeskakovat, i víc skladeb (10×) po sobě | ✅ nasazeno 16:58, měří se | připravená skladba ~0,6 s; postupná příprava 3 hned + po jedné až 10 (hloubka fronty 11); nepřipravená už nečeká na rozdělanou (druhé vlákno) |
+| 14 | Rychle přeskakovat, i víc skladeb (10×) po sobě | ✅ | příprava skladby 7,4 → 3,5–4,2 s (22:03, Premium 774 zachován); postupná příprava 3 hned + po jedné až 10; nepřipravená nečeká na rozdělanou |
 | 15 | Žádné lupání | 🔄 nasazeno 16:58, měří se | výpadky vznikaly v tichu mezi skladbami, když se další otevírala > 1 s (doloženo: počet výpadků = (čekání − 1 s) / 42,7 ms); zásobník 2 s. ⚠️ Pi hlásí podpětí při startu (0x50000) |
 | 16 | (nález) Restart bez dlouhého ticha | ✅ 5,8 s (ráno ~26 s) | skladba pokračuje od místa; přehrávač startuje první; zbývá zrychlit start mpv (3,6 s při souběhu) |
 
@@ -42,7 +42,7 @@ Stav k 26. 9. 2026 17:00 (na Pi běží 5d7e1ca).
 | 17 | „Musí hrát to, co mu user píše"; interpret = víc jeho písniček, ne jedna | ✅ | rychlá cesta bez modelu, režim interpreta |
 | 18 | Rozumět i překlepům („z nouze cnost" → Znouzectnost, „Vojtano") | ✅ | |
 | 19 | Přání přijmout hned, žádné „DJ ještě dokončuje…" | ✅ | přijetí 0,01–0,14 s |
-| 20 | Lepší model, když je potřeba | ✅ | volné přání 11,7 s (Codex běží), ~25 s po pauze → v pracovní době zůstává zahřátý |
+| 20 | Lepší model, když je potřeba | ✅ | úsilí low (A/B 16 skutečných vět: stejný výklad, medián 7,2 → 5,8 s); zahřátý 2 h po přání; 5 tahů na vlákno |
 | 21 | Play bez přání = výběr podle času, dne, kanceláře, historie | ✅ | chytrý start |
 | 22 | DJ nesmí slibovat, co neumí („nastavím střídání") | ✅ nasazeno 11:29 | odpověď se skládá z toho, co se opravdu zařadilo |
 | 23 | Otázky a stížnosti („proč nehraje moje…", „to není demokracie") zodpovědět podle skutečnosti | ✅ | přání uvnitř stížnosti („nefér, chci Olympic") se zařadí (15:42) |
@@ -67,7 +67,7 @@ Stav k 26. 9. 2026 17:00 (na Pi běží 5d7e1ca).
 | # | Požadavek | Stav | Doklad / kde |
 |---|---|---|---|
 | 33 | Projít a vylepšit UI displeje i webu, s ohledem na 1 GB RAM | ✅ | obaly alb, QR „přání z mobilu", oznámení přání, hlasy; web gzip 110 → ~25 kB |
-| 34 | Dotyk: „je utrpení na něco kliknout, trefit" | 🔄 nasazeno 16:08, měří se | ráno jen ~40 % dotyků → akce; nový filtr v ovladači, stisk podle dosednutí, mezery patří nejbližšímu tlačítku, orámování při dotyku, Kalibrace dotyku (síť → 5 křížků); vyhodnotí `python3 -m ytdj.panel.touchreport` |
+| 34 | Dotyk: „je utrpení na něco kliknout, trefit" | 🔄 nasazeno 17:11, čeká na kalibraci | tlačítko podle místa, kde prst ležel; kalibrace 9 křížků s mřížkou (sklo nerovné o 12 px); Test dotyku; horní tlačítka až k okraji |
 | 35 | „Škoda, že není větší" | 📝 | UI je kreslené v PIL, větší HDMI displej (např. 7" 800×480) = jiný ovladač, ne přepis |
 
 ## Provoz a způsob práce
@@ -83,7 +83,7 @@ Stav k 26. 9. 2026 17:00 (na Pi běží 5d7e1ca).
 | 42 | „Aby to, co aplikace už umí, zůstávalo" — jasné funkce, žádný další požadavek je potichu nezmění | ✅ | `docs/FUNKCE.md`: 139 pravidel v 16 oblastech, každé s testem; `tests/test_funkce.py` hlídá, že žádné nezůstane bez testu; `CLAUDE.md`: změna jen se souhlasem vlastníka |
 | 43 | Nápověda v poli přání ne „Olympic", ale např. „Zahraj mi něco veselého k práci" | ✅ | web i displej (15:42) |
 | 44 | „Proč jen tři skladby? Jde to nastavit v nastavení?" | ✅ nasazeno 16:58 | nastavení jukeboxu: kolo 3 (2 když čekají jiní), rozpočet 4 (displej 3), interpret 12 — kvůli férovosti; výchozí hodnoty beze změny |
-| 45 | „Co hraje dál a nemá to u sebe moje jméno?" | 🔄 web ✅ 16:58, displej s další verzí | „Rádio podle přání X · nálada" — podkres jde podle naposledy splněného přání |
+| 45 | „Co hraje dál a nemá to u sebe moje jméno?" | ✅ | „Rádio podle přání X · nálada" na webu i displeji |
 
 ## Na konec: bezpečnost a přihlášení (připomenout)
 

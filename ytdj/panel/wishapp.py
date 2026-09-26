@@ -240,6 +240,24 @@ class WishController:
         self.pressed = None
         # a wish still on its way: show how it's doing rather than a blank form
         self.page = "sent" if self.phase == "busy" else "home"
+        self.warm_dj(now)
+
+    def warm_dj(self, now: float) -> None:
+        """Someone is about to type a wish: let the DJ's brain (Codex) start
+        now (F-PROVOZ-08), not when it is sent. At most once a minute; only a
+        hint, so failures are ignored."""
+        if self.api is None or now - getattr(self, "_warmed_at", -1e9) < 60.0:
+            return
+        self._warmed_at = now
+        api = self.api
+
+        def run() -> None:
+            try:
+                post_json(api, "/api/dj/warm", {}, 5.0)
+            except Exception:  # noqa: BLE001 — jen nápověda, displej nesmí spadnout
+                pass
+
+        threading.Thread(target=run, name="panel-dj-warm", daemon=True).start()
 
     def open_queue(self, now: float) -> None:
         self.last_touch = now

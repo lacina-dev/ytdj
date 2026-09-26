@@ -9,8 +9,9 @@ Proč: `codex exec` na Pi 3 platí při každém tahu start CLI (node obal + bin
   app-server, 2. tah   5.3 s
 
 Paměť: nativní binárka bez node obalu má v klidu ~165 MB RSS, při tahu ~180 MB.
-Proces se spouští až při prvním přání. Mimo pracovní dobu se po IDLE_TTL bez
-tahu ukončí; v pracovní době (`office_warm`) zůstává běžet. Důvod — Pi 26. 9.
+Proces se spouští až při prvním přání (nebo dřív, viz CodexDJ.warm_ahead). Po
+IDLE_TTL bez tahu se ukončí, pokud ho nedrží `warm_policy`: pracovní doba
+(`office_warm`) nebo 2 h po posledním přání posluchače (WISH_WARM_S). Důvod — Pi 26. 9.
 9:23: první přání po pauze přetáhlo 25 s rozpočtu (request.done took_ms 25049)
 a skončilo chybou; podle rozboru provozu (dj.turn) studený start ~9 s + model
 ~14 s. Volná paměť na Pi podle telemetrie ze zadání: medián 590 MB, minimum
@@ -79,6 +80,10 @@ def feature_args() -> list[str]:
 
 IDLE_TTL = 600.0  # s bez tahu → proces končí (uvolní ~165 MB), mimo pracovní dobu
 WARM_HOURS = (7, 19)  # pracovní doba (Po–Pá): app-server drží teplý
+# Po přání posluchače drží teplý kdykoli (i večer a o víkendu) tak dlouho —
+# 26. 9. (sobota) platilo studený start 9 z 18 tahů posluchačů; souhlas
+# vlastníka 26. 9. ("Codex zahřátý vždy po přání").
+WISH_WARM_S = 2 * 3600
 WARM_MIN_FREE_MB = 250  # MemAvailable (s běžícím app-serverem) pod tímhle → ukončit
 MEM_CHECK = 60.0  # s — jak často se mimo tah kontroluje paměť
 START_TIMEOUT = 30.0  # s na initialize + thread/start (Pi pod zátěží)
@@ -514,12 +519,36 @@ def office_warm(now: Any = None, free_mb: int | None = -1) -> bool:
     return free is None or free >= WARM_MIN_FREE_MB
 
 
+def warm_policy(last_wish: float = 0.0, now: Any = None, free_mb: int | None = -1,
+                wall: float | None = None) -> bool:
+    """Držet app-server teplý? V pracovní době (office_warm), nebo do WISH_WARM_S
+    po posledním přání posluchače (`last_wish` = time.time() přání, 0 = žádné) —
+    vždy jen s dost volnou pamětí. `now`/`wall`/`free_mb` dosadí testy."""
+    free = mem_available_mb() if free_mb == -1 else free_mb
+    if free is not None and free < WARM_MIN_FREE_MB:
+        return False
+    wall = time.time() if wall is None else wall
+    if last_wish and 0 <= wall - last_wish < WISH_WARM_S:
+        return True
+    return office_warm(now, free_mb=free)
+
+
+# Úsilí uvažování DJe. A/B na Pi 26. 9. (gpt-5.6-luna, 16 skutečných přání
+# × 2 běhy, samostatný proces): low i medium vyložily stejně 30/32 (zbylé 2
+# u obou stejná skladba — „Holky z naší školky" skutečně nahráli Hložek
+# a Kotvald), model_ms medián 7,2 s → 5,8 s, p90 10,0 → 7,2 s, uvažovacích
+# tokenů 136 → 88. Přijato se souhlasem vlastníka („Zkusit nižší úsilí modelu",
+# jen když to nezhorší porozumění). YTDJ_CODEX_EFFORT=medium vrátí původní.
+DEFAULT_EFFORT = "low"
+
+
 def effort_from_env() -> str:
-    """YTDJ_CODEX_EFFORT=low|medium|high… — úsilí uvažování DJe; "" = výchozí
-    Codexu (na Pi `model_reasoning_effort` v ~/.codex/config.toml, 26. 9.:
-    medium). Přepínač pro měření A/B, výchozí chování se jím nemění."""
+    """Úsilí uvažování DJe: YTDJ_CODEX_EFFORT (low|medium|high…), jinak
+    DEFAULT_EFFORT; "default" = nechat výchozí Codexu (~/.codex/config.toml)."""
     value = os.environ.get("YTDJ_CODEX_EFFORT", "").strip().lower()
-    return value if re.fullmatch(r"[a-z]{1,12}", value) else ""
+    if value == "default":
+        return ""
+    return value if re.fullmatch(r"[a-z]{1,12}", value) else DEFAULT_EFFORT
 
 
 def app_server_enabled() -> bool:

@@ -1279,5 +1279,47 @@ class RadioOriginTest(unittest.TestCase):
             tmp.cleanup()
 
 
+class WishScreenWarmsTheDJ(unittest.TestCase):
+    """F-PROVOZ-08: otevření obrazovky přání nahřeje Codex (POST /api/dj/warm),
+    nejvýš jednou za minutu; selhání nic nerozbije."""
+
+    def test_opening_the_wish_screen_warms_once_a_minute(self):
+        import threading
+        from types import SimpleNamespace
+
+        from ytdj.panel.wishapp import WishController
+
+        sent = []
+        done = threading.Event()
+
+        class Conn:
+            def request(self, method, path, body=None, headers=None):
+                sent.append((method, path))
+
+            def getresponse(self):
+                done.set()
+                return SimpleNamespace(status=200, read=lambda: b'{"ok": true}')
+
+            def close(self):
+                pass
+
+        api = SimpleNamespace(prefix="", connection=lambda timeout: Conn())
+        c = WishController(api, lambda m: None)
+        c.open(100.0)
+        self.assertTrue(done.wait(2))
+        c.close()
+        c.open(130.0)  # za půl minuty znovu — nic
+        c.close()
+        time.sleep(0.2)
+        self.assertEqual(sent, [("POST", "/api/dj/warm")])
+        self.assertEqual(c.page, None)
+
+        broken = SimpleNamespace(prefix="", connection=lambda timeout: 1 / 0)
+        c2 = WishController(broken, lambda m: None)
+        c2.open(100.0)  # výjimka ve vlákně se spolkne, obrazovka se otevře
+        time.sleep(0.2)
+        self.assertEqual(c2.page, "home")
+
+
 if __name__ == "__main__":
     unittest.main()

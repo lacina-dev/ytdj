@@ -7,7 +7,7 @@ v [PLAN.md](PLAN.md); tady je jen „na nic nezapomenout".
 Stav: ✅ hotovo a ověřeno na Pi · ☑️ hotovo v kódu, čeká na nasazení ·
 🔄 rozpracováno · 📋 čeká · ⚠️ známý problém
 
-Stav k 26. 9. 2026 23:05 (na Pi běží ef2664b).
+Stav k 27. 9. 2026 (na Pi běží 1710010).
 
 ## Zařízení a systém
 
@@ -50,7 +50,7 @@ Stav k 26. 9. 2026 23:05 (na Pi běží ef2664b).
 | 25 | „Ať to není ostuda": sprostá jména a texty se na displeji a webu neukážou | ✅ | `ytdj/display.py` |
 | 46 | Volná přání přes model rychleji („zahraj mi něco veselého k práci" ~10–12 s, po pauze 23–33 s) | ☑️ v kódu, čeká na nasazení | rozbor Pi 26. 9.: studený start 4,8–12,4 s (9 z 18 tahů), nové vlákno +2,3 s, uvažování modelu 1,6–8,4 s, výpis odpovědi ~2,3 s, dohledání semínek ~1,4 s, rádio ~1,5 s, příprava první skladby ~7 s. Nahřátí při psaní přání a po startu (F-PROVOZ-08), náhradní vlákno (F-PROVOZ-09); volba vlastníka 26. 9.: zahřátý 2 h po každém přání, 5 tahů na vlákno, úsilí „low" (A/B na Pi: stejné porozumění, model medián 7,2 → 5,8 s), displej nahřívá při otevření přání |
 | 47 | Na webu stránka s rychlým názorným návodem pro běžného uživatele + dokumentace „jak to funguje" se všemi automatikami, vhodně vyvážená, dohledatelná, pravidelně aktuální | ✅ 23:05 | `/napoveda` (2 min, příklady ověřené testem) a `/jak-to-funguje` (živě z FUNKCE.md: 159 pravidel, hledání, „Automatiky, o kterých možná nevíš"); odkaz „?" v hlavičce webu |
-| 48 | Import playlistů jako oblíbené kanceláře: každý předá své preference odkazem na playlist, bez vypisování; písničky patří k oblíbeným kanceláře | 🔄 hotovo v kódu, čeká na nasazení | FUNKCE F-HLASY-12…18, `tests/test_playlist_import.py`; import = 👍 pod přezdívkou, vidět kdo co importoval, odebrat/obnovit; férově (každý člověk zhruba stejným dílem, omezená velikost); bez 👍 celým interpretům |
+| 48 | Import playlistů jako oblíbené kanceláře: každý předá své preference odkazem na playlist, bez vypisování; písničky patří k oblíbeným kanceláře | ✅ 27. 9. | Hlasování → Playlisty v oblíbených; import = 👍 pod přezdívkou, nic nepouští; bez limitu hlasů (pojistka 1000 písniček); „pusť oblíbené" střídá lidi; Obnovit/Odebrat |
 
 ## Víc lidí v kanceláři
 

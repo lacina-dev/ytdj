@@ -488,7 +488,6 @@ class App:
             if not self.player.died.is_set():
                 with contextlib.suppress(Exception):
                     await asyncio.wait_for(self.wishes.refresh_playing(), 2)
-            self.wishes.save()
             await self.wishes.stop()
             await self.loopwatch.stop()
             # the web must go down before the store — SSE would otherwise touch
@@ -496,7 +495,11 @@ class App:
             if self.web:
                 await self.web.stop()
             await self.dj.close()  # [app-server] trvale běžící Codex
-            await self.player.stop()
+            await self.player.stop()  # playback.json: co hraje a kde (naposledy)
+            # Přání až po přehrávači: session.json pak odpovídá playback.json —
+            # skladba, která mezitím dohrála, je v přání hotová a po restartu
+            # nezazní znovu (dřív se přání ukládala o celé ukončení dřív).
+            self.wishes.save()
             self.store.close()
         return rc
 

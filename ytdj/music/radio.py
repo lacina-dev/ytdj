@@ -78,6 +78,9 @@ class RadioPools:
         # poslední zapsaný stav radio.pool — prázdné dávky se stejným stavem
         # (plnič se ptá každou vteřinu) se do logu nepíšou znovu
         self._last_pool_sig: tuple | None = None
+        # roste s každým naplněním poolů (nové seedy, interpret, doplnění) —
+        # hlasování podle něj posouvá oblíbené jen jednou na doplnění
+        self.generation = 0
 
     def remember_tracks(self, tracks: list[Track]) -> None:
         for t in tracks:
@@ -115,6 +118,7 @@ class RadioPools:
             pool = Pool(seed=seed, tracks=deque(tracks), last_good=seed.id,
                         retry_at=0.0 if got is not None else time.monotonic() + RADIO_RETRY)
             self.pools.append(pool)
+            self.generation += 1
             self.store.record_seed(seed.id, mood)
             summary.append(
                 {
@@ -163,6 +167,7 @@ class RadioPools:
             return {"artist": name, "pool_size": 0, "sample": []}
         order = self._artist_rotation(tracks, await self._history(len(tracks)))
         self.pools = [Pool(seed=tracks[0], tracks=deque(order), last_good=tracks[0].id)]
+        self.generation += 1
         self._rr = 0
         self.mood = mood or name
         self.allow_long = True
@@ -432,6 +437,7 @@ class RadioPools:
         self.remember_tracks(fresh)
         new = [t for t in fresh if t.id not in self.session_seen]
         pool.tracks.extend(new)
+        self.generation += 1
         log.debug("pool %s doplněn o %d", pool.seed.label(), len(new))
 
     def _refill_artist(self, pool: Pool, history: list | None = None,
@@ -452,6 +458,7 @@ class RadioPools:
             self.session_seen -= {t.id for t in self._artist_all}
             fresh = self._artist_rotation(self._artist_all, history)
         pool.tracks.extend(fresh)
+        self.generation += 1
 
     # ---- feedback ----
 

@@ -33,6 +33,7 @@ class FakeMpv:
         # jak mpv ohlásí konec přeskočené položky (opuštěná při načítání → "error")
         self.next_reason = "stop"
         self.fail: set[str] = set()  # videoId, které se "nedají otevřít"
+        self.fail_once: set[str] = set()  # jen při prvním pokusu (vypršelá adresa)
         self.started: list[str] = []  # co opravdu začalo hrát
         self.loadfile_options: dict[int, dict] = {}  # index v log → volby loadfile
 
@@ -127,9 +128,11 @@ class FakeMpv:
                 return
             entry = self.playlist[idx]
             self._send({"event": "start-file", "playlist_entry_id": entry["id"]})
-            if entry["filename"].rsplit("v=", 1)[-1] not in self.fail:
-                self.started.append(entry["filename"].rsplit("v=", 1)[-1])
+            v = entry["filename"].rsplit("v=", 1)[-1]
+            if v not in self.fail and v not in self.fail_once:
+                self.started.append(v)
                 return
+            self.fail_once.discard(v)
             self._notify()
             self._send({"event": "end-file", "reason": "error", "file_error": "loading failed",
                         "playlist_entry_id": entry["id"]})

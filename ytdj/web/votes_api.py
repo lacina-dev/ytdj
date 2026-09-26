@@ -69,7 +69,7 @@ async def _track(app: Any, video_id: str) -> Any:
     return known(video_id) if known is not None else None
 
 
-def _message(target: str, res: Any) -> str:
+def _message(target: str, res: Any, fav_artist: int = 2) -> str:
     item = res.item
     name = item.get("label") or item.get("key")
     if res.changed == "ban":
@@ -83,6 +83,10 @@ def _message(target: str, res: Any) -> str:
         return f"Hlas zapsán (už je vyřazen{'ý' if target == ARTIST else 'á'})."
     if res.vote > 0 and item["status"] == FAVOURITE and target == ARTIST:
         return f"Hlas zapsán — {name} je mezi oblíbenými interprety kanceláře."
+    if res.vote > 0 and target == ARTIST and item.get("up", 0) < fav_artist:
+        # jeden 👍 celého interpreta z něj oblíbeného neudělá (PLAN H3)
+        who = f"dají aspoň {fav_artist} lidé" if fav_artist <= 4 else f"dá aspoň {fav_artist} lidí"
+        return f"Hlas zapsán — oblíbený interpret bude, až mu 👍 {who}."
     need = item.get("need") or 0
     if res.vote < 0 and need:
         return f"Hlas zapsán — k vyřazení chybí ještě {need}× 👎 od dalších."
@@ -143,7 +147,8 @@ def routes(srv: "WebServer") -> list[Route]:
             telemetry.event("vote.rejected", error=str(exc), status=exc.status, **rec)
             return _err(str(exc), exc.status)
         out: dict[str, Any] = {"ok": True, "item": res.item, "changed": res.changed,
-                               "message": _message(res.target, res)}
+                               "message": _message(res.target, res,
+                                                   getattr(votes, "fav_artist_threshold", lambda: 2)())}
         if res.changed == "ban":
             try:
                 out["effect"] = await enforce(app, reason=f"{res.target}:{res.key}")

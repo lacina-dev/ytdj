@@ -63,7 +63,8 @@ from .offline import (
     local_mood,
     looks_czech,
 )
-from .fastpath import FastResult, enforce_requested, find_artists, find_song
+from .fastpath import (SONG_BUDGET, FastResult, enforce_requested, find_artists, find_song,
+                       other_version)
 from .intent import Intent, ListenerIntent, Pair, build_intent, track_avoided
 from .prompts import ROLE, render_state
 
@@ -868,6 +869,25 @@ class CodexDJ:
         return plan
 
     # [fast-song] — "pusť Jasnou zprávu od Olympicu" bez Codexu
+    async def title_plan(self, title: str) -> Plan | None:
+        """Skladba jen podle názvu ("kdy bude Bohemian Rhapsody") — nejznámější
+        nahrávka, a jen když název sedí celý (fastpath.other_version); None = ne."""
+        t0 = time.monotonic()
+        try:
+            track = await asyncio.wait_for(other_version(self.catalog, title), SONG_BUDGET)
+        except Exception as exc:  # katalog umí selhat na čemkoli, i timeout
+            log.info("skladba podle názvu %r: %s", title, type(exc).__name__)
+            track = None
+        telemetry.event("dj.fast_path", text=title[:300], what="title", accepted=track is not None,
+                        track=track.label() if track else None,
+                        took_ms=int((time.monotonic() - t0) * 1000))
+        if track is None:
+            return None
+        intent = Intent(kind="song", text=title, tracks=[(track.artist, track.title)],
+                        mood=f"{track.artist} a podobné", note="fast_path_title",
+                        reply=f"Hraju {track.label()}, pak podobné.")
+        return self._office_votes(Plan(intent=intent, requested=[track], seeds=[track]))
+
     async def _fast_song_plan(self, text: str) -> Plan | None:
         """Skladba hned a pak rádio z ní ("… a podobné"); None = rozhodne model."""
         t0 = time.monotonic()

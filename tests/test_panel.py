@@ -196,7 +196,8 @@ class EndToEndTest(unittest.TestCase):
         x, y = center(PLAY)
         self.touch.feed("down", x, y)
         time.sleep(0.05)
-        self.touch.feed("move", x, y + 200)  # slid away, then lifted
+        self.touch.feed("move", x, y + 200)  # slid away (two samples: a clear drag), then lifted
+        self.touch.feed("move", x, y + 202)
         time.sleep(0.05)
         self.touch.feed("up", x, y + 200)
         time.sleep(0.5)
@@ -267,6 +268,7 @@ class EndToEndTest(unittest.TestCase):
         self.touch.feed("down", x, y)
         time.sleep(0.8)  # 65 → 70 → 75 (→ 80)
         self.touch.feed("move", x, y - 150)  # slid off the button, still touching
+        self.touch.feed("move", x, y - 152)
         time.sleep(0.1)
         stopped = self.app._view().volume
         self.assertGreater(stopped, 65)
@@ -396,6 +398,7 @@ class PanelEventsTest(unittest.TestCase):
         self.touch.feed("down", x, y)
         time.sleep(0.05)
         self.touch.feed("move", x, y + 200)
+        self.touch.feed("move", x, y + 202)
         time.sleep(0.05)
         self.touch.feed("up", x, y + 200)
         self.touch.tap(300, 182)  # the progress bar — nowhere near a button

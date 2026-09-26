@@ -634,6 +634,12 @@ def serve(path: str, cache: str | None = None) -> None:
         signal.signal(signal.SIGTERM, on_term)
 
     def handle(conn: socket.socket) -> None:
+        try:
+            serve_conn(conn)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # klient odešel (zrušené čekání při přeskočení) — odpověď nikdo nečte
+
+    def serve_conn(conn: socket.socket) -> None:
         with conn, conn.makefile("rwb") as f:
             for line in f:
                 try:

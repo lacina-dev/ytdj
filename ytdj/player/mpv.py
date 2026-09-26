@@ -46,8 +46,9 @@ RESOLVER_SOCKET = MPV_SOCKET.parent / "ytdl-resolver.sock"
 # Lupání 26. 9.: 466 výpadků (xrun) uzlu mpv v 35 okamžicích, 24 z nich když
 # resolver chystal skladbu. mpv plní zásobník z vláken s nice 0 na stejných
 # jádrech jako yt-dlp + JS. mpv tedy dostane přednost jako PipeWire (-11,
-# povoleno skupinou pipewire), resolver jen zbytky procesoru (SCHED_IDLE).
+# povoleno skupinou pipewire).
 MPV_NICE = -11
+RESOLVER_NICE = 5
 
 
 def _audio_first() -> None:
@@ -58,11 +59,13 @@ def _audio_first() -> None:
 
 
 def _background() -> None:
-    """preexec resolveru: jen volný procesor; dědí i jeho node/deno."""
+    """preexec resolveru: o kousek níž než zbytek ytdj; dědí i jeho node/deno.
+
+    Ne SCHED_IDLE: 26. 9. 11:29 po restartu (souběžně start Codexu) trvala
+    přednostní skladba 21 s místo ~7 s a posluchač čekal 27 s na zvuk. Zvuk
+    chrání přednost mpv (MPV_NICE), resolver hladovět nemusí."""
     with suppress(OSError):
-        os.nice(19)
-    with suppress(OSError, AttributeError):
-        os.sched_setscheduler(0, os.SCHED_IDLE, os.sched_param(0))
+        os.nice(RESOLVER_NICE)
 
 
 def _nice_of(pid: int | None) -> int | None:

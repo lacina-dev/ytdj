@@ -77,6 +77,9 @@ ARTIST_MAX = 12  # interpret při souběhu přání: nejvýš tolik skladeb, pak
 # nikdo nehlídá — přezdívka z webu je konkrétní člověk, který si ho upraví.
 BUDGET = 4
 PANEL_BUDGET = 3
+# Čísla výše jsou výchozí hodnoty; platí ta z nastavení jukeboxu (wish_block,
+# wish_shared_block, wish_budget, wish_budget_panel, wish_artist_max) —
+# viz Amounts.of(cfg).
 # Displej je v kole jeden člověk: relace displeje (id klienta) se mění s každým
 # zavřením přání, takže by jinak byl pokaždé "nováček" a předběhl všechny.
 PANEL_SEAT = "panel"
@@ -333,7 +336,9 @@ class Wish:
 
     @property
     def budget(self) -> int:
-        return PANEL_BUDGET if self.source == "panel" else BUDGET
+        """Rozpočet podle výchozích čísel; WishQueue počítá s nastavením
+        (WishQueue.amounts.budget_of)."""
+        return DEFAULT_AMOUNTS.budget_of(self)
 
     @property
     def active(self) -> bool:
@@ -424,6 +429,50 @@ class Wish:
 
 
 # --------------------------------------------------------------------------
+# počty skladeb přání (nastavení jukeboxu)
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Amounts:
+    """Kolik skladeb přání kdy hraje. Výchozí = konstanty modulu; v provozu
+    platí nastavení jukeboxu (Amounts.of(cfg)), měnitelné za běhu."""
+
+    block: int = BLOCK
+    shared: int = SHARED_BLOCK
+    budget: int = BUDGET
+    panel_budget: int = PANEL_BUDGET
+    artist_max: int = ARTIST_MAX
+
+    @classmethod
+    def of(cls, cfg: Any) -> "Amounts":
+        def num(key: str, default: int, top: int) -> int:
+            raw = getattr(cfg, key, default)
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                return default
+            return max(1, min(top, int(raw)))
+
+        block = num("wish_block", BLOCK, 10)
+        return cls(
+            block=block,
+            # kolo, když čekají jiní, nikdy delší než kolo, když nečeká nikdo
+            shared=min(block, num("wish_shared_block", SHARED_BLOCK, 10)),
+            budget=num("wish_budget", BUDGET, 10),
+            panel_budget=num("wish_budget_panel", PANEL_BUDGET, 10),
+            artist_max=num("wish_artist_max", ARTIST_MAX, 50),
+        )
+
+    def budget_of(self, w: "Wish") -> int:
+        return self.panel_budget if w.source == "panel" else self.budget
+
+    def block_size(self, others_waiting: bool) -> int:
+        return self.shared if others_waiting else self.block
+
+
+DEFAULT_AMOUNTS = Amounts()
+
+
+# --------------------------------------------------------------------------
 # spravedlivé pořadí — čistá funkce, testovatelná bez přehrávače
 # --------------------------------------------------------------------------
 
@@ -458,8 +507,8 @@ class Turns:
         return True
 
 
-def block_size(w: Wish, others_waiting: bool) -> int:
-    return SHARED_BLOCK if others_waiting else BLOCK
+def block_size(w: Wish, others_waiting: bool, amounts: Amounts | None = None) -> int:
+    return (amounts or DEFAULT_AMOUNTS).block_size(others_waiting)
 
 
 def fair_order(
@@ -468,6 +517,7 @@ def fair_order(
     prefix: list[tuple[Wish, Track]] | None = None,
     limit: int = 60,
     waiting: set[str] | None = None,
+    amounts: Amounts | None = None,
 ) -> list[tuple[Wish, Track]]:
     """Pořadí skladeb z přání za hrající skladbou (a za pevným `prefix`).
 
@@ -478,7 +528,9 @@ def fair_order(
 
     Rozpočet: přání, ze kterého zaznělo (nebo je zařazeno) už `w.budget`
     skladeb, jde za všechna přání ostatních, která rozpočet ještě mají.
+    `amounts` = počty z nastavení (bez něj výchozí).
     """
+    am = amounts or DEFAULT_AMOUNTS
     sim = turns.copy()
     used: set[str] = set()
     waiting = set(waiting or ())
@@ -492,7 +544,7 @@ def fair_order(
         return any(t.id not in used for t in queues.get(x.id, ()))
 
     def over(x: Wish) -> bool:
-        return count.get(x.id, 0) >= x.budget
+        return count.get(x.id, 0) >= am.budget_of(x)
 
     def others_under(w: Wish) -> bool:
         return any(x.seat != w.seat and left(x) and not over(x) for x in live)
@@ -500,7 +552,7 @@ def fair_order(
     def size(w: Wish) -> int:
         others = any(k != w.seat for k in waiting) or any(
             x.seat != w.seat and left(x) for x in live)
-        return block_size(w, others)
+        return block_size(w, others, am)
 
     def head(seat: str) -> Wish | None:
         """Které přání člověka je na řadě: nejnovější (Wish.rank), s rozpočtem."""
@@ -693,6 +745,11 @@ class WishQueue:
         self.nicks = Nicks(state_file.parent / "nicks.json" if state_file else None)
 
     @property
+    def amounts(self) -> Amounts:
+        """Počty skladeb přání z nastavení — čte se pokaždé, mění se za běhu."""
+        return Amounts.of(getattr(self, "cfg", None))
+
+    @property
     def censor(self):
         from .display import censor_for
 
@@ -735,14 +792,22 @@ class WishQueue:
         if w is not None:
             return {"kind": "wish", "who": c.clean(w.who), "text": c.clean(w.text[:200]), "id": w.id,
                     "who_key": tag_of(w.key)}
-        out = {k: v for k, v in self.bg_reason.items() if k != "id"}
-        out["who"] = c.clean(out.get("who", ""))
+        out = {k: v for k, v in self.bg_reason.items() if k not in ("id", "key")}
+        origin = c.clean(out.get("who", ""))
+        out["who"] = origin
         # "nálada z přání X" jen dokud to přání trvá; pak je to prostě výběr DJe
         src = self.by_id(self.bg_reason.get("id", ""))
         if src is None or not src.active:
             out["who"] = ""
         else:
             out["who_key"] = tag_of(src.key)
+        # odkud podkres je, i po skončení přání: "Rádio podle přání Robert"
+        # (who zůstává prázdné — tohle už není ničí přání)
+        if origin:
+            out["from_who"] = origin
+            key = tag_of(src.key) if src is not None else str(self.bg_reason.get("key") or "")
+            if key:
+                out["from_key"] = key
         return out
 
     def queue_tag(self, vid: str) -> dict | None:
@@ -828,7 +893,8 @@ class WishQueue:
             if w.cid == cid and w.who != nick:
                 w.who = nick
                 renamed += 1
-        if self.bg_reason.get("who") and self._key_of(self.bg_reason.get("id")) == cid:
+        if self.bg_reason.get("who") and (self._key_of(self.bg_reason.get("id")) == cid
+                                          or self.bg_reason.get("key") == tag_of(cid)):
             self.bg_reason["who"] = nick
         telemetry.event("web.nick", cid=cid[-6:], nick=nick, was=old or None,
                         shared=shared or None, renamed=renamed or None)
@@ -1374,7 +1440,7 @@ class WishQueue:
             return Plan(intent=intent, requested=target.tracks[:1])
         intent = Intent(kind="song", text=w.text, mood=target.label,
                         reply=f"Jedu podle odkazu — {target.label}.")
-        return Plan(intent=intent, requested=target.tracks[:ARTIST_MAX],
+        return Plan(intent=intent, requested=target.tracks[:self.amounts.artist_max],
                     seeds=target.tracks[:4])
 
     # ---- plán → přání se skladbami ----
@@ -1437,7 +1503,7 @@ class WishQueue:
             # pak interpret(i) střídavě
             first = list(plan.requested)
             every = allowed(_dedup(first + list(plan.artist_tracks)))
-            cap = ARTIST_MAX + len(first)
+            cap = self.amounts.artist_max + len(first)
             w.artist, w.artists = label, list(intent.artists)
             w.tracks, w.rest = every[:cap], every[cap:]
             w.summary = f"interpret: {label}"
@@ -1459,7 +1525,7 @@ class WishQueue:
             await self._set_background(seeds=plan.seeds, mood=intent.mood, who=w.who, wid=w.id,
                                        replace=False)
             # blok nálady patří autorovi — ať ji uslyší, i když čekají jiní
-            w.tracks = await dj.next_tracks(BLOCK)
+            w.tracks = await dj.next_tracks(self.amounts.block)
             await self._replace_background()
         # Co právě hraje, už hraje — do přání to nepatří. Pi 26. 9. 9:41: jediná
         # vyžádaná skladba byla ta hrající, přání se po jejím dohrání "splnilo"
@@ -1548,11 +1614,12 @@ class WishQueue:
         # nikdy prázdný výčet "Zařadil jsem: ."
         parts = [w.lead, (head + shown + more if shown else head.rstrip(": ")) + ".", *notes]
         others = any(x.seat != w.seat and x.active for x in self.wishes)
-        if others and len(ts) > w.budget:
+        am = self.amounts
+        if others and len(ts) > am.budget_of(w):
             parts.append(f"Čekají i další, tak se střídáme: z tohohle přání teď zazní nejvýš "
-                         f"{plural_tracks(w.budget)}, zbytek až nikdo jiný nečeká.")
+                         f"{plural_tracks(am.budget_of(w))}, zbytek až nikdo jiný nečeká.")
         elif others and w.kind == "artist":
-            parts.append(f"Čekají i další přání, tak se střídáme po {SHARED_BLOCK} skladbách.")
+            parts.append(f"Čekají i další přání, tak se střídáme po {am.shared} skladbách.")
         if self.bg_reason.get("id") == w.id and w.kind == "song":
             parts.append("Potom podobná hudba.")
         parts.append(when)
@@ -1655,7 +1722,7 @@ class WishQueue:
                               artist: str = "", artist_tracks: list[Track] | None = None,
                               artists: list[str] | None = None, replace: bool = True,
                               wid: str = "", max_tracks: int | None = BG_ARTIST_TRACKS,
-                              until: float | None = None) -> None:
+                              until: float | None = None, from_key: str = "") -> None:
         if artist_tracks:
             # podkres v režimu interpreta je vždycky omezený (skladby i čas)
             if until is None and max_tracks is not None:
@@ -1674,6 +1741,11 @@ class WishQueue:
         with contextlib.suppress(AttributeError):
             self.dj._focus_artists = focus
         self.bg_reason = {"kind": kind, "who": who, "text": mood or artist, "id": wid}
+        # čí přání podkres určilo (jmenovka webu), i když přání mezitím zmizí
+        src = self.by_id(wid) if wid else None
+        key = tag_of(src.key) if src is not None else (from_key if who else "")
+        if key:
+            self.bg_reason["key"] = key
         self._bg_at = time.time()
         telemetry.event("request.background", reason=kind, who=who or None,
                         mood=telemetry.clip(mood or artist, 120),
@@ -1885,7 +1957,7 @@ class WishQueue:
                     how = "skončilo, aniž z něj něco zaznělo"
                 parts.append(f"Tvoje poslední přání „{c.clean(telemetry.clip(last.text, 40))}“: {how}.")
             parts.append("Teď ve frontě nic nemáš — napiš, co chceš slyšet, a zařadím to.")
-        if owner is not None and owner.seat != w.seat and owner.played >= owner.budget \
+        if owner is not None and owner.seat != w.seat and owner.played >= self.amounts.budget_of(owner) \
                 and self._others_under_budget(owner):
             # cizí přání už vyčerpalo rozpočet a jiní čekají — kolo mu končí
             owner.yielded = True
@@ -1899,8 +1971,9 @@ class WishQueue:
         t = norm(w.text)
         if meta == "complaint" or re.search(r"\b(strid\w*|demokrac\w*|prednost|fer)\b", t):
             parts.append(
-                f"Pravidla: střídáme se po {SHARED_BLOCK} skladbách; jedno přání má, dokud čekají "
-                f"jiní, nejvýš {plural_tracks(BUDGET)} (z displeje {plural_tracks(PANEL_BUDGET)}) a "
+                f"Pravidla: střídáme se po {self.amounts.shared} skladbách; jedno přání má, dokud "
+                f"čekají jiní, nejvýš {plural_tracks(self.amounts.budget)} (z displeje "
+                f"{plural_tracks(self.amounts.panel_budget)}) a "
                 f"displej je v pořadí jeden člověk; kdo přeskočí cizí skladbu, ukončí tím jeho kolo.")
         if re.search(r"\bstrid\w*", t):
             parts.append("Střídání dvou interpretů umím jako jedno přání — napiš třeba "
@@ -2070,7 +2143,7 @@ class WishQueue:
                         break
                     # kolo mu ukončilo cizí přeskočení / vyčerpal rozpočet a
                     # jiní čekají → ani připravená položka mu nezůstává
-                    if w.yielded or (w.played >= w.budget and self._others_under_budget(w)):
+                    if w.yielded or (w.played >= self.amounts.budget_of(w) and self._others_under_budget(w)):
                         break
                     # Další položka zůstává vždy (resolver ji chystá); druhá jen,
                     # když dohrává rozehrané kolo — nové kolo téhož člověka by
@@ -2082,7 +2155,7 @@ class WishQueue:
                 self._cur_left = (max(0.0, float(st.duration or TRACK_GUESS) - float(st.position or 0)),
                                   time.monotonic())
             order = fair_order(live, self.turns, prefix, limit=max(0, HORIZON - len(prefix)),
-                               waiting=self._deciding())
+                               waiting=self._deciding(), amounts=self.amounts)
             self._order = prefix + order
             desired = [t for _, t in self._order]
             want = {t.id for t in desired}
@@ -2121,7 +2194,7 @@ class WishQueue:
             # resolver už chystá); zbytek je podkres — ten jde za každé nové
             # přání. Dřív si nechalo celý HORIZON zhmotněných (až 8 skladeb) a
             # Pi 26. 9. tak displej dál držel "přání" Parni Valjak.
-            keep_n = max(1, w.budget - w.played)
+            keep_n = max(1, self.amounts.budget_of(w) - w.played)
             keep_ids = {t.id for t in w.pending()[:keep_n]}
             every = list(w.tracks) + list(w.rest)
             w.tracks = [t for t in w.tracks
@@ -2160,7 +2233,7 @@ class WishQueue:
                     telemetry.event("request.turn", id=w.id, who=w.who, source=w.source, turn=self.turns.turn_no,
                                     people=len({x.seat for x in self.wishes
                                                 if x.state in ("queued", "playing")}),
-                                    played=w.played, budget=w.budget)
+                                    played=w.played, budget=self.amounts.budget_of(w))
             else:
                 self.turns.block = None
             self.kick()
@@ -2320,12 +2393,12 @@ class WishQueue:
         others = any(k != w.seat for k in self._deciding()) or any(
             x.seat != w.seat and x.state in ("queued", "playing") and x.pending()
             for x in self.wishes)
-        return block_size(w, others)
+        return block_size(w, others, self.amounts)
 
     def _others_under_budget(self, w: Wish) -> bool:
         """Mají jiní (jiné místo v kole) co hrát a rozpočet ještě nevyčerpali?"""
         return any(x.seat != w.seat and x.state in ("queued", "playing") and x.pending()
-                   and x.played < x.budget for x in self.wishes)
+                   and x.played < self.amounts.budget_of(x) for x in self.wishes)
 
     def can_seed_background(self) -> bool:
         """Smí plnič postavit podkres z hrající skladby? Jen když žádné přání
@@ -2476,7 +2549,8 @@ class WishQueue:
                 artist=artist, mood=str(bg.get("mood") or ""),
                 artist_tracks=tracks, artists=bg.get("artists") or None,
                 who=str(reason.get("who") or ""), kind=str(reason.get("kind") or "radio"),
-                wid=str(reason.get("id") or ""), max_tracks=left, until=float(until))
+                wid=str(reason.get("id") or ""), max_tracks=left, until=float(until),
+                from_key=str(reason.get("key") or ""))
             return
         live = [w for w in self.wishes if w.state in ("queued", "playing") and w.tracks]
         telemetry.event("request.background_stale", artist=artist, left=left,
@@ -2618,7 +2692,8 @@ class WishQueue:
                     await self._set_background(
                         seeds=seeds, mood=str(bg.get("mood") or ""),
                         allow_long=bool(bg.get("allow_long")),
-                        who=str(reason.get("who") or ""), kind=str(reason.get("kind") or "radio"))
+                        who=str(reason.get("who") or ""), kind=str(reason.get("kind") or "radio"),
+                        from_key=str(reason.get("key") or ""))
         except Exception:
             log.exception("podkres se po restartu nepodařilo obnovit")
         if not self.pools.pools and not self.has_requests():

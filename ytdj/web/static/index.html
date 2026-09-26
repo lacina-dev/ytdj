@@ -192,6 +192,7 @@
   .reason { margin: 14px 0 0; font-size: .9rem; color: var(--text-dim); overflow-wrap: anywhere;
             display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
   .reason b { color: var(--text); font-weight: 600; }
+  .reason .from { font-style: italic; }
   .idle-hint { margin: 14px 0 0; font-size: .95rem; color: var(--text-dim); }
 
   .progress { margin-top: 16px; }
@@ -1245,7 +1246,8 @@
     el.art.appendChild(img);
   }
 
-  // "přeje si Jana" / "vybral DJ: klidné ráno" under the artist
+  // "přeje si Jana" / "Rádio podle přání Robert · klidné ráno" under the artist.
+  // Rádio (podkres) není ničí přání: odkud je, se píše tlumeně, bez barevné jmenovky.
   function renderReason(r) {
     var html = "";
     if (r && r.kind === "wish") {
@@ -1253,9 +1255,15 @@
                 !!(S.status && (S.status.requests || []).some(function (x) { return x.id === r.id && isMine(x); }));
       html = (you ? "Tvoje přání" : "Přeje si " + whoChip(r.who, false, r.who_key)) + (r.text ? " „" + esc(r.text) + "“" : "");
     } else if (r && (r.kind === "radio" || r.kind === "start")) {
-      html = "Vybral DJ" + (r.text ? ": <b>" + esc(r.text) + "</b>" : "") +
-             (r.kind === "start" ? " (podle času a dne)" : "") +
-             (r.who ? " · nálada podle " + whoChip(r.who, false, r.who_key) : "");
+      var mood = r.text ? " · <b>" + esc(r.text) + "</b>" : "";
+      if (r.from_who) {
+        var yours = !!(S.tag && r.from_key === S.tag);
+        html = '<span class="from">Rádio podle ' + (yours ? "tvého přání" : "přání " + esc(r.from_who)) + "</span>" + mood;
+      } else if (r.kind === "start") {
+        html = '<span class="from">Rádio podle času a dne</span>' + mood;
+      } else {
+        html = '<span class="from">Rádio · vybral DJ</span>' + mood;
+      }
     }
     if (S.sig.reason !== html) {
       S.sig.reason = html;

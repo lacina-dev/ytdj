@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import os
 import random
 import sys
@@ -379,6 +380,109 @@ class SmartSkip(unittest.TestCase):
         run(go())
 
 
+class ProgressivePrefetch(unittest.TestCase):
+    """F-ZVUK-05: nejdřív 3 nejbližší, pak po jedné až 10, nikdy na úkor naléhavé."""
+
+    def resolver(self):
+        return ResolverQueue.resolver(self)  # type: ignore[arg-type]
+
+    @staticmethod
+    def drain(r, res, limit: int = 30) -> list[str]:
+        """Co by hlavní vlákno postupně řešilo (každá skladba hned hotová)."""
+        order = []
+        for _ in range(limit):
+            v = res._next()
+            if v is None:
+                break
+            order.append(v)
+            res.ready[v] = (r.time.time(), "{}")
+        return order
+
+    def test_player_sends_window_of_ten_with_near_three(self) -> None:
+        async def go():
+            async with Harness() as h:
+                p = h.player
+                await p.enqueue([T(i) for i in range(15)])
+                await h.settle(0.4)
+                req = [r for r in h.resolver if r.get("op") == "ahead"][-1]
+                self.assertEqual(req["ids"], h.fake.upcoming()[:10])
+                self.assertEqual(req["near"], 3)
+                self.assertEqual(p.prefetch_window, 10)
+                self.assertEqual(p.prefetch_depth, 6)  # plnič fronty beze změny
+                # nastavení za běhu (web): menší okno, jiný počet hned
+                p.cfg.prefetch_max, p.cfg.prefetch_first = 5, 2
+                await p.enqueue([T("Z")])
+                await h.settle(0.4)
+                req = [r for r in h.resolver if r.get("op") == "ahead"][-1]
+                self.assertEqual((len(req["ids"]), req["near"]), (5, 2))
+
+        run(go())
+
+    def test_nearest_three_first_then_extends_to_ten_when_idle(self) -> None:
+        r, res = self.resolver()
+        ids = [vid(i) for i in range(1, 11)]
+        with redirect_stderr(io.StringIO()):
+            res.t_get = r.time.monotonic()  # skladba právě startuje
+            res.set_ahead(ids, near=3)
+            self.assertEqual(self.drain(r, res), ids[:3])  # nejbližší hned
+            self.assertIsNotNone(res._wake_at)  # rozšiřování počká na klid
+            res.t_get -= r.EXTEND_QUIET
+            self.assertEqual(self.drain(r, res), ids[3:])  # pak po jedné až 10
+        self.assertEqual(set(res.ready), set(ids))
+
+    def test_urgent_and_wish_preempt_extension(self) -> None:
+        r, res = self.resolver()
+        ids = [vid(i) for i in range(1, 11)]
+        with redirect_stderr(io.StringIO()):
+            res.set_ahead(ids, near=3)
+            self.assertEqual(self.drain(r, res, 5), ids[:5])  # rozšiřuje se
+            res.urgent.append(vid("U"))  # mpv čeká (Další na nepřipravenou)
+            self.assertEqual(res._next(), vid("U"))
+            res.urgent.clear()
+            res.set_ahead(ids, near=3, first=[vid("W")])  # první skladba nového přání
+            self.assertEqual(res._next(), vid("W"))
+            res.set_ahead(ids, near=3, hold=True)  # Codex: rozšiřování stojí
+            self.assertIsNone(res._next())
+            # druhé (urgentní) vlákno rozšiřování nikdy nedělá
+            res.set_ahead(ids, near=3)
+            res.busy = vid("B")
+            self.assertIsNone(res._next(urgent_only=True))
+
+    def test_window_reshuffles_when_a_wish_is_inserted(self) -> None:
+        r, res = self.resolver()
+        ids = [vid(i) for i in range(1, 11)]
+        with redirect_stderr(io.StringIO()):
+            res.set_ahead(ids, near=3)
+            self.drain(r, res)
+            wish = vid("X")
+            res.set_ahead([wish] + ids[:9], near=3)  # přání hned za hrající
+            self.assertNotIn(ids[9], res.ready)  # vypadla z okna → z paměti
+            self.assertEqual(res._next(), wish)  # přání je mezi nejbližšími
+            self.assertEqual(self.drain(r, res), [wish])
+            res.set_ahead(ids[:4], near=3)  # fronta se zkrátila
+            self.assertEqual(set(res.ready), set(ids[:4]))
+
+    def test_ten_skips_in_a_row_all_land_on_prepared(self) -> None:
+        async def go():
+            async with Harness(jitter=0.001) as h:
+                p = h.player
+                await p.enqueue([T(i) for i in range(15)])
+                await h.settle(0.4)
+                p._on_resolver_event("_state", {"ready": p.prefetch_ids(), "busy": None,
+                                                "urgent": []})
+                for _ in range(10):
+                    await p.skip()
+                    await asyncio.sleep(0.01)
+                await h.settle()
+                reqs = [f for k, f in h.events if k == "track.request" and f["why"] == "skip"]
+                self.assertEqual(len(reqs), 10)
+                self.assertTrue(all(r["next_ready"] for r in reqs), reqs)
+                self.assertFalse([r for r in reqs if r.get("smart_skip")])  # nic se nepřeskládalo
+                self.assertEqual(h.fake.current_vid(), vid(10))
+
+        run(go())
+
+
 class SkipBurst(unittest.TestCase):
     def test_burst_requests_name_what_mpv_plays(self) -> None:
         async def go():
@@ -515,6 +619,85 @@ class ResolverQueue(unittest.TestCase):
             self.assertIn(vid(1), res.ready)
             res.set_template(["-J", "--", "url"])  # cizí volby
         self.assertFalse(res.ready)
+
+    def _lanes(self):
+        """Resolver s oběma vlákny; hlavní YoutubeDL drží skladbu, dokud se
+        nepustí `gate` (rozdělaná skladba dopředu, ~7 s na Pi)."""
+        import threading
+
+        r, res = self.resolver()
+        gate = threading.Event()
+
+        class Ydl:
+            def __init__(self, block: bool) -> None:
+                self.calls: list[str] = []
+                self.block = block
+
+            def extract_info(self, url, download=False):
+                v = url.rsplit("v=", 1)[-1]
+                self.calls.append(v)
+                if self.block:
+                    gate.wait(5)
+                return {"id": v}
+
+            def sanitize_info(self, i):
+                return i
+
+        main, second = Ydl(True), Ydl(False)
+        res.ydl, res.ydl_for = main, res.template
+        res.ydl_urgent, res.ydl_urgent_for = second, res.template
+        res.lanes = 2
+        for target in (res.worker, res.urgent_worker):
+            threading.Thread(target=target, daemon=True).start()
+        return r, res, gate, main, second
+
+    def test_urgent_does_not_wait_for_track_being_prepared(self) -> None:
+        """F-PRESKOK-09: Další za připravené skladby nečeká na rozdělanou."""
+        err = io.StringIO()
+        with redirect_stderr(err):
+            r, res, gate, main, second = self._lanes()
+            try:
+                res.set_ahead([vid(1)])
+                for _ in range(200):  # hlavní vlákno se pustilo do skladby dopředu
+                    if res.busy == vid(1):
+                        break
+                    r.time.sleep(0.01)
+                self.assertEqual(res.busy, vid(1))
+                t0 = r.time.monotonic()
+                data, error = res.get(self.argv(vid(2)), 3)
+                took = r.time.monotonic() - t0
+            finally:
+                gate.set()
+                for _ in range(200):  # doběhne, ať nepíše do stderr dalších testů
+                    if res.busy is None:
+                        break
+                    r.time.sleep(0.01)
+        self.assertIsNone(error)
+        self.assertIn(vid(2), data)
+        self.assertLess(took, 1.0)  # ne až po rozdělané (gate by čekal 5 s)
+        self.assertEqual(second.calls, [vid(2)])  # druhé vlákno: jen urgentní
+        self.assertEqual(main.calls, [vid(1)])
+        get = [json.loads(x[6:]) for x in err.getvalue().splitlines()
+               if x.startswith("EVENT ") and '"resolver.get"' in x][-1]
+        self.assertIsNone(get["blocked_by"])
+        self.assertEqual(get["how"], "miss")
+
+    def test_second_lane_never_prepares_ahead(self) -> None:
+        """Dopředu jen jedno vlákno (dva node při hrající hudbě = lupání);
+        je-li hlavní volné, urgentní skladbu vezme ono samo."""
+        with redirect_stderr(io.StringIO()):
+            r, res, gate, main, second = self._lanes()
+            gate.set()  # hlavní nic nedrží
+            data, error = res.get(self.argv(vid(4)), 3)  # hlavní je volné
+            self.assertIsNone(res._next(urgent_only=True))
+            res.set_ahead([vid(1), vid(2), vid(3)])
+            for _ in range(300):
+                if all(v in res.ready for v in (vid(1), vid(2), vid(3))):
+                    break
+                r.time.sleep(0.01)
+        self.assertIsNone(error)
+        self.assertEqual(second.calls, [])
+        self.assertEqual(sorted(main.calls), sorted([vid(1), vid(2), vid(3), vid(4)]))
 
     def test_hold_and_first(self) -> None:
         r, res = self.resolver()

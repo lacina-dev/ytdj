@@ -33,6 +33,16 @@ if [ ! -x .venv/bin/python ]; then
 fi
 .venv/bin/pip install -q --disable-pip-version-check -e .
 
+# Bajtkód předem, ne až při startu služby (F-RESTART-08): rsync mění .py
+# a co se nezkompiluje tady, kompiluje startující ytdj — o to déle je po
+# restartu ticho (celý balík ~5 s na Pi). __pycache__ patřící rootovi (ruční
+# běh panelu před ProtectHome) ytdj nezapíše nikdy a kompiloval by pokaždé
+# (Pi 26. 9.: ytdj/__pycache__, +0,45 s každého startu).
+find ytdj -type d -name __pycache__ ! -writable -print0 \
+    | xargs -0 -r sudo -n rm -rf -- \
+    || echo "POZOR: __pycache__ patřící rootovi nejde smazat (sudo) — start bude pomalejší"
+nice -n 19 .venv/bin/python -m compileall -q ytdj
+
 # USB sound card > 3.5 mm jack > HDMI
 conf_dir="$HOME/.config/wireplumber/wireplumber.conf.d"
 mkdir -p "$conf_dir"

@@ -9,30 +9,82 @@ One asyncio loop, no locks, no cross-thread handoffs.
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
-import logging
 import os
-import shutil
-import signal
-import sys
-from contextlib import suppress
+import time
 
-from .agent import CodexDJ
-from . import telemetry
-from .agent.intent import SkipWatch
-from .config import Config, load_secrets, write_default_config, write_env_template
-from .diagnose import check_audio, yt_dlp_warning
-from .music import Catalog, RadioPools
-from .player import MpvPlayer
-from .player.base import PlayerEvent, queue_transaction
-from .state import Store
-from .ui import Repl
-from .web import WebServer
-from .config import DATA_DIR
-from .wishes import WishQueue
-from .votes import aload_quietly, wire as wire_votes
-from .loopwatch import LoopWatch
+
+def _proc_age_s() -> float | None:
+    """Jak dlouho už běží tenhle proces (od exec run.sh), podle /proc."""
+    try:
+        with open("/proc/self/stat") as f:
+            ticks = int(f.read().rsplit(")", 1)[1].split()[19])  # pole 22: starttime
+        with open("/proc/uptime") as f:
+            up = float(f.read().split()[0])
+        return up - ticks / os.sysconf("SC_CLK_TCK")
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+class StartClock:
+    """Časy fází startu od spuštění procesu, pro událost `app.start`.
+
+    Po restartu služby je ticho od konce starého mpv po první zvuk; nový proces
+    startuje hned po konci starého, takže `sound = track.start − proc_start`.
+    """
+
+    def __init__(self) -> None:
+        age = _proc_age_s()
+        now = time.monotonic()
+        # execv (restart z webu mimo systemd) si nechává PID i čas startu
+        self.exact = age is not None and 0 <= age < 120
+        self.t0 = now - (age if self.exact else 0.0)
+        self.wall0 = time.time() - (now - self.t0)
+        self.marks: dict[str, int] = {}
+
+    def mark(self, name: str) -> None:
+        self.marks.setdefault(name, round((time.monotonic() - self.t0) * 1000))
+
+    def fields(self) -> dict:
+        return {**{f"{k}_ms": v for k, v in self.marks.items()},
+                "proc_start": round(self.wall0, 3), "exact": self.exact}
+
+
+CLOCK = StartClock()
+CLOCK.mark("py")  # interpret + site, do prvního řádku ytdj
+
+import asyncio  # noqa: E402
+import contextlib  # noqa: E402
+import importlib  # noqa: E402
+import logging  # noqa: E402
+import shutil  # noqa: E402
+import signal  # noqa: E402
+import sys  # noqa: E402
+from contextlib import suppress  # noqa: E402
+
+# Jen to, co potřebuje přehrávač: mpv a resolver startují dřív, než se načte
+# zbytek aplikace (DJ, fronta přání, web, ytmusicapi) — ten se importuje ve
+# vlákně souběžně se startem mpv (F-RESTART-08, _import_app).
+from . import telemetry  # noqa: E402
+from .config import (  # noqa: E402
+    DATA_DIR, Config, load_secrets, write_default_config, write_env_template,
+)
+from .diagnose import check_audio, yt_dlp_warning  # noqa: E402
+from .loopwatch import LoopWatch  # noqa: E402
+from .player import MpvPlayer  # noqa: E402
+from .player.base import PlayerEvent, queue_transaction  # noqa: E402
+
+CLOCK.mark("imports")
+
+# Zbytek aplikace; na Pi ~0,2 s importu (bez webu, REPL a ytmusicapi).
+APP_MODULES = ("ytdj.state", "ytdj.music", "ytdj.agent", "ytdj.wishes", "ytdj.votes")
+WEB_MODULE = "ytdj.web.server"
+REPL_MODULE = "ytdj.ui.repl"
+
+
+def _import_app() -> None:
+    for name in APP_MODULES:
+        importlib.import_module(name)
+
 
 log = logging.getLogger("ytdj")
 
@@ -73,12 +125,25 @@ def cookie_warning(cfg: Config) -> str | None:
 
 
 class App:
-    def __init__(self, cfg: Config) -> None:
+    def __init__(self, cfg: Config, player: MpvPlayer | None = None,
+                 player_start: asyncio.Future | None = None,
+                 clock: StartClock | None = None) -> None:
+        from .agent import CodexDJ
+        from .agent.intent import SkipWatch
+        from .music import Catalog, RadioPools
+        from .state import Store
+        from .votes import wire as wire_votes
+        from .wishes import WishQueue
+
         self.cfg = cfg
         # zápisy ve vlastním vlákně: event loop nikdy nečeká na SD kartu
         self.store = Store(background=True)
         self.catalog = Catalog(cfg)
-        self.player = MpvPlayer(cfg)
+        # Přehrávač může startovat už před sestavením aplikace (start_app):
+        # player_start je jeho běžící start(), run() na něj jen počká.
+        self.player = player if player is not None else MpvPlayer(cfg)
+        self._player_start = player_start
+        self.clock = clock
         # když Codex přemýšlí, resolver nic nechystá dopředu — oba naráz se do RAM nevejdou
         # …a ani když DJ rozhoduje o přání: resolver pak bude hned volný pro
         # jeho první skladbu (yt-dlp běží po jednom a nedá se přerušit)
@@ -88,8 +153,10 @@ class App:
         # The REPL is built only in run(); prompt_toolkit touches stdin during
         # construction, which prints a pointless warning when there is no
         # terminal (--web-only mode)
-        self.repl: Repl | None = None
-        self.web = WebServer(self, cfg.web_host, cfg.web_port) if cfg.web_enabled else None
+        self.repl = None
+        # Web (starlette/uvicorn, ~0,4 s importu na Pi) se sestaví až v run(),
+        # po rozjezdu navázané skladby; do té doby je None (_poke_web nic nedělá).
+        self.web = None
         self._reseeding = False
         self._reseed_task: asyncio.Task | None = None
         self._last_reseed = float("-inf")
@@ -252,6 +319,13 @@ class App:
 
     # ---- queue filler ----
 
+    async def _filler_after(self, resume: asyncio.Task) -> None:
+        """Plnič až po obnově stavu (nejdéle 15 s): dřív ho od navázání
+        oddělovala sonda yt-dlp (~2 s na Pi), teď by jinak stavěl rádio
+        z navázané skladby dřív, než obnova vrátí přání a podkres."""
+        await asyncio.wait({resume}, timeout=15)
+        await self._filler()
+
     async def _filler(self) -> None:
         while True:
             try:
@@ -403,14 +477,44 @@ class App:
 
     # ---- run ----
 
+    def _mark(self, name: str) -> None:
+        if self.clock is not None:
+            self.clock.mark(name)
+
+    async def _after_resume(self, resume: asyncio.Task) -> None:
+        """Co při startu nespěchá, až po navázání skladby (nejdéle 15 s), ať
+        nebere CPU mpv a resolveru, zatímco otevírají první skladbu: sonda
+        yt-dlp (vlastní proces s importem yt-dlp, ~2 s CPU na Pi) a YTMusic
+        (import ~0,6 s)."""
+        await asyncio.wait({resume}, timeout=15)
+        if warning := await yt_dlp_warning(self.cfg):
+            print(f"POZOR: {warning}\n")
+        warm = getattr(self.catalog, "warm", None)
+        if warm is None:
+            return
+        t0 = time.monotonic()
+        try:
+            await asyncio.to_thread(warm)
+        except Exception:
+            log.warning("katalog (ytmusicapi) se nepodařilo připravit", exc_info=True)
+            return
+        log.info("katalog připraven za %d ms", (time.monotonic() - t0) * 1000)
+
+
     async def run(self, repl: bool = True) -> int:
         self.player.on_event(self._on_event)
         self.player.on_event(self.wishes.on_event)
         # chytré Další přeskakuje jen podkres, přání nikdy
         if hasattr(self.player, "is_protected"):
             self.player.is_protected = self.wishes.is_request_track
+        from .votes import aload_quietly
+
         await aload_quietly(self.votes)  # state.db ve vlákně, ne v event loopu
-        await self.player.start()
+        if self._player_start is not None:
+            await self._player_start  # start() běží od _amain, souběžně s importy
+        else:
+            await self.player.start()
+        self._mark("player")
         self.wishes.start()
         # hlídač zaseknutého event loopu (sys.loop_lag se zásobníkem)
         self.loopwatch = LoopWatch()
@@ -418,13 +522,25 @@ class App:
         # Po restartu služby navázat (jen čerstvý stav, ne v noci — viz
         # wishes.should_resume); na pozadí, ať web naběhne hned.
         resume = asyncio.create_task(self.wishes.resume(), name="ytdj-resume")
+        self._mark("resume")
 
-        if self.web:
+        if self.cfg.web_enabled:
             try:
+                # import webu ve vlákně: event loop mezitím rozjíždí navázanou skladbu
+                await asyncio.to_thread(importlib.import_module, WEB_MODULE)
+                from .web import WebServer
+
+                self.web = WebServer(self, self.cfg.web_host, self.cfg.web_port)
                 await self.web.start()
             except OSError as exc:
                 print(f"web se nepodařilo spustit ({exc}) — pokračuji bez něj")
                 self.web = None
+        self._mark("web")
+        telemetry.event("app.start", **(self.clock.fields() if self.clock else {}),
+                        web=self.web is not None, repl=repl)
+        # sonda yt-dlp a ytmusicapi až po navázání; kdo katalog potřebuje dřív,
+        # vytvoří si YTMusic sám (LazyYT)
+        later = asyncio.create_task(self._after_resume(resume), name="ytdj-after-resume")
 
         auth = "přihlášen" if self.catalog.authenticated else "anonymně"
         model = self.cfg.codex_model or "výchozí"
@@ -435,13 +551,14 @@ class App:
         print(f"       web:  {self.web.url}\n" if self.web else "       web:  vypnutý\n")
         if warning := cookie_warning(self.cfg):
             print(f"POZOR: {warning}\n")
-        if warning := await yt_dlp_warning(self.cfg):
-            print(f"POZOR: {warning}\n")
 
         rc = 0
-        filler = asyncio.create_task(self._filler())
+        filler = asyncio.create_task(self._filler_after(resume))
         try:
             if repl:
+                await asyncio.to_thread(importlib.import_module, REPL_MODULE)
+                from .ui import Repl
+
                 self.repl = Repl(self.player, self._on_prompt)
                 # Restart z webu musí umět ukončit i REPL, jinak by tlačítko
                 # fungovalo jen v režimu --web-only.
@@ -483,7 +600,8 @@ class App:
         finally:
             filler.cancel()
             resume.cancel()
-            await asyncio.gather(filler, resume, return_exceptions=True)
+            later.cancel()
+            await asyncio.gather(filler, resume, later, return_exceptions=True)
             # co hrálo a kdo na co čeká — pro navázání po restartu
             if not self.player.died.is_set():
                 with contextlib.suppress(Exception):
@@ -513,6 +631,39 @@ ytdj — AI DJ pro YouTube Music
   ytdj --check-audio  co se nabízí za kvalitu a co jí případně chybí
   ytdj --help         tahle nápověda
 """
+
+
+async def start_app(cfg: Config, clock: StartClock | None = None,
+                    import_app=_import_app) -> App:
+    """Přehrávač první, zbytek aplikace souběžně (F-RESTART-08).
+
+    mpv (~1,4 s na Pi) a resolver se spustí hned po načtení konfigurace; DJ,
+    fronta přání a hlasování se mezitím importují ve vlákně. Navázání
+    přerušené skladby (App.run → wishes.resume) tak nečeká na import celé
+    aplikace — dřív startoval přehrávač až ~2,7 s po spuštění procesu.
+    Obsluhy událostí se zaregistrují v App.run; do té doby v mpv nic nehraje.
+    """
+    player = MpvPlayer(cfg)
+    started = asyncio.create_task(player.start(), name="ytdj-player-start")
+    if clock is not None:
+        clock.mark("player_call")
+        started.add_done_callback(lambda _t: clock.mark("player"))
+    await asyncio.sleep(0)  # start() se rozběhne (spustí mpv) dřív než importy
+    try:
+        await asyncio.to_thread(import_app)
+        if clock is not None:
+            clock.mark("app_imports")
+        app = App(cfg, player=player, player_start=started, clock=clock)
+    except BaseException:
+        started.cancel()
+        with suppress(BaseException):
+            await started
+        with suppress(Exception):
+            await player.stop()
+        raise
+    if clock is not None:
+        clock.mark("app")
+    return app
 
 
 async def _amain() -> int:
@@ -547,7 +698,8 @@ async def _amain() -> int:
             print(f"  • {p}")
         return 1
 
-    app = App(cfg)
+    CLOCK.mark("config")
+    app = await start_app(cfg, CLOCK)
     task = asyncio.create_task(app.run(repl=not web_only))
     # systemd stops a service with SIGTERM; without this the default handler
     # would kill us mid-flight and leave mpv and the SQLite behind unclosed.

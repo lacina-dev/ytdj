@@ -35,6 +35,10 @@ DEFAULTS: dict = {
     "queue_target": 5,  # how many tracks to keep queued ahead
     "queue_low": 3,  # refill below this
     "pool_low": 10,  # fetch more radio below this
+    # Příprava skladeb dopředu (resolver): nejdřív tolik nejbližších, pak se
+    # okno po jedné rozšiřuje až na prefetch_max — vždy až po naléhavých.
+    "prefetch_first": 3,
+    "prefetch_max": 10,
     "radio_limit": 50,  # how many tracks to request from one seed
     # filters
     "min_duration": 60,
@@ -71,6 +75,15 @@ DEFAULTS: dict = {
     # …a kolik různých lidí musí dát 👍 celému interpretovi (a víc 👍 než 👎),
     # aby byl oblíbený (písničce stačí jeden 👍).
     "favourite_artist_votes": 2,
+    # Přání (ytdj/wishes.py): kolik skladeb jednoho přání zazní v jednom kole,
+    # když nikdo jiný nečeká (i blok přání nálady) / když čekají i jiní, kolik
+    # celkem, dokud mají jiní co hrát (web / displej), a kolik skladeb
+    # interpreta je přání (zbytek jde do podkresu).
+    "wish_block": 3,
+    "wish_shared_block": 2,
+    "wish_budget": 4,
+    "wish_budget_panel": 3,
+    "wish_artist_max": 12,
     # Last set volume. mpv starts at it, so a restarted service picks up where
     # it left off instead of coming back at full blast.
     "volume": 100,
@@ -182,6 +195,13 @@ class Config:
     ban_song_votes: int = 2
     ban_artist_votes: int = 3
     favourite_artist_votes: int = 2
+    wish_block: int = 3
+    wish_shared_block: int = 2
+    wish_budget: int = 4
+    wish_budget_panel: int = 3
+    wish_artist_max: int = 12
+    prefetch_first: int = 3
+    prefetch_max: int = 10
 
     yt_dlp_path: str = ""
     node_bin: str | None = None

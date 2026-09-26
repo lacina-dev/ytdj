@@ -123,6 +123,13 @@ async def run(out: Path, base: str, fake, cdp_port: int) -> None:
                 over = await tab.js("[document.documentElement.scrollWidth, innerWidth]")
                 print(f"  {tag}: page width {over[0]} / viewport {over[1]}"
                       + ("  <-- HORIZONTAL SCROLL" if over[0] > over[1] else ""))
+                # the radio after somebody's wish: "Rádio podle přání Robert · …"
+                playing = fake.playing_req
+                state(playing_req=None, radio_from={"from_who": "Robert", "from_key": "shots-robert"})
+                await asyncio.sleep(1.5)
+                await tab.shot(out / f"{tag}-2b-radio-from.png", full=False)
+                state(playing_req=playing, radio_from={})
+                await asyncio.sleep(1.0)
                 # office voting: 👎 choice, a queue row, the Hlasování page, a banned track
                 await tab.js("window.scrollTo(0,0); document.querySelector('#vDown').click()")
                 await asyncio.sleep(0.6)

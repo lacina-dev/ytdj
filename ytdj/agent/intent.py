@@ -216,6 +216,38 @@ def artist_request(user_text: str, candidates: list[str]) -> list[str]:
     return [name for _, name in sorted(found)]
 
 
+# "oboje", "obojí", "i X i Y", "střídej X a Y" — posluchač chce VŠECHNO jmenované,
+# ne jedno z toho. Pi 26. 9. 9:41: "chci budulinka a Depeche mode taky chci
+# oboje" → model dal Budulínka do `requested` a Depeche Mode jen do `seeds`
+# (rádio v jeho duchu, které se při souběhu přání nikdy nespustilo).
+_BOTH = re.compile(
+    r"\b(oboje|oboji|obe|obojich|oba|both|stridej\w*|stridat|stridani|stridave|stridame"
+    r"|prostridej|prokladej|alternate)\b|\bi\s+\w+(\s+\w+)?\s+i\s+\w+"
+)
+
+
+def wants_both(text: str) -> bool:
+    return bool(_BOTH.search(norm(text)))
+
+
+def _both_focus(user_text: str, requested: list[dict], candidates: list[str]) -> list[str]:
+    """Interpreti, které posluchač jmenoval (a ne jen jejich jednu skladbu)."""
+    out: list[str] = []
+    for name in candidates:
+        name = (name or "").strip()
+        if not name or name in out or not mentions(user_text, name, any_word=True):
+            continue
+        # jmenoval jeho konkrétní skladbu ("budulinka") → ta je v requested
+        titled = any(
+            artist_match(r.get("artist") or "", name) and (r.get("title") or "").strip()
+            and mentions(user_text, r.get("title") or "", any_word=True)
+            for r in requested
+        )
+        if not titled:
+            out.append(name)
+    return out
+
+
 @dataclass
 class Repair:
     focus_artists: list[str]
@@ -271,6 +303,17 @@ def repair_decision(
             focus = promoted
             action = "start_radio"
             note = "play_next → režim interpreta " + ", ".join(promoted)
+
+    if wants_both(text) and action in ("start_radio", "play_next", "nothing"):
+        # 5. "oboje" / "střídej X a Y": každý jmenovaný interpret patří do
+        #    přání (režim interpreta; víc jmen = střídavě), jmenované skladby
+        #    zůstávají v requested a hrají první.
+        candidates = list(focus) + [r.get("artist") or "" for r in requested] + list(seed_artists or [])
+        both = _both_focus(user_text, requested, candidates)
+        missing = [a for a in both if a not in focus]
+        if missing:
+            focus = focus + missing
+            note = (note + "; " if note else "") + "oboje → režim interpreta " + ", ".join(focus)
 
     if focus and action != "start_radio":
         note = note or f"{action} s focus_artists → start_radio"
@@ -452,6 +495,67 @@ def local_command(text: str) -> tuple[str, int] | None:
         if pattern.match(t):
             return action, 0
     return None
+
+
+# ---- otázka / stížnost na frontu (ne hudební přání) ----
+#
+# Pi 26. 9.: "Proč to vůbec nehraje moje písničky?", "…pořád jen displej. To
+# není demokracie. Musí se to střídat." a "Žádné střídání jsi nenastavil" šly
+# jako přání k modelu — ten k nim zařadil náhodnou skladbu a slíbil, co
+# aplikace neumí. Na tohle odpovídá fronta sama, z toho, jak to opravdu je.
+
+_META = re.compile(
+    r"^proc\b|\bproc (to|se|jsi|nic|porad|furt|zase|uz|mi|nehraj\w*|nejsou|nebyl\w*|neni)\b"
+    r"|\bkdy (uz )?(bude|budou|prijde|prijdou|zahrajes|zahraje|hraje|dojde|pustis|budu)\b"
+    r"|\bkde (je|jsou|mam|zustal\w*) (moje|me|muj|moji|moje prani)\b"
+    r"|\b(moje|me|mych|muj) (pisn\w*|prani|skladb\w*|song\w*) (nehraj\w*|nejsou|neni|nebyl\w*|zmizel\w*)"
+    r"|\bnehraje\w* (moje|me|mi|nic z)\b|\bdemokraci\w*|\bneni to fer\b|\bnefer\b|\bnespravedl\w*"
+    r"|\bporad (hraje|ten|ta|to) (sam\w*|stejn\w*|dokola)\b"
+    r"|\bdlouhodobou prednost\b|\bma prednost\b|\bnestrid\w*|\bzadne strid\w*|\bnenastavil\w*"
+    r"|\bignoruj\w*|\bco (to )?(ted )?hraje\b|\bkdo (to )?(pustil|chtel|si preje|vybral)\b"
+    r"|\bjak dlouho (budu|jeste|to)\b|\bkolik (je|mam) (prede mnou|pred mnou)\b"
+)
+# kde je v textu i jasné přání hudby, jde o přání (i se stížností kolem)
+_MUSIC_VERB = re.compile(
+    r"\b(pust\w*|zahraj\w*|zahrej\w*|hraj|hrajte|hrej|dej mi|dejte|chci slyset|chci poslouchat"
+    r"|pridej\w*|zarad\w*|stridej\w*|prokladej|play|put on)\b"
+)
+_COMPLAINT = re.compile(
+    r"\b(demokraci\w*|nefer|neni to fer|nespravedl\w*|porad|furt|nestrid\w*|zadne|nenastavil\w*"
+    r"|ignoruj\w*|prednost|vubec|zase|nikdy)\b"
+)
+
+
+def meta_kind(text: str) -> str | None:
+    """ "question" / "complaint" o frontě a o tom, proč hraje, co hraje; None = přání."""
+    t = norm(text)
+    if not t or not _META.search(t) or _MUSIC_VERB.search(t):
+        return None
+    return "complaint" if _COMPLAINT.search(t) else "question"
+
+
+# ---- oprava vs. další přání téhož člověka ----
+#
+# Pi 26. 9. 9:36: "A co třeba Depeche mode" nahradilo až "Zahraj od Vojtano…"
+# — dvě různá přání, posluchač chtěl obojí. Nahrazuje jen oprava nebo zápor.
+_CORRECTS = re.compile(
+    r"^(ne|nee|ne ne|spis|radsi|oprava|oprav\w*|zrus\w*|zapomen\w*|nechci)\b"
+    r"|\b(misto toho|misto tamtoho|radsi|zrus\w*|zapomen\w*|nechci to|nechci uz|to ne\b|tohle ne\b"
+    r"|jsem myslel|jsem myslela|myslel jsem|myslela jsem|spatne|preklep|instead)\b"
+)
+
+
+def corrects(text: str) -> bool:
+    """Opravuje nebo ruší předchozí přání ("ne, radši…", "místo toho", "zruš…")?"""
+    return bool(_CORRECTS.search(norm(text)))
+
+
+def near_same(a: str, b: str) -> bool:
+    """Skoro stejný text (poslané znovu, překlep) — to je jedno přání, ne dvě."""
+    x, y = norm(a), norm(b)
+    if not x or not y:
+        return False
+    return x == y or SequenceMatcher(None, x, y).ratio() >= 0.85
 
 
 # ---- série přeskočení ----

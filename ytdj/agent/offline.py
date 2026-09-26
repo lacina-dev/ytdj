@@ -30,6 +30,9 @@ from .intent import norm
 # ---- druh výpadku ----
 
 LOGIN, LIMIT, NETWORK, ERROR = "login", "limit", "network", "error"
+# Tah nestihl rozpočet (náš timeout). NENÍ to síť: 26. 9. 9:23 studený start
+# app-serveru (~9 s) + model (~14 s) přetáhl 25 s a posluchač četl "síť".
+SLOW = "slow"
 
 MESSAGES = {
     LOGIN: "DJ teď nemá přístup k mozku (Codex není přihlášený). Hraju dál a na "
@@ -41,23 +44,29 @@ MESSAGES = {
     NETWORK: "DJ se teď nedovolá ke svému mozku (síť). Hraju dál; jednoduchá přání "
              "zvládnu i sám, na složitější to zkusím za chvíli znovu.",
     ERROR: "DJ má teď potíž s mozkem. Hraju dál; jednoduchá přání zvládnu i sám.",
+    SLOW: "DJ nestihl odpovědět včas — zkus to prosím znovu, hudba hraje dál. "
+          "Jednoduchá přání (interpret, klidnější, živější) zvládnu i bez něj.",
 }
 
 _LOGIN = re.compile(r"\b(401|403)\b|unauthori[sz]ed|not logged in|není přihlášen|login|"
                     r"incorrect api key|refresh token", re.I)
 _LIMIT = re.compile(r"\b429\b|rate.?limit|usage limit|quota|too many requests|limit reached", re.I)
-_NETWORK = re.compile(r"timeout|timed out|neodpověděl|connection|network|dns|resolve host|"
+_NETWORK = re.compile(r"timeout|timed out|connection|network|dns|resolve host|"
                       r"\b50[234]\b|unreachable|reset by peer|stream disconnected", re.I)
+# náš vlastní strop tahu (asyncio.timeout, TURN_TIMEOUT) — model nestihl, síť jela
+_SLOW = re.compile(r"neodpověděl do|nestihl", re.I)
 
 
 def classify(exc_or_text: object) -> str | None:
     """Druh výpadku z chyby Codexu; None = jednorázová chyba (neotevírat hned)."""
     text = str(exc_or_text)
+    if isinstance(exc_or_text, TimeoutError) or _SLOW.search(text):
+        return SLOW  # vypršel NÁŠ rozpočet — o síti to nic neříká
     if _LOGIN.search(text):
         return LOGIN
     if _LIMIT.search(text):
         return LIMIT
-    if _NETWORK.search(text) or isinstance(exc_or_text, TimeoutError):
+    if _NETWORK.search(text):
         return NETWORK
     return None
 
@@ -68,6 +77,7 @@ BACKOFF = {
     LIMIT: [300, 900, 1800],
     NETWORK: [30, 120, 300],
     ERROR: [60, 300, 600],
+    SLOW: [30, 120, 300],
 }
 ERRORS_TO_OPEN = 2  # jednorázové chyby (bez druhu) — kolik za sebou otevře jistič
 
@@ -124,11 +134,12 @@ class Breaker:
         now = time.time() if now is None else now
         reason = classify(exc)
         self.last_error = str(exc)[:300]
-        if reason is None:
+        if reason in (None, SLOW):
+            # jeden pomalý tah (studený start) není výpadek — jistič až po druhém
             self.errors_in_row += 1
             if self.errors_in_row < ERRORS_TO_OPEN:
                 return None
-            reason = ERROR
+            reason = reason or ERROR
         if self.reason != reason:
             self.failures = 0
             self.since = now

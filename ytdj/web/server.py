@@ -938,7 +938,7 @@ class WebServer:
         # povely jako "další" nebo "hlasitěji" hned, bez fronty
         by = wq.name_for(data.get("client"), " ".join(str(data.get("who") or "").split())[:24]) or (
             "displej" if source == "panel" else "někdo")
-        local = await wq.try_local(text, by=by)
+        local = await wq.try_local(text, by=by, client=data.get("client"))
         if local is not None:
             rec["local"] = True
             rec["reply"] = local
@@ -1079,8 +1079,11 @@ class WebServer:
                     # kdo přeskočil — vlastník přeskočeného přání to uvidí
                     by = wq.name_for(data.get("client"),
                                      " ".join(str(data.get("who") or "").split())[:24])
-                    wq.note_skip(by or ("displej" if rec.get("ua") == "panel" else "někdo"))
-                await player.skip()
+                    # přeskočení cizího přání ukončí jeho kolo ještě před skokem
+                    await wq.skip_current(by or ("displej" if rec.get("ua") == "panel" else "někdo"),
+                                          data.get("client"))
+                else:
+                    await player.skip()
             elif action == "stop":
                 if wq is not None:
                     await wq.stop_all()  # jen pauza — cizí přání se nemažou

@@ -43,6 +43,47 @@ PREFETCH_SETTLE = 0.2  # s — dávka změn fronty se sejde, než se pošle reso
 KEEP_HISTORY = 5  # kolik dohraných položek nechat v playlistu mpv před hrající
 VIDEO_ID = re.compile(r"[?&]v=([\w-]{11})")
 RESOLVER_SOCKET = MPV_SOCKET.parent / "ytdl-resolver.sock"
+# Lupání 26. 9.: 466 výpadků (xrun) uzlu mpv v 35 okamžicích, 24 z nich když
+# resolver chystal skladbu. mpv plní zásobník z vláken s nice 0 na stejných
+# jádrech jako yt-dlp + JS. mpv tedy dostane přednost jako PipeWire (-11,
+# povoleno skupinou pipewire), resolver jen zbytky procesoru (SCHED_IDLE).
+MPV_NICE = -11
+
+
+def _audio_first() -> None:
+    """preexec mpv: priorita pro celý proces (vlákna ji zdědí). Bez oprávnění
+    (limit nice) zůstane 0 — `player.start` hlásí, co skutečně platí."""
+    with suppress(OSError):
+        os.setpriority(os.PRIO_PROCESS, 0, MPV_NICE)
+
+
+def _background() -> None:
+    """preexec resolveru: jen volný procesor; dědí i jeho node/deno."""
+    with suppress(OSError):
+        os.nice(19)
+    with suppress(OSError, AttributeError):
+        os.sched_setscheduler(0, os.SCHED_IDLE, os.sched_param(0))
+
+
+def _nice_of(pid: int | None) -> int | None:
+    try:
+        return os.getpriority(os.PRIO_PROCESS, pid) if pid else None
+    except OSError:
+        return None
+
+
+def runtime_file(name: str) -> Path | None:
+    """Soubor v $XDG_RUNTIME_DIR (tmpfs): přežije restart služby, reboot ne, a
+    nepíše na SD kartu. Bez XDG_RUNTIME_DIR nic — /tmp může být na kartě."""
+    if not os.environ.get("XDG_RUNTIME_DIR"):
+        return None
+    return MPV_SOCKET.parent / name
+
+
+# Hrající skladba a pozice pro navázání po restartu služby (viz resume_track).
+PLAYBACK_EVERY = 5.0  # s — jak často se zapisuje (tmpfs, pár set bajtů)
+RESUME_REWIND = 2.0  # s — navázat kousek před místem, kde to skončilo
+RESUME_TAIL = 15.0  # s — skladbu, které zbývá méně, už nenavazovat
 
 # mpv nad 130 stejně nepustí a ručně zapsaná hodnota v configu by ho jinak
 # odmítla nastartovat
@@ -204,6 +245,10 @@ class MpvPlayer(Player):
         self._resolver_started = 0.0
         self._resolver_restarts = 0
         self.sampler: SystemSampler | None = None
+        # hrající skladba + pozice (tmpfs) — nastaví start(); testy ho nemají
+        self.playback_file: Path | None = None
+        self._playback_task: asyncio.Task | None = None
+        self._playback_sig: tuple | None = None
 
     # ---------- lifecycle ----------
 
@@ -235,6 +280,12 @@ class MpvPlayer(Player):
             "--cache-pause-initial=yes",
             "--cache-pause-wait=2",
             "--keep-open=no",
+            # nepotřebné skripty (OSD, statistiky, konzole) — vlákna a paměť
+            # navíc; volby, které zná i starší mpv (neznámá volba = mpv nevstane)
+            "--osc=no",
+            "--load-stats-overlay=no",
+            "--load-osd-console=no",
+            "--load-auto-profiles=no",
             # Když YouTube uprostřed skladby zavře spojení (rotace CDN, síť),
             # ffmpeg to bez tohohle vezme jako konec souboru — mpv ohlásí eof
             # a skočí na další skladbu v půlce té současné. S reconnectem se
@@ -271,7 +322,10 @@ class MpvPlayer(Player):
 
         env = self.cfg.child_env()
         env[ytdl_cache.ENV_REAL] = self.cfg.yt_dlp_path
-        env[ytdl_cache.ENV_SOCKET] = str(RESOLVER_SOCKET)
+        if self._resolver_python():
+            # jen když resolver poběží: shim na jeho socket chvíli čeká
+            env[ytdl_cache.ENV_SOCKET] = str(RESOLVER_SOCKET)
+        self.playback_file = runtime_file("playback.json")
         env.update(telemetry.child_env())
         t0 = time.monotonic()
         self.proc = await asyncio.create_subprocess_exec(
@@ -279,6 +333,7 @@ class MpvPlayer(Player):
             env=env,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
+            preexec_fn=_audio_first,
         )
 
         # Při bootu Pi 3 startuje všechno naráz a mpv socket občas nestihl
@@ -297,7 +352,8 @@ class MpvPlayer(Player):
             telemetry.event("player.fail", error="socket mpv nevznikl")
             raise RuntimeError(f"mpv nenastartoval (socket {MPV_SOCKET} nevznikl)")
         telemetry.event("player.start", took_ms=_ms(t0, time.monotonic()),
-                        volume=self._volume, format=self.cfg.ytdl_format)
+                        volume=self._volume, format=self.cfg.ytdl_format,
+                        nice=_nice_of(self.proc.pid))
 
         self._reader_task = asyncio.create_task(self._read_loop())
         # Resolver až po mpv: jeho start (import yt-dlp) bere Pi 3 desítky
@@ -309,6 +365,8 @@ class MpvPlayer(Player):
 
         self.sampler = SystemSampler(self._telemetry_context, self._telemetry_pids)
         self.sampler.start()
+        if self.playback_file is not None:
+            self._playback_task = asyncio.create_task(self._playback_loop())
 
     async def _observe(self) -> None:
         for i, prop in enumerate(
@@ -337,6 +395,7 @@ class MpvPlayer(Player):
     async def stop(self) -> None:
         self._stopping = True
         self._flush_volume()
+        self._save_playback()  # poslední pozice před restartem (tmpfs, okamžitě)
         if self.sampler:
             with suppress(Exception):
                 await self.sampler.stop()
@@ -356,7 +415,7 @@ class MpvPlayer(Player):
         with suppress(FileNotFoundError):
             os.unlink(MPV_SOCKET)
         for task in (self._resolver_task, self._prefetch_task, self._prune_task,
-                     self._outage_task):
+                     self._outage_task, self._playback_task):
             if task:
                 task.cancel()
         if self._resolver and self._resolver.returncode is None:
@@ -503,6 +562,8 @@ class MpvPlayer(Player):
                     # skladba se po výpadku zkusí znovu
                     kind = "unavailable"
                     self._note_transient(entry, text)
+            if kind in ("error", "unavailable"):
+                self._drop_resolved(self._entries.get(entry))
             premature = self._note_premature_end(kind, msg.get("playlist_entry_id", -1))
             self._t_end_file(kind, msg, premature)
             self._time_pos = 0.0
@@ -911,7 +972,11 @@ class MpvPlayer(Player):
             return
         if kind.startswith("_"):
             return
-        if kind in ("resolver.resolve", "resolver.get") and fields.get("video_id"):
+        if kind in ("resolver.listen", "resolver.ready"):
+            # resolver (znovu) poslouchá / má yt-dlp — hned mu říct, co chystat
+            self._schedule_prefetch(now=True)
+        if (kind in ("resolver.resolve", "resolver.get") and fields.get("video_id")
+                and fields.get("how") != "startup"):  # "resolver startuje" není chyba videa
             if fields.get("ok"):
                 self._res_errors.pop(fields["video_id"], None)
             elif fields.get("error"):
@@ -1371,12 +1436,20 @@ class MpvPlayer(Player):
         self._resolver = await asyncio.create_subprocess_exec(
             python, str(Path(__file__).with_name("ytdl_resolver.py")),
             "--socket", str(RESOLVER_SOCKET),
+            # hotové skladby přežijí restart služby (tmpfs) — bez něj nic
+            *(["--cache", str(cache)] if (cache := runtime_file("resolver-cache")) else []),
             env=self.cfg.child_env(),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
-            preexec_fn=lambda: os.nice(5),  # zvuk má přednost
+            preexec_fn=_background,  # zvuk má přednost
         )
         self._resolver_task = asyncio.create_task(self._watch_resolver(self._resolver))
+        sched = None
+        with suppress(OSError, AttributeError):
+            sched = {os.SCHED_IDLE: "idle", os.SCHED_OTHER: "other"}.get(
+                os.sched_getscheduler(self._resolver.pid), "other")
+        telemetry.event("player.priority", mpv=_nice_of(self.proc.pid if self.proc else None),
+                        resolver=_nice_of(self._resolver.pid), resolver_sched=sched)
 
     async def _watch_resolver(self, proc: asyncio.subprocess.Process) -> None:
         """Přeposílá log resolveru a po pádu ho spustí znovu."""
@@ -1416,6 +1489,113 @@ class MpvPlayer(Player):
             return None
         finally:
             writer.close()
+
+    def _drop_resolved(self, vid: str | None) -> None:
+        """Adresa z resolveru nešla otevřít (vypršela, výpadek) — ať ji příště
+        nepodá znovu z cache, ale vyřeší čerstvě. Bez IPC s mpv."""
+        if vid and self._resolver is not None:
+            with suppress(RuntimeError):
+                asyncio.get_running_loop().create_task(
+                    self._resolver_call({"op": "drop", "ids": [vid]}))
+
+    # ---------- navázání po restartu služby ----------
+
+    def _playback_state(self) -> dict | None:
+        track = self._tracks.get(self._current_id or "")
+        if track is None or self._cur_entry is None:
+            return None
+        return {"v": 1, "saved": time.time(), "pos": round(self._time_pos, 1),
+                "paused": self._paused,
+                "track": {"id": track.id, "title": track.title, "artist": track.artist,
+                          "album": track.album, "duration": track.duration,
+                          "explicit": track.explicit}}
+
+    def _save_playback(self) -> None:
+        """Hrající skladba a pozice do tmpfs. Malý zápis do RAM — neblokuje."""
+        path = self.playback_file
+        if path is None:
+            return
+        data = self._playback_state()
+        try:
+            if data is None:
+                if self._playback_sig is not None:
+                    path.unlink(missing_ok=True)
+                    self._playback_sig = None
+                return
+            sig = (data["track"]["id"], int(data["pos"]), data["paused"])
+            if sig == self._playback_sig:
+                return
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False))
+            tmp.replace(path)
+            self._playback_sig = sig
+        except OSError:
+            log.debug("pozici pro navázání nejde uložit", exc_info=True)
+
+    async def _playback_loop(self) -> None:
+        while True:
+            await asyncio.sleep(PLAYBACK_EVERY)
+            self._save_playback()
+
+    def saved_playback(self, max_age: float) -> tuple[Track, float] | None:
+        """Co hrálo před restartem služby a kde: (skladba, pozice), nebo None.
+
+        Jen čerstvé (≤ max_age), ne pauza a ne skladba těsně před koncem.
+        """
+        path = self.playback_file
+        if path is None:
+            return None
+        try:
+            data = json.loads(path.read_text())
+            age = time.time() - float(data["saved"])
+            t = data["track"]
+            dur = t.get("duration")
+            track = Track(str(t["id"]), str(t.get("title") or ""), str(t.get("artist") or ""),
+                          t.get("album") if isinstance(t.get("album"), str) else None,
+                          int(dur) if isinstance(dur, (int, float)) else None,
+                          explicit=t.get("explicit") if isinstance(t.get("explicit"), bool) else None)
+            pos = max(0.0, float(data.get("pos") or 0) - RESUME_REWIND)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return None
+        if not re.fullmatch(r"[\w-]{11}", track.id):
+            return None
+        if age < 0 or age > max_age or data.get("paused"):
+            return None
+        if track.duration and pos > track.duration - RESUME_TAIL:
+            return None
+        return track, pos
+
+    async def resume_track(self, track: Track, pos: float) -> bool:
+        """Po restartu služby: skladba, která hrála, hned a od místa, kde byla.
+
+        Resolver ji má hotovou z cache na disku (tmpfs), takže zazní do pár
+        vteřin; další skladby za ni doplní ytdj jako vždy. True = zařazena.
+        """
+        async with self._mutex:
+            await self._sync()
+            if self._cur_index() >= 0 or self._load is not None:
+                return False  # něco už hraje / načítá — nepřebíjet
+            self._tracks[track.id] = track
+            self._enqueued_at[track.id] = time.monotonic()
+            self._t_request("restart", resume_pos_s=round(pos, 1))
+            flag = "append" if self._outage is not None else "append-play"
+            # pojmenované argumenty: mpv 0.37 i ≥ 0.38 (tam přibyl index před volbami)
+            cmd: dict[str, Any] = {"name": "loadfile", "url": WATCH_URL.format(track.id),
+                                   "flags": flag}
+            if pos >= 1:
+                cmd["options"] = {"start": f"{pos:.1f}"}
+            res = await self._send({"command": cmd})
+            if not _ok(res) and "options" in cmd:
+                del cmd["options"]  # mpv volby neumí — aspoň od začátku
+                res = await self._send({"command": cmd})
+            if not _ok(res):
+                return False
+            self._note_entry(res, track.id)
+            await self._sync()
+        telemetry.event("player.resume_track", video_id=track.id, pos_s=round(pos, 1),
+                        ready=track.id in self._res_ready)
+        self._schedule_prefetch(now=True)
+        return True
 
     def _schedule_prefetch(self, now: bool = False) -> None:
         """Probudí (nebo spustí) úlohu, která resolveru říká, co chystat dopředu.

@@ -34,6 +34,7 @@ class FakeMpv:
         self.next_reason = "stop"
         self.fail: set[str] = set()  # videoId, které se "nedají otevřít"
         self.started: list[str] = []  # co opravdu začalo hrát
+        self.loadfile_options: dict[int, dict] = {}  # index v log → volby loadfile
 
     # ---- pohled pro testy ----
 
@@ -134,8 +135,14 @@ class FakeMpv:
                         "playlist_entry_id": entry["id"]})
             idx = idx + 1 if idx + 1 < len(self.playlist) else None
 
-    def _do(self, cmd: list):
+    def _do(self, cmd):
         self.log.append(cmd)
+        if isinstance(cmd, dict):
+            # pojmenované argumenty (loadfile s volbami, např. start=)
+            if cmd.get("name") != "loadfile":
+                raise _Err("invalid parameter")
+            self.loadfile_options[len(self.log) - 1] = dict(cmd.get("options") or {})
+            cmd = ["loadfile", cmd["url"], cmd.get("flags", "replace")]
         name = cmd[0]
         if name == "observe_property":
             self.observed[cmd[2]] = cmd[1]

@@ -272,6 +272,41 @@ class DJFallback(unittest.TestCase):
         self.assertIn("turn 1", run(go()).reply)
 
 
+class KeepWarm(unittest.TestCase):
+    """Pi 26. 9. 9:23: první přání po pauze zaplatilo studený start (~9 s)."""
+
+    def test_office_hours_policy(self):
+        from datetime import datetime
+
+        from ytdj.agent.appserver import office_warm
+
+        fri_9 = datetime(2026, 9, 25, 9, 23)
+        self.assertTrue(office_warm(fri_9, free_mb=590))
+        self.assertTrue(office_warm(fri_9, free_mb=None))  # nevím → jako dřív v práci
+        self.assertFalse(office_warm(fri_9, free_mb=120))  # málo paměti → uvolnit
+        self.assertFalse(office_warm(datetime(2026, 9, 25, 20, 0), free_mb=590))
+        self.assertFalse(office_warm(datetime(2026, 9, 26, 10, 0), free_mb=590))  # sobota
+
+    def test_kept_warm_while_policy_says_so(self):
+        os.environ["FAKE_LOG"] = str(Path(tempfile.mkdtemp(dir=_TMP)) / "w.jsonl")
+        os.environ["FAKE_MODE"] = "ok"
+        warm = {"on": True}
+
+        async def go():
+            app = AppServer(str(FAKE), _TMP, idle_ttl=0.2, keep_warm=lambda: warm["on"])
+            try:
+                await app.turn("p", DECISION_SCHEMA, timeout=5)
+                await asyncio.sleep(0.7)
+                kept = app.alive and app.ready
+                warm["on"] = False
+                await asyncio.sleep(0.5)
+                return kept, app.alive
+            finally:
+                await app.close()
+
+        self.assertEqual(run(go()), (True, False))
+
+
 class NativeBinary(unittest.TestCase):
     def test_finds_vendor_binary_next_to_npm_wrapper(self):
         root = Path(tempfile.mkdtemp(dir=_TMP)) / "@openai/codex"

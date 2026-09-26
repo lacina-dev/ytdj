@@ -329,7 +329,12 @@ def vote_mark(votes: object) -> str:
     arts = votes.get("artists")
     if isinstance(arts, list) and any(isinstance(a, dict) and a.get("status") == "banned" for a in arts):
         return "banned"
-    return "favourite" if votes.get("status") == "favourite" else ""
+    if votes.get("status") == "favourite" or votes.get("artist_status") == "favourite":
+        return "favourite"
+    # oblíbený interpret (👍 celému interpretovi) — hrající skladba nese jen artists[]
+    if isinstance(arts, list) and any(isinstance(a, dict) and a.get("status") == "favourite" for a in arts):
+        return "favourite"
+    return ""
 
 
 def who_color(name: str) -> tuple[tuple[int, int, int], tuple[int, int, int]]:

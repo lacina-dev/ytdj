@@ -627,7 +627,7 @@
       </button>
       <h1 id="votesH">Hlasování kanceláře</h1>
     </div>
-    <p class="rule" id="votesRule">Písnička vypadne, když ji 👎 aspoň 2 lidi (a víc než 👍). Interpret při 3. Vyřazené DJ sám nepustí, oblíbené hraje rád.</p>
+    <p class="rule" id="votesRule">Písnička vypadne, když ji 👎 aspoň 2 lidi (a víc než 👍). Interpret při 3. 👍 jde dát i celému interpretovi. Vyřazené DJ sám nepustí, oblíbené hraje rád.</p>
     <div class="quick">
       <button class="btn primary" type="button" data-fav="pusť oblíbené kanceláře">▶ Pusť oblíbené kanceláře</button>
       <button class="btn" type="button" data-fav="pusť moje oblíbené">▶ Pusť moje oblíbené</button>
@@ -647,7 +647,7 @@
       <div class="stack">
         <section class="card vsec" aria-labelledby="vBanH">
           <h2 class="sec-h" id="vBanH">Vyřazené <span class="count" id="vBanN"></span></h2>
-          <p class="hint2">Vrátíš je stažením svého 👎 — nebo 👍 u písničky.</p>
+          <p class="hint2">Vrátíš je stažením svého 👎 — nebo 👍: vyřazení platí, jen dokud je 👎 víc.</p>
           <ul class="list vlist" id="vBan"></ul>
         </section>
         <section class="card vsec" aria-labelledby="vMineH">
@@ -1787,7 +1787,7 @@
 
 
   /* ------------------------------------------------------------------ */
-  /* hlasování kanceláře (PLAN H): 👍 / 👎 skladbě, 👎 interpretovi        */
+  /* hlasování kanceláře (PLAN H): 👍 / 👎 skladbě i celému interpretovi  */
   /* ------------------------------------------------------------------ */
 
   var V = { detail: null, detailSig: "", detailFor: "", lists: null, listsTimer: null, sheet: null, busy: false };
@@ -1807,7 +1807,20 @@
     if ((b.down_by || []).indexOf(S.tag) >= 0) return -1;
     return 0;
   }
-  function myArtistVote(a) { return a && S.tag && (a.by || []).indexOf(S.tag) >= 0 ? -1 : 0; }
+  function myArtistVote(a) {
+    if (!a || !S.tag) return 0;
+    if ((a.up_by || []).indexOf(S.tag) >= 0) return 1;
+    return (a.down_by || a.by || []).indexOf(S.tag) >= 0 ? -1 : 0;
+  }
+  function artistVoters(d) {  // "👍 Kabát: Petr · 👎 Olympic: ty" z /api/votes/track
+    var line = "";
+    (d.artists || []).forEach(function (a) {
+      var u = names(a.voters, 1), n = names(a.voters, -1);
+      if (u) line += (line ? " · " : "") + "👍 " + a.name + ": " + u;
+      if (n) line += (line ? " · " : "") + "👎 " + a.name + ": " + n;
+    });
+    return line;
+  }
 
   var SONG_STATUS = { favourite: ["oblíbená", "fav"], downweighted: ["upozaděná", "low"], banned: ["vyřazená", "ban"] };
   function voteMarks(b) {
@@ -1817,6 +1830,7 @@
     if (st) out += '<span class="vs ' + st[1] + '">' + (b.status === "favourite" ? "♥ " : "") + st[0] + "</span>";
     if (b.artist_status === "banned") out += '<span class="vs ban">interpret vyřazen</span>';
     else if (b.artist_status === "pending") out += '<span class="vs pend">interpret: 👎</span>';
+    else if (b.artist_status === "favourite") out += '<span class="vs fav">♥ interpret</span>';
     return out;
   }
   function rowVoteBtn(where, i, t) {
@@ -1889,13 +1903,14 @@
     (b.artists || []).forEach(function (a) {
       if (a.status === "banned") info += ' <span class="vs ban">' + esc(a.name) + " vyřazen</span>";
       else if (a.status === "pending") info += ' <span class="vs pend">' + esc(a.name) + ": " + a.down + "× 👎</span>";
+      else if (a.status === "favourite") info += ' <span class="vs fav">♥ ' + esc(a.name) + "</span>";
     });
     if (vel.info.innerHTML !== info) vel.info.innerHTML = info;
     // who voted: names come from /api/votes/track, only when the counts change
     var sig = (cur.id || "") + "|" + JSON.stringify(b);
     if (sig !== V.detailSig) {
       V.detailSig = sig;
-      if ((b.up || b.down || (b.artists || []).some(function (a) { return a.down; })) && S.nick) loadDetail(cur.id);
+      if ((b.up || b.down || (b.artists || []).some(function (a) { return a.down || a.up; })) && S.nick) loadDetail(cur.id);
       else { V.detail = null; setHidden(vel.who, true); }
     }
   }
@@ -1907,11 +1922,8 @@
       if (!res.ok) throw new Error();
       var d = await res.json();
       V.detail = d;
-      var line = votersLine(d.song && d.song.voters);
-      (d.artists || []).forEach(function (a) {
-        var n = names(a.voters, -1);
-        if (n) line += (line ? " · " : "") + "👎 " + a.name + ": " + n;
-      });
+      var line = votersLine(d.song && d.song.voters), al = artistVoters(d);
+      if (al) line += (line ? " · " : "") + al;
       vel.who.textContent = line;
       setHidden(vel.who, !line);
     } catch (e) { setHidden(vel.who, true); }
@@ -1956,9 +1968,9 @@
     var sh = V.sheet, t = sh.t, d = sh.detail, b = t.votes || {};
     var song = d ? d.song : null;
     var mine = song ? (song.mine || 0) : myVote(b);
-    var arts = d ? d.artists.map(function (a) { return { name: a.name, down: a.down, status: a.status, mine: a.mine || 0, voters: a.voters }; })
+    var arts = d ? d.artists.map(function (a) { return { name: a.name, up: a.up || 0, down: a.down || 0, status: a.status, need: a.need, mine: a.mine || 0, voters: a.voters }; })
                  : (b.artists && b.artists.length ? b.artists : splitArtists(t.artist).map(function (n) { return { name: n, down: 0, status: "neutral" }; }))
-                   .map(function (a) { return { name: a.name, down: a.down || 0, status: a.status, mine: a.mine != null ? a.mine : myArtistVote(a) }; });
+                   .map(function (a) { return { name: a.name, up: a.up || 0, down: a.down || 0, status: a.status, mine: a.mine != null ? a.mine : myArtistVote(a) }; });
     var html = "";
     var up = song ? song.up : (b.up || 0), down = song ? song.down : (b.down || 0);
     if (!sh.downOnly) {
@@ -1968,18 +1980,25 @@
     html += opt("song:" + (mine === -1 ? 0 : -1), "👎", mine === -1 ? "Stáhnout můj 👎 u písničky" : "Jen tuhle písničku",
                 down ? down + "× 👎" + (song && song.status === "banned" ? " — vyřazená" : song && song.need ? ", k vyřazení chybí " + song.need + "×" : "") : "vypadne, když ji 👎 aspoň 2 lidi",
                 mine === -1);
+    var banA = (V.lists && V.lists.rules && V.lists.rules.ban_artist_votes) || 3;
     arts.forEach(function (a, i) {
-      var need = 3 - (a.down || 0);
+      if (!sh.downOnly) {
+        html += opt("artist:" + i + ":" + (a.mine === 1 ? 0 : 1), "👍",
+                    a.mine === 1 ? "Stáhnout můj 👍 pro " + a.name : "Celý interpret " + a.name,
+                    a.status === "favourite" ? "♥ oblíbený" + (a.up ? " — " + a.up + "× 👍" : "") : (a.up ? a.up + "× 👍" : "oblíbený kanceláře, DJ ho hraje rád"),
+                    a.mine === 1);
+      }
+      var need = a.need != null ? a.need : banA - (a.down || 0);
       html += opt("artist:" + i + ":" + (a.mine === -1 ? 0 : -1), "👎",
                   a.mine === -1 ? "Stáhnout můj 👎 pro " + a.name : "Celého interpreta " + a.name,
-                  a.status === "banned" ? "vyřazený" : (a.down ? a.down + "× 👎, chybí ještě " + Math.max(1, need) + "×" : "vypadne při 3× 👎"),
+                  a.status === "banned" ? "vyřazený" : (a.down ? a.down + "× 👎, chybí ještě " + Math.max(1, need) + "×" : "vypadne při " + banA + "× 👎"),
                   a.mine === -1);
     });
     sh.arts = arts;
     vel.sOpts.innerHTML = html;
     if (d) {
-      var line = votersLine(song && song.voters);
-      d.artists.forEach(function (a) { var n = names(a.voters, -1); if (n) line += (line ? " · " : "") + "👎 " + a.name + ": " + n; });
+      var line = votersLine(song && song.voters), al = artistVoters(d);
+      if (al) line += (line ? " · " : "") + al;
       vel.sWho.textContent = line;
       setHidden(vel.sWho, !line);
     }
@@ -2065,10 +2084,9 @@
     var sub = song ? it.artist : "";
     var first = (it.voters || [])[0];
     var st = it.status === "banned" ? '<span class="vs ban">' + (song ? "vyřazená" : "vyřazený") + "</span>"
-           : it.status === "favourite" ? '<span class="vs fav">♥ oblíbená</span>'
-           : it.need ? '<span class="vs pend">chybí ještě ' + it.need + "× 👎</span>" : "";
-    var acts = "";
-    if (song) acts += voteBtn(list, idx, 1, it.mine === 1, it.up);
+           : it.status === "favourite" ? '<span class="vs fav">♥ ' + (song ? "oblíbená" : "oblíbený") + "</span>"
+           : it.need && it.down ? '<span class="vs pend">chybí ještě ' + it.need + "× 👎</span>" : "";
+    var acts = voteBtn(list, idx, 1, it.mine === 1, it.up);
     acts += voteBtn(list, idx, -1, it.mine === -1, it.down);
     return '<li class="' + (it.status === "banned" ? "banned-row" : "") + '"><span class="meta">' +
            (song ? "" : '<span class="kind">interpret</span>') +
@@ -2092,9 +2110,9 @@
     if (rules.ban_song_votes) {
       vel.rule.textContent = "Písnička vypadne, když ji 👎 aspoň " + rules.ban_song_votes + " " +
         plural(rules.ban_song_votes, "člověk", "lidi", "lidí") + " (a víc než 👍). Interpret při " + rules.ban_artist_votes +
-        ". Vyřazené DJ sám nepustí, oblíbené hraje rád.";
+        ". 👍 jde dát i celému interpretovi. Vyřazené DJ sám nepustí, oblíbené hraje rád.";
     }
-    var sets = [["favourites", vel.fav, vel.favN, "Zatím nic — dej 👍 písničce, která se ti líbí."],
+    var sets = [["favourites", vel.fav, vel.favN, "Zatím nic — dej 👍 písničce nebo interpretovi, který se ti líbí."],
                 ["pending", vel.pend, vel.pendN, "Nic nečeká na rozhodnutí."],
                 ["banned", vel.ban, vel.banN, "Nic není vyřazené."],
                 ["mine", vel.mine, vel.mineN, "Ještě jsi nehlasoval(a). 👍/👎 najdeš u skladby, která hraje."]];

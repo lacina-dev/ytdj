@@ -27,6 +27,12 @@ ENV_REAL = "YTDJ_YTDL_REAL"      # cesta ke skutečnému yt-dlp
 ENV_SOCKET = "YTDJ_YTDL_SOCKET"  # socket resolveru
 VIDEO_ID = re.compile(r"[?&]v=([\w-]{11})")
 TIMEOUT = 150.0  # s — resolver může čekat, než doběhne rozdělaná skladba
+# Po startu služby vzniká socket resolveru až chvíli po mpv (start Pythonu,
+# načtení cache z RAM). Dřív shim hned sáhl po skutečném yt-dlp (~19 s ticha)
+# — teď chvíli počká: resolver má skladbu často hotovou z cache na disku.
+SOCKET_WAIT = 6.0  # s
+# odpovědi resolveru, po kterých se má zkusit skutečné yt-dlp (ne "nedá se hrát")
+FALLBACK_ERRORS = ("vypršel čas", "resolver startuje")
 
 
 def _is_single_json(argv: list[str]) -> bool:
@@ -38,12 +44,33 @@ def _is_single_json(argv: list[str]) -> bool:
     )
 
 
+def _connect(path: str) -> socket.socket | None:
+    """Spojení s resolverem; chvíli počká, když socket ještě nevznikl."""
+    deadline = time.monotonic() + SOCKET_WAIT
+    while True:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            s.connect(path)
+            return s
+        except (FileNotFoundError, ConnectionRefusedError):
+            # resolver teprve startuje (restart služby, pád) — zkusit znovu
+            s.close()
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.1)
+        except OSError:
+            s.close()
+            return None
+
+
 def _ask_resolver(path: str, argv: list[str]) -> dict | None:
     """Odpověď resolveru, nebo None, když s ním nejde mluvit."""
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s = _connect(path)
+        if s is None:
+            return None
+        with s:
             s.settimeout(TIMEOUT)
-            s.connect(path)
             s.sendall(json.dumps({"op": "get", "argv": argv}).encode() + b"\n")
             buf = b""
             while not buf.endswith(b"\n"):
@@ -112,7 +139,7 @@ def main(argv: list[str]) -> int:
                 sys.stdout.flush()
                 return 0
             error = str(resp.get("error") or "")
-            if error and error != "vypršel čas":
+            if error and error not in FALLBACK_ERRORS:
                 # video se přehrát nedá — to samé by řeklo i yt-dlp, jen o 20 s později
                 print(f"ERROR: {error}", file=sys.stderr)
                 return 1

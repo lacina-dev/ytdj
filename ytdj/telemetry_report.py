@@ -129,14 +129,16 @@ KNOWN = {
     "track.mismatch",
     "resolver.resolve", "resolver.get", "resolver.ahead", "resolver.ready",
     "resolver.template", "resolver.exit", "resolver.fallback", "prefetch.ahead",
-    "player.start", "player.died", "player.fail",
+    "resolver.listen", "resolver.disk", "resolver.drop", "resolver.import_failed",
+    "resolver.cancel", "player.resume_track",
+    "player.start", "player.priority", "player.died", "player.fail",
     "sys.sample", "sys.throttle", "audio.xrun",
     "web.prompt", "web.control", "web.sse_open", "web.sse_close", "web.restart",
     "web.config", "web.error",
     "request.created", "request.interpreted", "request.queued", "request.started",
     "request.done", "request.removed", "request.turn", "request.play_next",
     "request.handover", "request.background", "request.start", "request.resume",
-    "request.steer", "web.request_action", "sys.loop_lag",
+    "request.steer", "request.meta", "request.background_follow", "request.background_stale", "request.already_playing", "request.reply_fixed", "web.request_action", "sys.loop_lag",
 }
 
 

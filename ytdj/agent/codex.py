@@ -43,6 +43,7 @@ from .appserver import (
     app_server_enabled,
     default_binary,
     feature_args,
+    office_warm,
 )
 from .offline import (
     CALMER,
@@ -76,6 +77,10 @@ TURN_TIMEOUT = 240  # s
 # Rozpočet celého tahu (app-server i případný exec) — pak jistič a DJ bez
 # modelu. Posluchač nemá čekat minuty: 429 s opakováním držel tah až 240 s.
 LISTENER_BUDGET = 25.0  # s
+# Studený start app-serveru (proces + vlákno) se do rozpočtu posluchače
+# nepočítá: Pi 26. 9. 9:57 start 8.8 s + model 14 s; v 9:23 totéž skončilo
+# chybou "síť" po 25 s. Když Codex neběží, tah smí o tolik déle.
+COLD_START_BUDGET = 15.0  # s
 AUTO_BUDGET = 90.0  # s — přeseedování, o které nikdo nežádal, smí déle
 
 # Response schema. Structured outputs require every property to be listed
@@ -841,7 +846,7 @@ class CodexDJ:
             return None
         mine = which == "mine"
         own = voter if mine and voter and not voter.startswith("wish:") else ""
-        tracks = self.votes.favourite_tracks(own) if (own or not mine) else []
+        tracks = await self.votes.favourite_mix(self.catalog, own) if (own or not mine) else []
         label = "tvoje oblíbené" if mine else "oblíbené kanceláře"
         telemetry.event("dj.fast_path", text=text[:300], what="favourites", which=which,
                         accepted=bool(tracks), n=len(tracks))
@@ -898,6 +903,7 @@ class CodexDJ:
             self.app = AppServer(
                 self._binary, str(self._dir), model=self.cfg.codex_model,
                 max_turns_per_thread=self.MAX_RESUMED_TURNS,
+                keep_warm=office_warm,  # v pracovní době bez studeného startu
             )
         return self.app
 
@@ -1024,6 +1030,9 @@ class CodexDJ:
             return await self._offline_intent(user_input, auto, None)
         prompt = await self._build_prompt(user_input)
         budget = AUTO_BUDGET if auto else LISTENER_BUDGET
+        cold = app_server_enabled() and not (self.app is not None and self.app.ready)
+        if cold and not auto:
+            budget += COLD_START_BUDGET
         t0 = time.monotonic()
         try:
             async with asyncio.timeout(budget):
@@ -1036,6 +1045,7 @@ class CodexDJ:
             opened = self.breaker.failure(exc)
             telemetry.event(
                 "dj.offline", opened=opened, reason=self.breaker.reason,
+                cause=classify(exc) or None, cold=cold or None, budget_s=budget,
                 error=f"{type(exc).__name__}: {exc}"[:300], auto=auto,
                 retry_in_s=self.breaker.status()["retry_in_s"],
                 took_ms=int((time.monotonic() - t0) * 1000),

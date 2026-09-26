@@ -111,6 +111,13 @@ Příklady:
                                  jejího interpreta a nejbližšího okolí
   "něco jiného" / "tohle ne"   → start_radio jiným směrem; režim interpreta
                                  končí; ale výslovná přání (jazyk, žánr) platí
+  "chci Budulínka a Depeche Mode, oboje" / "i X i Y"
+                               → posluchač chce OBOJÍ: start_radio, requested =
+                                 [Vojtaano — Budulínek], focus_artists =
+                                 [Depeche Mode]. Nic z toho nedávej jen do seeds.
+  "střídej Kabát a Olympic" / "střídavě X a Y"
+                               → start_radio, focus_artists = [Kabát, Olympic]
+                                 (aplikace je sama zařadí střídavě)
   "kdyby to bylo X, tak hraj X" / "máš hrát X" / "to není X"
                                → posluchač si stěžuje, že neslyší, co chtěl:
                                  oprav to HNED (start_radio / focus_artists),
@@ -130,10 +137,15 @@ Pole `remember` vyplň jen tehdy, když se posluchač SÁM vyjádřil o svém vk
 ("tohle mám rád", "tohle mi nesedí") — jednou větou. Přeskočené skladby nejsou
 vyjádření vkusu. Pravidla o tom, jak máš fungovat, sem nepiš — splň je rovnou.
 
-Pole `reply` je to jediné, co posluchač uvidí: jedna dvě věty česky, prostý
-text. Piš jen to, co se opravdu stane podle tvých polí — neslibuj nic, co v
-nich není (žádné "budu teď pořád…", když nevyplníš `focus_artists`).
-Neodříkávej všechny názvy.
+Pole `reply` posluchač uvidí jen u akce `nothing` (odpověď na otázku nebo
+pozdrav): jedna dvě věty česky, prostý text. U všeho, co mění hudbu, napíše
+aplikace odpověď sama podle toho, co OPRAVDU zařadila — ty tam dej jen
+krátké shrnutí pro log.
+Nikdy neslibuj režimy ani nastavení, které aplikace nemá: žádné "nastavím
+střídání", "budu teď pořád…", "vždycky", "zapamatuju si pořadí". Aplikace umí
+jen to, co je v polích výš (interpret(i) přes `focus_artists` — víc jmen se
+střídá —, konkrétní skladby, nálada, povely). Na otázky, proč hraje, co hraje,
+a kdy přijde něčí přání, odpovídá aplikace sama ze stavu fronty.
 
 Pole `volume` nech 0, pokud `action` není volume.
 """

@@ -27,7 +27,7 @@ Položka (item) — stejná v POST, GET /api/votes i v detailu:
      "voters": [{"nick": "Petr", "vote": -1, "at": 1790000000.0, "tag": "3f2a…"}],
      "updated": 1790000000.0, "mine": -1}
     status skladby: banned | favourite | downweighted | neutral
-    status interpreta: banned | pending | neutral   (interpret má jen 👎)
+    status interpreta: banned | favourite | pending | neutral   (👍 i 👎 jako u skladby)
     need = kolik 👎 ještě chybí k vyřazení; mine jen s ?client= / "client".
 """
 
@@ -41,7 +41,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from .. import telemetry
-from ..votes import ARTIST, BANNED, SONG, VoteError, enforce
+from ..votes import ARTIST, BANNED, FAVOURITE, SONG, VoteError, enforce
 from ..wishes import clean_cid
 
 if TYPE_CHECKING:
@@ -80,7 +80,9 @@ def _message(target: str, res: Any) -> str:
     if res.vote == 0:
         return "Hlas stažen."
     if item["status"] == BANNED:
-        return "Hlas zapsán (už je vyřazená)."
+        return f"Hlas zapsán (už je vyřazen{'ý' if target == ARTIST else 'á'})."
+    if res.vote > 0 and item["status"] == FAVOURITE and target == ARTIST:
+        return f"Hlas zapsán — {name} je mezi oblíbenými interprety kanceláře."
     need = item.get("need") or 0
     if res.vote < 0 and need:
         return f"Hlas zapsán — k vyřazení chybí ještě {need}× 👎 od dalších."
@@ -190,10 +192,13 @@ def annotate(app: Any, current: dict | None, queue: list[dict]) -> None:
 
         current.votes = {"up": 1, "down": 0, "status": "favourite",
                          "up_by": ["<tag>"], "down_by": [],
-                         "artists": [{"name": "Kabát", "down": 1, "status": "pending",
-                                      "by": ["<tag>"]}]}
+                         "artists": [{"name": "Kabát", "up": 2, "down": 1,
+                                      "status": "favourite", "up_by": ["<tag>", …],
+                                      "by": ["<tag>"], "down_by": ["<tag>"]}]}
         queue[i].votes = {"up", "down", "status", "up_by"?, "down_by"?,
-                          "artist_status"?}   — jen u položek, o kterých se hlasovalo
+                          "artist_status"?, "artists"?}   — jen u položek s hlasy
+        artists[].by = down_by (👎; starší web a displej čtou "by");
+        artist_status = banned | pending | favourite (nejhorší z uvedených)
 
     `tag` je značka klienta z /api/me: "můj hlas" = moje značka v up_by / down_by.
     """

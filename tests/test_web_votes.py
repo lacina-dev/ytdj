@@ -90,8 +90,31 @@ class Page(unittest.TestCase):
     def test_page_uses_the_contract(self):
         html = INDEX.read_text()
         for needle in ('"/api/votes"', "/api/votes/track", "up_by", "down_by", "#hlasovani",
-                       "Jen tuhle písničku", "Celého interpreta"):
+                       "Jen tuhle písničku", "Celého interpreta", "Celý interpret "):
             self.assertIn(needle, html)
+        # 👍 celému interpretovi: vlastní hlas pozná z up_by, 👎 ze staršího "by" i down_by
+        self.assertIn("(a.up_by || []).indexOf(S.tag)", html)
+        self.assertIn("(a.down_by || a.by || [])", html)
+        self.assertIn('b.artist_status === "favourite"', html)
+
+    def test_artist_thumbs_up_from_history_row(self):
+        async def go():
+            srv, app, h = make()
+            post = h[("/api/votes", "POST")]
+            # řádek Odehráno: web posílá id + interpreta; cíl = interpret té skladby
+            resp = await post(request({"target": "artist", "vote": 1, "client": JANA,
+                                       "video_id": "pohoda00001", "artist": "Kabát",
+                                       "title": "Pohoda"}))
+            out = json.loads(resp.body)
+            self.assertEqual((out["item"]["key"], out["item"]["status"]), ("kabat", "favourite"))
+            snap = await srv._snapshot()
+            hv = snap["history"][0]["votes"]
+            self.assertEqual(hv["artist_status"], "favourite")
+            self.assertEqual(hv["artists"][0]["up_by"], [tag_of(JANA)])
+            cur = snap["current"]["votes"]["artists"][0]  # hrající je taky od Kabátu
+            self.assertEqual((cur["name"], cur["up"], cur["status"]), ("Kabát", 1, "favourite"))
+
+        tw.run(go())
 
 
 class IndexServing(unittest.TestCase):

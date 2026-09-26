@@ -2,6 +2,7 @@
 
 Usage: fake_app_server.py app-server   (argv like the real binary)
 Behaviour by env FAKE_MODE: ok | crash | hang | ask | fail | limit | auth | authdead
+FAKE_DECISION: JSON fields that replace the default decision (e.g. the favourites action).
 FAKE_LOG: file where every received message is appended (JSON lines).
 """
 
@@ -14,7 +15,10 @@ MODE = os.environ.get("FAKE_MODE", "ok")
 LOG = os.environ.get("FAKE_LOG")
 DECISION = {"action": "nothing", "seeds": [], "requested": [], "focus_artists": [],
             "after_current": False, "avoid": [], "mood": "", "volume": 0,
-            "remember": "", "reply": "ok"}
+            "remember": "", "reply": "ok",
+            "favourites_scope": "", "continuous": False, "alternate_artists": False}
+if os.environ.get("FAKE_DECISION"):  # rozhodnutí modelu pro test (JSON, přepíše pole)
+    DECISION = {**DECISION, **json.loads(os.environ["FAKE_DECISION"])}
 threads = 0
 turns = 0
 
@@ -86,7 +90,8 @@ for line in sys.stdin:
                                                "willRetry": False,
                                                "error": {"message": "usage limit"}}})
             continue
-        d = dict(DECISION, reply=f"turn {turns} in {tid}")
+        d = dict(DECISION, reply=DECISION["reply"] if os.environ.get("FAKE_DECISION")
+                 else f"turn {turns} in {tid}")
         out({"method": "item/completed", "params": {
             "threadId": tid, "turnId": turn_id, "completedAtMs": 0,
             "item": {"type": "agentMessage", "id": "m", "text": json.dumps(d)}}})

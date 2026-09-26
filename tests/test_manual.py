@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import gzip
+import json
 import os
 import re
 import sys
@@ -244,6 +245,24 @@ class NapovedaIsTrue(unittest.TestCase):
                     self.assertFalse(RE_URL.search(text))
                 else:
                     self.fail(f"neznámý druh příkladu {kind}")
+
+    def test_model_understood_examples_are_measured(self):
+        """Příklad, kterému rozumí jen model (data-understood="favourites:office"),
+        musí mít záznam skutečného modelu na Pi (tests/model_favourites_check.py
+        → tests/fixtures/model_understanding.json): každé měření správně."""
+        rec = json.loads((ROOT / "tests" / "fixtures" / "model_understanding.json").read_text())
+        by_text = {r["text"]: r for r in rec["results"]}
+        found = [(a, t) for a, t in examples() if a.get("data-understood")]
+        self.assertTrue(found)
+        for a, text in found:
+            with self.subTest(text=text):
+                action, _, scope = a["data-understood"].partition(":")
+                self.assertIn(text, by_text, "změř ho: tests/model_favourites_check.py")
+                runs = by_text[text]["runs"]
+                self.assertGreaterEqual(len(runs), 2)
+                for r in runs:
+                    self.assertTrue(r["ok"])
+                    self.assertEqual((r["action"], r.get("scope", "")), (action, scope))
 
     def test_owner_example_pust_kabat_is_an_artist(self):
         self.assertIn(({"data-example": "artist", "data-artist": "Kabát"}, "pusť Kabát"), examples())

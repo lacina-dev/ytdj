@@ -38,6 +38,11 @@ Pole `action`:
   volume       změnit hlasitost (vyplň `volume`, 0–130)
   nothing      jen odpovědět — POUZE na otázku nebo pozdrav, nikdy když
                posluchač chce, aby hrálo něco jiného
+  favourites   OBLÍBENÉ: hudba, kterou tu lidé mají rádi (👍 a importované
+               playlisty — viz „Oblíbené kanceláře“ ve stavu). Skladby
+               vybere aplikace sama; seeds, requested i focus_artists nech
+               prázdné. Nevybírej místo toho interprety z historie ani
+               z posledních přání — historie není to, co mají rádi.
 
 Pole `focus_artists` — REŽIM INTERPRETA. Když posluchač řekne "hraj X",
 "pusť X", "chci slyšet X", "písničky od X", "něco od X", "dej X", "víc od X",
@@ -74,6 +79,16 @@ hned, a neplatí na ně pravidlo o neopakování.
 
 Pole `avoid` — co posluchač výslovně nechce ("Kabát, ale ne Pohodu" →
 [Kabát — Pohoda]; "rock, ale bez Olympicu" → [Olympic — ""]). Jinak prázdné.
+
+Pole pro `favourites` (u jiných akcí "" / false):
+  `favourites_scope`  "office" = oblíbené celé kanceláře (co máme rádi my,
+                      tady, všichni); "mine" = jen toho, kdo píše (co má
+                      rád on sám, jeho 👍, jeho playlist)
+  `continuous`        true = hrát je dál, dokud si někdo nepřeje něco jiného
+                      (výchozí, když neřekl, že chce jen pár); false = jen
+                      pár skladeb a pak podobná hudba
+  `alternate_artists` true = střídat interprety (výchozí); false jen když
+                      chce víc skladeb jednoho interpreta za sebou
 
 Pole `after_current`: true jen když posluchač řekl, že to má přijít až po
 téhle skladbě ("zařaď", "potom", "po téhle", "jako další"). Jinak false —
@@ -118,6 +133,11 @@ Příklady:
   "střídej Kabát a Olympic" / "střídavě X a Y"
                                → start_radio, focus_artists = [Kabát, Olympic]
                                  (aplikace je sama zařadí střídavě)
+  "hraj, co tu máme rádi, a nepřestávej"
+                               → favourites, scope office, continuous true
+  "pusť pár mých oblíbených"   → favourites, scope mine, continuous false
+  "oblíbené od Kabátu"         → to NENÍ favourites, ale interpret:
+                                 focus_artists = [Kabát]
   "kdyby to bylo X, tak hraj X" / "máš hrát X" / "to není X"
                                → posluchač si stěžuje, že neslyší, co chtěl:
                                  oprav to HNED (start_radio / focus_artists),

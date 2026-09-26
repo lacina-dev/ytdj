@@ -371,7 +371,8 @@ class App:
                     # zatímco Jana a Karel teprve čekali).
                     if self.wishes.can_seed_background():
                         await self._seed_from_current()
-                elif self.pools.pools and not self.dj.focus and not self.pools.retrying():
+                elif self.pools.pools and not self.dj.focus and not getattr(self.pools, "favourites", "") \
+                        and not self.pools.retrying():
                     # (při výpadku rádia nevolat Codex každé 2 minuty — pooly to zkusí samy)
                     # (v režimu interpreta pooly jedou dokola samy; prázdná
                     # dávka znamená jen, že všechno už čeká ve frontě)
@@ -406,7 +407,8 @@ class App:
         taneční" hudbu — pravý opak zadání. A v režimu interpreta se nic
         nemění vůbec: přeskočená skladba Stypky neznamená "už ne Stypku".
         """
-        if self.dj.focus:
+        if self.dj.focus or getattr(getattr(self, "pools", None), "favourites", ""):
+            # (ani v režimu oblíbených — hraje "pořád", dokud si někdo nepřeje jinak)
             return
         skipped = self.skips.due(self._now())
         if not skipped:

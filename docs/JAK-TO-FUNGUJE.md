@@ -154,6 +154,7 @@ spouštět příkazy ani sahat na soubory.
 - **F-PRESKOK-04** Když tvé přání přeskakují ostatní, skončí dřív
 - **F-HLASY-06** Vyřazená skladba hned zmizí z podkresu
 - **F-HLASY-17** Oblíbené kanceláře se hrají po lidech na střídačku
+- **F-FRONTA-20** Oblíbené hrají dál napřeskáčku, dokud si někdo nepřeje něco jiného
 - **F-ZVUK-11** Vulgární skladby se samy do podkresu nedostanou
 - **F-ZVUK-12** Nepřehratelná skladba se na týden vynechá
 - **F-ZVUK-15** Automatika nikdy sama nepřeskočí skladbu bez důvodu

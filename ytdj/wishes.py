@@ -289,6 +289,10 @@ class Wish:
     artist: str = ""  # interpret (kind artist) — pro předání do podkresu
     artists: list[str] = field(default_factory=list)
     rest: list[Track] = field(default_factory=list)  # interpret nad ARTIST_MAX
+    # přání oblíbených: "office" / "mine" → podkres pak v režimu oblíbených
+    # (RadioPools.set_favourites; "mine" = 👍 tohohle člověka, Wish.key)
+    fav: str = ""
+    fav_alternate: bool = True  # napřeskáčku podle interpretů (rozhodl model)
     done_ids: set[str] = field(default_factory=set)
     current: str | None = None  # videoId, které z přání právě hraje
     played: int = 0  # kolik skladeb začalo hrát
@@ -390,7 +394,8 @@ class Wish:
             "play_next": self.play_next, "kind": self.kind, "summary": self.summary,
             "reply": self.reply, "via": self.via, "artist": self.artist,
             "artists": self.artists, "played": self.played, "started": self.started,
-            "handed": self.handed, "cid": self.cid,
+            "handed": self.handed, "cid": self.cid, "fav": self.fav,
+            "fav_alternate": self.fav_alternate,
             "order_age": round(self.mono - self.rank, 3) if self.order else None,
             "skips_others": self.skips_others,
             "current": self.current,
@@ -415,6 +420,8 @@ class Wish:
                 played=int(d.get("played") or 0), started=bool(d.get("started")),
                 handed=bool(d.get("handed")), cid=clean_cid(d.get("cid")),
                 skips_others=int(d.get("skips_others") or 0),
+                fav=str(d.get("fav") or "") if d.get("fav") in ("office", "mine") else "",
+                fav_alternate=d.get("fav_alternate") is not False,
             )
             if isinstance(d.get("order_age"), (int, float)):
                 w.order = w.mono - float(d["order_age"])
@@ -1269,6 +1276,8 @@ class WishQueue:
                 w.state = "thinking"
                 self._changed()
                 change = wants_change(w.text)
+                with contextlib.suppress(AttributeError):
+                    self.dj.asker = w.key  # "moje oblíbené" = tohohle člověka (prompt)
                 try:
                     intent = await self.dj.interpret(w.text + (CHANGE_HINT if change else ""))
                 except Exception as exc:
@@ -1276,12 +1285,23 @@ class WishQueue:
                     w.reply = self._failure_text(exc)
                     self._finish(w, "error", t0)
                     return
+                finally:
+                    with contextlib.suppress(AttributeError):
+                        self.dj.asker = ""  # automatické tahy nejsou ničí
             steered = False
             if change:
                 before = intent
                 intent = self._steer_change(w, intent)
                 steered = intent is not before
-            plan = await self.dj.resolve(intent)
+            fav = getattr(self.dj, "favourites_plan", None)
+            plan = None
+            if getattr(intent, "favourites", "") and fav is not None:
+                # model poznal oblíbené ("co máme rádi") — vybere je aplikace
+                # z hlasování, se "moje" = tenhle člověk
+                plan = await fav(w.text, w.key, which=intent.favourites,
+                                 continuous=intent.fav_continuous, alternate=intent.fav_alternate)
+            if plan is None:
+                plan = await self.dj.resolve(intent)
             if steered and plan.failed:
                 seeds = await asyncio.to_thread(self._history_seeds, before.artists)
                 if seeds:
@@ -1517,7 +1537,19 @@ class WishQueue:
             # "X a pak podobné" smí přeladit podkres, jen když nikdo jiný nečeká —
             # jinak by jedna písnička přebila náladu, kterou si řekl někdo jiný
             others = any(x.key != w.key and x.active for x in self.wishes)
-            if seeds and not others:
+            fav = getattr(intent, "favourites", "") if intent.note == "favourites" else ""
+            if fav and not getattr(intent, "fav_continuous", True):
+                fav = ""  # jen blok oblíbených, pak "… a podobné" jako u skladby
+            if fav:
+                # oblíbené napřeskáčku pořád, dokud si nikdo nepřeje něco jiného
+                # (F-FRONTA-20); čekají-li jiní, převezme to podkres po nich (_follow)
+                w.fav, w.fav_alternate = fav, getattr(intent, "fav_alternate", True)
+                if not others:
+                    await self._set_background(favourites=fav, voter=w.key, seeds=seeds,
+                                               mood=intent.mood, who=w.who, wid=w.id,
+                                               played=[t.id for t in w.tracks],
+                                               alternate=w.fav_alternate)
+            elif seeds and not others:
                 await self._set_background(seeds=seeds, mood=intent.mood, who=w.who, wid=w.id,
                                            allow_long=True)
         elif intent.kind == "mood":
@@ -1620,7 +1652,9 @@ class WishQueue:
                          f"{plural_tracks(am.budget_of(w))}, zbytek až nikdo jiný nečeká.")
         elif others and w.kind == "artist":
             parts.append(f"Čekají i další přání, tak se střídáme po {am.shared} skladbách.")
-        if self.bg_reason.get("id") == w.id and w.kind == "song":
+        if self.bg_reason.get("id") == w.id and w.fav and getattr(self.pools, "favourites", ""):
+            parts.append("Pak hraju oblíbené dál napřeskáčku, dokud si nikdo nepřeje něco jiného.")
+        elif self.bg_reason.get("id") == w.id and w.kind == "song":
             parts.append("Potom podobná hudba.")
         parts.append(when)
         return " ".join(x for x in parts if x).strip()
@@ -1722,8 +1756,18 @@ class WishQueue:
                               artist: str = "", artist_tracks: list[Track] | None = None,
                               artists: list[str] | None = None, replace: bool = True,
                               wid: str = "", max_tracks: int | None = BG_ARTIST_TRACKS,
-                              until: float | None = None, from_key: str = "") -> None:
-        if artist_tracks:
+                              until: float | None = None, from_key: str = "",
+                              favourites: str = "", voter: str = "",
+                              played: list[str] | None = None, alternate: bool = True) -> None:
+        focus: list[str] = []
+        set_fav = getattr(self.pools, "set_favourites", None)
+        if favourites and set_fav is not None and (await set_fav(
+                favourites, voter, mood=mood, played=list(played or []),
+                alternate=alternate)).get("pool_size"):
+            # režim oblíbených: bez limitu skladeb a času, do dalšího přání (F-FRONTA-20)
+            mood, artist = self.pools.mood, ""
+        elif artist_tracks:
+            favourites = ""
             # podkres v režimu interpreta je vždycky omezený (skladby i čas)
             if until is None and max_tracks is not None:
                 until = time.time() + BG_ARTIST_TTL
@@ -1734,6 +1778,9 @@ class WishQueue:
                 await self.pools.set_artist(artist, artist_tracks, mood=mood or artist)
             focus = list(artists or [artist])
         else:
+            if favourites and mood:  # bez oblíbených aspoň rádio z bloku přání
+                mood = f"{mood} a podobné"
+            favourites = ""
             if not seeds:
                 return
             await self.pools.set_seeds(seeds, mood=mood, allow_long=allow_long)
@@ -1741,6 +1788,8 @@ class WishQueue:
         with contextlib.suppress(AttributeError):
             self.dj._focus_artists = focus
         self.bg_reason = {"kind": kind, "who": who, "text": mood or artist, "id": wid}
+        if favourites:
+            self.bg_reason["mode"] = "favourites"
         # čí přání podkres určilo (jmenovka webu), i když přání mezitím zmizí
         src = self.by_id(wid) if wid else None
         key = tag_of(src.key) if src is not None else (from_key if who else "")
@@ -1820,7 +1869,14 @@ class WishQueue:
                 log.exception("podkres po přání %s se nepodařilo přeladit", w.id)
 
     async def _follow(self, x: Wish, why: str) -> None:
-        if x.kind == "artist" and (x.tracks or x.rest):
+        if x.fav:
+            if self.bg_reason.get("id") == x.id and getattr(self.pools, "favourites", ""):
+                return  # už hraje jeho oblíbené
+            await self._set_background(favourites=x.fav, voter=x.key, seeds=_dedup(list(x.tracks))[:4],
+                                       mood="moje oblíbené" if x.fav == "mine" else "oblíbené kanceláře",
+                                       who=x.who, wid=x.id, played=[t.id for t in x.tracks],
+                                       alternate=x.fav_alternate)
+        elif x.kind == "artist" and (x.tracks or x.rest):
             every = _dedup(list(x.tracks) + list(x.rest))
             await self._set_background(artist=x.artist, mood=x.artist, who=x.who, wid=x.id,
                                        artist_tracks=every, artists=x.artists or None)
@@ -2426,6 +2482,12 @@ class WishQueue:
                       # omezení režimu interpreta — po restartu nesmí začít znovu
                       left=getattr(pools, "artist_left", None),
                       until=getattr(pools, "artist_until", None))
+        elif getattr(pools, "favourites", "") and getattr(pools, "pools", None):
+            # režim oblíbených: co už v tomhle kole zaznělo (ať se po restartu neopakuje)
+            bg.update(mode="favourites", which=pools.favourites,
+                      voter=getattr(pools, "_fav_voter", ""),
+                      alternate=bool(getattr(pools, "_fav_alternate", True)),
+                      played=sorted(getattr(pools, "_fav_played", ()))[:1000])
         elif getattr(pools, "pools", None):
             bg.update(mode="seeds", allow_long=bool(getattr(pools, "allow_long", False)),
                       seeds=[_track_json(p.seed) for p in pools.pools[:5]])
@@ -2686,6 +2748,14 @@ class WishQueue:
                 tracks = [t for t in (_track_from(x) for x in bg.get("tracks") or []) if t]
                 if tracks:
                     await self._restore_artist_bg(bg, reason, tracks, wall)
+            elif bg.get("mode") == "favourites" and bg.get("which") in ("office", "mine"):
+                await self._set_background(
+                    favourites=str(bg["which"]), voter=str(bg.get("voter") or ""),
+                    mood=str(bg.get("mood") or ""),
+                    played=[str(x) for x in bg.get("played") or []],
+                    alternate=bg.get("alternate") is not False,
+                    who=str(reason.get("who") or ""), kind=str(reason.get("kind") or "radio"),
+                    wid=str(reason.get("id") or ""), from_key=str(reason.get("key") or ""))
             elif bg.get("mode") == "seeds":
                 seeds = [t for t in (_track_from(x) for x in bg.get("seeds") or []) if t]
                 if seeds:

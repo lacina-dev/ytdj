@@ -51,7 +51,7 @@ Stav k 27. 9. 2026 (na Pi běží 1710010).
 | 46 | Volná přání přes model rychleji („zahraj mi něco veselého k práci" ~10–12 s, po pauze 23–33 s) | ☑️ v kódu, čeká na nasazení | rozbor Pi 26. 9.: studený start 4,8–12,4 s (9 z 18 tahů), nové vlákno +2,3 s, uvažování modelu 1,6–8,4 s, výpis odpovědi ~2,3 s, dohledání semínek ~1,4 s, rádio ~1,5 s, příprava první skladby ~7 s. Nahřátí při psaní přání a po startu (F-PROVOZ-08), náhradní vlákno (F-PROVOZ-09); volba vlastníka 26. 9.: zahřátý 2 h po každém přání, 5 tahů na vlákno, úsilí „low" (A/B na Pi: stejné porozumění, model medián 7,2 → 5,8 s), displej nahřívá při otevření přání |
 | 47 | Na webu stránka s rychlým názorným návodem pro běžného uživatele + dokumentace „jak to funguje" se všemi automatikami, vhodně vyvážená, dohledatelná, pravidelně aktuální | ✅ 23:05 | `/napoveda` (2 min, příklady ověřené testem) a `/jak-to-funguje` (živě z FUNKCE.md: 159 pravidel, hledání, „Automatiky, o kterých možná nevíš"); odkaz „?" v hlavičce webu |
 | 48 | Import playlistů jako oblíbené kanceláře: každý předá své preference odkazem na playlist, bez vypisování; písničky patří k oblíbeným kanceláře | ✅ 27. 9. | Hlasování → Playlisty v oblíbených; import = 👍 pod přezdívkou, nic nepouští; bez limitu hlasů (pojistka 1000 písniček); „pusť oblíbené" střídá lidi; Obnovit/Odebrat |
-| 49 | „Hraj to, co máme rádi, napřeskáčku interprety… a hraj pořád" — DJ má hrát z oblíbených (je tam hromada umělců), střídat interprety a nepřestat po pár skladbách | 🔄 | 27. 9. 00:59 DJ nepoznal oblíbené a hrál 2 interprety z historie → rozpoznání bez modelu + trvalý režim oblíbených |
+| 49 | „Hraj to, co máme rádi, napřeskáčku interprety… a hraj pořád" — DJ má hrát z oblíbených (je tam hromada umělců), střídat interprety a nepřestat po pár skladbách | 🔄 hotovo v kódu, čeká na nasazení | 27. 9. 00:59 DJ nepoznal oblíbené a hrál 2 interprety z historie → DJ (model) chápe přání oblíbených podle smyslu (akce oblíbené: čí, pořád, napřeskáčku; ne seznam frází — vlastník: „chci, aby chápal, co mu user napíše“) + režim oblíbených v podkresu do dalšího přání; FUNKCE F-FRONTA-20, F-HLASY-19/20 |
 
 ## Víc lidí v kanceláři
 
@@ -87,6 +87,7 @@ Stav k 27. 9. 2026 (na Pi běží 1710010).
 | 43 | Nápověda v poli přání ne „Olympic", ale např. „Zahraj mi něco veselého k práci" | ✅ | web i displej (15:42) |
 | 44 | „Proč jen tři skladby? Jde to nastavit v nastavení?" | ✅ nasazeno 16:58 | nastavení jukeboxu: kolo 3 (2 když čekají jiní), rozpočet 4 (displej 3), interpret 12 — kvůli férovosti; výchozí hodnoty beze změny |
 | 45 | „Co hraje dál a nemá to u sebe moje jméno?" | ✅ | „Rádio podle přání X · nálada" na webu i displeji |
+| 50 | „Nechci, aby se učil konkrétní fráze a podle nich pak něco dělal. Chci, aby chápal, co mu user napíše, a choval se podle toho.“ | ✅ pravidlo (27. 9.) | `docs/PLAN.md` Vize 5; oblíbené vykládá model (F-HLASY-19), bez modelu jen jednoznačné povely a jména |
 
 ## Na konec: bezpečnost a přihlášení (připomenout)
 

@@ -104,8 +104,16 @@ DECISION_SCHEMA = {
                 "resume",
                 "volume",
                 "nothing",
+                # oblíbené (hlasování, ytdj/votes.py) — vybere je aplikace;
+                # čí, jak dlouho a jak: favourites_scope / continuous / alternate_artists
+                "favourites",
             ],
         },
+        # akce favourites: čí oblíbené, jestli hrát dál (podkres v režimu
+        # oblíbených) a jestli napřeskáčku podle interpretů; jinak "" / false
+        "favourites_scope": {"type": "string", "enum": ["office", "mine", ""]},
+        "continuous": {"type": "boolean"},
+        "alternate_artists": {"type": "boolean"},
         "seeds": {
             "type": "array",
             "items": {
@@ -167,6 +175,9 @@ DECISION_SCHEMA = {
         "volume",
         "remember",
         "reply",
+        "favourites_scope",
+        "continuous",
+        "alternate_artists",
     ],
     "additionalProperties": False,
 }
@@ -308,6 +319,7 @@ class CodexDJ:
         self._switch_task: asyncio.Task | None = None
         # hlasování kanceláře (ytdj/votes.py, zapojí App) — None = bez něj
         self.votes = None
+        self.asker = ""  # id klienta toho, jehož přání se právě vykládá (wishes)
         # kdy naposledy přišlo přání posluchače (time.time()) — drží Codex teplý
         self._last_wish_at = 0.0
 
@@ -328,7 +340,8 @@ class CodexDJ:
             requested=[r.label() for r in top],
             intent=self.wish.describe(),
             focus=self.focus,
-            office=self.votes.describe() if self.votes is not None else "",
+            # kdo píše (id klienta, nastaví fronta přání) — jeho vlastní oblíbené
+            office=self.votes.describe(asker=self.asker) if self.votes is not None else "",
         )
         return f"{ROLE}\n\n{state}\n\nUživatel říká: {user_input}"
 
@@ -500,6 +513,13 @@ class CodexDJ:
         Plan.failed je vyplněné, když z přání nejde nic zahrát — tehdy se
         přehrávání nemá měnit a posluchač má slyšet proč.
         """
+        if intent.favourites and self.votes is not None:
+            # oblíbené vybírá aplikace z hlasování (kdo je "moje", ví jen fronta přání)
+            fav = await self.favourites_plan(intent.text, "", which=intent.favourites,
+                                             continuous=intent.fav_continuous,
+                                             alternate=intent.fav_alternate)
+            if fav is not None:
+                return fav
         with telemetry.timer("dj.resolve", intent_kind=intent.kind) as ev:
             plan = self._office_votes(await self._resolve(intent))
             ev.update(
@@ -630,7 +650,7 @@ class CodexDJ:
         if plan.failed:
             telemetry.event("dj.apply", intent_kind=intent.kind, applied=False, failed=plan.failed[:200])
             return plan.failed
-        if auto and self.focus and intent.changes_music:
+        if auto and (self.focus or getattr(self.pools, "favourites", "")) and intent.changes_music:
             # Režim interpreta mění jen posluchač. (Automatické tahy se v něm
             # ani nespouštějí — tohle je pojistka.)
             log.info("automatický tah v režimu interpreta %s ignoruji", self.focus)
@@ -850,20 +870,32 @@ class CodexDJ:
             plan.notes.extend(notes[:3])
         return plan
 
-    async def favourites_plan(self, text: str, voter: str = "") -> Plan | None:
-        """ "pusť oblíbené" / "pusť moje oblíbené" bez modelu; None = není to ono."""
+    async def favourites_plan(self, text: str, voter: str = "", which: str | None = None,
+                              continuous: bool = True, alternate: bool = True) -> Plan | None:
+        """Oblíbené kanceláře / moje oblíbené; None = není to ono.
+
+        `which` ("office" / "mine"), `continuous` a `alternate` rozhodl model
+        (akce `favourites`, prompts.py); bez `which` jen přesný povel "pusť
+        (moje) oblíbené" (intent.favourites_request) — ten hraje pořád
+        a napřeskáčku. Blok přání (nejvýš FAVOURITES_MAX), s `continuous` pak
+        podkres v režimu oblíbených, dokud si nikdo nepřeje něco jiného
+        (wishes: Wish.fav → RadioPools.set_favourites, FUNKCE F-FRONTA-20)."""
         from .intent import favourites_request
 
-        which = favourites_request(text)
+        which = which or favourites_request(text)
         if which is None or self.votes is None:
             return None
         mine = which == "mine"
         own = voter if mine and voter and not voter.startswith("wish:") else ""
-        tracks = await self.votes.favourite_mix(self.catalog, own) if (own or not mine) else []
+        tracks = await self.votes.favourite_mix(self.catalog, own, alternate=alternate) \
+            if (own or not mine) else []
         label = "tvoje oblíbené" if mine else "oblíbené kanceláře"
         telemetry.event("dj.fast_path", text=text[:300], what="favourites", which=which,
-                        accepted=bool(tracks), n=len(tracks))
-        intent = Intent(kind="song", text=text, mood=f"{label} a podobné", note="favourites",
+                        accepted=bool(tracks), n=len(tracks),
+                        artists=len({t.artist for t in tracks}) or None,
+                        continuous=continuous, alternate=alternate)
+        intent = Intent(kind="song", text=text, mood=label, note="favourites", favourites=which,
+                        fav_continuous=continuous, fav_alternate=alternate,
                         tracks=[(t.artist, t.title) for t in tracks[:FAVOURITES_MAX]])
         plan = Plan(intent=intent)
         if not tracks:
@@ -877,7 +909,8 @@ class CodexDJ:
             return plan
         plan.requested = tracks[:FAVOURITES_MAX]
         plan.seeds = tracks[:4]
-        intent.reply = f"Hraju {label} ({len(plan.requested)}), pak podobné."
+        intent.reply = (f"Hraju {label} ({len(plan.requested)}), pak dál, dokud neřekneš jinak."
+                        if continuous else f"Hraju {label} ({len(plan.requested)}), pak podobné.")
         return plan
 
     # [fast-song] — "pusť Jasnou zprávu od Olympicu" bez Codexu

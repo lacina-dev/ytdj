@@ -1,0 +1,420 @@
+{
+ "what": "Rozumí DJ (skutečný model) přáním oblíbených? FUNKCE F-HLASY-19",
+ "measured": "2026-09-27 01:20–01:40",
+ "where": "Pi (ytdj), codex app-server, úsilí low jako v provozu, nové vlákno na každé přání, skutečné oblíbené (93 skladeb od 64 interpretů) a historie; nic se nepouštělo",
+ "tool": "tests/model_favourites_check.py",
+ "correct": 32,
+ "total": 32,
+ "results": [
+  {
+   "text": "Hraj to co mame radi napreskacku",
+   "want": {
+    "action": "favourites",
+    "scope": "office",
+    "continuous": true
+   },
+   "runs": [
+    {
+     "action": "favourites",
+     "ok": true,
+     "took_s": 15.7,
+     "scope": "office",
+     "continuous": true,
+     "alternate_artists": true
+    },
+    {
+     "action": "favourites",
+     "ok": true,
+     "took_s": 4.2,
+     "scope": "office",
+     "continuous": true,
+     "alternate_artists": true
+    }
+   ]
+  },
+  {
+   "text": "Hraj pisnicky co mame radi stridej interprety a hraj porad",
+   "want": {
+    "action": "favourites",
+    "scope": "office",
+    "continuous": true
+   },
+   "runs": [
+    {
+     "action": "favourites",
+     "ok": true,
+     "took_s": 4.0,
+     "scope": "office",
+     "continuous": true,
+     "alternate_artists": true
+    },
+    {
+     "action": "favourites",
+     "ok": true,
+     "took_s": 5.2,
+     "scope": "office",
+     "continuous": true,
+     "alternate_artists": true
+    }
+   ]
+  },
+  {
+   "text": "pusť něco z toho, co tu posloucháme",
+   "want": {
+    "action": "favourites",
+    "scope": "office",
+    "continuous": true
+   },
+   "runs": [
+    {
+     "action": "favourites",
+     "ok": true,
+     "took_s": 4.2,
+     "scope": "office",
+     "continuous": true,
+     "alternate_artists": true
+    },
+    {
+     "action": "favourites",
+     "ok": true,
+     "took_s": 3.9,
+     "scope": "office",
+     "continuous": true,
+     "alternate_artists": true
+    }
+   ]
+  },
+  {
+   "text": "dej naše srdcovky a nepřestávej",
+   "want": {
+    "action": "favourites",
+    "scope": "office",
+    "continuous": true
+   },
+   "runs": [
+    {
+     "action": "favourites",
+     "ok": true,
+     "took_s": 4.7,
+     "scope": "office",
+     "continuous": true,
+     "alternate_artists": true
+    },
+    {
+     "action": "favourites",
+     "ok": true,
+     "took_s": 4.5,
+     "scope": "office",
+     "continuous": true,
+     "alternate_artists": true
+    }
+   ]
+  },
+  {
+   "text": "zahraj moje oblíbené, ale střídej kapely",
+   "want": {
+    "action": "favourites",
+    "scope": "mine",
+    "continuous": true
+   },
+   "runs": [
+    {
+     "action": "favourites",
+     "ok": true,
+     "took_s": 4.0,
+     "scope": "mine",
+     "continuous": true,
+     "alternate_artists": true
+    },
+    {
+     "action": "favourites",
+     "ok": true,
+     "took_s": 9.8,
+     "scope": "mine",
+     "continuous": true,
+     "alternate_artists": true
+    }
+   ]
+  },
+  {
+   "text": "chci slyšet to, co mám v playlistu",
+   "want": {
+    "action": "favourites",
+    "scope": "mine",
+    "continuous": true
+   },
+   "runs": [
+    {
+     "action": "favourites",
+     "ok": true,
+     "took_s": 3.9,
+     "scope": "mine",
+     "continuous": true,
+     "alternate_artists": true
+    },
+    {
+     "action": "favourites",
+     "ok": true,
+     "took_s": 5.4,
+     "scope": "mine",
+     "continuous": true,
+     "alternate_artists": true
+    }
+   ]
+  },
+  {
+   "text": "co máme rádi v kanceláři",
+   "want": {
+    "action": "favourites",
+    "scope": "office",
+    "continuous": true
+   },
+   "runs": [
+    {
+     "action": "favourites",
+     "ok": true,
+     "took_s": 4.1,
+     "scope": "office",
+     "continuous": true,
+     "alternate_artists": true
+    },
+    {
+     "action": "favourites",
+     "ok": true,
+     "took_s": 4.9,
+     "scope": "office",
+     "continuous": true,
+     "alternate_artists": true
+    }
+   ]
+  },
+  {
+   "text": "hoď tam pár věcí, co se mi líbí",
+   "want": {
+    "action": "favourites",
+    "scope": "mine",
+    "continuous": false
+   },
+   "runs": [
+    {
+     "action": "favourites",
+     "ok": true,
+     "took_s": 4.6,
+     "scope": "mine",
+     "continuous": false,
+     "alternate_artists": true
+    },
+    {
+     "action": "favourites",
+     "ok": true,
+     "took_s": 4.1,
+     "scope": "mine",
+     "continuous": false,
+     "alternate_artists": true
+    }
+   ]
+  },
+  {
+   "text": "hraj nám oblíbený věci celý den",
+   "want": {
+    "action": "favourites",
+    "scope": "office",
+    "continuous": true
+   },
+   "runs": [
+    {
+     "action": "favourites",
+     "ok": true,
+     "took_s": 3.9,
+     "scope": "office",
+     "continuous": true,
+     "alternate_artists": true
+    },
+    {
+     "action": "favourites",
+     "ok": true,
+     "took_s": 5.0,
+     "scope": "office",
+     "continuous": true,
+     "alternate_artists": true
+    }
+   ]
+  },
+  {
+   "text": "pust to co jsme olajkovali",
+   "want": {
+    "action": "favourites",
+    "scope": "office",
+    "continuous": true
+   },
+   "runs": [
+    {
+     "action": "favourites",
+     "ok": true,
+     "took_s": 3.8,
+     "scope": "office",
+     "continuous": true,
+     "alternate_artists": true
+    },
+    {
+     "action": "favourites",
+     "ok": true,
+     "took_s": 5.6,
+     "scope": "office",
+     "continuous": true,
+     "alternate_artists": true
+    }
+   ]
+  },
+  {
+   "text": "něco z našich oblíbených, ale jen chvilku",
+   "want": {
+    "action": "favourites",
+    "scope": "office",
+    "continuous": false
+   },
+   "runs": [
+    {
+     "action": "favourites",
+     "ok": true,
+     "took_s": 3.8,
+     "scope": "office",
+     "continuous": false,
+     "alternate_artists": true
+    },
+    {
+     "action": "favourites",
+     "ok": true,
+     "took_s": 3.9,
+     "scope": "office",
+     "continuous": false,
+     "alternate_artists": true
+    }
+   ]
+  },
+  {
+   "text": "moje srdcovky dokola",
+   "want": {
+    "action": "favourites",
+    "scope": "mine",
+    "continuous": true
+   },
+   "runs": [
+    {
+     "action": "favourites",
+     "ok": true,
+     "took_s": 5.0,
+     "scope": "mine",
+     "continuous": true,
+     "alternate_artists": true
+    },
+    {
+     "action": "favourites",
+     "ok": true,
+     "took_s": 5.1,
+     "scope": "mine",
+     "continuous": true,
+     "alternate_artists": true
+    }
+   ]
+  },
+  {
+   "text": "pusť Kabát",
+   "want": {
+    "action": "artist",
+    "scope": "",
+    "continuous": null
+   },
+   "runs": [
+    {
+     "action": "artist",
+     "ok": true,
+     "took_s": 4.2,
+     "artists": [
+      "Kabát"
+     ]
+    },
+    {
+     "action": "artist",
+     "ok": true,
+     "took_s": 4.4,
+     "artists": [
+      "Kabát"
+     ]
+    }
+   ]
+  },
+  {
+   "text": "něco veselého",
+   "want": {
+    "action": "mood",
+    "scope": "",
+    "continuous": null
+   },
+   "runs": [
+    {
+     "action": "mood",
+     "ok": true,
+     "took_s": 4.5
+    },
+    {
+     "action": "mood",
+     "ok": true,
+     "took_s": 5.6
+    }
+   ]
+  },
+  {
+   "text": "hraj oblíbené od Kabátu",
+   "want": {
+    "action": "artist",
+    "scope": "",
+    "continuous": null
+   },
+   "runs": [
+    {
+     "action": "artist",
+     "ok": true,
+     "took_s": 5.5,
+     "artists": [
+      "Kabát"
+     ]
+    },
+    {
+     "action": "artist",
+     "ok": true,
+     "took_s": 4.4,
+     "artists": [
+      "Kabát"
+     ]
+    }
+   ]
+  },
+  {
+   "text": "hraj to, co máme rádi, napřeskáčku",
+   "want": {
+    "action": "favourites",
+    "scope": "office",
+    "continuous": true
+   },
+   "runs": [
+    {
+     "action": "favourites",
+     "ok": true,
+     "took_s": 10.1,
+     "scope": "office",
+     "continuous": true,
+     "alternate_artists": true
+    },
+    {
+     "action": "favourites",
+     "ok": true,
+     "took_s": 4.0,
+     "scope": "office",
+     "continuous": true,
+     "alternate_artists": true
+    }
+   ]
+  }
+ ]
+}

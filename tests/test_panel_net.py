@@ -86,13 +86,13 @@ class ParseTest(unittest.TestCase):
         out = "\n".join([
             r" :O2-Internet-58A1:40:WPA2",
             r" :O2-Internet-58A1:78:WPA2",  # second AP of the same network
-            r"*:EsteTesteReste:53:WPA2",
+            r"*:Kancelar-WiFi:53:WPA2",
             r" ::90:WPA2",  # hidden
             r" :Kavárna\: host:61:--",
             r" :weird:abc:WPA1 WPA2",
         ])
         nets = parse_wifi_list(out)
-        self.assertEqual([n.ssid for n in nets], ["EsteTesteReste", "O2-Internet-58A1", "Kavárna: host", "weird"])
+        self.assertEqual([n.ssid for n in nets], ["Kancelar-WiFi", "O2-Internet-58A1", "Kavárna: host", "weird"])
         self.assertTrue(nets[0].in_use)
         self.assertEqual(nets[1].signal, 78)
         self.assertFalse(nets[2].secure)

@@ -23,11 +23,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from panel_shots import PLAYING  # noqa: E402
 
 ETH = Link("eth0", "ethernet", "connected", "10.42.0.149")
-WIFI = Link("wlan0", "wifi", "connected", "192.168.0.24", "EsteTesteReste", 54)
+WIFI = Link("wlan0", "wifi", "connected", "192.168.0.24", "Kancelar-WiFi", 54)
 BASE = NetView(loaded=True, hostname="ytdj", mdns=True)
 
 NETS = (
-    WifiNet("EsteTesteReste", 54, "WPA2", True),
+    WifiNet("Kancelar-WiFi", 54, "WPA2", True),
     WifiNet("O2-Internet-58A1", 78, "WPA2"),
     WifiNet("Kavárna U Žluťoučkého koně — host", 61, ""),
     WifiNet("TP-Link_2.4GHz_7C3E", 40, "WPA1 WPA2"),

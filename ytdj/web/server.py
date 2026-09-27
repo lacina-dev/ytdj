@@ -5,8 +5,11 @@ not via `uvicorn.run()`. Nothing here may block the loop: everything that
 touches mpv or Codex is awaited, and a Codex query (tens of seconds) holds
 only its own `busy` flag, not a lock over the whole server.
 
-Listens exclusively on 127.0.0.1 and has no authentication — it controls
-your own player, it is not a public service.
+Na Pi poslouchá v kancelářské síti (web_host 0.0.0.0): hudbu (přání,
+Další, hlasitost, hlasy, přezdívka) ovládá kdokoli z kolegů bez hesla.
+Nastavení a restart chtějí PIN správce (hlavička X-YTDJ-PIN, F-BEZP-09/10);
+klíče, které spouštějí kód, míří na soubory nebo mění síť, přes web nejdou
+vůbec (WEB_LOCKED_KEYS, F-BEZP-08).
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ import gzip
 import hashlib
 import json
 import logging
+import re
 import shlex
 import socket
 import time
@@ -37,6 +41,7 @@ from starlette.staticfiles import StaticFiles
 
 import uvicorn
 
+from .. import adminpin
 from .. import config as cfgmod
 from .. import manual
 from .. import telemetry
@@ -124,6 +129,29 @@ RESTART_KEYS = frozenset(
 # Keys the settings form doesn't show. Volume has its own slider next to the
 # controls; a second field for it would be a second source of truth.
 HIDDEN_KEYS = frozenset({"volume"})
+
+# Klíče, které přes web nejdou vůbec, ani s PINem (F-BEZP-08): spouštějí kód
+# nebo programy, míří na soubory a přihlášení, nebo mění, kdo se k webu
+# dostane. GET je nevypíše, POST je odmítne; mění se jen v config.toml na Pi.
+WEB_LOCKED_KEYS = frozenset(
+    {
+        "mpv_extra_args",  # libovolné volby mpv = spuštění kódu
+        "js_runtimes",  # yt-dlp spustí zadaný program (i s cestou)
+        "remote_components",  # yt-dlp stáhne a spustí JS odjinud
+        "cookies_file",  # cesta k souboru s přihlášením
+        "cookies_browser",  # profil prohlížeče s přihlášením
+        "web_enabled",  # vypnutím by web zavřel všem
+        "web_host",  # kdo se k webu dostane (nebo nikdo)
+        "web_port",
+    }
+)
+LOCKED_MESSAGE = "{label}: mění se jen v config.toml na Pi, ne z webu."
+# Texty, které jdou jako argument dál (codex -m, yt-dlp extractor-args):
+# jen obyčejná jména, žádné oddělovače ani volby navíc.
+PLAIN_KEYS = {
+    "codex_model": re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9._:-]{0,63})?$"),
+    "player_client": re.compile(r"^[A-Za-z0-9_,-]{0,80}$"),
+}
 
 # Keys we can switch at runtime — they are also set directly on app.cfg.
 LIVE_KEYS = (
@@ -409,6 +437,8 @@ def coerce_value(key: str, raw: Any) -> Any:
         raise BadValue(f"{key} se nastavuje přehrávačem (POST /api/control)")
     default = cfgmod.DEFAULTS[key]
     label = FIELD_META.get(key, (key,))[0]
+    if key in WEB_LOCKED_KEYS:
+        raise BadValue(LOCKED_MESSAGE.format(label=label))
 
     if isinstance(default, bool):
         if isinstance(raw, bool):
@@ -444,6 +474,8 @@ def coerce_value(key: str, raw: Any) -> Any:
 
     if not isinstance(raw, str):
         raise BadValue(f"{label}: očekávám text, přišlo {raw!r}")
+    if key in PLAIN_KEYS and not PLAIN_KEYS[key].match(raw):
+        raise BadValue(f"{label}: jen písmena, číslice a - _ (bez mezer), přišlo {raw!r}")
     return raw
 
 
@@ -536,6 +568,7 @@ def _safe(handler: Callable) -> Callable:
             return _json_error("Vnitřní chyba serveru — podrobnosti v logu.", 500)
 
     wrapper.__name__ = getattr(handler, "__name__", "handler")
+    wrapper.admin_only = getattr(handler, "admin_only", False)  # type: ignore[attr-defined]
     return wrapper
 
 
@@ -576,6 +609,7 @@ class WebServer:
         self._task: asyncio.Task | None = None
         self._sock: socket.socket | None = None
         self._closing = asyncio.Event()
+        self.admin = adminpin.AdminGuard()  # PIN správce + brzda hádání
         self._pages = manual.Pages()
         self._starlette = self._build()
 
@@ -593,10 +627,11 @@ class WebServer:
             Route("/api/dj/warm", _safe(self._dj_warm), methods=["POST"]),
             Route("/api/me", _safe(self._me_get), methods=["GET"]),
             Route("/api/me", _safe(self._me_post), methods=["POST"]),
-            Route("/api/config", _safe(self._config_get), methods=["GET"]),
-            Route("/api/config", _safe(self._config_post), methods=["POST"]),
+            # nastavení a restart jen s PINem správce (F-BEZP-09, F-BEZP-10)
+            Route("/api/config", _safe(self._admin_only(self._config_get)), methods=["GET"]),
+            Route("/api/config", _safe(self._admin_only(self._config_post)), methods=["POST"]),
             Route("/api/about", _safe(self._about), methods=["GET"]),
-            Route("/api/restart", _safe(self._restart), methods=["POST"]),
+            Route("/api/restart", _safe(self._admin_only(self._restart)), methods=["POST"]),
             # Nápověda a Jak to funguje (docs/FUNKCE.md živě) — F-WEB-07, F-WEB-08
             Route("/napoveda", _safe(self._manual), methods=["GET"]),
             Route("/jak-to-funguje", _safe(self._manual), methods=["GET"]),
@@ -1273,6 +1308,49 @@ class WebServer:
         self.app.restart_requested.set()
         return JSONResponse({"ok": True})
 
+    # ---- PIN správce ----
+
+    def _admin_only(self, handler: Callable) -> Callable:
+        """Pustí požadavek dál jen se správným PINem v hlavičce X-YTDJ-PIN.
+
+        Výjimka pro 127.0.0.1 není: tyhle adresy nevolá nic místního (panel,
+        skripty v packaging/), a na Pi běží i model (Codex) — ten nemá co
+        měnit nastavení ani restartovat.
+        """
+
+        async def guarded(request: Request) -> Response:
+            pin = await asyncio.to_thread(adminpin.ensure_pin, self.admin.path)
+            state, left = self.admin.check(request.headers.get(adminpin.HEADER), pin)
+            if state == "ok":
+                return await handler(request)
+            client = _client(request)
+            path = request.url.path
+            if state == "missing":
+                return JSONResponse(
+                    {"error": "Nastavení chce PIN správce. PIN je na displeji jukeboxu: Síť.",
+                     "pin": "required"}, status_code=401)
+            if state == "wrong":
+                # PIN sám (ani ten špatný) do logu nejde
+                log.warning("špatný PIN správce (%s %s z %s, pokus %d z %d)", request.method, path,
+                            client["ip"], self.admin.failures, adminpin.MAX_FAILURES)
+                telemetry.event("web.admin_denied", path=path, failures=self.admin.failures, **client)
+                return JSONResponse(
+                    {"error": "Špatný PIN. Správný je na displeji jukeboxu: Síť.", "pin": "wrong"},
+                    status_code=403)
+            if state == "lockout":
+                log.warning("správa webu zavřená na %d s po %d špatných PINech (poslední z %s)",
+                            left, adminpin.MAX_FAILURES, client["ip"])
+                telemetry.event("web.admin_locked", path=path, seconds=left, **client)
+            minutes = max(1, (left + 59) // 60)
+            return JSONResponse(
+                {"error": f"Moc špatných PINů — nastavení je zamčené ještě {minutes} min.",
+                 "pin": "locked", "retry_after": left},
+                status_code=429, headers={"Retry-After": str(left)})
+
+        guarded.__name__ = getattr(handler, "__name__", "handler")
+        guarded.admin_only = True  # type: ignore[attr-defined]
+        return guarded
+
     # ---- settings ----
 
     async def _config_get(self, request: Request) -> Response:
@@ -1281,7 +1359,7 @@ class WebServer:
         fields: list[dict] = []
 
         for key in cfgmod.DEFAULTS:
-            if key in HIDDEN_KEYS:
+            if key in HIDDEN_KEYS or key in WEB_LOCKED_KEYS:
                 continue
             value = getattr(cfg, key, cfgmod.DEFAULTS[key])
             if isinstance(value, list):
@@ -1395,6 +1473,14 @@ class WebServer:
             await asyncio.sleep(0.02)
 
         log.info("webové rozhraní běží na %s", self.url)
+        # PIN správce hned při startu, ať ho displej ukáže dřív, než ho někdo
+        # potřebuje; do logu jen cesta, nikdy PIN
+        try:
+            await asyncio.to_thread(adminpin.ensure_pin, self.admin.path)
+            log.info("PIN správce webu (nastavení, restart) je v %s — ukazuje ho displej: Síť",
+                     self.admin.path)
+        except OSError as exc:
+            log.warning("PIN správce se nepodařilo připravit (%s): %s", self.admin.path, exc)
 
     async def stop(self) -> None:
         self._closing.set()  # SSE loops terminate on their own

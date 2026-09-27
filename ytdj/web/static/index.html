@@ -512,6 +512,16 @@
   .settings .msg { font-size: .82rem; color: var(--text-dim); flex: 1 1 100%; margin: 0; }
   .settings .msg.warn { color: var(--warn); }
   .settings .msg.err { color: var(--err); }
+  .pinbox { padding: 14px 18px; border-bottom: 1px solid var(--line); background: var(--surface); }
+  .pinbox label { display: block; font-size: .9rem; font-weight: 550; margin-bottom: 4px; }
+  .pinbox .help { font-size: .8rem; color: var(--text-faint); margin: 0 0 8px; }
+  .pinbox .row { display: flex; gap: 10px; }
+  .pinbox input { flex: 1 1 auto; min-width: 0; min-height: 44px; padding: 9px 11px; border-radius: 9px; border: 1px solid var(--line);
+                  background: var(--bg); font-size: 1.1rem; letter-spacing: .25em; font-variant-numeric: tabular-nums; }
+  .pinbox input:focus { outline: none; border-color: var(--accent); }
+  .pinbox .btn { flex: none; min-height: 44px; }
+  .pinbox .msg { font-size: .82rem; color: var(--err); margin: 8px 0 0; }
+  .pinbox .msg:empty { display: none; }
 </style>
 </head>
 <body>
@@ -745,6 +755,15 @@
     </button>
   </div>
   <div class="about" id="about"></div>
+  <form class="pinbox" id="pinBox" hidden autocomplete="off">
+    <label for="pinInput">PIN správce</label>
+    <p class="help">PIN je na displeji jukeboxu: Síť.</p>
+    <div class="row">
+      <input id="pinInput" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off" aria-describedby="pinMsg">
+      <button class="btn primary" id="pinOk" type="submit">Potvrdit</button>
+    </div>
+    <p class="msg" id="pinMsg" role="alert"></p>
+  </form>
   <div class="body" id="settingsBody"><p class="empty">Načítám…</p></div>
   <div class="foot">
     <button class="btn primary" id="btnSave" type="button">Uložit</button>
@@ -1678,6 +1697,48 @@
 
   var cfg = { values: {}, fields: [] };
 
+  /* PIN správce: nastavení a restart ho chtějí (F-BEZP-09); zařízení si ho
+     pamatuje, špatný zapomene. Hudbu dál ovládá každý bez PINu. */
+  var PIN_KEY = "ytdj.adminPin";
+  var pinEl = { box: $("#pinBox"), input: $("#pinInput"), msg: $("#pinMsg") };
+  var pinThen = null;  // co udělat po zadání PINu (načíst nastavení)
+  function adminPin() { return load(PIN_KEY) || ""; }
+  function forgetPin() { try { localStorage.removeItem(PIN_KEY); } catch (e) {} }
+  async function adminFetch(path, opts) {
+    opts = opts || {};
+    var headers = Object.assign({}, opts.headers || {});
+    var pin = adminPin();
+    if (pin) headers["X-YTDJ-PIN"] = pin;
+    return fetch(path, Object.assign({}, opts, { headers: headers, cache: "no-store" }));
+  }
+  function pinMinutes(sec) { return Math.max(1, Math.ceil((sec || 0) / 60)) + " min"; }
+  // Odpověď 401/403/429 na správu → pole pro PIN se zprávou; vrací true, když to byl ten případ.
+  function askPin(res, data, then) {
+    if (res.status !== 401 && res.status !== 403 && res.status !== 429) return false;
+    data = data || {};
+    var text = "";
+    if (res.status === 403) { forgetPin(); text = "Špatný PIN. Správný je na displeji jukeboxu: Síť."; }
+    else if (res.status === 429) text = "Moc špatných PINů — zkus to znovu za " + pinMinutes(data.retry_after) + ".";
+    else if (adminPin()) { forgetPin(); }
+    pinEl.msg.textContent = text;
+    pinEl.box.hidden = false;
+    pinThen = then || null;
+    if (res.status !== 429) setTimeout(function () { pinEl.input.focus(); }, 50);
+    return true;
+  }
+  pinEl.box.addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var pin = pinEl.input.value.replace(/\D/g, "");
+    if (pin.length !== 6) { pinEl.msg.textContent = "PIN má 6 číslic."; return; }
+    store(PIN_KEY, pin);
+    pinEl.input.value = "";
+    pinEl.msg.textContent = "";
+    pinEl.box.hidden = true;
+    var then = pinThen || loadConfig;
+    pinThen = null;
+    then();
+  });
+
   function openSettings() {
     el.settings.classList.add("show");
     el.settings.setAttribute("aria-hidden", "false");
@@ -1737,9 +1798,10 @@
     if (!confirm("Restartovat ytdj? Přehrávání se na pár vteřin přeruší.")) return;
     setMsg("Restartuji…");
     try {
-      var res = await fetch("/api/restart", { method: "POST" });
+      var res = await adminFetch("/api/restart", { method: "POST" });
       if (!res.ok) {
         var err = await res.json().catch(function () { return {}; });
+        if (askPin(res, err, restartApp)) { setMsg("Restart chce PIN správce."); return; }
         setMsg(err.error || "Restart se nepovedl.", "err");
         return;
       }
@@ -1753,8 +1815,16 @@
     loadAbout();
     el.settingsBody.innerHTML = '<p class="empty">Načítám…</p>';
     try {
-      var res = await fetch("/api/config", { cache: "no-store" });
-      if (!res.ok) throw new Error("HTTP " + res.status);
+      var res = await adminFetch("/api/config");
+      if (!res.ok) {
+        var err = await res.json().catch(function () { return {}; });
+        if (askPin(res, err, loadConfig)) {
+          el.settingsBody.innerHTML = '<p class="empty">Nastavení se ukáže po zadání PINu správce.</p>';
+          return;
+        }
+        throw new Error("HTTP " + res.status);
+      }
+      pinEl.box.hidden = true;
       var data = await res.json();
       cfg.values = (data && data.values) || {};
       cfg.fields = (data && data.fields) || [];
@@ -1827,7 +1897,17 @@
     el.btnSave.disabled = true;
     setMsg("Ukládám…");
     try {
-      var data = await postJSON("/api/config", changed);
+      var res = await adminFetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" },
+                                                  body: JSON.stringify(changed) });
+      var data = await res.json().catch(function () { return null; });
+      if (!res.ok) {
+        // PIN mezitím neplatí (zapomenutý, zámek): zadat a uložit znovu, formulář zůstane
+        if (askPin(res, data, function () { setMsg("PIN uložen — klikni znovu na Uložit."); })) {
+          setMsg("Uložení chce PIN správce.", "warn");
+          return;
+        }
+        throw new Error((data && data.error) || "Jukebox to teď nevzal — zkus to prosím znovu.");
+      }
       keys.forEach(function (k) { cfg.values[k] = changed[k]; });
       var restart = (data && data.restart_required) || [];
       if (restart.length) {

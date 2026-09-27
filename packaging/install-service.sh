@@ -63,6 +63,13 @@ if [ "$panel" = yes ]; then
     fi
 fi
 
+# Sandbox Codexu: na Linuxu izoluje příkazy přes bubblewrap, bez něj read-only
+# sandbox neplatí a přání od kohokoli ze sítě jdou modelu bez izolace.
+if ! command -v bwrap > /dev/null && command -v apt-get > /dev/null; then
+    echo "instaluji bubblewrap (sandbox Codexu):"
+    sudo apt-get install -y bubblewrap
+fi
+
 if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || echo no)" != "yes" ]; then
     echo "zapínám linger (spuštění bez přihlášení) — vyžádá si heslo:"
     sudo loginctl enable-linger "$USER"

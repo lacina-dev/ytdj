@@ -718,7 +718,20 @@ def make_server(port: int = 0, fake: FakeYtdj | None = None, sse: bool = True) -
                                              "quality": "opus 251 kb/s"},
                                  "backend": {"engine": "codex CLI", "model": "výchozí"}, "restartable": False})
             elif self.path == "/api/config":
-                self._json(200, {"values": {}, "fields": []})
+                # jako skutečný server: nastavení jen s PINem správce (F-BEZP-09/10)
+                pin = self.headers.get("X-YTDJ-PIN", "")
+                locked = getattr(fake, "admin_locked", 0)
+                if locked:
+                    self._json(429, {"error": "Moc špatných PINů.", "pin": "locked", "retry_after": locked})
+                elif not pin:
+                    self._json(401, {"error": "Nastavení chce PIN správce.", "pin": "required"})
+                elif pin != getattr(fake, "admin_pin", "123456"):
+                    self._json(403, {"error": "Špatný PIN.", "pin": "wrong"})
+                else:
+                    self._json(200, {"values": {"queue_target": 5}, "fields": [
+                        {"key": "queue_target", "label": "Cílová hloubka fronty",
+                         "help": "Kolik skladeb držet nachystaných za tou právě hrající.",
+                         "type": "int", "restart": False}]})
             elif self.path.startswith("/api/votes"):
                 u = urlparse(self.path)
                 q = {k: v[0] for k, v in parse_qs(u.query).items()}

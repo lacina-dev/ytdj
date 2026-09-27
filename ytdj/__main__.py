@@ -105,6 +105,16 @@ def preflight(cfg: Config) -> list[str]:
     return problems
 
 
+def sandbox_warning() -> str | None:
+    """Na Linuxu Codex izoluje příkazy přes bubblewrap; bez něj read-only sandbox neplatí.
+
+    Na Pi chyběl do 27. 9. 2026 — přání od kohokoli ze sítě šla modelu bez
+    vynucené izolace (zbývalo jen to, že Codex nemá nástroje)."""
+    if not sys.platform.startswith("linux") or shutil.which("bwrap"):
+        return None
+    return "chybí bubblewrap — Codex běží bez sandboxu  →  sudo apt install bubblewrap"
+
+
 def cookie_warning(cfg: Config) -> str | None:
     """Cookies z prohlížeče bez přihlášené plochy nefungují.
 
@@ -574,6 +584,9 @@ class App:
         print(f"       web:  {self.web.url}\n" if self.web else "       web:  vypnutý\n")
         if warning := cookie_warning(self.cfg):
             print(f"POZOR: {warning}\n")
+        if warning := sandbox_warning():
+            print(f"POZOR: {warning}\n")
+            log.warning(warning)
 
         rc = 0
         self._filler_task = asyncio.create_task(self._filler_after(resume))

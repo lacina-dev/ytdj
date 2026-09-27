@@ -70,7 +70,7 @@ Stav k 27. 9. 2026 (na Pi běží 1710010).
 | # | Požadavek | Stav | Doklad / kde |
 |---|---|---|---|
 | 33 | Projít a vylepšit UI displeje i webu, s ohledem na 1 GB RAM | ✅ | obaly alb, QR „přání z mobilu", oznámení přání, hlasy; web gzip 110 → ~25 kB |
-| 34 | Dotyk: „je utrpení na něco kliknout, trefit" | 🔄 nasazeno 27. 9. 02:48, čeká na novou kalibraci prstem | tlačítko podle místa, kde prst ležel; kalibrace s mřížkou; Test dotyku a Test prstem; 27. 9. čtení podle datasheetu XPT2046 (ustálení 100 µs, 1 MHz, medián 7): chyba u okraje ~3× menší, rozptyl ve stisku ~10× menší, vlastník: „teď je ten dotyk celkem dobrej"; 02:48 robustní kalibrace (okrajové křížky 2×, oprava okraje max 15 px) a „Zpět" dole velké |
+| 34 | Dotyk: „je utrpení na něco kliknout, trefit" | ✅ 27. 9. 03:15 — vlastník: „šlo to teď naposled docela dobře všude… fungovalo to přijatelně" | tlačítko podle místa, kde prst ležel; kalibrace s mřížkou; Test dotyku a Test prstem; 27. 9. čtení podle datasheetu XPT2046 (ustálení 100 µs, 1 MHz, medián 7): chyba u okraje ~3× menší, rozptyl ve stisku ~10× menší, vlastník: „teď je ten dotyk celkem dobrej"; 02:48 robustní kalibrace (okrajové křížky 2×, oprava okraje max 15 px) a „Zpět" dole velké; 03:08 kalibrace prstem + Test prstem: uprostřed 3–14 px, horní okraj čte ~+19 px níž (mez opravy okraje 15 px zahodila opakovatelně naměřených ~20 px; přepočet bez meze by dal ~+2 px) — vlastník změnu meze nechtěl, knoflíky nahoře se trefují |
 | 35 | „Škoda, že není větší" | 📝 | UI je kreslené v PIL, větší HDMI displej (např. 7" 800×480) = jiný ovladač, ne přepis |
 
 ## Provoz a způsob práce

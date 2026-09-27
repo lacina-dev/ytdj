@@ -80,6 +80,28 @@ def _build_lib() -> Path:
     return so
 
 
+def sampling_config(env: dict | None = None) -> tuple[str, int, int]:
+    """(mode, SPI clock divider, settle µs) from YTDJ_PANEL_TOUCH_SAMPLING / _CDIV / _SETTLE_US.
+
+    "settled" (default): per axis, drivers kept on, settle, first conversion
+    dropped — like Linux's ads7846. "old": the pre-27. 9. alternating X/Y reads
+    (for an A/B comparison with Test prstem)."""
+    env = os.environ if env is None else env
+    mode = env.get("YTDJ_PANEL_TOUCH_SAMPLING", "settled").strip().lower()
+    if mode not in ("settled", "old"):
+        log.warning("YTDJ_PANEL_TOUCH_SAMPLING=%r nerozumím — beru settled", mode)
+        mode = "settled"
+
+    def num(name: str, default: int, lo: int, hi: int) -> int:
+        try:
+            v = int(env.get(name, default))
+        except ValueError:
+            return default
+        return v if lo <= v <= hi else default
+
+    return mode, num("YTDJ_PANEL_TOUCH_CDIV", 400, 64, 4096), num("YTDJ_PANEL_TOUCH_SETTLE_US", 100, 0, 2000)
+
+
 def _release_kernel_spi() -> None:
     """Kernelový ovladač SPI0 by nám přepisoval piny i registry — odpojit."""
     if (SPI_DRIVER / SPI_DEVICE).exists():
@@ -106,6 +128,15 @@ class _Device:
         lib.kd_touch.argtypes = [ctypes.POINTER(ctypes.c_int)] * 3
         if hasattr(lib, "kd_touch_ex"):  # diagnostics: why a sample was refused, raw Z1/Z2
             lib.kd_touch_ex.argtypes = [ctypes.POINTER(ctypes.c_int)]
+        if hasattr(lib, "kd_touch_trace"):
+            lib.kd_touch_trace.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
+        self.sampling = "old"
+        if hasattr(lib, "kd_touch_config"):
+            lib.kd_touch_config.argtypes = [ctypes.c_int] * 3
+            mode, cdiv, settle = sampling_config()
+            lib.kd_touch_config(1 if mode == "settled" else 0, cdiv, settle)
+            self.sampling = f"{mode} cdiv={cdiv} settle={settle}us" if mode == "settled" else "old"
+            log.info("vzorkování dotyku: %s", self.sampling)
         lib.kd_pen_down.argtypes = []
         rc = lib.kd_open(0)
         if rc != 0:
@@ -145,8 +176,19 @@ class _Device:
         """(kód, (x, y, z1, z2, rozptyl x, rozptyl y)) — viz kd_touch_ex v kedei.c."""
         v = (ctypes.c_int * 6)()
         with self.lock:
+            t0 = time.perf_counter()
             code = self.lib.kd_touch_ex(v)
+            self.last_us = int((time.perf_counter() - t0) * 1_000_000)
         return code, tuple(v)
+
+    def touch_trace(self, cmd: int, n: int = 12) -> list[int]:
+        """n převodů jedné osy po sobě bez čekání (průběh ustálení); [] bez dotyku."""
+        if not hasattr(self.lib, "kd_touch_trace"):
+            return []
+        out = (ctypes.c_int * 64)()
+        with self.lock:
+            got = self.lib.kd_touch_trace(cmd, n, out)
+        return list(out[:got])
 
     def pen_down(self) -> bool:
         """Jen úroveň PENIRQ (jedno čtení GPIO) — pro statistiku anomálií."""
@@ -533,6 +575,10 @@ class KedeiTouch:
         return info["error"]
 
     @property
+    def sampling(self) -> str:
+        return getattr(self._dev, "sampling", "old")
+
+    @property
     def calibration_source(self) -> str:
         return getattr(self._cal, "source", "custom")
 
@@ -551,6 +597,12 @@ class KedeiTouch:
             raw = self._dev.touch_raw()
             return raw, (1 if raw else 0), ()
         code, v = ex()
+        if code != 0:
+            # what a real measurement costs (the SPI is shared with the LCD) — per minute in panel.touch_driver
+            us = getattr(self._dev, "last_us", 0)
+            if isinstance(us, int) and us > 0:
+                self._stats["sample_us"] = self._stats.get("sample_us", 0) + us
+                self._bump("timed_samples")
         if code == 1:
             return (v[0], v[1], v[2] + 4095 - v[3]), code, v
         return None, code, v
@@ -598,6 +650,12 @@ class KedeiTouch:
             item["raw"] = list(v)
         if pos is not None:
             item["x"], item["y"] = pos
+        trace = getattr(self._dev, "touch_trace", None)
+        if code == 1 and callable(trace) and len(rec) % 4 == 0:
+            # every 4th sample of a probe: 12 raw conversions per axis straight after
+            # switching the drivers on — how fast the plate settles under this finger
+            item["trace_x"] = trace(0xD0, 12)
+            item["trace_y"] = trace(0x90, 12)
         rec.append(item)
 
     def start_recording(self) -> None:
@@ -786,15 +844,37 @@ def _test(rotate: int) -> None:
                 screen.show(img, (ev.x - 8, ev.y - 8, ev.x + 8, ev.y + 8))
 
 
+def _trace(rotate: int, seconds: float = 30.0) -> None:
+    """Vypisuje surové převody X, Y (bez čekání na ustálení) a jeden vzorek ze vzorkování."""
+    dev = _Device.get()
+    dev.init(_check_rotate(rotate))
+    end = time.monotonic() + seconds
+    print(f"vzorkování: {dev.sampling}; drž prst nebo tužku na displeji ({seconds:.0f} s)", flush=True)
+    while time.monotonic() < end:
+        xs = dev.touch_trace(0xD0, 16)
+        ys = dev.touch_trace(0x90, 16)
+        if not xs:
+            time.sleep(0.05)
+            continue
+        code, v = dev.touch_ex()
+        print(f"X {xs}\nY {ys}\n  vzorek kód {code}: x {v[0]} y {v[1]} z1 {v[2]} z2 {v[3]} "
+              f"rozptyl {v[4]}/{v[5]}, {getattr(dev, 'last_us', 0)} µs", flush=True)
+        time.sleep(0.25)
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m ytdj.panel.kedei")
     p.add_argument("--rotate", type=int, default=0, choices=sorted(MADCTL))
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--test", action="store_true", help="obrazec + výpis dotyků")
     g.add_argument("--calibrate", action="store_true", help=f"kalibrace do {CALIBRATION}")
+    g.add_argument("--trace", action="store_true",
+                   help="průběh ustálení převodníku, dokud se drží prst (nejdřív zastav ytdj-panel)")
     args = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    if args.calibrate:
+    if args.trace:
+        _trace(args.rotate)
+    elif args.calibrate:
         cal = calibrate(args.rotate)
         cal.save()
         print(f"uloženo do {CALIBRATION}")

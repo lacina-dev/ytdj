@@ -826,6 +826,80 @@ class FingerTestFlowTest(_AppBase):
         self.assertTrue(wait_for(lambda: self.app._shown_page == "player"))
 
 
+class SamplingTest(unittest.TestCase):
+    """XPT2046 sampling (27. 9.): per axis with the plate drivers kept on (datasheet p. 17, option 2)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import ctypes
+        import shutil
+        import subprocess
+
+        if not shutil.which("cc"):
+            raise unittest.SkipTest("no C compiler")
+        cls.tmp = tempfile.TemporaryDirectory()
+        so = Path(cls.tmp.name) / "libkedei.so"
+        subprocess.run(["cc", "-O2", "-Wall", "-Werror", "-shared", "-fPIC", "-o", str(so),
+                        str(Path(kedei.__file__).with_name("kedei.c"))], check=True)
+        cls.lib = ctypes.CDLL(str(so))
+        cls.ctypes = ctypes
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def _plan(self, mode):
+        buf = (self.ctypes.c_int * 64)()
+        n = self.lib.kd_touch_plan(mode, buf, 64)
+        return list(buf[:n])
+
+    def test_settled_reads_each_axis_with_drivers_on_and_powers_down_last(self):
+        plan = self._plan(1)
+        self.assertEqual(plan, [0xD1] * 9 + [0x91] * 9 + [0xB1] * 3 + [0xC1] * 3 + [0x90])
+        for cmd in plan[:-1]:
+            self.assertEqual(cmd & 0x03, 0x01, hex(cmd))  # PD1:0 = 01 — drivers on, PENIRQ off
+            self.assertEqual(cmd & 0x04, 0, hex(cmd))  # SER/DFR = 0 — differential (ratiometric)
+        self.assertEqual(plan[-1] & 0x03, 0x00)  # the last one re-arms PENIRQ
+
+    def test_old_sampling_is_still_there_for_an_a_b_comparison(self):
+        plan = self._plan(0)
+        self.assertEqual(plan, [0xD0] + [0xD0, 0x90] * 7 + [0xB0, 0xC0, 0x80])
+
+    def test_config_from_the_environment(self):
+        self.assertEqual(kedei.sampling_config({}), ("settled", 400, 100))
+        self.assertEqual(kedei.sampling_config({"YTDJ_PANEL_TOUCH_SAMPLING": "old"})[0], "old")
+        self.assertEqual(kedei.sampling_config({"YTDJ_PANEL_TOUCH_SAMPLING": "weird"})[0], "settled")
+        self.assertEqual(kedei.sampling_config({"YTDJ_PANEL_TOUCH_CDIV": "800", "YTDJ_PANEL_TOUCH_SETTLE_US": "150"}),
+                         ("settled", 800, 150))
+        self.assertEqual(kedei.sampling_config({"YTDJ_PANEL_TOUCH_CDIV": "3", "YTDJ_PANEL_TOUCH_SETTLE_US": "x"}),
+                         ("settled", 400, 100))
+
+    def test_sample_cost_is_counted(self):
+        saved = kedei._Device._instance
+        try:
+            dev = _ExDevice([(1, (300, 230, 600, 3000, 20, 20))] * 3 + [(0, (0,) * 6)] * 3)
+            dev.last_us = 900
+            kedei._Device._instance = dev
+            t = kedei.KedeiTouch(calibration=kedei.Calibration(1, 0, 0, 0, 1, 0))
+            t.DOWN_INTERVAL = t.IDLE_INTERVAL = 0.0
+            for _ in range(8):
+                t.poll(0.0)
+            st = t.take_stats()
+            self.assertEqual(st["timed_samples"], 3)
+            self.assertEqual(st["sample_us"], 2700)
+        finally:
+            kedei._Device._instance = saved
+
+    def test_probe_report_shows_settling_from_traces(self):
+        from ytdj.panel.touchreport import probe_report
+
+        sm = [{"t": 0, "c": 1, "raw": [2048, 100, 900, 2000, 10, 10], "x": 40, "y": 60,
+               "trace_x": [1500, 1900, 2000, 2040, 2048, 2050, 2047, 2049],
+               "trace_y": [300, 120, 105, 101, 100, 100, 99, 100]}]
+        text = probe_report([{"kind": "panel.touch_probe", "target": [40, 10], "err": [0, 50], "samples": sm}])
+        self.assertIn(" 548/200", text)
+
+
 class ProbeReportTest(unittest.TestCase):
     def test_per_spot_error_spread_and_pressure(self):
         from ytdj.panel.touchreport import probe_report

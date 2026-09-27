@@ -83,6 +83,9 @@ def report(events: list[dict]) -> str:
                 "noisy_release"):
         if drv.get(key):
             lines.append(f"  {key}: {drv[key]}")
+    if drv.get("timed_samples"):
+        lines.append(f"  converter: {drv['sample_us'] / drv['timed_samples']:.0f} µs per sample "
+                     f"({drv['timed_samples']} samples)")
     lines.append(f"actions from touch: {actions}" + (f" ({100 * actions / downs:.0f} % of presses)" if downs else ""))
     if press_ms:
         press_ms.sort()
@@ -125,13 +128,27 @@ def _q(values: list[float]) -> str:
     return f"{v[len(v) // 2]:.2f} [{v[0]:.2f}–{v[-1]:.2f}]"
 
 
+def _settle(samples: list[dict]) -> str:
+    """How far the first raw conversion after switching the drivers on is from the settled
+    value (median of the last 4 of the trace), median over the traced samples: "Δx/Δy" raw."""
+    dx, dy = [], []
+    for sm in samples:
+        for key, out in (("trace_x", dx), ("trace_y", dy)):
+            tr = sm.get(key)
+            if isinstance(tr, list) and len(tr) >= 6:
+                out.append(abs(tr[0] - statistics.median(tr[-4:])))
+    if not dx and not dy:
+        return "–"
+    return f"{statistics.median(dx) if dx else 0:.0f}/{statistics.median(dy) if dy else 0:.0f}"
+
+
 def probe_report(events: list[dict]) -> str:
     """Per spot of "Test prstem": the error, the spread within the press, pressure, refused samples."""
     probes = [e for e in events if e.get("kind") == "panel.touch_probe"]
     if not probes:
         return "no panel.touch_probe events (run \"Test prstem\" on the display: Síť → Test prstem)"
     lines = [f"{'spot':>11} {'err dx,dy':>11} {'button':>9} {'n ok/bad':>9} {'spread':>7} "
-             f"{'z1 median':>9} {'R median [min–max]':>22}  refused"]
+             f"{'z1 median':>9} {'R median [min–max]':>22} {'settle x/y':>10}  refused"]
     groups: dict[str, dict[str, list]] = {"top edge": {"r": [], "dy": []}, "rest": {"r": [], "dy": []}}
     for e in probes:
         tx, ty = (e.get("target") or [0, 0])[:2]
@@ -145,16 +162,19 @@ def probe_report(events: list[dict]) -> str:
         z1 = [x["raw"][2] for x in ok if len(x.get("raw", [])) >= 4]
         rs = [r for r in (_r(x.get("raw", [])) for x in ok) if r is not None]
         refused = Counter(CODES.get(x.get("c"), str(x.get("c"))) for x in bad)
+        settle = _settle(ok)
         g = groups["top edge" if ty <= 20 else "rest"]
         g["r"].extend(rs)
         g["dy"].append(dy)
         lines.append(f"{tx:>4},{ty:<4}  {dx:+4d},{dy:+4d}  {str(e.get('button')):>9} {len(ok):>4}/{len(bad):<4}"
-                     f" {spread:>6}  {statistics.median(z1) if z1 else 0:>8.0f}  {_q(rs):>22}  "
+                     f" {spread:>6}  {statistics.median(z1) if z1 else 0:>8.0f}  {_q(rs):>22} {settle:>10}  "
                      + ", ".join(f"{k} {v}" for k, v in refused.most_common()))
     lines.append("")
     for name, g in groups.items():
         if g["dy"]:
             lines.append(f"{name}: median dy {statistics.median(g['dy']):+.0f} px, touch resistance R {_q(g['r'])}")
+    lines.append("settle x/y: raw units the first conversion after switching the plate drivers on is off the "
+                 "settled value (traces recorded during Test prstem) — large = the old sampling read unsettled plates.")
     lines.append("R = x/4096·(Z2/Z1 − 1): the XPT2046's touch resistance without the plate constant. If the top "
                  "edge's R sits apart from the rest, it's a pressure signature (two contacts?) — the prepared filter "
                  "is YTDJ_PANEL_CONTACT_R=\"od:do\" for the panel service.")

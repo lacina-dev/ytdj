@@ -88,13 +88,13 @@ Stav k 27. 9. 2026 (na Pi běží 1710010).
 | 44 | „Proč jen tři skladby? Jde to nastavit v nastavení?" | ✅ nasazeno 16:58 | nastavení jukeboxu: kolo 3 (2 když čekají jiní), rozpočet 4 (displej 3), interpret 12 — kvůli férovosti; výchozí hodnoty beze změny |
 | 45 | „Co hraje dál a nemá to u sebe moje jméno?" | ✅ | „Rádio podle přání X · nálada" na webu i displeji |
 | 50 | „Nechci, aby se učil konkrétní fráze a podle nich pak něco dělal. Chci, aby chápal, co mu user napíše, a choval se podle toho.“ | ✅ pravidlo (27. 9.) | `docs/PLAN.md` Vize 5; oblíbené vykládá model (F-HLASY-19), bez modelu jen jednoznačné povely a jména |
-| 51 | „A jak to vidíš s tou bezpečností" → „Oprav všechny body, které můžeš" (27. 9.) — web: nastavení a restart | 🔄 v kódu | nebezpečné klíče (mpv_extra_args, cookies, web_host…) jen v config.toml; nastavení a restart s PINem správce (displej: Síť), brzda 5 špatných / 5 min — F-BEZP-08 až F-BEZP-11, `tests/test_admin.py` |
+| 51 | „A jak to vidíš s tou bezpečností" → „Oprav všechny body, které můžeš" (27. 9.) — web, Wi-Fi, sudo, sandbox | ✅ nasazeno 27. 9. 04:45 | nebezpečné klíče (mpv_extra_args, cookies, web_host…) jen v config.toml; nastavení a restart s PINem správce (displej: Síť), brzda 5 špatných / 5 min — F-BEZP-08 až F-BEZP-11, `tests/test_admin.py`; heslo Wi-Fi přes stdin (F-BEZP-06); ytdj s NoNewPrivileges — sudo z ytdj/Codexu na Pi ověřeně nejde, mpv dál nice −11; bubblewrap na Pi, sandbox Codexu ověřen (zápis → Read-only file system), přání přes model 9,0 s (F-BEZP-07); z LAN ověřeno: bez PINu 401, špatný 403, web_host i s PINem 400 |
 
 ## Na konec: bezpečnost a přihlášení (připomenout)
 
 - Vlastní přihlášení YouTube na Pi (teď cookies z notebooku); možná osiřelá relace „Chrome on Linux" v Google účtu.
-- Web bez hesla: kdokoli v síti ovládá hudbu (záměr); nastavení a restart jukeboxu s PINem správce — 🔄 v kódu (#51), čeká na nasazení. Zbývá: web bez HTTPS.
-- Heslo Wi-Fi z displeje je krátce vidět v seznamu procesů.
-- Panel běží jako root (kvůli /dev/mem).
-- Na Pi chybí bubblewrap (sandbox Codexu).
-- Na notebooku může běžet starý SSH tunel na web Pi.
+- Web bez hesla: kdokoli v síti ovládá hudbu (záměr); nastavení a restart s PINem správce — ✅ #51. Zbývá: web bez HTTPS (PIN jde sítí čitelně); PIN si přečte i proces na Pi pod uživatelem lacina.
+- ✅ Heslo Wi-Fi z displeje už není v seznamu procesů (#51).
+- Panel běží jako root (kvůli /dev/mem) — ponecháno, omezený sandboxem systemd.
+- ✅ bubblewrap na Pi, sandbox Codexu ověřen; ✅ ytdj bez sudo (NoNewPrivileges) (#51).
+- ✅ Starý SSH tunel na notebooku neběží (ověřeno 27. 9.).

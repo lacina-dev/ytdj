@@ -26,6 +26,10 @@ RestartSec=5
 KillMode=mixed
 TimeoutStopSec=15
 SyslogIdentifier=ytdj
+# ytdj ani nic, co spustí (Codex, mpv, yt-dlp), nesmí získat víc práv — hlavně
+# ne přes sudo, které má uživatel na Pi bez hesla. Priorita zvuku (nice -11)
+# jde přes limit nice (ulimit -e), ne přes setuid, takže funguje dál.
+NoNewPrivileges=yes
 
 [Install]
 WantedBy=default.target

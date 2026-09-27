@@ -188,6 +188,7 @@ Tohle je seznam všeho, co aplikace umí (stav 26. 9. 2026, commit e713074).
 - **F-FRONTA-17** Během rozhodování DJe má první skladba přání přednost v přípravě.
   Testy: `tests/test_wishes.py::Supersede::test_first_track_is_prioritised_while_deciding`, `tests/test_player_queue.py::Prefetch::test_codex_hold_keeps_list_and_first`
 - **F-FRONTA-18** Počty skladeb přání jdou změnit v nastavení jukeboxu, platí hned: kolo (`wish_block`, i blok přání nálady), kolo, když čekají jiní (`wish_shared_block`, nejvýš jako kolo), rozpočet z webu / z displeje (`wish_budget`, `wish_budget_panel`), skladby interpreta v přání (`wish_artist_max`); výchozí hodnoty jsou ty z F-FRONTA-01 a F-FRONTA-02 (3 / 2, 4 / 3) a 12; odpovědi DJe říkají nastavená čísla. (Přidáno 26. 9. 2026 na přání vlastníka: „Proč jen tři? Jde to nastavit v nastavení?")
+  Změněno 27. 9. 2026 se souhlasem vlastníka („Oprav všechny body, které můžeš" — bezpečnost): nastavení jukeboxu na webu (i tyhle počty) a restart jdou jen s PINem správce z displeje (F-BEZP-09); čísla i to, že platí hned, zůstávají.
   Testy: `tests/test_wish_settings.py::WishAmounts::test_defaults_are_the_rules`, `tests/test_wish_settings.py::WishAmounts::test_bad_values_are_clamped`, `tests/test_wish_settings.py::WishAmounts::test_fair_order_follows_the_amounts`, `tests/test_wish_settings.py::WishAmounts::test_settings_change_the_queue_live`, `tests/test_wish_settings.py::WishAmounts::test_settings_form_offers_the_keys_with_bounds`
 - **F-FRONTA-19** Rádio (podkres) řekne, odkud je: po přání „Rádio podle přání Robert · nálada" (na webu i na displeji, tlumeným textem, ne jmenovkou přání — ničí přání to není), po rozjezdu „Rádio podle času a dne", jinak „Rádio · vybral DJ"; jméno jde přes kancelářský filtr. (Přidáno 26. 9. 2026 na přání vlastníka: „Co je to, co hraje dál a nemá to už u sebe moje jméno?")
   Testy: `tests/test_wish_settings.py::RadioOrigin::test_radio_after_a_wish_says_whose_wish_it_follows`, `tests/test_wish_settings.py::RadioOrigin::test_background_nobody_asked_for_has_no_name`, `tests/test_wish_settings.py::RadioOrigin::test_name_goes_through_the_office_filter`, `tests/test_wish_settings.py::WebShowsRadioOrigin::test_radio_after_a_wish`, `tests/test_wish_settings.py::WebShowsRadioOrigin::test_other_origins`, `tests/test_panel.py::RadioOriginTest::test_status_strip_says_whose_wish_the_radio_follows`, `tests/test_panel.py::RadioOriginTest::test_panel_reads_the_origin_from_the_status`
@@ -448,12 +449,29 @@ Pravidla, která dnes platí:
   Testy: `tests/test_nicks.py::Book::test_tag_does_not_reveal_the_client`
 - **F-BEZP-05** Codex nemá nástroje: každý požadavek serveru na schválení (shell, soubory) se odmítne.
   Testy: `tests/test_dj_appserver.py::Fake::test_server_requests_are_refused`
+- **F-BEZP-06** Heslo Wi-Fi z displeje nikdy není v příkazové řádce (vidí ji každý proces na Pi): profil se založí bez hesla, heslo dostane `nmcli con edit` na vstupu, pak se profil aktivuje; WPA3-only síť dostane `sae`; nepovedený profil se smaže.
+  Nové pravidlo 27. 9. 2026 se souhlasem vlastníka („Oprav všechny body, které můžeš" — bezpečnost).
+  Testy: `tests/test_panel_net.py::NmcliBackendTest::test_connect_ok`, `tests/test_panel_net.py::NmcliBackendTest::test_connect_fails_without_leaking`, `tests/test_panel_net.py::NmcliBackendTest::test_wpa3_only_network_gets_sae`, `tests/test_panel_net.py::NmcliBackendTest::test_open_network_has_no_secret_step`
+- **F-BEZP-07** ytdj a vše, co spustí (Codex, mpv, yt-dlp), běží bez možnosti získat víc práv (`NoNewPrivileges`, tedy ani přes sudo); Codex má vynucený sandbox (bubblewrap) — instalace ho doplní a start ytdj varuje, když chybí.
+  Nové pravidlo 27. 9. 2026 se souhlasem vlastníka („Oprav všechny body, které můžeš" — bezpečnost).
+  Testy: `tests/test_security.py::ServiceUnit::test_no_new_privileges`, `tests/test_security.py::ServiceUnit::test_install_script_brings_bubblewrap`, `tests/test_security.py::SandboxWarning::test_missing_bwrap_on_linux_is_reported`, `tests/test_security.py::SandboxWarning::test_present_bwrap_is_quiet`
+- **F-BEZP-08** Nastavení, která spouštějí kód nebo programy, míří na soubory a přihlášení nebo mění, kdo se k webu dostane (`mpv_extra_args`, `js_runtimes`, `remote_components`, `cookies_file`, `cookies_browser`, `web_enabled`, `web_host`, `web_port`), web neukáže ani nezmění — ani s PINem („mění se jen v config.toml na Pi"); model Codexu a klient yt-dlp jen jako obyčejná jména.
+  Nové pravidlo 27. 9. 2026 se souhlasem vlastníka („Oprav všechny body, které můžeš" — bezpečnost).
+  Testy: `tests/test_admin.py::LockedKeys::test_classification_covers_every_key`, `tests/test_admin.py::LockedKeys::test_get_hides_them`, `tests/test_admin.py::LockedKeys::test_post_rejects_them_even_with_pin`, `tests/test_admin.py::LockedKeys::test_names_passed_on_as_arguments_are_plain`
+- **F-BEZP-09** Nastavení jukeboxu a restart z webu chtějí PIN správce (6 náhodných číslic v `~/.config/ytdj/admin-pin`, práva 0600, vznikne při startu); stránka se na něj zeptá jednou a zařízení si ho pamatuje. Výjimka pro Pi samotné (127.0.0.1) není. Přání, Další, hlasitost, hlasování a přezdívka jdou dál bez PINu. PIN není v logu ani v telemetrii, do logu jde jen cesta k souboru.
+  Nové pravidlo 27. 9. 2026 se souhlasem vlastníka („Oprav všechny body, které můžeš" — bezpečnost).
+  Testy: `tests/test_admin.py::ConfigNeedsPin::test_no_pin_wrong_pin_right_pin`, `tests/test_admin.py::ConfigNeedsPin::test_post_needs_pin_and_then_saves`, `tests/test_admin.py::ConfigNeedsPin::test_restart_needs_pin`, `tests/test_admin.py::ConfigNeedsPin::test_localhost_is_not_exempt`, `tests/test_admin.py::ConfigNeedsPin::test_music_stays_open_without_pin`, `tests/test_admin.py::ConfigNeedsPin::test_pin_never_in_logs_or_telemetry`, `tests/test_admin.py::PinFile::test_created_0600_six_digits_and_stable`, `tests/test_admin.py::PinFile::test_lives_next_to_config_toml`, `tests/test_admin.py::PinFile::test_random_pins_differ`, `tests/test_admin.py::PinFile::test_start_writes_pin_off_the_loop_and_logs_only_the_path`, `tests/test_admin.py::WebPage::test_page_asks_for_the_pin_and_sends_it`
+- **F-BEZP-10** Po 5 špatných PINech (od kohokoli, i z různých adres) je správa webu na 5 minut zavřená i pro správný PIN (hláška se zbývajícími minutami); zavření jde do logu a telemetrie (`web.admin_locked`), bez PINu. Chybějící PIN se jako pokus nepočítá.
+  Nové pravidlo 27. 9. 2026 se souhlasem vlastníka („Oprav všechny body, které můžeš" — bezpečnost).
+  Testy: `tests/test_admin.py::Brake::test_five_wrong_lock_for_five_minutes`, `tests/test_admin.py::Brake::test_missing_pin_is_not_a_guess_and_success_resets`
+- **F-BEZP-11** PIN správce je vidět na displeji na obrazovce Síť vpravo v záhlaví („PIN nastavení 123456"; toast hlasitosti ho na chvíli zakryje) — kdo stojí u jukeboxu, je správce. Panel ho čte přímo ze souboru vedle config.toml, mimo hlavní vlákno; bez souboru záhlaví jen bez PINu.
+  Nové pravidlo 27. 9. 2026 se souhlasem vlastníka („Oprav všechny body, které můžeš" — bezpečnost).
+  Testy: `tests/test_panel_net.py::AdminPinOnDisplay::test_overview_shows_the_pin`, `tests/test_panel_net.py::AdminPinOnDisplay::test_no_pin_file_no_pin_and_no_crash`, `tests/test_panel_net.py::AdminPinOnDisplay::test_reads_the_file_next_to_config_toml`
 
 Otevřené body (nejsou pravidla, rozhodne vlastník na konci — viz POZADAVKY #41):
-- web je bez hesla: kdokoli v síti ovládá hudbu, **nastavení i restart jsou otevřené**;
-- heslo Wi-Fi z displeje je krátce vidět v seznamu procesů (`nmcli` argument);
+- web je bez hesla: kdokoli v síti ovládá hudbu (záměr — kolegové); nastavení a restart od 27. 9. jen s PINem správce (F-BEZP-08 až F-BEZP-11); web jde po síti bez HTTPS;
 - panel běží jako root (kvůli `/dev/mem`);
-- YouTube na Pi zatím s cookies z notebooku; na Pi chybí bubblewrap (sandbox Codexu).
+- YouTube na Pi zatím s cookies z notebooku (vlastní účet pro jukebox rozhodne vlastník).
 
 ## Bez testu (hardware)
 
@@ -490,3 +508,5 @@ Opraveno v dokumentaci (kód se neměnil):
 | 26. 9. 2026 | F-PROVOZ-08 | Nahřívání Codexu dopředu až nad 330 MB volné paměti (dřív 250), jeden pokus za minutu — spolehlivost paměti Pi (zadání „v nejlepší podobě"). |
 | 27. 9. 2026 | F-HLASY-09, F-HLASY-13 | 👍 z importu playlistu se nepočítají do 30 hlasů / 10 min; pojistka importu 1000 písniček na člověka (dřív navrženo 300). |
 | 27. 9. 2026 | F-HLASY-17 | „Pusť oblíbené" a oblíbené pro DJe se střídají po lidech místo řazení jen podle počtu 👍. |
+| 27. 9. 2026 | F-FRONTA-18 | Nastavení jukeboxu na webu a restart jen s PINem správce z displeje — bezpečnost („Oprav všechny body, které můžeš"). |
+| 27. 9. 2026 | F-BEZP-08 až F-BEZP-11 (nové) | Nebezpečné klíče (spuštění kódu, cesty, přihlášení, síť) jen v config.toml; PIN správce pro nastavení a restart, brzda 5 špatných / 5 min, PIN na displeji Síť — bezpečnost („Oprav všechny body, které můžeš"). |

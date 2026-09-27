@@ -88,6 +88,7 @@ STRINGS = {
         "done": "Hotovo",
         "retry": "Zkusit znovu",
         "volume": "hlasitost {v}",
+        "pin": "PIN nastavení",
         "err_wrong_password": "Špatné heslo.",
         "err_bad_password": "Heslo pro WPA musí mít 8 až 63 znaků.",
         "err_not_found": "Síť není v dosahu.",
@@ -138,6 +139,7 @@ STRINGS = {
         "done": "Done",
         "retry": "Try again",
         "volume": "volume {v}",
+        "pin": "Settings PIN",
         "err_wrong_password": "Wrong password.",
         "err_bad_password": "A WPA password has 8 to 63 characters.",
         "err_not_found": "The network is out of range.",
@@ -271,6 +273,9 @@ class NetView:
     wifi: Link | None = None
     error: str = ""  # translated
     urls: tuple[str, ...] = ()
+    # PIN správce pro nastavení a restart na webu (F-BEZP-11); kdo stojí
+    # u displeje, je správce. Do repr (logy) nepatří.
+    pin: str = field(default="", repr=False)
     # list
     nets: tuple[WifiNet, ...] = ()
     scroll: int = 0
@@ -431,7 +436,7 @@ class NetRenderer:
         if v.page == "overview":
             return [
                 back,
-                ("title", TITLE, lambda v: (self.s["net_title"], v.note), self._draw_title, False),
+                ("title", TITLE, self._title_sig, self._draw_title, False),
                 ("host", ROW_HOST, lambda v: (v.loaded, v.hostname, v.mdns, v.error), self._draw_host, False),
                 ("eth", ROW_ETH, lambda v: (v.loaded, v.eth, v.error), self._draw_eth, False),
                 ("wifi", ROW_WIFI, lambda v: (v.loaded, v.wifi, v.error), self._draw_wifi, False),
@@ -535,8 +540,24 @@ class NetRenderer:
             room -= note_w + 12
         d.text((x, (h - 2) / 2), ellipsize(title, self.head, max(20, room)), font=self.head, fill=TEXT, anchor="lm")
 
+    def _title_sig(self, v: NetView) -> tuple:
+        # toast hlasitosti PIN zakryje, takže PIN je v podpisu jen bez toastu
+        if v.note or not v.pin:
+            return (self.s["net_title"], v.note)
+        return (self.s["net_title"], "", v.pin)
+
     def _draw_title(self, d, size, v: NetView) -> None:
-        self._header(d, size, self.s["net_title"], v.note)
+        if v.note or not v.pin:
+            self._header(d, size, self.s["net_title"], v.note)
+            return
+        # PIN správce vpravo v záhlaví, drobně; toast hlasitosti ho na chvíli zakryje
+        self._header(d, size, self.s["net_title"], "")
+        w, h = size
+        cy = (h - 2) / 2
+        right = w - 12
+        d.text((right, cy), v.pin, font=self.value, fill=TEXT, anchor="rm")
+        right -= self.value.getlength(v.pin) + 8
+        d.text((right, cy), self.s["pin"], font=self.small, fill=DIM, anchor="rm")
 
     # ---- overview ----
 

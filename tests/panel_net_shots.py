@@ -54,7 +54,15 @@ STATES = {
         BASE, eth=ETH, wifi=WIFI, note="hlasitost 54",
         urls=("http://192.168.0.24:8765", "http://10.42.0.149:8765", "http://ytdj.local:8765"),
     ),
-    "overview-no-nm": replace(BASE, error="NetworkManager (nmcli) není k dispozici."),
+    "overview-pin": replace(
+        BASE, eth=ETH, wifi=WIFI, pin="482913",
+        urls=("http://192.168.0.24:8765", "http://10.42.0.149:8765", "http://ytdj.local:8765"),
+    ),
+    "overview-pin-toast": replace(
+        BASE, eth=ETH, wifi=WIFI, pin="482913", note="hlasitost 54",
+        urls=("http://192.168.0.24:8765", "http://10.42.0.149:8765", "http://ytdj.local:8765"),
+    ),
+    "overview-no-nm":replace(BASE, error="NetworkManager (nmcli) není k dispozici."),
     "list": replace(BASE, page="list", nets=NETS, scanned=True),
     "list-scrolled": replace(BASE, page="list", nets=NETS, scanned=True, scroll=3, pressed="row1"),
     "list-scanning": replace(BASE, page="list", scanning=True),

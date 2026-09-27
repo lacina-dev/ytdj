@@ -42,8 +42,15 @@ class NetController:
         web_port: int = 8765,
         now: float | None = None,
         count: Callable[[str], None] | None = None,
+        pin_reader: Callable[[], str] | None = None,
     ) -> None:
         self.backend = backend
+        # PIN správce webu (F-BEZP-11): čte se ze souboru vedle config.toml,
+        # mimo hlavní vlákno, při otevření přehledu a s každým stavem sítě
+        if pin_reader is None:
+            from ..adminpin import read_pin as pin_reader
+        self.pin_reader = pin_reader
+        self.pin = ""
         self.count = count or (lambda key: None)  # odmítnuté dotyky → souhrn za minutu
         self.post = post
         self.lang = lang if lang in STRINGS else "cs"
@@ -116,12 +123,17 @@ class NetController:
 
     def refresh(self) -> None:
         self._job("status", self.backend.status)
+        if self.page:
+            self._job("pin", self.pin_reader)
 
     def handle(self, msg: tuple) -> None:
         _, kind, value, error = msg
         self.inflight.discard(kind)
         now = time.monotonic()
         took_ms = int((now - self.job_started.pop(kind, now)) * 1000)
+        if kind == "pin":
+            self.pin = value if isinstance(value, str) and not error else ""
+            return
         if kind == "status":
             if isinstance(value, NetStatus):
                 self.status = value
@@ -284,6 +296,7 @@ class NetController:
             wifi=st.link("wifi"),
             error=self._error_text(st.error) if st.error else "",
             urls=self.urls(),
+            pin=self.pin,
             nets=tuple(self.nets),
             scroll=self.scroll,
             scanning="scan" in self.inflight,

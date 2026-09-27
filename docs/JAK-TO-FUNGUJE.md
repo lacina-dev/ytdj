@@ -138,7 +138,8 @@ Pomalá SD karta nesmí zastavit hudbu ani web.
 
 Heslo k Wi-Fi a přihlašovací tokeny se nikde neukazují ani nelogují. Přání
 může odebrat jen jeho autor. DJ (model) nemá žádné nástroje — nemůže
-spouštět příkazy ani sahat na soubory.
+spouštět příkazy ani sahat na soubory. Hudbu ovládá každý, ale nastavení
+jukeboxu a restart chtějí PIN správce, který je na displeji na obrazovce Síť.
 
 ## Automatiky, o kterých možná nevíš
 
@@ -166,6 +167,7 @@ spouštět příkazy ani sahat na soubory.
 - **F-DISPLEJ-06** Displej se po 5 minutách ticha ztlumí a ukáže QR
 - **F-START-04** Úmyslnou pauzu nové přání samo nezruší
 - **F-WEB-03** Stará otevřená stránka se po aktualizaci obnoví sama
+- **F-BEZP-10** Po 5 špatných PINech se nastavení na 5 minut zamkne
 
 ## Nastavení u pravidel
 

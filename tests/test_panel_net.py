@@ -28,6 +28,7 @@ from test_panel import EventLog  # noqa: E402
 os.environ.setdefault("YTDJ_PANEL_ART_URL", "")
 from ytdj.panel.app import PanelApp  # noqa: E402
 from ytdj.panel.net import (  # noqa: E402
+    CONNECT_WAIT,
     Connected,
     Link,
     NetError,
@@ -172,17 +173,21 @@ class NmcliBackendTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _nmcli(self, connect_ok: bool) -> str:
+    def _nmcli(self, connect_ok: bool, security: str = "WPA2") -> str:
         script = self.dir / "nmcli"
+        self.stdin = self.dir / "stdin"
+        fail = f'echo "Error: Connection activation failed: (7) Secrets were required, but not provided." >&2; exit 4'
         script.write_text(f"""#!/bin/sh
 echo "$@" >> {self.log}
 case "$*" in
   *"con show"*) cat {self.profiles} ;;
   *"con delete"*) : ;;
-  *"wifi connect"*)
-    {"exit 0" if connect_ok else f'echo "22222222-new:802-11-wireless" >> {self.profiles}; echo "Error: Connection activation failed: (7) Secrets were required, but not provided." >&2; exit 4'} ;;
+  *"con add"*) echo "22222222-new:802-11-wireless" >> {self.profiles} ;;
+  *"con edit"*) cat >> {self.stdin}; echo "echoes it: $(cat {self.stdin})" ;;
+  *"con up"*) {"exit 0" if connect_ok else fail} ;;
+  *"wifi connect"*) {"exit 0" if connect_ok else fail} ;;
   *"dev show"*) printf 'GENERAL.DEVICE:wlan0\\nGENERAL.TYPE:wifi\\nGENERAL.STATE:100 (connected)\\nIP4.ADDRESS[1]:192.168.1.57/24\\n' ;;
-  *"wifi list"*) printf '*:Nová síť:70:WPA2\\n' ;;
+  *"wifi list"*) printf '*:Nová síť:70:{security}\\n' ;;
 esac
 """)
         script.chmod(script.stat().st_mode | stat.S_IXUSR)
@@ -196,6 +201,7 @@ esac
         self.assertEqual(str(ctx.exception), "wrong_password")
         self.assertNotIn(SECRET, "\n".join(logs.output))
         calls = self.log.read_text()
+        self.assertNotIn(SECRET, calls)
         # the half-made profile goes, the one that existed before stays
         self.assertIn("con delete uuid 22222222-new", calls)
         self.assertNotIn("11111111-old", calls.split("con delete", 1)[1])
@@ -206,7 +212,25 @@ esac
             res = backend.connect("Nová síť", SECRET)
         self.assertEqual(res, Connected("Nová síť", "192.168.1.57"))
         self.assertNotIn(SECRET, "\n".join(logs.output))
-        self.assertIn(f"dev wifi connect Nová síť password {SECRET} ifname wlan0", self.log.read_text())
+        calls = self.log.read_text()
+        # 27. 9. 2026: the password is never an argument (the process list shows those) —
+        # it reaches NetworkManager on stdin of `con edit`
+        self.assertNotIn(SECRET, calls)
+        self.assertIn("con add type wifi ifname wlan0 con-name Nová síť ssid Nová síť wifi-sec.key-mgmt wpa-psk", calls)
+        self.assertIn("con edit uuid 22222222-new", calls)
+        self.assertIn(f"set 802-11-wireless-security.psk {SECRET}\nsave\nquit\n", self.stdin.read_text())
+        self.assertIn(f"-w {CONNECT_WAIT} con up uuid 22222222-new ifname wlan0", calls)
+        self.assertNotIn("con delete", calls)
+
+    def test_wpa3_only_network_gets_sae(self):
+        NmcliBackend(nmcli=self._nmcli(connect_ok=True, security="WPA3")).connect("Nová síť", SECRET)
+        self.assertIn("wifi-sec.key-mgmt sae", self.log.read_text())
+
+    def test_open_network_has_no_secret_step(self):
+        NmcliBackend(nmcli=self._nmcli(connect_ok=True, security="")).connect("Nová síť", None)
+        calls = self.log.read_text()
+        self.assertIn(f"-w {CONNECT_WAIT} dev wifi connect Nová síť ifname wlan0", calls)
+        self.assertNotIn("con edit", calls)
 
     def test_status(self):
         st = NmcliBackend(nmcli=self._nmcli(connect_ok=True)).status()
@@ -503,6 +527,70 @@ class NetRenderTest(unittest.TestCase):
         clean = NetRenderer()
         clean.render(v, full=True)
         self.assertEqual(r.frame.tobytes(), clean.frame.tobytes())
+
+
+class AdminPinOnDisplay(unittest.TestCase):
+    """F-BEZP-11: obrazovka Síť ukazuje PIN správce webu, čtený ze souboru vedle config.toml."""
+
+    def _controller(self, reader):
+        import queue
+
+        from ytdj.panel.netapp import NetController
+
+        q: queue.Queue = queue.Queue()
+        ctrl = NetController(FakeNet(), q.put, pin_reader=reader)
+        ctrl.open(time.monotonic())
+        seen = set()
+        while seen != {"status", "pin"}:
+            msg = q.get(timeout=5)
+            ctrl.handle(msg)
+            seen.add(msg[1])
+        return ctrl
+
+    def test_overview_shows_the_pin(self):
+        ctrl = self._controller(lambda: "482913")
+        v = ctrl.view(time.monotonic())
+        self.assertEqual(v.pin, "482913")
+        self.assertNotIn("482913", repr(v))  # do logů se nedostane
+        with_pin = NetRenderer()
+        with_pin.render(v, full=True)
+        without = NetRenderer()
+        without.render(replace(v, pin=""), full=True)
+        title = (0, 0, 480, 44)
+        self.assertNotEqual(with_pin.frame.crop(title).tobytes(), without.frame.crop(title).tobytes())
+        # zbytek obrazovky (adresy, QR, tlačítka) beze změny
+        self.assertEqual(with_pin.frame.crop((0, 44, 480, 320)).tobytes(),
+                         without.frame.crop((0, 44, 480, 320)).tobytes())
+        # toast hlasitosti PIN na chvíli zakryje, pak se vrátí jen záhlaví
+        toast = replace(v, note="hlasitost 54")
+        with_pin.render(toast)
+        boxes = with_pin.render(v)
+        self.assertTrue(boxes and all(b[3] <= 44 for b in boxes), boxes)
+
+    def test_no_pin_file_no_pin_and_no_crash(self):
+        ctrl = self._controller(lambda: "")
+        self.assertEqual(ctrl.view(time.monotonic()).pin, "")
+
+        def broken():
+            raise PermissionError("nečitelné")
+
+        ctrl = self._controller(broken)
+        self.assertEqual(ctrl.view(time.monotonic()).pin, "")
+
+    def test_reads_the_file_next_to_config_toml(self):
+        from ytdj import adminpin
+        from ytdj.config import CONFIG_FILE
+        from ytdj.panel.netapp import NetController
+
+        self.assertEqual(adminpin.PIN_FILE, CONFIG_FILE.parent / "admin-pin")
+        self.assertIs(NetController(FakeNet(), lambda m: None).pin_reader, adminpin.read_pin)
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "admin-pin"
+            pin = adminpin.ensure_pin(path)
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            self.assertEqual(adminpin.read_pin(path), pin)
+            path.write_text("12 34\n")
+            self.assertEqual(adminpin.read_pin(path), "")
 
 
 if __name__ == "__main__":

@@ -3,9 +3,11 @@
 The panel only ever talks to `NetBackend` — three blocking calls that the app
 runs off the main thread. `NmcliBackend` is the real thing; tests pass a fake.
 
-Passwords go to nmcli as an argument (the service runs as root, so nothing
-needs to prompt) and are never logged: errors are built from nmcli's stderr,
-not from the command line, and scrubbed of the password just in case.
+Passwords never appear on a command line (every process on the Pi can read
+those): the profile is added without the secret, `nmcli con edit` gets it on
+stdin, then the profile is activated. They are never logged either: errors are
+built from nmcli's stderr and scrubbed of the password just in case, and the
+editor's output (it echoes the value) is thrown away.
 """
 
 from __future__ import annotations
@@ -217,11 +219,12 @@ class NmcliBackend:
         self.iface = iface
         self.nmcli = nmcli
 
-    def _run(self, args: list[str], timeout: float) -> subprocess.CompletedProcess:
+    def _run(self, args: list[str], timeout: float, stdin: str | None = None) -> subprocess.CompletedProcess:
         env = dict(os.environ, LC_ALL="C", LANG="C")  # messages we can match on
         try:
             return subprocess.run(
-                [self.nmcli, *args], capture_output=True, text=True, timeout=timeout, env=env, check=False
+                [self.nmcli, *args], capture_output=True, text=True, timeout=timeout, env=env, check=False,
+                input=stdin,
             )
         except FileNotFoundError as exc:
             raise NetError("no_nm") from exc
@@ -281,13 +284,13 @@ class NmcliBackend:
             before = self._profiles()
         except NetError:
             before = None
-        args = ["-w", str(CONNECT_WAIT), "dev", "wifi", "connect", ssid]
-        if password:
-            args += ["password", password]
-        args += ["ifname", self.iface]
         log.info("wifi: připojuji k %r (%s)", ssid, "s heslem" if password else "otevřená")
         t0 = time.monotonic()
-        p = self._run(args, CONNECT_WAIT + 15)
+        if password:
+            p = self._connect_secret(ssid, password, before)
+        else:
+            p = self._run(["-w", str(CONNECT_WAIT), "dev", "wifi", "connect", ssid, "ifname", self.iface],
+                          CONNECT_WAIT + 15)
         if p.returncode != 0:
             err = friendly_error(p.stderr or p.stdout, password)
             log.warning("wifi: připojení k %r selhalo za %.0f s: %s", ssid, time.monotonic() - t0, err)
@@ -303,6 +306,37 @@ class NmcliBackend:
             time.sleep(0.5)
         log.info("wifi: připojeno k %r, IP %s", ssid, ip or "?")
         return Connected(ssid, ip)
+
+    def _key_mgmt(self, ssid: str) -> str:
+        """wpa-psk, or sae for a WPA3-only network (from the scan NetworkManager already has)."""
+        try:
+            net = next((n for n in self._wifi_list(False) if n.ssid == ssid), None)
+        except NetError:
+            net = None
+        sec = net.security.upper() if net else ""
+        if "WPA3" in sec and "WPA2" not in sec and "WPA1" not in sec:
+            return "sae"
+        return "wpa-psk"
+
+    def _connect_secret(self, ssid: str, password: str, before: set[str] | None) -> subprocess.CompletedProcess:
+        """Profile without the secret → secret over stdin → activate. The password is
+        never an argument: `nmcli … password <pw>` sat in the process list (27. 9. 2026)."""
+        if "\n" in password or "\r" in password:
+            return subprocess.CompletedProcess([], 2, "", "Error: psk: property is invalid.")
+        add = self._run(["-t", "con", "add", "type", "wifi", "ifname", self.iface, "con-name", ssid,
+                         "ssid", ssid, "wifi-sec.key-mgmt", self._key_mgmt(ssid)], STATUS_TIMEOUT)
+        if add.returncode != 0:
+            return add
+        new = (self._profiles() - before) if before is not None else set()
+        if len(new) != 1:
+            return subprocess.CompletedProcess([], 1, "", "Error: new profile not found")
+        uuid = next(iter(new))
+        edit = self._run(["con", "edit", "uuid", uuid], STATUS_TIMEOUT,
+                         stdin=f"set 802-11-wireless-security.psk {password}\nsave\nquit\n")
+        if edit.returncode != 0:  # its stdout echoes the password: only stderr, scrubbed later
+            return subprocess.CompletedProcess([], edit.returncode, "", edit.stderr or "Error: psk not saved")
+        return self._run(["-w", str(CONNECT_WAIT), "con", "up", "uuid", uuid, "ifname", self.iface],
+                         CONNECT_WAIT + 15)
 
     def _forget_new(self, before: set[str] | None, ssid: str) -> None:
         """A failed attempt leaves a profile with the wrong password behind —

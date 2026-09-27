@@ -57,8 +57,9 @@ static uint32_t lcd_cdiv = 16;    /* 400 MHz / 16 = 25 MHz */
 static uint32_t touch_cdiv = 256; /* ~1,5 MHz — XPT2046 zvládne max ~2,5 MHz */
 /* vzorkování dotyku (viz kd_touch_config): 1 = po osách s ustálením, 0 = staré */
 static int touch_mode = 1;
-static uint32_t settled_cdiv = 400; /* 400 MHz / 400 = 1 MHz */
+static uint32_t settled_cdiv = 400; /* 400 MHz / 400 = 1 MHz — změřeno 27. 9. (chyba u okraje 3× menší) */
 static long settle_us = 100;
+static int spread_max = 150; /* převody jednoho vzorku dál od sebe = prst dosedá/zvedá se (-3) */
 
 static inline void barrier(void) { __sync_synchronize(); }
 
@@ -265,6 +266,10 @@ static void spin_us(long us) {
  *               znovu povolí PENIRQ.
  */
 
+void kd_touch_limits(int spread) {
+    if (spread >= 10 && spread <= 4095) spread_max = spread;
+}
+
 void kd_touch_config(int mode, int cdiv, int settle) {
     touch_mode = mode;
     if (cdiv >= 64) settled_cdiv = (uint32_t)cdiv & ~1u;
@@ -303,10 +308,10 @@ static void sort_int(int *a, int n) {
  * -3 rozptýlené převody. Měření i podmínky jsou přesně ty, co kd_touch.
  */
 /* Jedna osa: budiče zapnout, počkat, první převod zahodit, pak n převodů. */
-static void read_axis(uint8_t cmd, int *out, int n) {
+static void read_axis(uint8_t cmd, int *out, int n, long settle) {
     uint8_t on = (uint8_t)(cmd | 0x01); /* PD1:0 = 01: ADC zapnutý, PENIRQ vypnutý, budiče drží */
     xpt_read(on);
-    spin_us(settle_us);
+    spin_us(settle);
     xpt_read(on);
     for (int i = 0; i < n; i++) out[i] = xpt_read(on);
 }
@@ -319,12 +324,12 @@ int kd_touch_ex(int *v) {
     enum { N = 7 };
     int xs[N], ys[N], z1 = 0, z2 = 0;
     if (touch_mode == 1) {
-        read_axis(0xD0, xs, N);
-        read_axis(0x90, ys, N);
+        read_axis(0xD0, xs, N, settle_us);
+        read_axis(0x90, ys, N, settle_us);
         int z[2];
-        read_axis(0xB0, z, 1);
+        read_axis(0xB0, z, 1, settle_us);
         z1 = z[0];
-        read_axis(0xC0, z, 1);
+        read_axis(0xC0, z, 1, settle_us);
         z2 = z[0];
         /* poslední příkaz s PD1:0 = 00: převodník do power-down, PENIRQ zase hlídá
            (XPT2046 str. 17, možnost 2; tabulka 8) — jako PWRDOWN v ads7846 */
@@ -357,7 +362,7 @@ int kd_touch_ex(int *v) {
        hlasitosti. Skutečný dotyk má z1 v řádu stovek a osy mimo dorazy. */
     if (z1 < 60 || xs[N / 2] < 40 || ys[N / 2] > 4050) return -2;
     /* medián nesmí stát na rozptýlených vzorcích (prst dosedá/zvedá se) */
-    if (v[4] > 150 || v[5] > 150) return -3;
+    if (v[4] > spread_max || v[5] > spread_max) return -3;
     return 1;
 }
 

@@ -150,33 +150,31 @@ STRINGS = {
 
 # ---- layout ----
 
-BACK = (0, 0, 118, 44)
-# Touch areas of the header buttons reach the screen's top edge and a bit
-# lower than drawn: nothing is above them, and on the Pi (26. 9.) readings
-# on the top strip landed up to 16 px high.
-HEADER_REACH = 50
-BACK_TARGET = (0, 0, 128, HEADER_REACH)
-TITLE = (118, 0, W, 44)
+# „Zpět" je dole, velké (vlastník 27. 9.: „Dolů, velké tlačítko"): prstem u
+# horního okraje displej čte nespolehlivě (±35–113 px). Nahoře jsou jen nadpisy.
+BACK = (8, 256, W - 8, 316)  # full width, 60 px
+BACK_HALF = (8, 256, 300, 316)  # next to another bottom button
+TITLE = (0, 0, W, 44)
 
 # overview
 ROW_HOST = (0, 48, 324, 76)
 ROW_ETH = (0, 76, 324, 104)
-ROW_WIFI = (0, 104, 324, 156)
-URLS = (0, 158, 324, 254)
-QR = (324, 48, W, 254)
-WIFI_BTN = (8, 262, 176, 314)
-CAL_BTN = (184, 262, 280, 314)  # "Kalibrace dotyku" — when taps land off
-TEST_BTN = (288, 262, 376, 314)  # "Test dotyku" — see where the panel reads the finger
-PROBE_BTN = (384, 262, 472, 314)  # "Test prstem" — 12 spots, every sample to the log
+ROW_WIFI = (0, 104, 324, 150)
+URLS = (0, 150, 324, 196)
+QR = (324, 48, W, 196)
+WIFI_BTN = (8, 200, 176, 250)
+CAL_BTN = (184, 200, 280, 250)  # "Kalibrace dotyku" — when taps land off
+TEST_BTN = (288, 200, 376, 250)  # "Test dotyku" — see where the panel reads the finger
+PROBE_BTN = (384, 200, 472, 250)  # "Test prstem" — 12 spots, every sample to the log
 
-# list
-LIST_TITLE = (118, 0, W - 124, 44)
-RESCAN = (W - 124, 0, W, 44)
-ROWS = 4
+# list: three networks at a time, "Zpět" and "Hledat" at the bottom
+LIST_TITLE = (0, 0, W, 44)
+RESCAN = (308, 256, W - 8, 316)
+ROWS = 3
 ROW_H, ROW_PITCH, ROW_Y = 60, 66, 52
 LIST_X = (8, 400)
-UP = (408, 52, 472, 178)
-DOWN = (408, 186, 472, 312)
+UP = (408, 52, 472, 148)
+DOWN = (408, 154, 472, 250)
 
 
 def list_row(i: int) -> Box:
@@ -298,10 +296,10 @@ class NetView:
 def targets(v: NetView, lang: str = "cs") -> dict[str, Box]:
     """What can be touched on the current page."""
     if v.page == "overview":
-        return {"back": BACK_TARGET, "wifi_list": WIFI_BTN, "calib": CAL_BTN, "touchtest": TEST_BTN,
+        return {"back": BACK, "wifi_list": WIFI_BTN, "calib": CAL_BTN, "touchtest": TEST_BTN,
                 "fingertest": PROBE_BTN}
     if v.page == "list":
-        t = {"back": BACK_TARGET, "rescan": (RESCAN[0], 0, W, HEADER_REACH), "up": UP, "down": DOWN}
+        t = {"back": BACK_HALF, "rescan": RESCAN, "up": UP, "down": DOWN}
         for i in range(ROWS):
             if v.scroll + i < len(v.nets):
                 t[f"row{i}"] = list_row(i)
@@ -448,7 +446,7 @@ class NetRenderer:
             ]
         if v.page == "list":
             regs: list[Region] = [
-                back,
+                ("back", BACK_HALF, lambda v: (v.pressed == "back",), self._draw_back, False),
                 ("ltitle", LIST_TITLE, lambda v: (v.note, v.scroll, len(v.nets)), self._draw_list_title, False),
                 ("rescan", RESCAN, lambda v: (v.scanning, v.pressed == "rescan"), self._draw_rescan, False),
             ]
@@ -513,13 +511,18 @@ class NetRenderer:
     def _button(d: ImageDraw.ImageDraw, size: tuple[int, int], fill, radius: int = 12) -> None:
         d.rounded_rectangle((0, 0, size[0] - 1, size[1] - 1), radius=radius, fill=fill)
 
-    def _draw_back(self, d, size, v: NetView) -> None:
+    def _draw_back(self, d, size, v) -> None:
+        """„Zpět" — a big button at the bottom of every screen."""
         w, h = size
-        d.line((0, h - 1, w, h - 1), fill=LINE)
-        d.rounded_rectangle((6, 5, w - 8, h - 7), radius=10, fill=SURFACE)
-        color = ACCENT_TEXT if v.pressed == "back" else TEXT
-        icon_back(d, 24, (h - 2) / 2, 16, color)
-        d.text((40, (h - 2) / 2), self.s["back"], font=self.value, fill=color, anchor="lm")
+        pressed = v.pressed == "back"
+        self._button(d, size, SURFACE_HI if pressed else SURFACE, 14)
+        color = ACCENT_TEXT if pressed else TEXT
+        f = self.f.button
+        label = self.s["back"]
+        total = 26 + f.getlength(label)
+        x = (w - total) / 2
+        icon_back(d, x + 6, h / 2, 20, color)
+        d.text((x + 26, h / 2), label, font=f, fill=color, anchor="lm")
 
     def _header(self, d, size, title: str, note: str, right_pad: int = 12) -> None:
         w, h = size
@@ -606,16 +609,14 @@ class NetRenderer:
         w, h = size
         d.line((14, 0, w - 8, 0), fill=LINE)
         if not v.urls:
-            y = 14
-            for line in wrap(self.s["offline_hint"], self.label, w - 28, 4):
+            y = 4
+            for line in wrap(self.s["offline_hint"], self.label, w - 28, 2):
                 d.text((14, y), line, font=self.label, fill=DIM, anchor="la")
-                y += 22
+                y += 20
             return
-        d.text((14, 8), self.s["open_in"], font=self.label, fill=DIM, anchor="la")
-        y = 34
-        for url in v.urls[:3]:
-            d.text((14, y), ellipsize(url, self.url, w - 20), font=self.url, fill=ACCENT_TEXT, anchor="la")
-            y += 21
+        # the address the QR code next to it leads to (the others are in the list below the QR)
+        d.text((14, 10), self.s["open_in"], font=self.label, fill=DIM, anchor="la")
+        d.text((14, 30), ellipsize(v.urls[0], self.url, w - 20), font=self.url, fill=ACCENT_TEXT, anchor="la")
 
     def _qr(self, text: str) -> list[list[bool]] | None:
         if self._qr_cache[0] != text:
@@ -692,13 +693,12 @@ class NetRenderer:
 
     def _draw_rescan(self, d, size, v: NetView) -> None:
         w, h = size
-        d.line((0, h - 1, w, h - 1), fill=LINE)
-        d.rounded_rectangle((4, 5, w - 8, h - 7), radius=10, fill=SURFACE)
+        self._button(d, size, SURFACE_HI if v.pressed == "rescan" else SURFACE, 14)
         if v.scanning:
             label, color = self.s["scanning"], FAINT
         else:
             label, color = self.s["rescan"], ACCENT_TEXT if v.pressed == "rescan" else TEXT
-        d.text(((w - 4) / 2, (h - 2) / 2), label, font=self.value, fill=color, anchor="mm")
+        d.text((w / 2, h / 2), label, font=self.f.button, fill=color, anchor="mm")
 
     def _row_sig(self, i: int) -> Callable[[NetView], tuple]:
         def sig(v: NetView) -> tuple:

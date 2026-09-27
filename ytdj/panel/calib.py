@@ -34,6 +34,8 @@ MARGIN = 40
 EDGE = 14
 _XS = (MARGIN, W // 2, W - MARGIN)
 _YS = (EDGE, 110, 210, H - EDGE)
+EDGE_ROWS = (EDGE, H - EDGE)  # these crosses are touched twice
+REPEAT_TOL = 20  # px — two touches of an edge cross further apart = unreliable, left out
 POINTS = tuple((x, y) for j, y in enumerate(_YS) for x in (_XS if j % 2 == 0 else _XS[::-1]))
 IDLE_CANCEL = 45.0  # s without a touch in the middle of it: give up, change nothing
 DONE_CLOSE = 20.0  # s the result stays up
@@ -46,6 +48,9 @@ STRINGS = {
     "cs": {
         "title": "Kalibrace dotyku",
         "hint": "Ťukni přesně doprostřed křížku a chvilku podrž ({i}/{n})",
+        "hint_again": "Ještě jednou tentýž křížek — u okraje zkoušíme, jestli čte stejně ({i}/{n})",
+        "unreliable_top": "Horní okraj čte prst nespolehlivě — kalibruji bez něj.",
+        "unreliable_bottom": "Dolní okraj čte prst nespolehlivě — kalibruji bez něj.",
         "done": "Hotovo — dotyk je zkalibrovaný",
         "done_detail": "Posun byl až {shift} px, nerovnoměrnost skla {bend} px je vyrovnaná; zbývá do {err} px. "
                        "Platí hned a zůstane i po restartu.",
@@ -59,6 +64,9 @@ STRINGS = {
     "en": {
         "title": "Touch calibration",
         "hint": "Tap the very centre of the cross and hold it a moment ({i}/{n})",
+        "hint_again": "The same cross once more — at the edge we check the reading repeats ({i}/{n})",
+        "unreliable_top": "The top edge reads the finger unreliably — calibrating without it.",
+        "unreliable_bottom": "The bottom edge reads the finger unreliably — calibrating without it.",
         "done": "Done — touch is calibrated",
         "done_detail": "The shift was up to {shift} px, the glass's unevenness of {bend} px is evened out; "
                        "{err} px remain. It applies now and after a restart.",
@@ -79,6 +87,7 @@ class CalibView:
     detail: str = ""
     pressed: str | None = None
     touching: bool = False
+    again: bool = False  # the same edge cross a second time
 
 
 class CalibController:
@@ -93,6 +102,9 @@ class CalibController:
         self.step = 0
         self.pairs: list[tuple[tuple[int, int], tuple[int, int]]] = []
         self.samples: list[tuple[int, int]] = []
+        self.readings: dict[int, list] = {}
+        self.unreliable: list[tuple[int, int]] = []
+        self.again = False
         self.detail = ""
         self.last_touch = 0.0
         self.done_at = 0.0
@@ -104,6 +116,9 @@ class CalibController:
     def open(self, now: float) -> None:
         self.page = "calib"
         self.phase, self.step, self.pairs, self.samples, self.detail = "points", 0, [], [], ""
+        self.readings: dict[int, list] = {}
+        self.unreliable: list[tuple[int, int]] = []
+        self.again = False
         self.last_touch = now
         self.pressed = self.press = None
         emit("panel.calibration", phase="start")
@@ -126,7 +141,7 @@ class CalibController:
             self.close()
 
     def view(self) -> CalibView:
-        return CalibView(self.step, self.phase, self.detail, self.pressed, bool(self.samples))
+        return CalibView(self.step, self.phase, self.detail, self.pressed, bool(self.samples), self.again)
 
     def _buttons(self) -> dict[str, Box]:
         if self.phase == "done":
@@ -169,7 +184,22 @@ class CalibController:
         steady = pts[1:-2] if len(pts) >= 5 else pts
         measured = (int(statistics.median(p[0] for p in steady)), int(statistics.median(p[1] for p in steady)))
         self.samples = []
-        self.pairs.append((measured, POINTS[self.step]))
+        target = POINTS[self.step]
+        got = self.readings.setdefault(self.step, [])
+        got.append(measured)
+        if target[1] in EDGE_ROWS and len(got) < 2:
+            self.again = True  # an edge cross is touched twice: is the reading repeatable?
+            return
+        self.again = False
+        if len(got) == 2:
+            (ax, ay), (bx, by) = got
+            if max(abs(ax - bx), abs(ay - by)) > REPEAT_TOL:
+                # the finger read somewhere else each time (27. 9.: y 73, then y 21) — leave it out
+                self.unreliable.append(target)
+            else:
+                self.pairs.append((((ax + bx) // 2, (ay + by) // 2), target))
+        else:
+            self.pairs.append((measured, target))
         self.step += 1
         if self.step < len(POINTS):
             return
@@ -183,7 +213,7 @@ class CalibController:
             self.phase, self.detail = "failed", self.s["unsupported"]
             return
         try:
-            err = apply(self.pairs)
+            err = apply(self.pairs, unreliable=tuple(self.unreliable))
         except (ValueError, OSError) as exc:
             self.phase = "failed"
             self.detail = self.s["failed_detail"].format(why=str(exc).capitalize() + ".")
@@ -195,9 +225,15 @@ class CalibController:
         info = dict(getattr(self.touch, "last_calibration", None) or {})
         bend = info.get("affine_error", err)
         self.detail = self.s["done_detail"].format(shift=shift, bend=round(bend), err=max(1, round(err)))
+        for row, key in ((EDGE, "unreliable_top"), (H - EDGE, "unreliable_bottom")):
+            if any(t[1] == row for t in self.unreliable):
+                self.detail = self.s[key] + " " + self.detail
         emit("panel.calibration", phase="saved", shift=shift, error=round(err, 1),
              affine_error=info.get("affine_error"), grid_max=info.get("grid_max"), n=len(self.pairs),
-             points=[list(m) for m, _ in self.pairs])
+             edge_capped=info.get("edge_capped"), edge_error=info.get("edge_error"),
+             unreliable=[list(t) for t in self.unreliable] or None,
+             points=[list(m) for m, _ in self.pairs],
+             readings={f"{POINTS[i][0]},{POINTS[i][1]}": r for i, r in self.readings.items() if len(r) > 1})
 
 
 class CalibRenderer:
@@ -220,13 +256,13 @@ class CalibRenderer:
         fs = self.fonts
         n = len(POINTS)
         if (not full and prev is not None and v.phase == prev.phase == "points" and v.step == prev.step
-                and v.step < n):
+                and v.again == prev.again and v.step < n):
             # only the finger came or went: recolour the cross (instant feedback, a few hundred px)
             return [self._cross(d, v)]
         self.frame.paste(BG, (0, 0, W, H))
         if v.phase == "points":
             step = min(v.step, n - 1)
-            hint = self.s["hint"].format(i=step + 1, n=n)
+            hint = self.s["hint_again" if v.again else "hint"].format(i=step + 1, n=n)
             # the text never over the current cross (nor the next ones in its row)
             ty = {EDGE: 150, 110: 196, 210: 60}.get(POINTS[step][1], 130)
             d.text((W // 2, ty), self.s["title"], font=fs.status_b, fill=TEXT, anchor="mm")

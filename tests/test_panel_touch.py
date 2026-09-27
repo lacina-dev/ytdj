@@ -447,28 +447,66 @@ class GridCalibrationTest(unittest.TestCase):
         self.assertLess(info9["error"], 1.0)
         self.assertGreater(info9["affine_error"], 3)  # the bend is reported
 
-    def test_twelve_points_catch_the_edge_pull_in(self):
-        """Test prstem 27. 9.: at the top edge the finger read 23–54 px lower, at the bottom higher."""
+    def test_twelve_points_edges_follow_only_up_to_the_cap(self):
+        """27. 9.: the edge reading is random per touch — the edge rows may correct at most
+        EDGE_CAP px beyond the inside, and the inside (where the buttons are) stays exact."""
         self.assertEqual(len(POINTS), 12)
         ident = kedei.Calibration(1, 0, 0, 0, 1, 0)
-
-        def pairs(points):
-            return [((round(edge_pull(x, y)[0]), round(edge_pull(x, y)[1])), (x, y)) for x, y in points]
-
-        cal9, _ = kedei.recalibrate(ident, pairs(self.NINE))
-        cal12, info = kedei.recalibrate(ident, pairs(POINTS))
+        pairs = [((round(edge_pull(x, y)[0]), round(edge_pull(x, y)[1])), (x, y)) for x, y in POINTS]
+        cal12, info = kedei.recalibrate(ident, pairs)
         self.assertEqual(len(cal12.grid["ys"]), 4)
-        probe_spots = [(40, 10), (282, 10), (366, 10), (451, 10), (30, 300), (240, 300), (450, 300)]
+        self._assert_edges_capped(cal12.grid)
+        self.assertLess(info["error"], 1.0)  # the inner crosses exactly
+        inner = [(122, 230), (358, 230), (240, 160), (240, 110)]
+        self.assertLess(max(abs(cal12.map_float(*edge_pull(x, y))[1] - y) for x, y in inner), 4)
 
-        def worst(cal):
-            return max(abs(cal.map_float(*edge_pull(x, y))[1] - y) for x, y in probe_spots)
+    def _assert_edges_capped(self, grid):
+        xs, ys, d = grid["xs"], grid["ys"], grid["d"]
+        nx, ny = len(xs), len(ys)
+        for row, nb in ((0, 1), (ny - 1, ny - 2)):
+            for i in range(nx):
+                for k in (0, 1):
+                    self.assertLessEqual(abs(d[row * nx + i][k] - d[nb * nx + i][k]), kedei.EDGE_CAP + 0.01)
 
-        self.assertGreater(worst(cal9), 15)  # 40 px in from the edge doesn't see the pull-in
-        self.assertLess(worst(cal12), 8)
-        self.assertLess(info["error"], 1.0)
-        # inside, the 12-point grid is as good as the 9-point one
-        inner = [(122, 230), (358, 230), (240, 160)]
-        self.assertLess(max(abs(cal12.map_float(*edge_pull(x, y))[1] - y) for x, y in inner), 5)
+    # the three logged attempts, 27. 9. (measured with the 9-point calibration of 26. 9.) —
+    # the first two were refused ("bod 240,14 je mimo o 113 px", "bod 440,14 je mimo o 81 px"),
+    # the third saved with grid_max 56,6 and the buttons drifted
+    SAVED_0155 = [(46, 29), (236, 24), (393, 34), (451, 110), (250, 104), (50, 95), (38, 225), (245, 205),
+                  (446, 198), (438, 301), (243, 312), (52, 296)]
+    TRY_0154 = [(32, 28), (220, 73), (363, 54), (416, 101), (233, 106), (49, 117)] + SAVED_0155[6:]
+    TRY_0155A = [(63, 60), (237, 21), (378, 52)] + SAVED_0155[3:]
+
+    def test_the_logged_attempts_no_longer_distort(self):
+        ident = kedei.Calibration(1, 0, 0, 0, 1, 0)
+        for name, read in (("01:54", self.TRY_0154), ("01:55a", self.TRY_0155A), ("01:55:31", self.SAVED_0155)):
+            cal, info = kedei.recalibrate(ident, list(zip(read, POINTS)))
+            self._assert_edges_capped(cal.grid)
+            # the inner crosses (where the buttons are) land where they were
+            for m, t in zip(read, POINTS):
+                if t[1] in (110, 210):
+                    mx, my = cal.map_float(*m)
+                    self.assertLess(max(abs(mx - t[0]), abs(my - t[1])), 1.0, (name, t))
+            self.assertLess(info["error"], 1.0, name)
+
+    def test_the_logged_double_reading_is_left_out(self):
+        # 01:54 and 01:55 read the top-middle cross at (220, 73) and (237, 21): as one calibration's
+        # two touches of that cross, it is unreliable and takes the inner neighbour's correction
+        pairs = [(m, t) for m, t in zip(self.SAVED_0155, POINTS) if t != (240, 14)]
+        cal, info = kedei.recalibrate(kedei.Calibration(1, 0, 0, 0, 1, 0), pairs, unreliable=[(240, 14)])
+        self.assertEqual(info["unreliable"], 1)
+        d, nx = cal.grid["d"], len(cal.grid["xs"])
+        self.assertEqual(d[1], d[nx + 1])  # (240,14) = (240,110)
+
+    def test_the_loader_caps_an_existing_bad_grid(self):
+        cal, _ = kedei.recalibrate(kedei.Calibration(1, 0, 0, 0, 1, 0), list(zip(self.SAVED_0155, POINTS)))
+        bad = {"xs": cal.grid["xs"], "ys": cal.grid["ys"], "d": [list(v) for v in cal.grid["d"]]}
+        bad["d"][1] = [bad["d"][4][0] - 40, bad["d"][4][1] + 56.6]  # like the file saved at 01:55:31
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cal.json"
+            path.write_text(json.dumps({"coef": list(cal.coef), "grid": bad}))
+            back = kedei.Calibration.load(path)
+        self.assertTrue(back.source.endswith(":capped"))
+        self._assert_edges_capped(back.grid)
 
     def test_beyond_the_grid_the_edge_correction_holds(self):
         cal, _ = kedei.recalibrate(kedei.Calibration(1, 0, 0, 0, 1, 0), self._pairs(POINTS))
@@ -484,10 +522,17 @@ class GridCalibrationTest(unittest.TestCase):
             back = kedei.Calibration.load(path)
         self.assertEqual(back.grid, cal.grid)
 
-    def test_a_slipped_edge_point_is_still_refused(self):
+    def test_a_slipped_edge_point_is_capped_not_refused(self):
         pairs = self._pairs(POINTS)
         (mx, my), t = pairs[1]  # (240, 14)
         pairs[1] = ((mx + 90, my + 110), t)
+        cal, _ = kedei.recalibrate(kedei.Calibration(1, 0, 0, 0, 1, 0), pairs)
+        self._assert_edges_capped(cal.grid)
+
+    def test_a_slipped_inner_point_is_still_refused(self):
+        pairs = self._pairs(POINTS)
+        (mx, my), t = pairs[4]  # (240, 110)
+        pairs[4] = ((mx + 90, my + 70), t)
         with self.assertRaises(ValueError):
             kedei.recalibrate(kedei.Calibration(1, 0, 0, 0, 1, 0), pairs)
 
@@ -570,24 +615,51 @@ class TouchTestScreenTest(unittest.TestCase):
         self.assertTrue(self.log.wait("panel.touch_test", phase="end"))
 
 
-class HeaderReachTest(unittest.TestCase):
-    def test_header_buttons_reach_the_top_edge(self):
+class BackAtTheBottomTest(unittest.TestCase):
+    """27. 9., owner: „Dolů, velké tlačítko" — Zpět at the bottom, nothing to tap in the top 40 px of sub-screens."""
+
+    def _pages(self):
+        from ytdj.panel.fingertest import BTN_DONE
+        from ytdj.panel.calib import BTN_FULL, BTN_L, BTN_R
         from ytdj.panel.netui import NetView
         from ytdj.panel.netui import targets as net_targets
         from ytdj.panel.wishui import WishView
         from ytdj.panel.wishui import targets as wish_targets
 
-        for page in ("home", "queue"):
-            t = wish_targets(WishView(page=page))
-            self.assertEqual(nearest(t, 30, 0)[0], "back", page)
-            self.assertEqual(nearest(t, 30, 49)[0], "back", page)
-        self.assertEqual(nearest(wish_targets(WishView(page="home")), 420, 2)[0], "queue")
-        for page in ("overview", "list"):
-            self.assertEqual(nearest(net_targets(NetView(page=page, loaded=True)), 30, 1)[0], "back", page)
+        nets = tuple(kedei_net(i) for i in range(7))
+        yield "wish:home", wish_targets(WishView(page="home"))
+        yield "wish:queue", wish_targets(WishView(page="queue"))
+        yield "net:overview", net_targets(NetView(page="overview", loaded=True))
+        yield "net:list", net_targets(NetView(page="list", loaded=True, nets=nets))
+        yield "calib:done", {"ok": BTN_FULL}
+        yield "calib:failed", {"cancel": BTN_L, "again": BTN_R}
+        yield "finger:done", {"done": BTN_DONE}
+
+    def test_nothing_to_tap_in_the_top_band(self):
+        for page, t in self._pages():
+            for name, box in t.items():
+                self.assertGreaterEqual(box[1], 40, (page, name, box))
+
+    def test_back_is_big_and_at_the_bottom(self):
+        for page, t in self._pages():
+            if "back" not in t:
+                continue
+            l, top, r, b = t["back"]
+            self.assertGreaterEqual(b - top, 60, page)
+            self.assertGreaterEqual(b, 310, page)
+            self.assertGreaterEqual(r - l, 160, page)
+
+    def test_player_strip_still_reaches_the_top_edge(self):
         for name in ("net", "wish", "phone"):
             box = TARGETS[name]
             self.assertEqual(nearest(TARGETS, (box[0] + box[2]) // 2, 0)[0], name)
             self.assertEqual(nearest(TARGETS, (box[0] + box[2]) // 2, 52)[0], name)
+
+
+def kedei_net(i):
+    from ytdj.panel.net import WifiNet
+
+    return WifiNet(f"síť-{i}", 50, "WPA2")
 
 
 class CalibrationFlowTest(unittest.TestCase):
@@ -624,6 +696,16 @@ class CalibrationFlowTest(unittest.TestCase):
         time.sleep(0.01)
         self.touch.feed("up", x, y)
 
+    def _cross(self, i, x, y, second=None):
+        """One calibration cross; the ones on the edge rows are touched twice."""
+        from ytdj.panel.calib import EDGE_ROWS
+
+        self._hold(x, y)
+        if POINTS[i][1] in EDGE_ROWS:
+            self.assertTrue(wait_for(lambda: self.app.calib.again))
+            self._hold(*(second or (x, y)))
+        self.assertTrue(wait_for(lambda: self.app.calib.step == i + 1 or self.app.calib.phase != "points"))
+
     def _open(self):
         from ytdj.panel.netui import CAL_BTN
         from ytdj.panel.ui import NET_TARGET
@@ -636,8 +718,7 @@ class CalibrationFlowTest(unittest.TestCase):
     def test_calibrate_then_taps_land_where_aimed(self):
         self._open()
         for i, (x, y) in enumerate(POINTS):
-            self._hold(x, y)
-            self.assertTrue(wait_for(lambda: self.app.calib.step == i + 1 or self.app.calib.phase != "points"))
+            self._cross(i, x, y)
         self.assertTrue(wait_for(lambda: self.app.calib.phase == "done"), self.app.calib.detail)
         saved = self.log.wait("panel.calibration", phase="saved")
         self.assertTrue(saved)
@@ -663,8 +744,7 @@ class CalibrationFlowTest(unittest.TestCase):
         self.touch.distort = bent_glass
         self._open()
         for i, (x, y) in enumerate(POINTS):
-            self._hold(x, y)
-            self.assertTrue(wait_for(lambda: self.app.calib.step == i + 1 or self.app.calib.phase != "points"))
+            self._cross(i, x, y)
         self.assertTrue(wait_for(lambda: self.app.calib.phase == "done"), self.app.calib.detail)
         saved = self.log.wait("panel.calibration", phase="saved")
         self.assertEqual(saved[0]["n"], 12)
@@ -675,13 +755,24 @@ class CalibrationFlowTest(unittest.TestCase):
         self.touch.tap(44, 270)
         self.assertLessEqual(abs(got[0][1] - 270), 3)
 
+    def test_an_edge_cross_that_reads_differently_twice_is_left_out(self):
+        """27. 9. 01:54–01:55: the top-middle cross read y 73 once and y 21 the next time."""
+        self._open()
+        for i, (x, y) in enumerate(POINTS):
+            second = (x - 3, y + 52) if (x, y) == (240, 14) else None
+            self._cross(i, x, y, second)
+        self.assertTrue(wait_for(lambda: self.app.calib.phase == "done"), self.app.calib.detail)
+        self.assertIn("Horní okraj čte prst nespolehlivě", self.app.calib.detail)
+        saved = self.log.wait("panel.calibration", phase="saved")
+        self.assertEqual(saved[0]["unreliable"], [[240, 14]])
+        self.assertEqual(saved[0]["n"], 11)
+
     def test_a_slipped_point_changes_nothing_and_offers_again(self):
         self._open()
         for i, (x, y) in enumerate(POINTS):
-            if i == 2:
-                x, y = x - 150, y - 90  # slipped far off
-            self._hold(x, y)
-            self.assertTrue(wait_for(lambda: self.app.calib.step == i + 1 or self.app.calib.phase != "points"))
+            if i == 4:
+                x, y = x - 150, y - 90  # an inner cross, slipped far off
+            self._cross(i, x, y)
         self.assertTrue(wait_for(lambda: self.app.calib.phase == "failed"))
         self.assertIsNone(self.touch.correction)
         from ytdj.panel.calib import BTN_L
@@ -873,6 +964,12 @@ class SamplingTest(unittest.TestCase):
                          ("settled", 800, 150))
         self.assertEqual(kedei.sampling_config({"YTDJ_PANEL_TOUCH_CDIV": "3", "YTDJ_PANEL_TOUCH_SETTLE_US": "x"}),
                          ("settled", 400, 100))
+
+    def test_spread_limit_from_the_environment(self):
+        self.assertEqual(kedei.spread_limit({}), 150)
+        self.assertEqual(kedei.spread_limit({"YTDJ_PANEL_TOUCH_SPREAD": "80"}), 80)
+        self.assertEqual(kedei.spread_limit({"YTDJ_PANEL_TOUCH_SPREAD": "1"}), 150)
+        self.assertEqual(kedei.spread_limit({"YTDJ_PANEL_TOUCH_SPREAD": "x"}), 150)
 
     def test_sample_cost_is_counted(self):
         saved = kedei._Device._instance

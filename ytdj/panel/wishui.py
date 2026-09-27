@@ -22,8 +22,6 @@ from PIL import ImageDraw
 from .hw import Box
 from .netui import (
     BACK,
-    BACK_TARGET,
-    HEADER_REACH,
     BTN_FULL,
     BTN_L,
     BTN_R,
@@ -157,12 +155,15 @@ CHIPS = {
 
 # ---- layout ----
 
-TITLE = (BACK[2], 0, W, 44)
-H_TITLE = (BACK[2], 0, 206, 44)
-WHO_BTN = (206, 0, 346, 44)
-QUEUE_BTN = (346, 0, W, 44)
-FIELD_BTN = (8, 52, 472, 104)
-CHIP_TOP, CHIP_H, CHIP_GAP = 112, 62, 6
+# Nahoře jen nadpis; „Zpět", „Kdo" a „Fronta" dole velké (vlastník 27. 9.:
+# prstem u horního okraje displej čte nespolehlivě).
+TITLE = (0, 0, W, 44)
+H_TITLE = (0, 0, W, 44)
+BACK_HOME = (8, 256, 176, 316)
+WHO_BTN = (184, 256, 340, 316)
+QUEUE_BTN = (348, 256, W - 8, 316)
+FIELD_BTN = (8, 48, 472, 96)
+CHIP_TOP, CHIP_H, CHIP_GAP = 102, 46, 6
 
 
 def chip_box(i: int) -> Box:
@@ -183,7 +184,7 @@ S_MAIN = (0, 108, W, 254)
 S_BTNS = (0, 256, W, 320)
 
 # the queue: four rows of 60 px (the network list's geometry), arrows on the right
-Q_TITLE = (BACK[2], 0, W, 44)
+Q_TITLE = (0, 0, W, 44)
 RM_W = 56
 
 
@@ -233,15 +234,14 @@ class WishView:
 
 def targets(v: WishView, lang: str = "cs") -> dict[str, Box]:
     if v.page == "home":
-        t = {"back": BACK_TARGET, "field": FIELD_BTN, "who": (WHO_BTN[0], 0, WHO_BTN[2], HEADER_REACH),
-             "queue": (QUEUE_BTN[0], 0, W, HEADER_REACH)}
+        t = {"back": BACK_HOME, "field": FIELD_BTN, "who": WHO_BTN, "queue": QUEUE_BTN}
         for i in range(len(CHIPS.get(lang, CHIPS["cs"]))):
             t[f"chip{i}"] = chip_box(i)
         return t
     if v.page == "keys":
         return dict(kb_keys(v.kb_page, lang, accents=True))
     if v.page == "queue":
-        t = {"back": BACK_TARGET, "up": UP, "down": DOWN}
+        t = {"back": BACK, "up": UP, "down": DOWN}
         for i in range(ROWS):
             k = v.scroll + i
             if k < len(v.rows) and v.rows[k].mine and v.rows[k].state in ACTIVE:
@@ -275,7 +275,7 @@ class WishRenderer(NetRenderer):
         back = ("back", BACK, lambda v: (v.pressed == "back",), self._draw_back, False)
         if v.page == "home":
             regs: list[Region] = [
-                back,
+                ("back", BACK_HOME, lambda v: (v.pressed == "back",), self._draw_back, False),
                 ("wtitle", H_TITLE, lambda v: (v.note,), self._draw_home_title, False),
                 ("who", WHO_BTN, lambda v: (v.who, v.pressed == "who"), self._draw_who_btn, False),
                 ("qbtn", QUEUE_BTN, lambda v: (v.count, v.pressed == "queue"), self._draw_queue_btn, False),
@@ -327,9 +327,9 @@ class WishRenderer(NetRenderer):
             d.text((8, (h - 2) / 2), self.s["title_short"], font=self.head, fill=TEXT, anchor="lm")
 
     def _header_btn(self, d, size, label: str, pressed: bool, badge: str = "") -> None:
+        """A big button in the bottom row (who is wishing, the queue)."""
         w, h = size
-        d.line((0, h - 1, w, h - 1), fill=LINE)
-        d.rounded_rectangle((4, 5, w - 6, h - 7), radius=10, fill=SURFACE_HI if pressed else SURFACE)
+        d.rounded_rectangle((0, 0, w - 1, h - 1), radius=14, fill=SURFACE_HI if pressed else SURFACE)
         color = ACCENT_TEXT if pressed else TEXT
         f = self.value
         bw = (self.small.getlength(badge) + 14) if badge else 0
@@ -340,7 +340,7 @@ class WishRenderer(NetRenderer):
         d.text((x, (h - 2) / 2), text, font=f, fill=color, anchor="lm")
         if badge:
             bx = x + f.getlength(text) + 6
-            d.rounded_rectangle((bx, 12, bx + bw, h - 14), radius=8, fill=ACCENT)
+            d.rounded_rectangle((bx, h / 2 - 11, bx + bw, h / 2 + 11), radius=8, fill=ACCENT)
             d.text((bx + bw / 2, (h - 2) / 2), badge, font=self.small, fill=ON_ACCENT, anchor="mm")
 
     def _draw_who_btn(self, d, size, v: WishView) -> None:

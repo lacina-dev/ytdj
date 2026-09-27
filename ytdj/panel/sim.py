@@ -75,12 +75,12 @@ class SimTouch:
             x, y = self.correction.map_float(x, y)
         self.q.put(TouchEvent(kind, int(round(x)), int(round(y))))
 
-    def apply_correction(self, pairs, path=None) -> float:
+    def apply_correction(self, pairs, path=None, unreliable=()) -> float:
         """Like KedeiTouch.apply_correction, without the file (unless a path is given)."""
         from .kedei import Calibration, recalibrate
 
         old = self.correction or Calibration(1, 0, 0, 0, 1, 0)
-        self.correction, self.last_calibration = recalibrate(old, pairs)
+        self.correction, self.last_calibration = recalibrate(old, pairs, unreliable)
         if path is not None:
             self.correction.save(path)
         return self.last_calibration["error"]

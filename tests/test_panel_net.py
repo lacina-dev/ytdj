@@ -356,9 +356,9 @@ class NetFlowTest(unittest.TestCase):
         self.open_net()
         self.tap(WIFI_BTN)
         self.assertTrue(wait_for(lambda: self.page() == "list" and len(self.app.net.nets) == 7))
-        self.tap(DOWN)
-        self.assertTrue(wait_for(lambda: self.app.net.scroll == 3))
-        self.tap(list_row(1))  # síť-4
+        self.tap(DOWN)  # three rows at a time since 27. 9. ("Zpět" and "Hledat" at the bottom)
+        self.assertTrue(wait_for(lambda: self.app.net.scroll == 2))
+        self.tap(list_row(2))  # síť-4
         self.assertTrue(wait_for(lambda: self.page() == "keys"))
         self.assertEqual(self.app.net.ssid, "síť-4")
 
@@ -457,8 +457,10 @@ class NetFlowTest(unittest.TestCase):
         self.assertTrue(wait_for(lambda: self.page() == "list"))
         self.assertEqual(self.app.net.password, "")
         self.tap(DOWN)
-        self.assertTrue(wait_for(lambda: self.app.net.scroll == 3))
-        self.tap(list_row(3))  # "otevřená" — straight to connecting
+        self.assertTrue(wait_for(lambda: self.app.net.scroll == 2))
+        self.tap(DOWN)
+        self.assertTrue(wait_for(lambda: self.app.net.scroll == 4))
+        self.tap(list_row(2))  # "otevřená" — straight to connecting
         self.assertTrue(wait_for(lambda: self.page() == "connect"))
         self.assertTrue(wait_for(lambda: self.app.net.phase == "ok"))
         self.assertEqual(self.net.connects, [("otevřená", None)])

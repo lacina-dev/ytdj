@@ -92,7 +92,8 @@ def main(argv: list[str] | None = None) -> int:
     log.info("panel běží (%s), ytdj na %s", args.driver, args.url)
     emit(
         "panel.startup", driver=args.driver, rotate=args.rotate, size=list(screen.size),
-        calibration=getattr(touch, "calibration_source", "n/a"), url=args.url, lang=args.lang,
+        calibration=getattr(touch, "calibration_source", "n/a"), sampling=getattr(touch, "sampling", "n/a"),
+        url=args.url, lang=args.lang,
         vol_max=app.vol_max, media_keys=app.media_keys, pid=os.getpid(),
     )
     started = time.monotonic()

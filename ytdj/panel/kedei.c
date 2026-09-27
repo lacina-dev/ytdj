@@ -55,6 +55,10 @@ static volatile uint32_t *gpio;
 static volatile uint32_t *spi;
 static uint32_t lcd_cdiv = 16;    /* 400 MHz / 16 = 25 MHz */
 static uint32_t touch_cdiv = 256; /* ~1,5 MHz — XPT2046 zvládne max ~2,5 MHz */
+/* vzorkování dotyku (viz kd_touch_config): 1 = po osách s ustálením, 0 = staré */
+static int touch_mode = 1;
+static uint32_t settled_cdiv = 400; /* 400 MHz / 400 = 1 MHz */
+static long settle_us = 100;
 
 static inline void barrier(void) { __sync_synchronize(); }
 
@@ -86,7 +90,10 @@ static inline void lcd_word(const uint8_t *b, int n) {
 static void cmd(uint8_t c) { uint8_t b[3] = {0x11, 0x00, c}; lcd_word(b, 3); }
 static void dat(uint8_t d) { uint8_t b[3] = {0x15, 0x00, d}; lcd_word(b, 3); }
 
+static int dry_run;
+
 static void bus_lcd(void) {
+    if (dry_run) return;
     spi[SPI_CLK] = lcd_cdiv;
     spi[SPI_CS] = CS_TA | CS_CLEAR_TX | CS_CLEAR_RX; /* mode 0, TA trvale */
     barrier();
@@ -200,7 +207,15 @@ void kd_blit_rgb(int x0, int y0, int x1, int y1, const uint8_t *rgb, int stride)
 
 /* ---- dotyk ---- */
 
+/* Zkušební běh bez hardwaru (kd_touch_plan): příkazy se jen zapisují sem. */
+static int dry_cmds[64];
+static int dry_n;
+
 static int xpt_read(uint8_t command) {
+    if (dry_run) {
+        if (dry_n < 64) dry_cmds[dry_n++] = command;
+        return 2000;
+    }
     uint8_t tx[3] = {command, 0, 0}, rx[3];
     spi[SPI_CS] = CS_TA | CS_CLEAR_TX | CS_CLEAR_RX;
     for (int i = 0; i < 3; i++) spi[SPI_FIFO] = tx[i];
@@ -221,11 +236,40 @@ static int xpt_read(uint8_t command) {
  * zvedne, čímž se převodník sám vrátí do výchozího stavu.
  */
 static void bus_touch(void) {
-    spi[SPI_CLK] = touch_cdiv;
+    if (dry_run) return;
+    spi[SPI_CLK] = touch_mode == 1 ? settled_cdiv : touch_cdiv;
     barrier();
 }
 
-int kd_pen_down(void) { return !(gpio[GPLEV0] & (1u << PIN_PENIRQ)); }
+int kd_pen_down(void) { return dry_run ? 1 : !(gpio[GPLEV0] & (1u << PIN_PENIRQ)); }
+
+/* Čekání v µs bez uspání vlákna (nanosleep by na 100 µs přespal o desítky µs). */
+static void spin_us(long us) {
+    if (dry_run || us <= 0) return;
+    struct timespec t0, t;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    do {
+        clock_gettime(CLOCK_MONOTONIC, &t);
+    } while ((t.tv_sec - t0.tv_sec) * 1000000L + (t.tv_nsec - t0.tv_nsec) / 1000 < us);
+}
+
+/*
+ * Jak se vzorkuje (kd_touch_config):
+ *  0 "old":     X a Y střídavě, každý příkaz s PD1:0 = 00 — mezi převody se
+ *               budiče vrstvy vypnou a na ustálení zbývají ~3 takty (~2 µs při
+ *               1,5 MHz). Prst (slabý tlak, velký odpor dotyku) se za tu dobu
+ *               neustálí: čtení u okrajů byla posunutá a nahodilá (27. 9.).
+ *  1 "settled": jako linuxový ovladač ads7846 — po osách, PD1:0 = 01 (ADC
+ *               zapnutý, budiče zůstávají zapnuté), po přepnutí osy čekání
+ *               settle_us a první převod se zahodí; nakonec příkaz s PD1:0 = 00
+ *               znovu povolí PENIRQ.
+ */
+
+void kd_touch_config(int mode, int cdiv, int settle) {
+    touch_mode = mode;
+    if (cdiv >= 64) settled_cdiv = (uint32_t)cdiv & ~1u;
+    if (settle >= 0 && settle <= 2000) settle_us = settle;
+}
 
 /* Převodník do power-down s povoleným PENIRQ (PD1:0 = 00). Po zapnutí může
    být v jiném režimu a pak by se o dotyku nikdy nedozvěděl. */
@@ -258,6 +302,15 @@ static void sort_int(int *a, int n) {
  * nedotýká, -1 prst se zvedl uprostřed měření, -2 klidové hodnoty / slabý tlak,
  * -3 rozptýlené převody. Měření i podmínky jsou přesně ty, co kd_touch.
  */
+/* Jedna osa: budiče zapnout, počkat, první převod zahodit, pak n převodů. */
+static void read_axis(uint8_t cmd, int *out, int n) {
+    uint8_t on = (uint8_t)(cmd | 0x01); /* PD1:0 = 01: ADC zapnutý, PENIRQ vypnutý, budiče drží */
+    xpt_read(on);
+    spin_us(settle_us);
+    xpt_read(on);
+    for (int i = 0; i < n; i++) out[i] = xpt_read(on);
+}
+
 int kd_touch_ex(int *v) {
     for (int i = 0; i < 6; i++) v[i] = 0;
     if (!kd_pen_down()) return 0;
@@ -265,14 +318,28 @@ int kd_touch_ex(int *v) {
 
     enum { N = 7 };
     int xs[N], ys[N], z1 = 0, z2 = 0;
-    xpt_read(0xD0); /* první převod po výběru bývá mimo */
-    for (int i = 0; i < N; i++) {
-        xs[i] = xpt_read(0xD0);
-        ys[i] = xpt_read(0x90);
+    if (touch_mode == 1) {
+        read_axis(0xD0, xs, N);
+        read_axis(0x90, ys, N);
+        int z[2];
+        read_axis(0xB0, z, 1);
+        z1 = z[0];
+        read_axis(0xC0, z, 1);
+        z2 = z[0];
+        /* poslední příkaz s PD1:0 = 00: převodník do power-down, PENIRQ zase hlídá
+           (XPT2046 str. 17, možnost 2; tabulka 8) — jako PWRDOWN v ads7846 */
+        xpt_read(0x90);
+        spin_us(20);    /* PENIRQ se po vypnutí budičů chvilku ustaluje */
+    } else {
+        xpt_read(0xD0); /* první převod po výběru bývá mimo */
+        for (int i = 0; i < N; i++) {
+            xs[i] = xpt_read(0xD0);
+            ys[i] = xpt_read(0x90);
+        }
+        z1 = xpt_read(0xB0);
+        z2 = xpt_read(0xC0);
+        xpt_read(0x80); /* zpět do power-down s povoleným PENIRQ */
     }
-    z1 = xpt_read(0xB0);
-    z2 = xpt_read(0xC0);
-    xpt_read(0x80); /* zpět do power-down s povoleným PENIRQ */
     int still = kd_pen_down();
     bus_lcd();
 
@@ -292,6 +359,37 @@ int kd_touch_ex(int *v) {
     /* medián nesmí stát na rozptýlených vzorcích (prst dosedá/zvedá se) */
     if (v[4] > 150 || v[5] > 150) return -3;
     return 1;
+}
+
+/*
+ * Diagnostika ustálení (python -m ytdj.panel.kedei --trace): n převodů jedné
+ * osy po sobě s budiči zapnutými (cmd | PD0), BEZ čekání a bez zahazování —
+ * z průběhu je vidět, po kolika převodech / µs se hodnota ustálí. Pak
+ * power-down s PENIRQ. Vrací n, nebo 0 když se nikdo nedotýká.
+ */
+int kd_touch_trace(int cmd, int n, int *out) {
+    if (n > 64) n = 64;
+    if (!kd_pen_down()) return 0;
+    bus_touch();
+    uint8_t on = (uint8_t)((cmd & 0xF0) | 0x01);
+    for (int i = 0; i < n; i++) out[i] = xpt_read(on);
+    xpt_read(0x90);
+    bus_lcd();
+    return n;
+}
+
+/* Pro testy: jaké příkazy by vzorkování poslalo převodníku (bez hardwaru). */
+int kd_touch_plan(int mode, int *out, int max) {
+    int saved = touch_mode, v[6];
+    touch_mode = mode;
+    dry_run = 1;
+    dry_n = 0;
+    kd_touch_ex(v);
+    dry_run = 0;
+    touch_mode = saved;
+    int n = dry_n < max ? dry_n : max;
+    for (int i = 0; i < n; i++) out[i] = dry_cmds[i];
+    return n;
 }
 
 /*

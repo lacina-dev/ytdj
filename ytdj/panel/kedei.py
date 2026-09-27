@@ -102,6 +102,16 @@ def sampling_config(env: dict | None = None) -> tuple[str, int, int]:
     return mode, num("YTDJ_PANEL_TOUCH_CDIV", 400, 64, 4096), num("YTDJ_PANEL_TOUCH_SETTLE_US", 100, 0, 2000)
 
 
+def spread_limit(env: dict | None = None) -> int:
+    """YTDJ_PANEL_TOUCH_SPREAD: how far apart (raw) the 7 conversions of one sample may be (default 150)."""
+    env = os.environ if env is None else env
+    try:
+        v = int(env.get("YTDJ_PANEL_TOUCH_SPREAD", 150))
+    except ValueError:
+        return 150
+    return v if 10 <= v <= 4095 else 150
+
+
 def _release_kernel_spi() -> None:
     """Kernelový ovladač SPI0 by nám přepisoval piny i registry — odpojit."""
     if (SPI_DRIVER / SPI_DEVICE).exists():
@@ -136,6 +146,11 @@ class _Device:
             mode, cdiv, settle = sampling_config()
             lib.kd_touch_config(1 if mode == "settled" else 0, cdiv, settle)
             self.sampling = f"{mode} cdiv={cdiv} settle={settle}us" if mode == "settled" else "old"
+            if hasattr(lib, "kd_touch_limits"):
+                lib.kd_touch_limits.argtypes = [ctypes.c_int]
+                spread = spread_limit()
+                lib.kd_touch_limits(spread)
+                self.sampling += f" spread={spread}"
             log.info("vzorkování dotyku: %s", self.sampling)
         lib.kd_pen_down.argtypes = []
         rc = lib.kd_open(0)
@@ -341,6 +356,14 @@ class Calibration:
             if why:
                 log.warning("mřížka kalibrace dotyku %s je vadná (%s) — beru jen afinní část", path, why)
                 grid, source = None, f"file:{path}:no-grid"
+        if grid:
+            grid = {"xs": list(grid["xs"]), "ys": list(grid["ys"]), "d": [list(v) for v in grid["d"]]}
+            capped = cap_edges(grid)
+            if capped:
+                # např. mřížka z 12 bodů z 27. 9. 01:55 (grid_max 56,6): krajní šum by ohnul tlačítka
+                log.warning("kalibrace dotyku %s: oprava u okraje omezena na ±%d px od vnitřku (%d hodnot)",
+                            path, EDGE_CAP, capped)
+                source += ":capped"
         cal = cls(*coef, grid=grid or None)
         cal.source = source
         return cal
@@ -417,62 +440,122 @@ def grid_problem(grid: object) -> str:
 
 
 MAX_GRID = 35  # px — větší zbytek uvnitř mřížky = sklouzlý prst, nic se neuloží
-# U samého okraje prst tlačí slabě a displej ho čte k středu (Test prstem 27. 9.:
-# nahoře o 23–54 px níž) — tam je větší zbytek skutečnost, ne sklouznutí.
-MAX_GRID_EDGE = 70
 
 
-def recalibrate(old: Calibration, pairs: list[tuple[tuple[int, int], tuple[int, int]]]) -> tuple[Calibration, dict]:
+EDGE_CAP = 15  # px — o kolik smí oprava u samého okraje odbočit od opravy vnitřku
+
+
+def _edge_rows(tys: list) -> set:
+    """Řádky mřížky přímo u horního a dolního okraje (jen u mřížky se 4+ řádky)."""
+    return {tys[0], tys[-1]} if len(tys) >= 4 else set()
+
+
+def cap_edges(grid: dict) -> int:
+    """Oprava v krajních řádcích smí od sousedního vnitřního řádku odbočit nejvýš o EDGE_CAP.
+
+    Prst u samého okraje čte displej nahodile (27. 9.: týž horní křížek
+    jednou y 73, podruhé y 21) — naměřený šum nesmí ohnout celou kalibraci.
+    Vrací, kolik uzlů se omezilo (mřížka se mění na místě)."""
+    xs, ys, d = grid["xs"], grid["ys"], grid["d"]
+    nx, ny = len(xs), len(ys)
+    if ny < 4:
+        return 0
+    capped = 0
+    for row, nb_row in ((0, 1), (ny - 1, ny - 2)):
+        for i in range(nx):
+            node, nb = d[row * nx + i], d[nb_row * nx + i]
+            for k in (0, 1):
+                v = min(max(node[k], nb[k] - EDGE_CAP), nb[k] + EDGE_CAP)
+                if abs(v - node[k]) > 1e-9:
+                    capped += 1
+                    node[k] = v
+    return capped
+
+
+def recalibrate(old: Calibration, pairs: list[tuple[tuple[int, int], tuple[int, int]]],
+                unreliable: tuple | list | set = ()) -> tuple[Calibration, dict]:
     """Nová kalibrace z párů (kam dotyk padl se starou kalibrací, kde byl křížek).
 
-    Nejdřív afinní oprava navrch té staré (5 i víc bodů); z bodů v mřížce
-    (3×3, nebo 3×4 s řádky u horního a dolního okraje) navíc mřížka zbytků,
-    takže sedí i tam, kde se vrstva prohýbá jinak nebo kde prst u okraje čte
-    k středu. ValueError, když body nedávají smysl — pak se nic nemění.
+    Afinní oprava navrch té staré se proloží jen vnitřními body (tam jsou
+    tlačítka a tam prst čte spolehlivě); z bodů v mřížce (3×3, nebo 3×4 s řádky
+    u horního a dolního okraje) navíc mřížka zbytků. Křížky u okraje, které
+    četly nahodile (`unreliable` — dvakrát ťuknuto, pokaždé jinde), se vynechají
+    a převezmou opravu sousedního vnitřního bodu; ostatní krajní opravy smí od
+    vnitřních odbočit nejvýš o EDGE_CAP. ValueError, když vnitřní body nedávají
+    smysl — pak se nic nemění.
     """
+    unreliable = {tuple(t) for t in unreliable}
     # co naměřila stará kalibrace bez své mřížky (mřížka je hladká: stačí odečíst)
-    base = [((m[0] - old.offset(*m)[0], m[1] - old.offset(*m)[1]), t) for m, t in pairs]
-    corr, affine_err = screen_correction(base)
-    affine = Calibration(*old.coef).then(corr)
-    txs = sorted({t[0] for _, t in pairs})
-    tys = sorted({t[1] for _, t in pairs})
-    info = {"points": len(pairs), "affine_error": round(affine_err, 1)}
+    base = [((m[0] - old.offset(*m)[0], m[1] - old.offset(*m)[1]), tuple(t)) for m, t in pairs]
+    targets = {t for _, t in base} | unreliable
+    txs = sorted({t[0] for t in targets})
+    tys = sorted({t[1] for t in targets})
     nx, ny = len(txs), len(tys)
-    if nx < 3 or ny < 3 or len(pairs) != nx * ny or len({t for _, t in pairs}) != nx * ny:
+    full = nx >= 3 and ny >= 3 and len(targets) == nx * ny == len(base) + len(unreliable)
+    edges = _edge_rows(tys) if full else set()
+    inner = [p for p in base if p[1][1] not in edges]
+    corr, affine_err = screen_correction(inner if len(inner) >= 3 else base)
+    affine = Calibration(*old.coef).then(corr)
+    info = {"points": len(pairs), "affine_error": round(affine_err, 1), "unreliable": len(unreliable)}
+    if not full:
         if affine_err > MAX_CAL_ERROR:
             raise ValueError(f"odchylka {affine_err:.0f} px")
         info["error"] = round(affine_err, 1)
         return affine, info
-    # zbytky po afinní části v uzlech mřížky; pár kol, ať sedí i s interpolací
-    after = [(corr.affine(*m), t) for m, t in base]
+    after = {t: corr.affine(*m) for m, t in base}
     d = [[0.0, 0.0] for _ in range(nx * ny)]
-    new = Calibration(*affine.coef, grid={"xs": txs, "ys": tys, "d": d})
-    for _ in range(30):
-        worst_step = 0.0
-        for (a, t) in after:
-            k = tys.index(t[1]) * nx + txs.index(t[0])
+    grid = {"xs": txs, "ys": tys, "d": d}
+    new = Calibration(*affine.coef, grid=grid)
+
+    def k(t) -> int:
+        return tys.index(t[1]) * nx + txs.index(t[0])
+
+    def settle_edges() -> None:
+        for t in unreliable:  # an unreliable edge cross: the inner neighbour's correction
+            nb = (t[0], tys[1] if t[1] == tys[0] else tys[-2])
+            d[k(t)][:] = d[k(nb)]
+        cap_edges(grid)
+
+    def step(on_edge: bool) -> float:
+        worst = 0.0
+        for t, a in after.items():
+            if (t[1] in edges) != on_edge:
+                continue
             ox, oy = new.offset(*a)
             ex, ey = t[0] - (a[0] + ox), t[1] - (a[1] + oy)
-            d[k][0] += ex
-            d[k][1] += ey
-            worst_step = max(worst_step, abs(ex), abs(ey))
-        if worst_step < 0.2:
+            d[k(t)][0] += ex
+            d[k(t)][1] += ey
+            worst = max(worst, abs(ex), abs(ey))
+        return worst
+
+    # the edge nodes first (and capped), then the inner ones against those — the inner
+    # crosses must end exact with the capped edges, not with the raw edge readings
+    for _ in range(200):
+        step(True)
+        settle_edges()
+        worst_step = step(False)
+        settle_edges()
+        if worst_step < 0.05:
             break
     worst = 0.0
-    for (a, t) in after:
-        k = tys.index(t[1]) * nx + txs.index(t[0])
-        edge = t[0] in (txs[0], txs[-1]) and nx > 3 or t[1] in (tys[0], tys[-1]) and ny > 3
-        size = max(abs(d[k][0]), abs(d[k][1]))
+    for t, a in after.items():
+        if t[1] in edges:
+            continue
+        size = max(abs(d[k(t)][0]), abs(d[k(t)][1]))
         worst = max(worst, size)
-        if size > (MAX_GRID_EDGE if edge else MAX_GRID):
+        if size > MAX_GRID:
             raise ValueError(f"bod {t[0]},{t[1]} je mimo o {size:.0f} px")
+    capped = sum(1 for t in after if t[1] in edges and _edge_residual(new, t, after[t]) > 1.0)
     new.grid = {"xs": txs, "ys": tys, "d": [[round(v[0], 2), round(v[1], 2)] for v in d]}
-    err = 0.0
-    for a, t in after:
-        ox, oy = new.offset(*a)
-        err = max(err, abs(a[0] + ox - t[0]), abs(a[1] + oy - t[1]))
-    info.update(error=round(err, 1), grid_max=round(worst, 1))
+    err = max((_edge_residual(new, t, a) for t, a in after.items() if t[1] not in edges), default=0.0)
+    edge_err = max((_edge_residual(new, t, a) for t, a in after.items() if t[1] in edges), default=0.0)
+    info.update(error=round(err, 1), grid_max=round(worst, 1), edge_capped=capped, edge_error=round(edge_err, 1))
     return new, info
+
+
+def _edge_residual(cal: Calibration, t: tuple, a: tuple) -> float:
+    ox, oy = cal.offset(*a)
+    return max(abs(a[0] + ox - t[0]), abs(a[1] + oy - t[1]))
 
 
 INVALID_REASONS = {-1: "invalid_lifted", -2: "invalid_rest", -3: "invalid_spread"}
@@ -557,7 +640,7 @@ class KedeiTouch:
         self.contact_filter = contact_filter_from_env()
 
     def apply_correction(self, pairs: list[tuple[tuple[int, int], tuple[int, int]]],
-                         path: Path | None = None) -> float:
+                         path: Path | None = None, unreliable: tuple | list = ()) -> float:
         """Kalibrace z panelu: páry (kam dotyk padl, kde byl křížek) v pixelech
         obrazovky. Opraví a uloží kalibraci, platí hned; vrátí největší zbytek (px).
         ValueError, když body nesedí — pak se nic nemění."""
@@ -565,7 +648,8 @@ class KedeiTouch:
             # kalibrace platí před otočením obrazu: body do jejích souřadnic
             pairs = [((WIDTH - 1 - m[0], HEIGHT - 1 - m[1]), (WIDTH - 1 - t[0], HEIGHT - 1 - t[1]))
                      for m, t in pairs]
-        new, info = recalibrate(self._cal, pairs)
+            unreliable = [(WIDTH - 1 - t[0], HEIGHT - 1 - t[1]) for t in unreliable]
+        new, info = recalibrate(self._cal, pairs, unreliable)
         target = path or CALIBRATION
         new.save(target)
         new.source = f"file:{target}"

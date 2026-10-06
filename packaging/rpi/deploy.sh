@@ -19,7 +19,9 @@ read -r -a ssh_extra <<< "${SSH_OPTS:-}"
 ssh_cmd=(ssh -i "$SSH_KEY" -o ConnectTimeout=10 "${ssh_extra[@]}")
 
 echo "==> rsync $repo -> $PI:~/$DEST"
-rsync -az --delete \
+# Na Pi s nejnižší prioritou (CPU i disk): nasazení 6. 10. 2026 za běhu hudby
+# způsobilo ~8 s zadrhávání zvuku (xruny 18:39:13–21, start skladby 10,4 s).
+rsync -az --delete --rsync-path="nice -n 19 ionice -c3 rsync" \
     --exclude .venv --exclude .git --exclude __pycache__ --exclude .claude \
     --exclude '*.pyc' --exclude .pytest_cache \
     -e "${ssh_cmd[*]}" "$repo/" "$PI:$DEST/"
@@ -34,7 +36,7 @@ export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 if [ ! -x .venv/bin/python ]; then
     python3 -m venv --system-site-packages .venv
 fi
-.venv/bin/pip install -q --disable-pip-version-check -e .
+nice -n 19 ionice -c3 .venv/bin/pip install -q --disable-pip-version-check -e .
 
 # Bajtkód předem, ne až při startu služby (F-RESTART-08): rsync mění .py
 # a co se nezkompiluje tady, kompiluje startující ytdj — o to déle je po
@@ -44,7 +46,7 @@ fi
 find ytdj -type d -name __pycache__ ! -writable -print0 \
     | xargs -0 -r sudo -n rm -rf -- \
     || echo "POZOR: __pycache__ patřící rootovi nejde smazat (sudo) — start bude pomalejší"
-nice -n 19 .venv/bin/python -m compileall -q ytdj
+nice -n 19 ionice -c3 .venv/bin/python -m compileall -q ytdj
 
 # USB sound card > 3.5 mm jack > HDMI
 conf_dir="$HOME/.config/wireplumber/wireplumber.conf.d"

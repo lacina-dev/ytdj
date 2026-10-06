@@ -22,7 +22,8 @@ přátelsky a pravdivě — jen co platí podle pravidel a testů.
 Hraje přehrávač mpv a fronta, kterou vidíš na webu i na displeji, je přesně
 jeho playlist — žádná kopie, která by se mohla rozejít se skutečností.
 Skladby se připravují dopředu, aby Další bylo rychlé a mezi skladbami nebylo
-ticho ani lupání.
+ticho ani lupání. Každá nahrávka je vyrobená jinak hlasitě, proto se skladby
+srovnávají na stejnou hlasitost — hlasitost, kterou sis nastavil, tím zůstává.
 
 Když si o nic konkrétního neřekneš, hraje studiová verze, ne live, cover ani
 výběrovka. A jiná kapela se stejně pojmenovanou písní nikdy — radši nic než
@@ -47,6 +48,14 @@ Hlavní smysl jukeboxu: zahrát přesně to, co si kdo přeje. Přání se přij
 hned. Jednoduchá přání — interpret, písnička, odkaz z YouTube, povel — vyřídí
 aplikace sama bez modelu; volný text („něco klidného na odpoledne") domýšlí
 DJ, tedy model Codex, a to trvá pár vteřin.
+
+Model do katalogu sám nevidí, proto ke každému přání dostane, co pod jeho
+textem zná YouTube Music — podle toho pozná, jestli jsi jmenoval(a) písničku,
+kapelu, nebo celé album. Album hraje v pořadí skladeb a jen ono.
+
+Když si DJ ani tak není jistý (stejné jméno je kapela i známá písnička), zeptá
+se: u tvého přání se objeví dvě tři tlačítka a stačí ťuknout. Ptá se jen
+výjimečně; bez odpovědi do půl minuty vybere sám a řekne, co vzal.
 
 Co se nenajde, DJ nezahraje a přizná to. Potvrzení („Zařadil jsem: …") skládá
 aplikace z toho, co se opravdu zařadilo, takže DJ nemůže slíbit něco, co
@@ -93,7 +102,17 @@ dlouho nic nehraje, ztlumí se a ukáže QR kód na web.
 Web vidí všichni stejně a živě — co hraje, co bude dál a čí přání čekají.
 Do telefonu jde zabalený, a když se jukebox aktualizuje, stará otevřená
 stránka se obnoví sama. Tlačítko Stop na webu není, jen pauza, aby nikdo
-omylem nesmazal ostatním přání.
+omylem nesmazal ostatním přání. Světlý nebo tmavý vzhled se řídí tvým
+zařízením, dole na stránce si ho ale můžeš přepnout sám (Auto, Den, Noc).
+
+## Chyby a nápady
+
+Něco nefunguje, nebo by se ti něco hodilo? Napiš to na stránku Chyby a
+nápady (💡 v hlavičce) — bez přihlášení, pod svou přezdívkou. K cizí položce
+přidáš komentář nebo +1, ať je vidět, kolika lidí se týká.
+
+U každé položky pak uvidíš stav a text „Jak to bylo vyřešeno“. Ty zapisuje
+jen správce (s PINem z displeje), aby seznam zůstal pravdivý.
 
 ## Síť a Wi-Fi
 
@@ -157,8 +176,12 @@ jukeboxu a restart chtějí PIN správce, který je na displeji na obrazovce Sí
 - **F-HLASY-17** Oblíbené kanceláře se hrají po lidech na střídačku
 - **F-FRONTA-20** Oblíbené hrají dál napřeskáčku, dokud si někdo nepřeje něco jiného
 - **F-ZVUK-11** Vulgární skladby se samy do podkresu nedostanou
+- **F-FRONTA-21** Z alba jsou první 4 skladby přání, zbytek hraje dál jako podkres
+- **F-PRANI-20** Název, který není kapela, ale písnička, se zahraje jako písnička
+- **F-PRANI-24** Když na otázku DJe neodpovíš, vybere po chvíli sám a řekne to
 - **F-ZVUK-12** Nepřehratelná skladba se na týden vynechá
 - **F-ZVUK-15** Automatika nikdy sama nepřeskočí skladbu bez důvodu
+- **F-ZVUK-24** Všechny skladby hrají stejně hlasitě, tichá i hlasitá nahrávka
 - **F-SLUSNOST-01** Sprostá slova se na displeji a webu nezobrazí
 - **F-VYPADEK-01** Při výpadku YouTube nebo sítě se čeká, nic se nemaže
 - **F-VYPADEK-04** Když nejede DJ, jednoduchá přání jedou dál
@@ -173,6 +196,7 @@ jukeboxu a restart chtějí PIN správce, který je na displeji na obrazovce Sí
 
 - F-FRONTA-01: wish_block, wish_shared_block
 - F-FRONTA-02: wish_budget, wish_budget_panel
+- F-PRANI-24: wish_clarify_timeout
 - F-HLASY-03: ban_song_votes
 - F-HLASY-04: ban_artist_votes, favourite_artist_votes
 - F-HLASY-05: repeat_days

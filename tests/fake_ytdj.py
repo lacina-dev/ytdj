@@ -704,7 +704,7 @@ def make_server(port: int = 0, fake: FakeYtdj | None = None, sse: bool = True) -
                 self.send_header("Content-Length", str(len(raw)))
                 self.end_headers()
                 self.wfile.write(raw)
-            elif urlparse(self.path).path in ("/napoveda", "/jak-to-funguje", "/manual.css"):
+            elif urlparse(self.path).path in ("/napoveda", "/jak-to-funguje", "/manual.css", "/theme.js"):
                 if not hasattr(fake, "pages"):
                     fake.pages, fake.labels = _manual_pages()
                 page = fake.pages.get(urlparse(self.path).path.lstrip("/"), {}, fake.labels)

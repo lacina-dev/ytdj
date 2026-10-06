@@ -154,6 +154,8 @@ class FakeMpv:
             return self._prop(cmd[1])
         if name == "set_property":
             return None
+        if name in ("load-script", "script-message-to", "script-message"):
+            return None  # skript srovnání hlasitosti (ytdj_gain.lua) — jen do logu
         if name == "loadfile":
             url, flag = cmd[1], (cmd[2] if len(cmd) > 2 else "replace")
             entry = {"id": self._next_id, "filename": url}

@@ -60,6 +60,17 @@ class RadioPools:
         self.allow_long = False
         # explicitní skladby (ytmusic isExplicit) do podkresu? Výchozí ne.
         self.allow_explicit = bool(getattr(cfg, "allow_explicit_radio", False))
+        # Filtr explicitních zvednutý jen pro jedno přání: posluchač si
+        # výslovně řekl o vulgární texty (rozhodl model, `explicit_ok`).
+        # Každé další naplnění poolů (set_seeds / set_artist / …) ho vrací.
+        self.explicit_ok = False
+        # Album v podkresu ("pusť album Load"): skladby alba v pořadí, každá
+        # jednou, bez rádia a bez jiných interpretů, dokud album neskončí —
+        # viz set_album(). "" = není. Jede přes stejný stav jako režim
+        # interpreta (`artist` = název alba), ale bez protáčení a opakování.
+        self.album: str = ""
+        self._album_artists: list[str] = []
+        self._album_done: set[str] = set()  # zazněly (nebo patří bloku přání)
         # registry of everything we have seen in this session — the LLM works
         # only with videoIds, here we translate them back to Tracks
         self.known: dict[str, Track] = {}
@@ -101,7 +112,8 @@ class RadioPools:
     # ---- filling ----
 
     async def set_seeds(
-        self, seeds: list[Track], mood: str = "", allow_long: bool = False
+        self, seeds: list[Track], mood: str = "", allow_long: bool = False,
+        explicit_ok: bool = False,
     ) -> dict:
         """Replaces the pools with new seeds and pulls in radios for them.
 
@@ -113,8 +125,11 @@ class RadioPools:
         self._rr = 0
         self.mood = mood
         self.allow_long = allow_long
+        self.explicit_ok = bool(explicit_ok)
         self.favourites = ""
         self.artist = ""
+        self.album = ""
+        self._album_artists, self._album_done = [], set()
         self._artist_all = []
         self.artist_left = self.artist_until = None
         summary = []
@@ -138,7 +153,7 @@ class RadioPools:
                 }
             )
         telemetry.event(
-            "radio.seeds", mood=mood, allow_long=allow_long,
+            "radio.seeds", mood=mood, allow_long=allow_long, explicit_ok=explicit_ok or None,
             seeds=[p["seed"] for p in summary],
             pool_sizes=[p["pool_size"] for p in summary],
         )
@@ -181,8 +196,11 @@ class RadioPools:
         self._rr = 0
         self.mood = mood or name
         self.allow_long = True
+        self.explicit_ok = False
         self.favourites = ""
         self.artist = name
+        self.album = ""
+        self._album_artists, self._album_done = [], set()
         self._artist_all = list(tracks)
         self.artist_left = max_tracks
         self.artist_until = until
@@ -193,6 +211,57 @@ class RadioPools:
             "pool_size": len(tracks),
             "sample": [t.label() for t in tracks[:5]],
         }
+
+    async def set_album(self, label: str, tracks: list[Track], mood: str = "",
+                        done: set[str] | list[str] | tuple = (),
+                        artists: list[str] | None = None) -> dict:
+        """Album v podkresu: jeho skladby v pořadí alba, každá jednou.
+
+        Vlastník 6. 10. 2026 ("Album jako podkres"): první skladby alba jdou
+        jako přání, zbytek pokračuje tady — bez míchání s interpretem nebo
+        rádiem, dokud album neskončí. `done` = co už zaznělo nebo patří bloku
+        přání (nehraje se znovu); po cizím přání se pokračuje tam, kde se
+        přestalo (`album_remaining`). Pravidlo neopakování, strop na
+        interpreta, délka ani filtr explicitních tu neplatí — o album si
+        posluchač řekl jménem; vyřazené hlasováním zůstávají vyřazené. Když
+        album dohraje, přejde podkres na rádio "<album> a podobné".
+        Bez zbývajících skladeb nechá pooly být a vrátí pool_size 0.
+        """
+        done_ids = set(done)
+        left = [t for t in tracks if t.id not in done_ids]
+        telemetry.event("radio.album_mode", album=label, n=len(tracks), left=len(left),
+                        first=left[0].label() if left else None)
+        if not left:
+            return {"album": label, "pool_size": 0, "sample": []}
+        self.pools = [Pool(seed=left[0], tracks=deque(left), last_good=left[0].id)]
+        self.generation += 1
+        self._rr = 0
+        self.mood = mood or f"album {label}"
+        self.allow_long = True
+        self.explicit_ok = False
+        self.favourites = ""
+        self.artist = label
+        self.album = label
+        self._album_artists = [a for a in (artists or []) if a]
+        self._album_done = {t.id for t in tracks if t.id in done_ids}
+        self._artist_all = list(tracks)
+        self.artist_left = self.artist_until = None
+        self.remember_tracks(tracks)
+        self.store.record_seed(left[0].id, self.mood)
+        return {"album": label, "pool_size": len(left),
+                "sample": [t.label() for t in left[:5]]}
+
+    def album_remaining(self) -> list[Track]:
+        """Co z alba ještě nezaznělo (v pořadí alba) — i to, co už čeká ve
+        frontě přehrávače, ale nezačalo hrát."""
+        if not self.album:
+            return []
+        return [t for t in self._artist_all if t.id not in self._album_done]
+
+    def note_started(self, video_id: str) -> None:
+        """Skladba začala hrát — u alba se už nebude opakovat."""
+        if self.album and any(t.id == video_id for t in self._artist_all):
+            self._album_done.add(video_id)
 
     async def set_favourites(self, which: str = "office", voter: str = "", mood: str = "",
                              played: list[str] | tuple = (), alternate: bool = True) -> dict:
@@ -225,7 +294,10 @@ class RadioPools:
         # na webu a displeji to vidí všichni: "vlastní", ne "tvoje"/"moje"
         self.mood = "vlastní oblíbené" if mine else "oblíbené kanceláře"
         self.allow_long = False
+        self.explicit_ok = False
         self.artist = ""
+        self.album = ""
+        self._album_artists, self._album_done = [], set()
         self._artist_all = []
         self.artist_left = self.artist_until = None
         self.favourites = "mine" if mine else "office"
@@ -317,6 +389,9 @@ class RadioPools:
         """Omezený režim interpreta vypršel (skladby nebo čas)?"""
         if not self.artist:
             return False
+        if self.album:
+            # album dohrálo: nic nezbývá vydat (poslední skladby už jsou ve frontě)
+            return not self.pools or not self.pools[0].tracks
         if self.artist_left is not None and self.artist_left <= 0:
             return True
         now = time.time() if now is None else now
@@ -344,6 +419,7 @@ class RadioPools:
         log.info("režim interpreta %s končí (%s) → %s a podobné", name, why, name)
         if not seeds:
             self.artist, self._artist_all = "", []
+            self.album, self._album_artists, self._album_done = "", [], set()
             self.artist_left = self.artist_until = None
             return True
         await self.set_seeds(seeds, mood=f"{name} a podobné")
@@ -352,7 +428,7 @@ class RadioPools:
     async def next_tracks(self, count: int) -> list[Track]:
         """Pulls `count` tracks, alternating between pools, with filters applied."""
         if self.artist_expired():
-            await self.soften_artist()
+            await self.soften_artist("album_done" if self.album else "expired")
         out: list[Track] = []
         blocked = await _aread(self.store, "blacklisted")
         # vyžádaný interpret má přednost před pravidlem neopakování
@@ -447,6 +523,8 @@ class RadioPools:
         return out
 
     def _focus_names(self) -> list[str]:
+        if self.album:
+            return list(self._album_artists)
         return [a.strip() for a in self.artist.split(",") if a.strip()] if self.artist else []
 
     def _long_limit(self) -> int:
@@ -485,8 +563,15 @@ class RadioPools:
             why = votes.pool_reject(track, self._focus_names())
             if why:
                 return why
-        if track.explicit and not self.artist and not self.allow_explicit:
-            # vulgární texty do podkresu ne; vyžádaný interpret / skladba jménem ano
+        if self.album:
+            # album je vyžádané jménem celé a v pořadí: žádný další filtr
+            # (opakování, délka, strop na interpreta); každá skladba je
+            # v poolu jednou, takže se neopakuje
+            return None
+        if track.explicit and not self.artist and not (self.allow_explicit or self.explicit_ok):
+            # vulgární texty do podkresu ne; vyžádaný interpret / skladba jménem
+            # ano — a taky přání, které si o vulgární texty výslovně řeklo
+            # (explicit_ok, jen do dalšího přání)
             return "explicit"
         if track.id in self.session_seen:
             return "session_seen"
@@ -511,6 +596,8 @@ class RadioPools:
         if self.favourites:
             self._refill_favourites(pool)
             return
+        if self.album:
+            return  # album se nedoplňuje — co zbývá, je v poolu; pak "a podobné"
         if self.artist:
             history = await self._history(len(self._artist_all))
             blocked = await _aread(self.store, "blacklisted")
@@ -553,6 +640,11 @@ class RadioPools:
         """Skladby vydané next_tracks, které se nakonec do fronty nedostaly
         (plnič je zahodil, protože mezitím přišel nový tah) — nepočítat je
         jako zahrané, ať o ně režim interpreta nepřijde."""
+        if self.album and self.pools:
+            # zpátky na své místo v pořadí alba
+            back = {t.id for t in tracks} | {t.id for t in self.pools[0].tracks}
+            self.pools[0].tracks = deque(
+                t for t in self._artist_all if t.id in back and t.id not in self._album_done)
         for t in tracks:
             self.session_seen.discard(t.id)
             self._fav_played.discard(t.id)
@@ -578,6 +670,8 @@ class RadioPools:
         return not self.pools or all(len(p) == 0 for p in self.pools)
 
     def describe(self) -> str:
+        if self.album and self.pools:
+            return f"album {self.album} (zbývá {len(self.pools[0])} skladeb)"
         if self.artist and self.pools:
             return f"interpret {self.artist} (v zásobě {len(self.pools[0])} skladeb)"
         if self.favourites and self.pools:

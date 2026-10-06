@@ -103,6 +103,41 @@ CREATE TABLE IF NOT EXISTS import_items (
     pos       INTEGER,
     PRIMARY KEY (import_id, key)
 );
+
+-- Chyby a nápady kolegů (ytdj/issues.py, FUNKCE F-HLASENI-01…): položka,
+-- komentáře a „+1". Všechno drží IssueBook v paměti, sem se jen zapisuje.
+-- `seed_key` / `seed_sig` mají položky, které jdou s kódem (issues_seed.json).
+CREATE TABLE IF NOT EXISTS issues (
+    id          INTEGER PRIMARY KEY,
+    seed_key    TEXT,                          -- stálý klíč ze seedu, jinak NULL
+    seed_sig    TEXT,                          -- otisk seedu, který je promítnutý
+    kind        TEXT NOT NULL,                 -- chyba|napad
+    title       TEXT NOT NULL,
+    body        TEXT NOT NULL,
+    state       TEXT NOT NULL,                 -- nove|resi_se|nasazeni|vyreseno|zamitnuto
+    resolution  TEXT NOT NULL DEFAULT '',      -- „Jak to bylo vyřešeno"
+    resolved_at REAL,
+    author      TEXT,                          -- id klienta (jako u přání)
+    who         TEXT,                          -- přezdívka v době zápisu
+    created     REAL NOT NULL,
+    updated     REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS issue_comments (
+    id       INTEGER PRIMARY KEY,
+    issue_id INTEGER NOT NULL,
+    author   TEXT,
+    who      TEXT,
+    body     TEXT NOT NULL,
+    ts       REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS issue_comments_issue ON issue_comments(issue_id);
+CREATE TABLE IF NOT EXISTS issue_plus (
+    issue_id INTEGER NOT NULL,
+    voter    TEXT NOT NULL,                    -- id klienta
+    who      TEXT,
+    ts       REAL NOT NULL,
+    PRIMARY KEY (issue_id, voter)
+);
 """
 
 
@@ -325,6 +360,52 @@ class Store:
             ("DELETE FROM import_items WHERE import_id=?", (import_id,)),
             ("DELETE FROM imports WHERE id=?", (import_id,)),
         ])
+
+    # ---- chyby a nápady (ytdj/issues.py) ----
+
+    def save_issue(self, row: tuple) -> None:
+        """Celá položka (nová i změněná): id, seed_key, seed_sig, kind, title,
+        body, state, resolution, resolved_at, author, who, created, updated."""
+        self._write(
+            """INSERT OR REPLACE INTO issues(id,seed_key,seed_sig,kind,title,body,state,resolution,
+                                              resolved_at,author,who,created,updated)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", tuple(row))
+
+    def save_issue_comment(self, row: tuple) -> None:
+        """Komentář: id, issue_id, author, who, body, ts."""
+        self._write(
+            "INSERT OR REPLACE INTO issue_comments(id,issue_id,author,who,body,ts) VALUES(?,?,?,?,?,?)",
+            tuple(row))
+
+    def delete_issue_comment(self, comment_id: int) -> None:
+        self._write("DELETE FROM issue_comments WHERE id=?", (int(comment_id),))
+
+    def set_issue_plus(self, issue_id: int, voter: str, who: str, ts: float, on: bool) -> None:
+        if on:
+            self._write("INSERT OR REPLACE INTO issue_plus(issue_id,voter,who,ts) VALUES(?,?,?,?)",
+                        (int(issue_id), voter, who, ts))
+        else:
+            self._write("DELETE FROM issue_plus WHERE issue_id=? AND voter=?", (int(issue_id), voter))
+
+    def delete_issue(self, issue_id: int) -> None:
+        iid = (int(issue_id),)
+        self._write_tx([
+            ("DELETE FROM issue_comments WHERE issue_id=?", iid),
+            ("DELETE FROM issue_plus WHERE issue_id=?", iid),
+            ("DELETE FROM issues WHERE id=?", iid),
+        ])
+
+    def all_issues(self) -> tuple[list[tuple], list[tuple], list[tuple]]:
+        """(položky, komentáře, +1) — nejvýš stovky řádků, čte se při startu."""
+        items = self._read(
+            """SELECT id, seed_key, seed_sig, kind, title, body, state, COALESCE(resolution,''),
+                      resolved_at, COALESCE(author,''), COALESCE(who,''), created, updated
+                 FROM issues ORDER BY id""")
+        comments = self._read(
+            """SELECT id, issue_id, COALESCE(author,''), COALESCE(who,''), body, ts
+                 FROM issue_comments ORDER BY id""")
+        plus = self._read("SELECT issue_id, voter, COALESCE(who,''), ts FROM issue_plus ORDER BY ts")
+        return items, comments, plus
 
     def _migrate_blacklist(self) -> None:
         """Sloupec `until` (platnost záznamu). Staré záznamy bez něj vznikaly

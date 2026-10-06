@@ -194,6 +194,11 @@ class App:
         # 👍/👎 skladbám a 👎 interpretům; podkres a DJ je respektují, výslovné
         # přání se splní vždy. Hlasy se načtou v run() mimo event loop.
         self.votes = wire_votes(self)
+        # ---- chyby a nápady kolegů (POZADAVKY #52, ytdj/issues.py) ----
+        # Načtou se v run() mimo event loop, stejně jako hlasy.
+        from .issues import wire as wire_issues
+
+        self.issues = wire_issues(self)
         self._start_task: asyncio.Task | None = None
 
     def _poke_web(self) -> None:
@@ -541,6 +546,9 @@ class App:
 
     async def _run(self, repl: bool, aload_quietly) -> int:
         await aload_quietly(self.votes)  # state.db ve vlákně, ne v event loopu
+        from .issues import aload_quietly as aload_issues
+
+        await aload_issues(self.issues)  # state.db a seed ve vlákně
         if self._player_start is not None:
             # shield: SIGTERM během startu nezruší rozjezd mpv napůl — _shutdown ho
             # nechá dostartovat a pak řádně zastaví

@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0e1013" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#faf7f2" media="(prefers-color-scheme: light)">
+<title>Chyby a nápady — Jukebox</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%277%27 fill=%27%23d8a656%27/%3E%3Crect x=%279%27 y=%2713%27 width=%273%27 height=%279%27 rx=%271.5%27 fill=%27%23141414%27/%3E%3Crect x=%2714.5%27 y=%278%27 width=%273%27 height=%2714%27 rx=%271.5%27 fill=%27%23141414%27/%3E%3Crect x=%2720%27 y=%2711%27 width=%273%27 height=%2711%27 rx=%271.5%27 fill=%27%23141414%27/%3E%3C/svg%3E">
+<script src="/theme.js"></script>
+<link rel="stylesheet" href="/manual.css">
+<style>
+  /* Chyby a nápady (FUNKCE F-HLASENI-01…): barvy a karty z manual.css, tady jen to navíc. */
+  textarea, select { font: inherit; color: inherit; }
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px;
+         padding: 8px 16px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface);
+         font-size: .92rem; font-weight: 600; text-decoration: none; color: var(--text); }
+  .btn:hover { background: var(--surface-2); }
+  .btn.primary { background: var(--btn); color: var(--on-btn); border-color: transparent; }
+  .btn.primary:hover { filter: brightness(1.06); }
+  .btn.danger { color: var(--err); }
+  .btn[disabled] { opacity: .55; cursor: default; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 14px; }
+  .bar .grow { flex: 1 1 auto; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { min-height: 44px; padding: 6px 14px; border-radius: 99px; border: 1px solid var(--line);
+          background: var(--surface); font-size: .88rem; font-weight: 600; }
+  .chip[aria-pressed="true"] { background: var(--btn); color: var(--on-btn); border-color: transparent; }
+  .chip small { font-weight: 500; opacity: .8; margin-left: 4px; }
+  .sel { min-height: 44px; padding: 6px 10px; border-radius: 12px; border: 1px solid var(--line);
+         background: var(--card); font-size: .9rem; max-width: 100%; }
+
+  .form { padding: 16px; margin: 0 0 16px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .form label { display: block; font-size: .86rem; font-weight: 600; margin-bottom: 4px; }
+  .form input[type=text], .form textarea, .box textarea, details.admin textarea {
+    width: 100%; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line);
+    background: var(--card); font-size: 1rem; min-height: 46px; display: block; max-width: 100%; }
+  .form textarea, .box textarea, details.admin textarea { min-height: 110px; resize: vertical; line-height: 1.45; }
+  .form input:focus, textarea:focus, .sel:focus { outline: none; border-color: var(--accent); }
+  .hint { font-size: .82rem; color: var(--text-faint); margin: 0; }
+  .msg { font-size: .88rem; margin: 0; min-height: 1.2em; color: var(--text-dim); }
+  .msg:empty { display: none; }
+  .msg.err { color: var(--err); }
+  .msg.ok { color: var(--ok); }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+  .list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+  .item { display: block; width: 100%; text-align: left; padding: 14px 16px; border-radius: 14px;
+          background: var(--card); border: 1px solid var(--line-soft); box-shadow: var(--shadow); }
+  .item:hover { background: var(--surface-2); }
+  .item h3 { margin: 6px 0 4px; font-size: 1.02rem; line-height: 1.3; }
+  .item p { margin: 0 0 8px; color: var(--text-dim); font-size: .9rem; }
+  .tags { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .tag { display: inline-flex; align-items: center; padding: 2px 10px; border-radius: 99px; font-size: .76rem;
+         font-weight: 650; background: var(--surface-2); color: var(--text-dim); white-space: nowrap; }
+  .tag.chyba { background: color-mix(in srgb, var(--err) 16%, transparent); color: var(--err); }
+  .tag.napad { background: var(--accent-soft); color: var(--accent-text); }
+  .tag.resi_se, .tag.nasazeni { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+  .tag.vyreseno { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+  .meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: .8rem; color: var(--text-faint); }
+  .empty { padding: 22px 16px; text-align: center; color: var(--text-dim); }
+  .more { display: flex; justify-content: center; margin-top: 14px; }
+
+  .detail h2 { margin: 10px 0 6px; font-size: 1.35rem; line-height: 1.25; }
+  .box { padding: 16px; margin: 14px 0; }
+  .box h3 { margin: 0 0 8px; font-size: .78rem; letter-spacing: .12em; text-transform: uppercase;
+            color: var(--text-faint); font-weight: 650; }
+  .text { white-space: pre-wrap; margin: 0; }
+  .solved { border: 1px solid color-mix(in srgb, var(--ok) 45%, transparent);
+            background: color-mix(in srgb, var(--ok) 10%, var(--card)); }
+  .solved h3 { color: var(--ok); }
+  .solved .when { font-size: .82rem; color: var(--text-dim); margin: 8px 0 0; }
+  .plus { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 14px 0; }
+  .plus .btn[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-text); }
+  .plus span { font-size: .86rem; color: var(--text-dim); min-width: 0; }
+  .cmts { list-style: none; margin: 0 0 12px; padding: 0; display: grid; gap: 10px; }
+  .cmt { padding: 10px 12px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line-soft); }
+  .cmt .hd { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; font-size: .8rem;
+             color: var(--text-faint); margin-bottom: 2px; }
+  .cmt .hd b { color: var(--text); font-size: .9rem; }
+  .cmt .x { display: none; margin-left: auto; border: 0; background: none; color: var(--err); font-size: .8rem; min-height: 28px; padding: 0 4px; }
+  .detail.adm .cmt .x { display: inline-block; }  /* mazání komentářů jen v části pro správce */
+  details.admin { margin: 14px 0; }
+  details.admin summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; padding: 0 16px;
+                          font-weight: 600; font-size: .92rem; color: var(--text-dim); }
+  details.admin .in { padding: 0 16px 16px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  details.admin label { display: block; font-size: .86rem; font-weight: 600; margin-bottom: 4px; }
+  /* pole pro PIN správce — stejné jako v Nastavení jukeboxu na hlavní stránce */
+  .pinbox { padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); }
+  .pinbox label { display: block; font-size: .9rem; font-weight: 550; margin-bottom: 4px; }
+  .pinbox .help { font-size: .8rem; color: var(--text-faint); margin: 0 0 8px; }
+  .pinbox .row { display: flex; flex-wrap: nowrap; gap: 10px; }
+  .pinbox input { flex: 1 1 auto; min-width: 0; min-height: 44px; padding: 9px 11px; border-radius: 9px;
+                  border: 1px solid var(--line); background: var(--card); }
+  .pinbox input:focus { outline: none; border-color: var(--accent); }
+  .pinbox .msg { color: var(--err); margin-top: 8px; }
+  .pinbox .msg:empty { display: none; }
+</style>
+</head>
+<body>
+<!--
+  Chyby a nápady kolegů (POZADAVKY #52, FUNKCE F-HLASENI-01…). API: ytdj/web/issues_api.py.
+  Text od lidí se vkládá jen jako text (textContent) — nikdy jako HTML.
+-->
+<div class="wrap">
+
+  <header class="top">
+    <a class="back" href="/"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>Jukebox</a>
+    <a class="navlink" href="/napoveda">Nápověda</a>
+  </header>
+
+  <!-- ====== seznam ====== -->
+  <main id="listView">
+    <h1>Chyby a nápady</h1>
+    <p class="lead">Něco nefunguje, nebo by se ti něco hodilo? Napiš to sem. U každé položky pak uvidíš, jak to dopadlo.</p>
+
+    <div class="bar">
+      <button class="btn primary" id="addBtn" type="button" aria-expanded="false" aria-controls="addForm">+ Přidat</button>
+      <span class="grow"></span>
+      <label class="hint" for="stateSel">Stav</label>
+      <select class="sel" id="stateSel" aria-label="Filtr podle stavu">
+        <option value="">všechny</option>
+        <option value="open">otevřené</option>
+        <option value="closed">uzavřené</option>
+        <option value="nove">nové</option>
+        <option value="resi_se">řeší se</option>
+        <option value="nasazeni">čeká na nasazení</option>
+        <option value="vyreseno">vyřešeno</option>
+        <option value="zamitnuto">zamítnuto</option>
+      </select>
+    </div>
+
+    <form class="form card" id="addForm" hidden autocomplete="off">
+      <div>
+        <label id="kindLbl">Co to je?</label>
+        <div class="chips" role="group" aria-labelledby="kindLbl">
+          <button class="chip" type="button" data-kind="chyba" aria-pressed="true">🐞 Chyba</button>
+          <button class="chip" type="button" data-kind="napad" aria-pressed="false">💡 Nápad</button>
+        </div>
+      </div>
+      <div>
+        <label for="fTitle">Krátce, o co jde</label>
+        <input id="fTitle" type="text" maxlength="120" required placeholder="Třeba: Nenašlo to písničku od…">
+      </div>
+      <div>
+        <label for="fBody">Podrobnosti <span class="hint">(nepovinné)</span></label>
+        <textarea id="fBody" maxlength="2000" placeholder="Co jsi napsal(a) nebo zmáčkl(a), co se stalo a co jsi čekal(a)."></textarea>
+      </div>
+      <p class="hint" id="asWho"></p>
+      <div class="row">
+        <button class="btn primary" id="fSend" type="submit">Odeslat</button>
+        <button class="btn" id="fCancel" type="button">Zrušit</button>
+      </div>
+      <p class="msg" id="fMsg" role="status"></p>
+    </form>
+
+    <div class="bar">
+      <div class="chips" id="kindChips" role="group" aria-label="Filtr podle druhu">
+        <button class="chip" type="button" data-f="" aria-pressed="true">Vše<small id="cAll"></small></button>
+        <button class="chip" type="button" data-f="chyba" aria-pressed="false">Chyby<small id="cChyba"></small></button>
+        <button class="chip" type="button" data-f="napad" aria-pressed="false">Nápady<small id="cNapad"></small></button>
+      </div>
+    </div>
+
+    <ul class="list" id="list" aria-live="polite"></ul>
+    <p class="empty" id="listMsg" role="status">Načítám…</p>
+    <div class="more"><button class="btn" id="moreBtn" type="button" hidden>Načíst další</button></div>
+  </main>
+
+  <!-- ====== jedna položka ====== -->
+  <main class="detail" id="detailView" hidden>
+    <a class="btn" id="backList" href="#">← Všechny chyby a nápady</a>
+    <div id="detail"></div>
+    <p class="empty" id="detailMsg" role="status" hidden></p>
+  </main>
+
+  <footer class="foot"><a href="/">Zpět na jukebox</a><a href="/napoveda">Nápověda</a></footer>
+  <div class="theme" data-theme-switch role="group" aria-label="Vzhled stránky" hidden>
+    <span>Vzhled</span>
+    <span class="seg">
+      <button type="button" data-theme-set="auto" aria-pressed="true" title="Podle zařízení">Auto</button>
+      <button type="button" data-theme-set="light" aria-pressed="false" title="Světlý">Den</button>
+      <button type="button" data-theme-set="dark" aria-pressed="false" title="Tmavý">Noc</button>
+    </span>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (s) { return document.querySelector(s); };
+  var KIND = { chyba: "Chyba", napad: "Nápad" };
+  var STATE = { nove: "nové", resi_se: "řeší se", nasazeni: "čeká na nasazení", vyreseno: "vyřešeno", zamitnuto: "zamítnuto" };
+  var PAGE = 20;
+
+  /* prvek z kódu: text vždy jako text (createTextNode), nikdy HTML */
+  function h(tag, attrs, kids) {
+    var e = document.createElement(tag), k;
+    for (k in attrs || {}) {
+      if (k === "class") e.className = attrs[k];
+      else if (k.slice(0, 2) === "on") e.addEventListener(k.slice(2), attrs[k]);
+      else if (attrs[k] !== false && attrs[k] != null) e.setAttribute(k, attrs[k] === true ? "" : attrs[k]);
+    }
+    [].concat(kids == null ? [] : kids).forEach(function (c) {
+      if (c != null) e.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+    });
+    return e;
+  }
+  function clear(e) { while (e.firstChild) e.removeChild(e.firstChild); }
+  function day(ts) {
+    if (!ts) return "";
+    var d = new Date(ts * 1000);
+    return d.getDate() + ". " + (d.getMonth() + 1) + ". " + d.getFullYear();
+  }
+  function load(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
+  function store(key, v) { try { localStorage.setItem(key, v); } catch (e) {} }
+
+  /* kdo jsem: stejné id prohlížeče a přezdívka jako na hlavní stránce */
+  var client = load("ytdj.client") || "";
+  if (!/^[A-Za-z0-9_-]{6,40}$/.test(client)) {
+    var rnd = "";
+    try {
+      var a = new Uint8Array(9); crypto.getRandomValues(a);
+      for (var i = 0; i < a.length; i++) rnd += ("0" + a[i].toString(16)).slice(-2);
+    } catch (e) { rnd = Math.random().toString(36).slice(2) + Date.now().toString(36); }
+    client = "web-" + rnd;
+    store("ytdj.client", client);
+  }
+  var nick = load("ytdj.nick") || "";
+  $("#asWho").textContent = nick ? "Píšeš jako " + nick + "."
+    : "Bez přezdívky budeš „Host“ — přezdívku si nastavíš na hlavní stránce.";
+
+  async function api(method, path, body, admin) {
+    var opts = { method: method, cache: "no-store", headers: {} };
+    if (body) { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
+    if (admin && adminPin()) opts.headers["X-YTDJ-PIN"] = adminPin();
+    var res, data = {};
+    try { res = await fetch(path, opts); } catch (e) { return { status: 0, data: { error: "Jukebox neodpovídá — zkus to za chvilku." } }; }
+    try { data = await res.json(); } catch (e) {}
+    return { status: res.status, ok: res.ok, data: data || {} };
+  }
+  function me(extra) { extra.client = client; if (nick) extra.who = nick; return extra; }
+
+  /* PIN správce — totéž co Nastavení jukeboxu: zařízení si ho pamatuje pod
+     stejným klíčem, špatný zapomene (F-BEZP-09, F-BEZP-10). */
+  var PIN_KEY = "ytdj.adminPin";
+  function adminPin() { return load(PIN_KEY) || ""; }
+  function forgetPin() { try { localStorage.removeItem(PIN_KEY); } catch (e) {} }
+  function pinMinutes(sec) { return Math.max(1, Math.ceil((sec || 0) / 60)) + " min"; }
+  // 401/403/429 od správy → pole pro PIN se zprávou; po zadání se akce zopakuje
+  function askPin(r, box, then) {
+    if (r.status !== 401 && r.status !== 403 && r.status !== 429) return false;
+    if (!r.data || !r.data.pin) return false;  // 429 může být i brzda příspěvků
+    var text = "";
+    if (r.status === 403) { forgetPin(); text = "Špatný PIN. Správný je na displeji jukeboxu: Síť."; }
+    else if (r.status === 429) text = "Moc špatných PINů — zkus to znovu za " + pinMinutes(r.data.retry_after) + ".";
+    else if (adminPin()) forgetPin();
+    clear(box);
+    var input = h("input", { id: "pinInput", type: "password", inputmode: "numeric", pattern: "[0-9]*", maxlength: "6", autocomplete: "off" });
+    var msg = h("p", { class: "msg", role: "alert" }, text);
+    box.appendChild(h("form", { class: "pinbox", id: "pinBox", autocomplete: "off", onsubmit: function (ev) {
+      ev.preventDefault();
+      var pin = input.value.replace(/\D/g, "");
+      if (pin.length !== 6) { msg.textContent = "PIN má 6 číslic."; return; }
+      store(PIN_KEY, pin);
+      clear(box);
+      then();
+    } }, [
+      h("label", { for: "pinInput" }, "PIN správce"),
+      h("p", { class: "help" }, "PIN je na displeji jukeboxu: Síť."),
+      h("div", { class: "row" }, [input, h("button", { class: "btn primary", type: "submit" }, "Potvrdit")]),
+      msg
+    ]));
+    if (r.status !== 429) setTimeout(function () { input.focus(); }, 50);
+    return true;
+  }
+
+  /* ---------- seznam ---------- */
+  var F = { kind: "", state: "", offset: 0 };
+  var el = { list: $("#list"), listMsg: $("#listMsg"), more: $("#moreBtn"), form: $("#addForm"), add: $("#addBtn"),
+             fTitle: $("#fTitle"), fBody: $("#fBody"), fMsg: $("#fMsg"), fSend: $("#fSend"),
+             listView: $("#listView"), detailView: $("#detailView"), detail: $("#detail"), detailMsg: $("#detailMsg") };
+
+  function tags(it) {
+    return h("div", { class: "tags" }, [
+      h("span", { class: "tag " + it.kind }, KIND[it.kind] || it.kind),
+      h("span", { class: "tag " + it.state }, STATE[it.state] || it.state),
+      it.resolved && it.open ? h("span", { class: "tag vyreseno" }, "má odpověď") : null
+    ]);
+  }
+  function row(it) {
+    return h("li", null, h("button", { class: "item", type: "button", onclick: function () { location.hash = "#" + it.id; } }, [
+      tags(it),
+      h("h3", null, it.title),
+      it.excerpt ? h("p", null, it.excerpt) : null,
+      h("div", { class: "meta" }, [
+        h("span", null, (it.who || "—") + " · " + day(it.created)),
+        h("span", null, "+1: " + it.plus + (it.plus_mine ? " (i ty)" : "")),
+        h("span", null, "komentářů: " + it.comments)
+      ])
+    ]));
+  }
+  async function loadList(append) {
+    if (!append) { F.offset = 0; el.listMsg.hidden = false; el.listMsg.textContent = "Načítám…"; }
+    var q = "?client=" + encodeURIComponent(client) + "&kind=" + F.kind + "&state=" + F.state +
+            "&offset=" + F.offset + "&limit=" + PAGE;
+    var r = await api("GET", "/api/issues" + q);
+    if (!r.ok) { el.listMsg.hidden = false; el.listMsg.textContent = r.data.error || "Seznam se nepodařilo načíst."; return; }
+    if (!append) clear(el.list);
+    r.data.items.forEach(function (it) { el.list.appendChild(row(it)); });
+    F.offset += r.data.items.length;
+    el.more.hidden = !r.data.more;
+    el.listMsg.hidden = el.list.children.length > 0;
+    el.listMsg.textContent = "Tady zatím nic není.";
+    var c = r.data.counts || {};
+    $("#cAll").textContent = c.all != null ? c.all : "";
+    $("#cChyba").textContent = c.kinds ? c.kinds.chyba : "";
+    $("#cNapad").textContent = c.kinds ? c.kinds.napad : "";
+  }
+  $("#kindChips").addEventListener("click", function (ev) {
+    var b = ev.target.closest("button[data-f]");
+    if (!b) return;
+    F.kind = b.getAttribute("data-f");
+    [].forEach.call(this.querySelectorAll("button"), function (x) { x.setAttribute("aria-pressed", String(x === b)); });
+    loadList(false);
+  });
+  $("#stateSel").addEventListener("change", function () { F.state = this.value; loadList(false); });
+  el.more.addEventListener("click", function () { loadList(true); });
+
+  /* ---------- přidat ---------- */
+  var newKind = "chyba";
+  function showForm(on) {
+    el.form.hidden = !on;
+    el.add.setAttribute("aria-expanded", String(on));
+    if (on) el.fTitle.focus();
+  }
+  el.add.addEventListener("click", function () { showForm(el.form.hidden); });
+  $("#fCancel").addEventListener("click", function () { showForm(false); });
+  el.form.addEventListener("click", function (ev) {
+    var b = ev.target.closest("button[data-kind]");
+    if (!b) return;
+    newKind = b.getAttribute("data-kind");
+    [].forEach.call(el.form.querySelectorAll("button[data-kind]"), function (x) { x.setAttribute("aria-pressed", String(x === b)); });
+  });
+  el.form.addEventListener("submit", async function (ev) {
+    ev.preventDefault();
+    var title = el.fTitle.value.trim();
+    if (title.length < 3) { el.fMsg.className = "msg err"; el.fMsg.textContent = "Napiš prosím krátký název (aspoň 3 znaky)."; return; }
+    el.fSend.disabled = true;
+    var r = await api("POST", "/api/issues", me({ kind: newKind, title: title, body: el.fBody.value }));
+    el.fSend.disabled = false;
+    if (!r.ok) { el.fMsg.className = "msg err"; el.fMsg.textContent = r.data.error || "Nepodařilo se to odeslat."; return; }
+    el.fTitle.value = ""; el.fBody.value = ""; el.fMsg.textContent = "";
+    showForm(false);
+    location.hash = "#" + r.data.item.id;
+  });
+
+  /* ---------- jedna položka ---------- */
+  function show(it) {
+    clear(el.detail);
+    el.detailView.classList.remove("adm");
+    el.detailMsg.hidden = true;
+    var d = el.detail;
+    d.appendChild(h("h2", null, it.title));
+    d.appendChild(tags(it));
+    d.appendChild(h("div", { class: "meta", style: "margin-top:8px" },
+      h("span", null, (it.who || "—") + " · " + day(it.created) + " · #" + it.id)));
+    if (it.resolution) {
+      d.appendChild(h("section", { class: "box card solved", id: "solved" }, [
+        h("h3", null, "Jak to bylo vyřešeno"),
+        h("p", { class: "text" }, it.resolution),
+        h("p", { class: "when" }, day(it.resolved_at))
+      ]));
+    }
+    if (it.body) d.appendChild(h("section", { class: "box card" }, [h("h3", null, "Popis"), h("p", { class: "text" }, it.body)]));
+
+    var plusMsg = h("span", null, it.plus ? "Chce to / děje se to i: " + it.plus_by.join(", ") : "Zatím nikdo další.");
+    d.appendChild(h("div", { class: "plus" }, [
+      h("button", { class: "btn", type: "button", id: "plusBtn", "aria-pressed": String(!!it.plus_mine), onclick: async function () {
+        this.disabled = true;
+        var r = await api("POST", "/api/issues/" + it.id + "/plus", me({ on: !it.plus_mine }));
+        if (r.ok) show(r.data.item); else { this.disabled = false; plusMsg.textContent = r.data.error || "Nepovedlo se."; }
+      } }, "+1 " + (it.kind === "chyba" ? "taky se mi to děje" : "taky to chci") + (it.plus ? " · " + it.plus : "")),
+      plusMsg
+    ]));
+
+    var cMsg = h("p", { class: "msg", role: "status" });
+    var cText = h("textarea", { id: "cBody", maxlength: "1000", placeholder: "Doplň, co víš — kdy se to stalo, co jsi zkoušel(a)…", "aria-label": "Komentář" });
+    var cSend = h("button", { class: "btn primary", type: "submit" }, "Přidat komentář");
+    d.appendChild(h("section", { class: "box card" }, [
+      h("h3", null, "Komentáře" + (it.comments ? " (" + it.comments + ")" : "")),
+      h("ul", { class: "cmts" }, it.comment_list.map(function (c) {
+        return h("li", { class: "cmt" }, [
+          h("div", { class: "hd" }, [h("b", null, c.who), h("span", null, day(c.at)),
+            h("button", { class: "x", type: "button", title: "Smazat komentář (správce)", onclick: function () { delComment(it, c.id); } }, "smazat")]),
+          h("p", { class: "text" }, c.body)
+        ]);
+      })),
+      h("form", { style: "display:grid;gap:10px", onsubmit: async function (ev) {
+        ev.preventDefault();
+        if (!cText.value.trim()) { cMsg.className = "msg err"; cMsg.textContent = "Komentář je prázdný."; return; }
+        cSend.disabled = true;
+        var r = await api("POST", "/api/issues/" + it.id + "/comments", me({ body: cText.value }));
+        if (r.ok) show(r.data.item); else { cSend.disabled = false; cMsg.className = "msg err"; cMsg.textContent = r.data.error || "Nepovedlo se."; }
+      } }, [cText, h("div", { class: "row" }, cSend), cMsg])
+    ]));
+
+    /* správce: stav a „Jak to bylo vyřešeno" — chce PIN */
+    var sel = h("select", { class: "sel", id: "aState" }, Object.keys(STATE).map(function (s) {
+      return h("option", { value: s, selected: s === it.state }, STATE[s]);
+    }));
+    var res = h("textarea", { id: "aRes", maxlength: "2000" });
+    res.value = it.resolution || "";
+    var aMsg = h("p", { class: "msg", role: "status" });
+    var pin = h("div", { id: "pinSlot" });
+    adminUI = { msg: aMsg, pin: pin };
+    function save() {
+      admin("POST", "/api/issues/" + it.id + "/resolve", { state: sel.value, resolution: res.value }, save,
+            function (r) { show(r.data.item); el.detail.querySelector("details.admin").open = true;
+                           adminUI.msg.className = "msg ok"; adminUI.msg.textContent = "Uloženo."; });
+    }
+    function del() {
+      if (!confirm("Opravdu smazat „" + it.title + "“ i s komentáři?")) return;
+      admin("DELETE", "/api/issues/" + it.id, null, del, function () { location.hash = ""; });
+    }
+    d.appendChild(h("details", { class: "admin card", ontoggle: function () { el.detailView.classList.toggle("adm", this.open); } }, [
+      h("summary", null, "Pro správce: stav a řešení"),
+      h("div", { class: "in" }, [
+        h("div", null, [h("label", { for: "aState" }, "Stav"), sel]),
+        h("div", null, [h("label", { for: "aRes" }, "Jak to bylo vyřešeno"), res]),
+        pin,
+        h("div", { class: "row" }, [
+          h("button", { class: "btn primary", type: "button", onclick: save }, "Uložit"),
+          it.seed ? null : h("button", { class: "btn danger", type: "button", onclick: del }, "Smazat položku")
+        ]),
+        aMsg
+      ])
+    ]));
+  }
+  var adminUI = null;
+  async function admin(method, path, body, again, done) {
+    var r = await api(method, path, body, true);
+    if (r.ok) { clear(adminUI.pin); done(r); return; }
+    el.detail.querySelector("details.admin").open = true;
+    if (askPin(r, adminUI.pin, again)) { adminUI.msg.className = "msg"; adminUI.msg.textContent = "Tohle může jen správce — chce PIN."; return; }
+    adminUI.msg.className = "msg err";
+    adminUI.msg.textContent = r.data.error || "Nepovedlo se.";
+  }
+  function delComment(it, cid) {
+    admin("DELETE", "/api/issues/" + it.id + "/comments/" + cid, null, function () { delComment(it, cid); },
+          function (r) { show(r.data.item); });
+  }
+  async function openDetail(id) {
+    el.listView.hidden = true; el.detailView.hidden = false;
+    clear(el.detail);
+    el.detailMsg.hidden = false; el.detailMsg.textContent = "Načítám…";
+    var r = await api("GET", "/api/issues/" + id + "?client=" + encodeURIComponent(client));
+    if (!r.ok) { el.detailMsg.textContent = r.data.error || "Položku se nepodařilo načíst."; return; }
+    show(r.data.item);
+    window.scrollTo(0, 0);
+  }
+  function route() {
+    var m = /^#(\d{1,9})$/.exec(location.hash);
+    if (m) { openDetail(m[1]); return; }
+    el.detailView.hidden = true; el.listView.hidden = false;
+    loadList(false);
+  }
+  $("#backList").addEventListener("click", function (ev) { ev.preventDefault(); location.hash = ""; });
+  window.addEventListener("hashchange", route);
+  route();
+})();
+</script>
+</body>
+</html>

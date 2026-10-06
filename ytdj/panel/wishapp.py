@@ -42,7 +42,7 @@ SOURCE = "panel"
 PANEL_WHO = "displej"  # the name on wishes typed here, unless somebody picks theirs
 
 STATE_PHASE = {
-    "waiting": "busy", "thinking": "busy", "queued": "queued", "playing": "playing",
+    "waiting": "busy", "thinking": "busy", "asking": "ask", "queued": "queued", "playing": "playing",
     "done": "ok", "notfound": "notfound", "error": "error", "removed": "error", "replaced": "ok",
     "skipped": "ok",
 }
@@ -135,6 +135,8 @@ class WishController:
         self.sent_at = 0.0
         self.done_at = 0.0
         self.reply = ""
+        self.question = ""  # the DJ's question about our wish…
+        self.options: tuple[str, ...] = ()  # …and the readings to tap
         self.error = ""
         self.req_id = ""
         self.eta = ""
@@ -193,6 +195,24 @@ class WishController:
         before = self.phase
         st = str(r.get("state") or "")
         phase = STATE_PHASE.get(st, before)
+        if phase == "ask":
+            opts = r.get("options")
+            self.question = str(r.get("question") or "")
+            self.options = tuple(str(o) for o in opts[:3]) if isinstance(opts, list) else ()
+            if not self.options or self.req_id not in self.mine:
+                phase = "busy"  # nothing to tap here — the DJ decides after its timeout
+            elif before != "ask":
+                self.phase = "ask"
+                emit("panel.wish_ask", id=self.req_id, options=len(self.options))
+                return True  # put the question up, like an answer
+            else:
+                return False
+        elif before == "ask":
+            self.question, self.options = "", ()
+            if phase == "busy":
+                self.phase = "busy"  # answered (or timed out) — the DJ is queueing it
+                return False
+            before = "busy"  # the DJ chose itself and it is already queued
         self.eta = str(r.get("eta") or "")
         self.play_next = bool(r.get("play_next"))
         self.started = self.started or st in ("playing", "done")
@@ -297,6 +317,7 @@ class WishController:
         self.phase = "busy"
         self.wish, self.chip = text, chip
         self.reply = self.error = self.eta = ""
+        self.question, self.options = "", ()
         self.req_id = ""
         self.play_next = self.started = False
         self.sent_at = now
@@ -317,14 +338,15 @@ class WishController:
 
         threading.Thread(target=run, name="panel-wish", daemon=True).start()
 
-    def _action(self, rid: str, action: str) -> None:
+    def _action(self, rid: str, action: str, **extra) -> None:
         token = self.mine.get(rid)
         if not token:
             return
         api, post = self.api, self.post
 
         def run() -> None:
-            status, data, error = post_json(api, f"/api/requests/{rid}", {"action": action, "token": token}, 10.0)
+            status, data, error = post_json(api, f"/api/requests/{rid}",
+                                            {"action": action, "token": token, **extra}, 10.0)
             post(("wish", "action", action, rid, status, data, error))
 
         threading.Thread(target=run, name="panel-wish-action", daemon=True).start()
@@ -399,6 +421,8 @@ class WishController:
             hint=self.hint,
             can_connect=bool(self.text.strip()),
             phase=self.phase,
+            question=self.question,
+            options=self.options,
             wish=self.wish,
             elapsed=elapsed,
             reply=self.reply,
@@ -553,6 +577,13 @@ class WishController:
             elif name == "next" and self.req_id:
                 self.play_next = True  # optimistic; the stream confirms it
                 self._action(self.req_id, "next")
+            elif name.startswith("opt") and self.req_id and self.phase == "ask":
+                i = int(name[3:])
+                if i < len(self.options):
+                    emit("panel.wish_action", page="sent", button="answer", choice=i)
+                    self.phase = "busy"  # optimistic; the stream brings what was queued
+                    self.question, self.options = "", ()
+                    self._action(self.req_id, "answer", choice=i)
 
     def _key(self, name: str, now: float) -> None:
         self.hint = ""

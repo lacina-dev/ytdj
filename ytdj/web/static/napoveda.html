@@ -6,8 +6,9 @@
 <meta name="color-scheme" content="dark light">
 <meta name="theme-color" content="#0e1013" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#faf7f2" media="(prefers-color-scheme: light)">
-<title>Nápověda — ytdj</title>
+<title>Nápověda — Jukebox</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%277%27 fill=%27%23d8a656%27/%3E%3Crect x=%279%27 y=%2713%27 width=%273%27 height=%279%27 rx=%271.5%27 fill=%27%23141414%27/%3E%3Crect x=%2714.5%27 y=%278%27 width=%273%27 height=%2714%27 rx=%271.5%27 fill=%27%23141414%27/%3E%3Crect x=%2720%27 y=%2711%27 width=%273%27 height=%2711%27 rx=%271.5%27 fill=%27%23141414%27/%3E%3C/svg%3E">
+<script src="/theme.js"></script>
 <link rel="stylesheet" href="/manual.css">
 </head>
 <body>
@@ -116,6 +117,7 @@
       <div><b>Ráno nebo v noci ticho</b>Po restartu v noci (22:00–7:00) nebo po zapnutí jukeboxu se hudba sama nerozehraje, aby nehrála do prázdné kanceláře. Stačí zmáčknout ▶.</div>
       <div><b>Nastavení chce PIN</b>Nastavení jukeboxu a restart jsou pro správce: chtějí PIN, který je na displeji jukeboxu na obrazovce Síť. Přání, Další, hlasitost a hlasování jdou bez PINu. Po 5 špatných PINech je nastavení na 5 minut zamčené.</div>
       <div><b>Moje přání pořád nehraje</b>Zeptej se: „kdy bude moje písnička?“ — DJ odpoví podle fronty. Kdo 10 minut nic svého neslyšel a zeptá se, jde na řadu hned po hrající skladbě.</div>
+      <div id="hlaseni"><b>Našel(a) jsi chybu nebo máš nápad?</b>Napiš to na stránku <a href="/hlaseni">Chyby a nápady</a> (💡 nahoře na hlavní stránce) — bez přihlášení, pod svou přezdívkou. K cizí položce přidáš komentář nebo <strong>+1</strong> („taky se mi to děje“, „taky to chci“). U každé pak uvidíš stav a <strong>Jak to bylo vyřešeno</strong>; ty zapisuje správce (s PINem).</div>
     </div>
   </section>
 
@@ -126,10 +128,15 @@
       <li>Jen jednu písničku od interpreta: <q data-example="model">zahraj jednu od Chinaski</q>.</li>
       <li>Něco vynechat: <q data-example="model">Kabát, ale ne Pohodu</q>. Dva interpreti na střídačku: <q data-example="model">střídej Kabát a Olympic</q>.</li>
       <li>Chceš live nebo remix? Řekni si o něj — jinak hraje studiová verze.</li>
+      <li>Celé album: <q data-example="model">Metallica album Load</q> — první čtyři skladby jsou tvoje přání, zbytek alba hraje dál v pořadí jako podkres. Když si mezitím někdo něco přeje, zahraje se to a album pak pokračuje, kde přestalo.</li>
+      <li>Stačí i jen název písničky, třeba od malé kapely: <q data-example="model">Nerdíci v neklidu</q> — DJ se podívá do katalogu, jestli je to písnička, nebo kapela.</li>
+      <li>Když si DJ není jistý, co myslíš (stejné jméno je kapela i písnička), zeptá se: u tvého přání se objeví tlačítka s možnostmi — stačí ťuknout. Ptá se jen výjimečně; když neodpovíš, do půl minuty vybere sám a napíše, co vzal. Ostatní přání ani hudba na to nečekají.</li>
       <li><b>Něco jiného</b> a <b>Překvap mě</b> opravdu změní směr, <b>Víc takového</b> naváže na to, co hraje.</li>
       <li>Další u cizího přání: když ho ostatní přeskočí dvakrát, přání skončí. Přeskakuj ohleduplně — tvoje Další se připíše tobě.</li>
       <li>V tichu stačí ▶ a DJ vybere hudbu sám podle času, dne a toho, co tu obvykle hraje.</li>
+      <li>Písničky se samy srovnávají na stejnou hlasitost — kvůli tiché staré nahrávce nemusíš přidávat a po ní zase ubírat. Hlasitost, kterou nastavíš, platí pro všechny stejně.</li>
       <li>Chceš, aby DJ znal tvůj vkus? <a href="#playlist">Importuj svůj playlist</a> do oblíbených na stránce <b>Hlasování</b>. (Odkaz na playlist vložený do přání z něj jen zahraje pár písniček jako přání — do oblíbených nic nepřidá.)</li>
+      <li id="vzhled">Světlá, nebo tmavá stránka? Úplně dole na každé stránce je <b>Vzhled</b>: <b>Auto</b> (podle tvého zařízení), <b>Den</b> nebo <b>Noc</b>. Volbu si pamatuje jen to zařízení, na kterém ji uděláš.</li>
     </ul>
   </section>
 
@@ -140,6 +147,14 @@
   </a>
 
   <footer class="foot"><a href="/">Zpět na jukebox</a><a href="/jak-to-funguje">Jak to funguje</a></footer>
+  <div class="theme" data-theme-switch role="group" aria-label="Vzhled stránky" hidden>
+    <span>Vzhled</span>
+    <span class="seg">
+      <button type="button" data-theme-set="auto" aria-pressed="true" title="Podle zařízení">Auto</button>
+      <button type="button" data-theme-set="light" aria-pressed="false" title="Světlý">Den</button>
+      <button type="button" data-theme-set="dark" aria-pressed="false" title="Tmavý">Noc</button>
+    </span>
+  </div>
 </div>
 </body>
 </html>

@@ -26,7 +26,7 @@ from pathlib import Path
 from .. import telemetry
 from ..config import MPV_SOCKET, Config, save_values
 from ..telemetry_sampler import SystemSampler
-from . import ytdl_cache
+from . import ytdl_cache, ytdl_loudness
 from .outage import classify_error, outage_reason, probe_connectivity
 from ..music.catalog import Track
 from .base import EventHandler, Player, PlayerEvent, PlayerStatus
@@ -78,6 +78,18 @@ AUDIO_BUFFER = 2.0
 TAIL_SLACK = 1.0  # s — latence PipeWire nad zásobu mpv (Pi: konec ~2,5 s po eof)
 TAIL_MIN = 0.2  # s — kratší doznívání se navenek nedrží
 SOCKET_POLL = 0.01  # s — jak často se po spuštění mpv dívat po jeho IPC socketu
+# Srovnání hlasitosti skladeb (F-ZVUK-24/25): zisk na skladbu počítá resolver
+# z hlasitosti, kterou o skladbě ví YouTube (ytdl_loudness), a nasazuje ho
+# skript v mpv jako filtr jen pro tu skladbu — přesně na hranici skladeb a
+# bez závislosti na téhle smyčce (zpoždění smyčky by jinak zdrželo start
+# skladby; Pi 1.–6. 10.: 11 zpoždění ≥ 0,5 s, nejdelší 8,2 s). Hlasitost
+# (`volume`) je jiný stupeň a nesahá se na ni.
+GAIN_SCRIPT = Path(__file__).with_name("ytdj_gain.lua")
+GAIN_CLIENT = "ytdj_gain"  # jméno skriptu v mpv (podle souboru)
+GAIN_MESSAGE = "ytdj-gain"  # zpráva skriptu: co které skladbě nasadil
+GAIN_TARGET_RANGE = (-24, -8)  # LUFS — meze nastavení loudness_target
+# chyba mpv, když skladbě nejde postavit řetěz zvuku (filtr) — nic nezaznělo
+NOTHING_PLAYED = "no audio or video data"
 SOCKET_TIMEOUT = 20.0  # s — při bootu Pi 3 startuje všechno naráz
 
 
@@ -386,6 +398,13 @@ class MpvPlayer(Player):
         self.playback_file: Path | None = None
         self._playback_task: asyncio.Task | None = None
         self._playback_sig: tuple | None = None
+        # ---- srovnání hlasitosti skladeb ----
+        self._gain_script = False  # skript ytdj_gain.lua v mpv běží
+        self._gain_sent = self._gain_target()  # cíl, který zná resolver (None = vypnuto)
+        self._gain: dict[str, Any] | None = None  # co skript nasadil načítané / hrající skladbě
+        self._gain_retried: set[int] = set()  # položky už jednou puštěné znovu bez filtru
+        self._retry_why: dict[int, str] = {}  # položka → proč se načítá znovu
+        self._gain_unsent: tuple | None = None  # cíl, který resolver zatím nepřevzal
 
     # ---------- lifecycle ----------
 
@@ -450,6 +469,11 @@ class MpvPlayer(Player):
             raw.append(f"extractor-args={extractor_args}")
         # each option separately via -append, so commas need no escaping
         args += [f"--ytdl-raw-options-append={opt}" for opt in raw]
+        # Srovnání hlasitosti: skript jen když je zapnuté (vypnuté = mpv přesně
+        # jako dřív; zapnutí za běhu ho načte příkazem, viz config_changed).
+        self._gain_script = self._gain_target() is not None and GAIN_SCRIPT.is_file()
+        if self._gain_script:
+            args.append(f"--script={GAIN_SCRIPT}")
         args += list(self.cfg.mpv_extra_args)
         return args
 
@@ -732,6 +756,12 @@ class MpvPlayer(Player):
                 self._load["t_loaded"] = time.monotonic()
             return
 
+        if event == "client-message":
+            args = msg.get("args")
+            if isinstance(args, list) and args and args[0] == GAIN_MESSAGE:
+                self._on_gain_message(args[1:])
+            return
+
         if event == "end-file":
             reason = msg.get("reason", "")
             # reason distinguishes played-to-end vs. skipped — that is our
@@ -756,11 +786,13 @@ class MpvPlayer(Player):
                 kind = "replaced"
             self._replacing = False
             detail = reason
-            if kind == "error" and self._disk_retry(entry):
+            if kind == "error" and (self._disk_retry(entry) or self._gain_retry(entry, msg)):
                 # Adresa z cache na disku (z doby před restartem) se nedala
                 # otevřít — vypršela / jiná IP. Není to vlastnost skladby ani
                 # výpadek: zahodit ji v resolveru a tutéž položku načíst znovu
                 # (čerstvě vyřešenou). Žádná černá listina, žádné přeskočení.
+                # Totéž, když mpv nepostavilo filtr srovnání hlasitosti:
+                # položka se načte znovu a skript ji pustí bez filtru.
                 self._retry[entry] = (self._load or {}).get("req")
                 self._t_end_file("retry", msg, False)
                 self._time_pos = 0.0
@@ -1119,6 +1151,9 @@ class MpvPlayer(Player):
             if load["paused"]:
                 fields["paused"] = True  # čekání zahrnuje pauzu — do latencí nepočítat
             fields.update(self._audio_fields())
+            gain = self._gain
+            if gain and gain.get("entry") == load.get("entry"):
+                fields["gain_db"] = gain.get("gain_db")  # srovnání hlasitosti (viz track.gain)
             if req and req["why"] == "eof" and fields["wait_ms"] is not None:
                 # Konec skladby: konec staré hraje ze zásoby (AUDIO_BUFFER) a
                 # mezitím se otevírá nová. Co čekání přesáhne zásobu, je ticho
@@ -1278,6 +1313,7 @@ class MpvPlayer(Player):
                 self._res_failed.add(fields["video_id"])
             self._res_changed.set()
         if kind == "resolver.get" and fields.get("video_id"):
+            self._push_gain(fields)
             self._res_gets[fields["video_id"]] = (time.monotonic(), fields)
             if len(self._res_gets) > 50:  # mpv prefetch bez startu — neudržovat věčně
                 for old in sorted(self._res_gets, key=lambda v: self._res_gets[v][0])[:25]:
@@ -1744,11 +1780,15 @@ class MpvPlayer(Player):
         RESOLVER_SOCKET.parent.mkdir(parents=True, exist_ok=True)
         self._resolver_started = time.monotonic()
         self._res_listening = False
+        target = self._gain_target()
+        self._gain_sent = target  # resolver ho dostane rovnou při spuštění
         self._resolver = await asyncio.create_subprocess_exec(
             *niced([python, str(Path(__file__).with_name("ytdl_resolver.py")),
                     "--socket", str(RESOLVER_SOCKET),
                     # hotové skladby přežijí restart služby (tmpfs) — bez něj nic
-                    *(["--cache", str(cache)] if (cache := runtime_file("resolver-cache")) else [])],
+                    *(["--cache", str(cache)] if (cache := runtime_file("resolver-cache")) else []),
+                    # srovnání hlasitosti skladeb: cíl v LUFS (bez volby vypnuto)
+                    *([f"--gain-target={target}"] if target is not None else [])],
                    RESOLVER_NICE),  # zvuk má přednost
             env=self.cfg.child_env(),
             stdout=asyncio.subprocess.DEVNULL,
@@ -1855,9 +1895,12 @@ class MpvPlayer(Player):
         ji pustí znovu na jejím místě v playlistu — i s volbami položky (start
         navázané skladby). Na co mpv mezitím přešlo, je "replaced"."""
         vid = self._entries.get(entry)
-        self._res_gets.pop(vid or "", None)
-        self._res_ready.discard(vid or "")
-        dropped = await self._resolver_call({"op": "drop", "ids": [vid]}) if vid else None
+        why = self._retry_why.pop(entry, "disk_url")
+        dropped = None
+        if why == "disk_url":
+            self._res_gets.pop(vid or "", None)
+            self._res_ready.discard(vid or "")
+            dropped = await self._resolver_call({"op": "drop", "ids": [vid]}) if vid else None
         ok = False
         async with self._mutex:
             await self._sync()
@@ -1877,9 +1920,121 @@ class MpvPlayer(Player):
                     self._replacing = False
         if not ok:
             self._retry.pop(entry, None)
-        telemetry.event("player.retry", video_id=vid, why="disk_url", ok=ok,
+        telemetry.event("player.retry", video_id=vid, why=why, ok=ok,
                         dropped=bool(dropped and dropped.get("ok")))
         self._schedule_prefetch(now=True)
+
+    # ---------- srovnání hlasitosti skladeb ----------
+
+    def _gain_target(self) -> int | None:
+        """Cíl srovnání hlasitosti v LUFS z nastavení; None = vypnuto."""
+        if not getattr(self.cfg, "loudness_normalize", False):
+            return None
+        try:
+            target = int(getattr(self.cfg, "loudness_target", ytdl_loudness.DEFAULT_TARGET))
+        except (TypeError, ValueError):
+            target = ytdl_loudness.DEFAULT_TARGET
+        return max(GAIN_TARGET_RANGE[0], min(GAIN_TARGET_RANGE[1], target))
+
+    def _post(self, *cmd: Any) -> None:
+        """Příkaz mpv bez čekání na odpověď — smí se volat i z čtecí smyčky."""
+        if not self.writer:
+            return
+        self._req_id += 1
+        with suppress(Exception):
+            self.writer.write(
+                (json.dumps({"command": list(cmd), "request_id": self._req_id}) + "\n").encode())
+
+    def _push_gain(self, fields: dict[str, Any]) -> None:
+        """Zisk, který resolver připsal skladbě, i zprávou skriptu v mpv: mpv
+        < 0.38 skriptu JSON od yt-dlp neukáže. Novější si ho přečte samo."""
+        gain = fields.get("gain")
+        if not self._gain_script or not isinstance(gain, (int, float)):
+            return
+        loud = fields.get("loud")
+        self._post("script-message-to", GAIN_CLIENT, "gain", str(fields["video_id"]),
+                   f"{gain:.1f}", f"{loud:.2f}" if isinstance(loud, (int, float)) else "")
+
+    def _on_gain_message(self, args: list) -> None:
+        """Skript v mpv hlásí, co skladbě nasadil: [videoId, dB, LUFS, odkud,
+        stav]. Jedna událost `track.gain` na skladbu. Bez IPC."""
+        try:
+            vid, gain, loud, via, state = (list(args) + [""] * 5)[:5]
+
+            def num(text: Any) -> float | None:
+                try:
+                    return float(text)
+                except (TypeError, ValueError):
+                    return None
+
+            if state in ("failed", "disabled"):
+                # filtr nešel postavit: skladba se pustí znovu bez něj
+                # (_gain_retry); "disabled" = skript srovnávání do restartu vypnul
+                log.warning("srovnání hlasitosti: filtr pro %s nejde postavit%s", vid,
+                            " — do restartu vypnuto" if state == "disabled" else "")
+                telemetry.event("player.gain_failed", video_id=vid or None,
+                                disabled=state == "disabled")
+                return
+            applied = num(gain) if state in ("ok", "limited") else 0.0
+            self._gain = {"entry": self._cur_entry, "vid": vid or None, "gain_db": applied,
+                          "state": state}
+            telemetry.event(
+                "track.gain", video_id=vid or self._entries.get(self._cur_entry or -1),
+                loud_lufs=num(loud),  # hlasitost skladby podle YouTube
+                gain_db=applied,  # co doopravdy platí pro tuhle skladbu
+                src="youtube" if num(loud) is not None or num(gain) is not None else "none",
+                via=via or "none",  # "json" (z resolveru přes mpv) | "message" | "none"
+                state=state,  # ok | limited (zesíleno přes omezovač) | unity | none | broken | unset
+                target=self._gain_target(),
+            )
+        except Exception:
+            pass
+
+    def _gain_retry(self, entry: Any, msg: dict) -> bool:
+        """Skladba s filtrem srovnání hlasitosti vůbec nezazněla (mpv filtr
+        nepostavilo) a ještě se znovu nezkoušela? Skript ji příště pustí bez
+        filtru. Bez IPC."""
+        gain = self._gain
+        if not isinstance(entry, int) or entry < 0 or self._outage is not None:
+            return False
+        if not gain or gain.get("entry") != entry or gain.get("state") not in ("ok", "limited"):
+            return False
+        if NOTHING_PLAYED not in str(msg.get("file_error") or ""):
+            return False
+        load = self._load
+        if load and load.get("entry") == entry and load.get("t_play") is not None:
+            return False
+        if entry in self._retry or entry in self._gain_retried:
+            return False
+        self._gain_retried.add(entry)
+        if len(self._gain_retried) > 100:
+            self._gain_retried = {entry}
+        self._retry_why[entry] = "gain_filter"
+        return True
+
+    async def config_changed(self) -> None:
+        """Nastavení se změnilo za běhu (web). Srovnání hlasitosti: nový cíl /
+        vypnutí platí od další načtené skladby — hrající se nemění."""
+        target = self._gain_target()
+        if target == self._gain_sent:
+            return
+        if (target is not None and not self._gain_script and self.writer is not None
+                and GAIN_SCRIPT.is_file()):
+            # zapnuto až za běhu: skript se do mpv načte teď
+            self._gain_script = _ok(await self._command("load-script", str(GAIN_SCRIPT)))
+        ok = None
+        if self._resolver is None:
+            self._gain_sent = target  # bez resolveru není komu to říct (a nesrovnává se)
+        else:
+            resp = await self._resolver_call({"op": "gain", "target": target})
+            ok = bool(resp and resp.get("ok"))
+            if ok:
+                self._gain_sent = target
+            elif self._gain_unsent == (target,):
+                return  # resolver nepřevzal (restartuje se): zkusí se znovu, do logu jednou
+            self._gain_unsent = None if ok else (target,)
+        telemetry.event("player.gain_config", enabled=target is not None, target=target,
+                        ok=ok, script=self._gain_script)
 
     # ---------- navázání po restartu služby ----------
 
@@ -2047,6 +2202,9 @@ class MpvPlayer(Player):
             if not self._prefetch_now:
                 await asyncio.sleep(PREFETCH_SETTLE)  # fronta se mění po dávkách
             self._prefetch_now = False
+            if self._gain_target() != self._gain_sent:
+                with suppress(Exception):  # nastavení změněné jinudy než z webu
+                    await self.config_changed()
             ahead = self.prefetch_ids()
             # Codex si bere ~200 MB — node vedle by poslal Pi do swapu. Seznam
             # se ale pošle i tak (s hold): resolver podle něj drží, co už má

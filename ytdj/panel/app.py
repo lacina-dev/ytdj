@@ -538,7 +538,7 @@ class PanelApp:
         new = [] if first else [
             r for r in reqs if isinstance(r, dict) and str(r.get("id")) not in self._seen_reqs
             and str(r.get("id")) not in self.wish.mine
-            and r.get("state") in ("waiting", "thinking", "queued", "playing")
+            and r.get("state") in ("waiting", "thinking", "asking", "queued", "playing")
         ]
         self._seen_reqs = ids if first else (self._seen_reqs | ids)
         if new:

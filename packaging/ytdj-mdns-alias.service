@@ -1,0 +1,22 @@
+[Unit]
+Description=ytdj — druhé jméno v síti (jukebox.local)
+Documentation=https://github.com/lacina-dev/ytdj
+Wants=avahi-daemon.service network-online.target
+After=avahi-daemon.service network-online.target
+
+[Service]
+Type=simple
+# skript se při instalaci kopíruje mimo domovský adresář (DynamicUser do něj nevidí)
+ExecStart=/usr/local/lib/ytdj/mdns-alias.sh jukebox.local
+Restart=always
+RestartSec=10
+# jen vyhlašuje jméno přes avahi (D-Bus) — žádná práva navíc
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+SyslogIdentifier=ytdj-mdns
+
+[Install]
+WantedBy=multi-user.target

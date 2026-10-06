@@ -45,7 +45,7 @@ from .. import adminpin
 from .. import config as cfgmod
 from .. import manual
 from .. import telemetry
-from . import votes_api
+from . import issues_api, votes_api
 
 if TYPE_CHECKING:  # circular import — we pull in App for typing only
     from ..__main__ import App
@@ -94,7 +94,7 @@ PING = "event: ping\ndata: 1\n\n"
 SOURCES = frozenset({"web", "panel", "repl"})  # who sent a wish (POST /api/prompt "source")
 
 NO_INDEX_HTML = """<!doctype html><meta charset="utf-8">
-<title>ytdj</title>
+<title>Jukebox</title>
 <body style="font:16px/1.5 system-ui;margin:3rem auto;max-width:32rem">
 <h1>Frontend zatím chybí</h1>
 <p>Soubor <code>ytdj/web/static/index.html</code> neexistuje, takže není co
@@ -178,6 +178,8 @@ LIVE_KEYS = (
     "playlist_import_max",
     "prefetch_first",
     "prefetch_max",
+    "loudness_normalize",
+    "loudness_target",
 )
 
 CODEX_MODELS = [
@@ -233,6 +235,20 @@ FIELD_META: dict[str, tuple[str, str, tuple[int, int] | None]] = {
         "Po nejbližších se dopředu přidává po jedné až do tolika skladeb "
         "(rychlé série Další); vždy až po skladbách, na které se čeká.",
         (3, 15),
+    ),
+    "loudness_normalize": (
+        "Srovnávat hlasitost skladeb",
+        "Každá skladba se ztlumí nebo zesílí tak, aby všechny hrály stejně hlasitě "
+        "(podle hlasitosti, kterou o skladbě ví YouTube). Nastavená hlasitost se nemění. "
+        "Platí od další skladby.",
+        None,
+    ),
+    "loudness_target": (
+        "Cílová hlasitost skladeb (LUFS)",
+        "Na jakou úroveň se skladby srovnávají; −14 mají streamovací služby. Nižší číslo "
+        "(−18) = všechno tišší, ale ani tiché nahrávky není třeba zesilovat. "
+        "Platí od další skladby.",
+        (-24, -8),
     ),
     "queue_target": (
         "Cílová hloubka fronty",
@@ -636,7 +652,12 @@ class WebServer:
             Route("/napoveda", _safe(self._manual), methods=["GET"]),
             Route("/jak-to-funguje", _safe(self._manual), methods=["GET"]),
             Route("/manual.css", _safe(self._manual), methods=["GET"]),
+            # vzhled Auto / Den / Noc pro všechny stránky (F-WEB-09)
+            Route("/theme.js", _safe(self._manual), methods=["GET"]),
             *votes_api.routes(self),  # hlasování kanceláře (PLAN H)
+            # Chyby a nápady kolegů (POZADAVKY #52, F-HLASENI-01…)
+            Route("/hlaseni", _safe(self._manual), methods=["GET"]),
+            *issues_api.routes(self),
             Mount(
                 "/static",
                 StaticFiles(directory=str(STATIC_DIR), check_dir=False),
@@ -1135,6 +1156,8 @@ class WebServer:
             ok, msg = await wq.remove(rid, token)
         elif action == "next":
             ok, msg = await wq.set_play_next(rid, token)
+        elif action == "answer":  # upřesnění: autor vybral jednu z možností DJe
+            ok, msg = await wq.answer(rid, token, data.get("choice"))
         else:
             return _json_error(f"Neznámá akce: {action!r}", 400)
         telemetry.event("web.request_action", action=action, id=rid[:16], ok=ok, **_client(request))
@@ -1412,6 +1435,13 @@ class WebServer:
                 setattr(self.app.cfg, key, value)
             elif getattr(self.app.cfg, key, None) != value:
                 restart.append(key)
+        # přehrávač si převezme, co se ho týká (srovnání hlasitosti skladeb)
+        notify = getattr(getattr(self.app, "player", None), "config_changed", None)
+        if callable(notify):
+            try:
+                await notify()
+            except Exception:
+                log.exception("přehrávač nepřevzal změnu nastavení")
         # jen klíče a čísla/přepínače — cesty a texty (cookies…) se nepíšou
         telemetry.event(
             "web.config", keys=sorted(changes), restart=restart,

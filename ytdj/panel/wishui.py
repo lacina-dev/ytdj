@@ -84,12 +84,14 @@ STRINGS = {
         "dj_says": "DJ:",
         "failed": "Přání se nepovedlo poslat",
         "leave": "Zpět k přehrávání",
+        "ask": "Co přesně myslíš?",
+        "ask_leave": "Nevím — ať vybere DJ",
         "again": "Další přání",
         "done": "Hotovo",
         "retry": "Zkusit znovu",
         "next_btn": "Hned po téhle",
         "removed": "Přání bylo odebráno.",
-        "err_offline": "ytdj teď neodpovídá (možná se restartuje).",
+        "err_offline": "Jukebox teď neodpovídá (možná se restartuje).",
         "err_server": "DJ narazil na chybu: {e}",
         "err_busy": "DJ má pořád práci s jiným přáním. Zkus to za chvíli.",
     },
@@ -119,12 +121,14 @@ STRINGS = {
         "dj_says": "DJ:",
         "failed": "The wish did not get through",
         "leave": "Back to the player",
+        "ask": "What exactly do you mean?",
+        "ask_leave": "Not sure — let the DJ pick",
         "again": "Another wish",
         "done": "Done",
         "retry": "Try again",
         "next_btn": "Right after this",
         "removed": "The wish was removed.",
-        "err_offline": "ytdj is not answering (restarting, maybe).",
+        "err_offline": "Jukebox is not answering (restarting, maybe).",
         "err_server": "The DJ ran into an error: {e}",
         "err_busy": "The DJ is still busy with another wish. Try again in a moment.",
     },
@@ -188,6 +192,18 @@ Q_TITLE = (0, 0, W, 44)
 RM_W = 56
 
 
+# the DJ's question ("kapelu, nebo písničku?"): up to three finger-sized
+# answers under it, in the answer area
+ASK_TOP, ASK_BOTTOM, ASK_GAP = 140, 252, 6
+
+
+def ask_box(i: int, n: int) -> Box:
+    n = max(1, min(3, n))
+    h = (ASK_BOTTOM - ASK_TOP - ASK_GAP * (n - 1)) // n
+    y0 = ASK_TOP + i * (h + ASK_GAP)
+    return (8, y0, W - 8, y0 + h)
+
+
 def rm_box(i: int) -> Box:
     l, t, r, b = list_row(i)
     return (r - RM_W, t, r, b)
@@ -217,7 +233,9 @@ class WishView:
     hint: str = ""
     can_connect: bool = False  # the "Poslat" key is live
     # the answer
-    phase: str = ""  # "busy" | "queued" | "playing" | "ok" | "notfound" | "error"
+    phase: str = ""  # "busy" | "ask" | "queued" | "playing" | "ok" | "notfound" | "error"
+    question: str = ""  # phase "ask": the DJ is not sure what was meant…
+    options: tuple[str, ...] = ()  # …and these are the readings to pick from (one tap)
     wish: str = ""
     elapsed: int = 0
     reply: str = ""
@@ -248,6 +266,11 @@ def targets(v: WishView, lang: str = "cs") -> dict[str, Box]:
                 t[f"rm{i}"] = rm_box(i)
         return t
     if v.page == "sent":
+        if v.phase == "ask":
+            t = {"leave": BTN_FULL}
+            for i in range(min(3, len(v.options))):
+                t[f"opt{i}"] = ask_box(i, len(v.options))
+            return t
         if v.phase == "busy":
             return {"leave": BTN_FULL}
         if v.phase == "queued" and v.can_next:
@@ -259,7 +282,7 @@ def targets(v: WishView, lang: str = "cs") -> dict[str, Box]:
     return {}
 
 
-ACTIVE = ("waiting", "thinking", "queued", "playing")
+ACTIVE = ("waiting", "thinking", "asking", "queued", "playing")
 Region = tuple[str, Box, Callable[[WishView], tuple], Callable, bool]
 
 
@@ -311,7 +334,9 @@ class WishRenderer(NetRenderer):
             return [
                 ("stitle", S_TITLE, lambda v: (v.note,), lambda d, s, v: self._header(d, s, self.s["title"], v.note), False),
                 ("swish", S_WISH, lambda v: (v.wish, v.who), self._draw_wish_text, False),
-                ("smain", S_MAIN, lambda v: (v.phase, v.elapsed, v.reply, v.error, v.eta), self._draw_main, False),
+                ("smain", S_MAIN, lambda v: (v.phase, v.elapsed, v.reply, v.error, v.eta, v.question,
+                                             v.options, v.pressed if v.phase == "ask" else None),
+                 self._draw_main, False),
                 ("sbtns", S_BTNS, lambda v: (v.phase, v.pressed, v.can_next), self._draw_sent_btns, False),
             ]
         return []
@@ -498,7 +523,21 @@ class WishRenderer(NetRenderer):
     def _draw_main(self, d, size, v: WishView) -> None:
         w, h = size
         x = 14
-        if v.phase == "busy":
+        if v.phase == "ask":
+            # the DJ asks; one tap answers (no answer → it picks the first itself)
+            oy = S_MAIN[1]
+            q = v.question or self.s["ask"]
+            d.text((x, 16), ellipsize(q, self.value, w - 28), font=self.value, fill=ACCENT_TEXT, anchor="lm")
+            n = min(3, len(v.options))
+            for i in range(n):
+                bx = ask_box(i, n)
+                b = (bx[0], bx[1] - oy, bx[2] - 1, bx[3] - oy - 1)
+                pressed = v.pressed == f"opt{i}"
+                d.rounded_rectangle(b, radius=12, fill=SURFACE_HI if pressed else SURFACE)
+                d.text(((b[0] + b[2]) / 2, (b[1] + b[3]) / 2),
+                       ellipsize(v.options[i], self.f.artist, b[2] - b[0] - 20), font=self.f.artist,
+                       fill=ACCENT_TEXT if pressed else TEXT, anchor="mm")
+        elif v.phase == "busy":
             d.text((x, 14), ellipsize(self.s["picking"], self.ssid, w - 28), font=self.ssid, fill=ACCENT_TEXT, anchor="la")
             # a bar that creeps toward the usual length of a turn: it moves, so
             # it's alive, and it never claims to be done before the answer is
@@ -549,7 +588,9 @@ class WishRenderer(NetRenderer):
                 color = ACCENT_TEXT if pressed else TEXT
             d.text(((b[0] + b[2]) / 2, (b[1] + b[3]) / 2), label, font=self.f.button, fill=color, anchor="mm")
 
-        if v.phase == "busy":
+        if v.phase == "ask":
+            btn(BTN_FULL, "leave", self.s["ask_leave"], False)
+        elif v.phase == "busy":
             btn(BTN_FULL, "leave", self.s["leave"], False)
         elif v.phase == "queued" and v.can_next:
             btn(BTN_L, "next", self.s["next_btn"], False)

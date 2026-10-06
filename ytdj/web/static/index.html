@@ -6,8 +6,9 @@
 <meta name="color-scheme" content="dark light">
 <meta name="theme-color" content="#0e1013" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#faf7f2" media="(prefers-color-scheme: light)">
-<title>ytdj — DJ pro kancelář</title>
+<title>Jukebox — DJ pro kancelář</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%277%27 fill=%27%23d8a656%27/%3E%3Crect x=%279%27 y=%2713%27 width=%273%27 height=%279%27 rx=%271.5%27 fill=%27%23141414%27/%3E%3Crect x=%2714.5%27 y=%278%27 width=%273%27 height=%2714%27 rx=%271.5%27 fill=%27%23141414%27/%3E%3Crect x=%2720%27 y=%2711%27 width=%273%27 height=%2711%27 rx=%271.5%27 fill=%27%23141414%27/%3E%3C/svg%3E">
+<script src="/theme.js"></script>
 <style>
   :root {
     --bg: #0e1013;
@@ -31,8 +32,10 @@
     --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 34px rgba(0,0,0,.38);
     --radius: 16px;
   }
+  /* Vzhled (F-WEB-09): bez volby podle zařízení; ruční volba = <html data-theme="light|dark">
+     (/theme.js). Tmavé barvy jsou základ výše, světlé jsou tu dvakrát — pro zařízení a pro volbu. */
   @media (prefers-color-scheme: light) {
-    :root {
+    :root:not([data-theme]) {
       --bg: #faf7f2;
       --bg-glow: rgba(176, 124, 32, 0.10);
       --card: #fffdf9;
@@ -54,6 +57,29 @@
       --shadow: 0 1px 2px rgba(60,45,20,.07), 0 10px 30px rgba(60,45,20,.08);
     }
   }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #faf7f2;
+    --bg-glow: rgba(176, 124, 32, 0.10);
+    --card: #fffdf9;
+    --surface: rgba(30, 24, 12, 0.04);
+    --surface-2: rgba(30, 24, 12, 0.075);
+    --line: rgba(30, 24, 12, 0.13);
+    --line-soft: rgba(30, 24, 12, 0.075);
+    --text: #1d1b17;
+    --text-dim: #555149;
+    --text-faint: #6b665c;
+    --accent: #9a6f1c;
+    --accent-soft: rgba(154, 111, 28, 0.12);
+    --accent-text: #83590f;
+    --btn: #8a6216;
+    --on-btn: #ffffff;
+    --ok: #3f7030;
+    --warn: #a0541f;
+    --err: #b03a3a;
+    --shadow: 0 1px 2px rgba(60,45,20,.07), 0 10px 30px rgba(60,45,20,.08);
+  }
+  :root[data-theme="dark"] { color-scheme: dark; }
 
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
@@ -133,7 +159,8 @@
     display: grid; place-items: center; font-size: .82rem; font-weight: 700;
     background: hsl(var(--h) 55% 50% / .22); color: hsl(var(--h) 60% 76%);
   }
-  @media (prefers-color-scheme: light) { .av { color: hsl(var(--h) 60% 28%); background: hsl(var(--h) 55% 50% / .18); } }
+  @media (prefers-color-scheme: light) { :root:not([data-theme]) .av { color: hsl(var(--h) 60% 28%); background: hsl(var(--h) 55% 50% / .18); } }
+  :root[data-theme="light"] .av { color: hsl(var(--h) 60% 28%); background: hsl(var(--h) 55% 50% / .18); }
   @media (pointer: coarse) { .me { min-height: 44px; } }
 
   /* ---------- banners ---------- */
@@ -288,6 +315,10 @@
   .mw-eta { margin: 8px 0 0; font-size: 1.02rem; }
   .mw-eta b { font-weight: 700; }
   .mw-eta .sub { color: var(--text-dim); font-size: .92rem; }
+  .mw-ask { margin: 8px 0 0; display: flex; flex-wrap: wrap; gap: 8px; }
+  .mw-ask p { flex: 1 0 100%; margin: 0; font-weight: 600; }
+  .mw-ask .sub { font-weight: 400; color: var(--text-dim); font-size: .86rem; }
+  .mw-ask .ask-opt { flex: 1 1 auto; min-height: 44px; }
   .mw-reply { margin: 6px 0 0; font-size: .86rem; color: var(--text-dim); overflow-wrap: anywhere; }
   .steps { display: flex; gap: 4px; list-style: none; margin: 12px 0 0; padding: 0; }
   .steps li { flex: 1; min-width: 0; font-size: .72rem; color: var(--text-faint); text-align: center; }
@@ -321,7 +352,8 @@
          flex: none; padding: 0 8px; border-radius: 99px; font-size: .75rem; font-weight: 650; line-height: 1.65;
          white-space: nowrap; background: hsl(var(--h) 50% 50% / .17); border: 1px solid hsl(var(--h) 50% 55% / .32);
          color: hsl(var(--h) 60% 76%); }
-  @media (prefers-color-scheme: light) { .who { color: hsl(var(--h) 60% 28%); } }
+  @media (prefers-color-scheme: light) { :root:not([data-theme]) .who { color: hsl(var(--h) 60% 28%); } }
+  :root[data-theme="light"] .who { color: hsl(var(--h) 60% 28%); }
   .who.you { background: var(--btn); border-color: transparent; color: var(--on-btn); }
   .list .req { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 3px; }
 
@@ -345,6 +377,15 @@
   .hist li.skipped-row .t { color: var(--text-dim); }
 
   footer.foot { margin-top: 28px; display: flex; justify-content: center; }
+  /* přepínač vzhledu Auto / Den / Noc (F-WEB-09) — stejný jako v manual.css */
+  .theme { margin-top: 10px; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px;
+           font-size: .86rem; color: var(--text-faint); }
+  .theme .seg { display: inline-flex; padding: 3px; border-radius: 99px; border: 1px solid var(--line); background: var(--surface); }
+  .theme button { min-height: 36px; min-width: 58px; padding: 4px 14px; border: 0; border-radius: 99px; background: none;
+                  color: var(--text-dim); font-size: .86rem; font-weight: 600; }
+  .theme button:hover { color: var(--text); }
+  .theme button[aria-pressed="true"] { background: var(--btn); color: var(--on-btn); }
+  @media (pointer: coarse) { .theme button { min-height: 44px; } }
 
   /* ---------- hlasování (PLAN H) ---------- */
   .navbtn { min-height: 40px; padding: 6px 12px; border-radius: 99px; border: 1px solid var(--line);
@@ -357,6 +398,25 @@
   @media (max-width: 360px) { .brand .name { display: none; } }
   .navbtn.help { flex: none; width: 40px; padding: 0; justify-content: center; text-decoration: none; font-size: 1.02rem; font-weight: 750; }
   @media (pointer: coarse) { .navbtn.help { width: 44px; } }
+  /* Chyby a nápady (/hlaseni): odkaz v hlavičce s počtem otevřených */
+  .navbtn.issues { flex: none; text-decoration: none; }
+  .navbtn.issues .cnt { min-width: 20px; padding: 0 6px; border-radius: 99px; background: var(--accent-soft);
+                        color: var(--accent-text); font-size: .76rem; line-height: 20px; text-align: center; }
+  /* telefon: jen ikona s počtem v rohu; název „Jukebox" ustoupí, logo zůstává */
+  @media (max-width: 480px) {
+    .navbtn.issues { position: relative; width: 44px; padding: 0; justify-content: center; }
+    .navbtn.issues .cnt { position: absolute; top: -5px; right: -5px; min-width: 18px; padding: 0 4px; line-height: 18px;
+                          font-size: .68rem; background: var(--btn); color: var(--on-btn); }
+    .brand .name { display: none; }
+  }
+  @media (max-width: 360px) { header.top { gap: 6px; } }
+  /* Hlavička se nesmí rozlézt ani s dlouhou přezdívkou: logo a název drží šířku, popisky
+     ustupují dřív, než dojde místo, a jméno se zkrátí třeba až na kolečko s iniciálou. */
+  .brand { flex: none; }
+  .me { min-width: 44px; overflow: hidden; }
+  @media (max-width: 900px) { .brand .sub { display: none; } }
+  @media (max-width: 760px) { .navbtn .lbl { display: none; } }
+  @media (max-width: 640px) { .conn #connText { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); } }
   .modal .hlp { display: flex; align-items: center; justify-content: center; min-height: 44px; margin-top: 8px;
                 font-size: .9rem; color: var(--accent-text); }
 
@@ -451,7 +511,8 @@
            -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
   .modal .box { width: min(420px, 100%); padding: 24px 22px 20px; background: var(--card);
                 border: 1px solid var(--line); border-radius: 20px; box-shadow: var(--shadow); }
-  @media (prefers-color-scheme: dark) { .modal .box { background: #181b20; } }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme]) .modal .box { background: #181b20; } }
+  :root[data-theme="dark"] .modal .box { background: #181b20; }
   .modal .logo { width: 44px; height: 44px; border-radius: 13px; margin-bottom: 14px; }
   .modal .logo svg { width: 26px; height: 26px; }
   .modal h2 { margin: 0 0 6px; font-size: 1.35rem; line-height: 1.25; }
@@ -531,13 +592,16 @@
   <header class="top">
     <div class="brand">
       <span class="logo" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="10" width="3" height="9" rx="1.5"/><rect x="10.5" y="5" width="3" height="14" rx="1.5"/><rect x="17" y="8" width="3" height="11" rx="1.5"/></svg></span>
-      <span class="name">ytdj</span>
+      <span class="name">Jukebox</span>
       <span class="sub">DJ pro celou kancelář</span>
     </div>
     <span class="conn" id="conn" title="Spojení s jukeboxem"><span class="dot"></span><span id="connText">připojuji…</span></span>
     <button class="navbtn" id="votesBtn" type="button" aria-label="Hlasování kanceláře — oblíbené a vyřazené">
       <span aria-hidden="true">👍👎</span><span class="lbl">Hlasování</span>
     </button>
+    <a class="navbtn issues" id="issuesBtn" href="/hlaseni" aria-label="Chyby a nápady — nahlásit chybu nebo navrhnout vylepšení" title="Chyby a nápady">
+      <span aria-hidden="true">💡</span><span class="lbl">Chyby a nápady</span><span class="cnt" id="issuesCnt" hidden></span>
+    </a>
     <a class="navbtn help" id="helpBtn" href="/napoveda" aria-label="Nápověda — jak jukebox používat" title="Nápověda">?</a>
     <button class="me" id="meBtn" type="button" hidden>
       <span class="av" id="meAv" aria-hidden="true"></span><span class="nm" id="meName"></span>
@@ -713,6 +777,14 @@
       Nastavení jukeboxu
     </button>
   </footer>
+  <div class="theme" data-theme-switch role="group" aria-label="Vzhled stránky" hidden>
+    <span>Vzhled</span>
+    <span class="seg">
+      <button type="button" data-theme-set="auto" aria-pressed="true" title="Podle zařízení">Auto</button>
+      <button type="button" data-theme-set="light" aria-pressed="false" title="Světlý">Den</button>
+      <button type="button" data-theme-set="dark" aria-pressed="false" title="Tmavý">Noc</button>
+    </span>
+  </div>
 </div>
 
 <!-- první návštěva: přezdívka; později změna přes "Jsi: …" -->
@@ -1237,8 +1309,8 @@
     // --- now playing ---
     setHidden(el.idleHint, !!cur || !!s.busy || !!s.starting || S.sending);
     renderReason(cur && cur.reason);
-    var docTitle = cur ? (cur.title || "Neznámá skladba") + (cur.artist ? " — " + cur.artist : "") + " · ytdj"
-                       : "ytdj — DJ pro kancelář";
+    var docTitle = cur ? (cur.title || "Neznámá skladba") + (cur.artist ? " — " + cur.artist : "") + " · Jukebox"
+                       : "Jukebox — DJ pro kancelář";
     if (docTitle !== S.title) { S.title = docTitle; document.title = docTitle; }
     if (cur) {
       el.now.classList.remove("idle");
@@ -1330,13 +1402,14 @@
     }
   }
 
-  var ACTIVE = { waiting: 1, thinking: 1, queued: 1, playing: 1 };
+  var ACTIVE = { waiting: 1, thinking: 1, asking: 1, queued: 1, playing: 1 };
   var ICO_X = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
   var STEPS = ["Přijato", "DJ vybírá", "Ve frontě", "Hraje"];
-  var STEP_OF = { waiting: 0, thinking: 1, queued: 2, playing: 3 };
+  var STEP_OF = { waiting: 0, thinking: 1, asking: 1, queued: 2, playing: 3 };
 
   // when the wish plays — the honest, big line on the person's own card
   function etaLine(r) {
+    if (r.state === "asking") return "<b>DJ se ptá</b>" + (r.ask_s ? ' <span class="sub">· za ' + r.ask_s + " s vybere sám</span>" : "");
     if (r.state === "playing") {
       return "<b>Hraje teď</b>" + (r.next ? ' <span class="sub">· dál ' + esc((r.next.artist ? r.next.artist + " — " : "") + r.next.title) + "</span>" : "");
     }
@@ -1375,14 +1448,19 @@
         var cls = i < step ? "done" : (i === step ? "cur" + (r.state === "thinking" || r.state === "waiting" ? " pulse" : "") : "");
         return '<li class="' + cls + '"' + (i === step ? ' aria-current="step"' : "") + ">" + name + "</li>";
       }).join("") + "</ol>" : "";
-      var reply = r.reply && r.state !== "waiting" && r.state !== "thinking" ? r.reply : "";
+      var reply = r.reply && r.state !== "waiting" && r.state !== "thinking" && r.state !== "asking" ? r.reply : "";
+      // upřesnění: DJ si není jistý — autor vybere jedním ťuknutím (jinak rozhodne DJ sám)
+      var ask = r.state === "asking" && r.options && r.options.length ? '<div class="mw-ask"><p>' + esc(r.question || "Co přesně myslíš?") + "</p>" +
+        (S.tokens[r.id] ? r.options.map(function (o, i) {
+          return '<button class="btn ask-opt" type="button" data-ans="' + esc(r.id) + '" data-choice="' + i + '">' + esc(o) + "</button>";
+        }).join("") : '<p class="sub">Odpovědět může jen ten, kdo přání poslal (z téhož zařízení).</p>') + "</div>" : "";
       var canRm = live && S.tokens[r.id];
       return '<article class="mw' + (live ? "" : bad ? " fin bad" : " fin") + '" data-id="' + esc(r.id) + '">' +
              '<div class="mw-head"><span class="mw-text">„' + esc(r.text) + "“</span>" +
              (canRm ? '<button class="rm" type="button" data-rm="' + esc(r.id) + '" aria-label="Odebrat přání „' +
                       esc(r.text) + '“" title="Odebrat přání">' + ICO_X + "</button>" : "") + "</div>" +
              steps +
-             '<p class="mw-eta">' + etaLine(r) + "</p>" +
+             '<p class="mw-eta">' + etaLine(r) + "</p>" + ask +
              (reply ? '<p class="mw-reply">DJ: ' + esc(reply) + "</p>" : "") +
              "</article>";
     }).join("");
@@ -1465,6 +1543,20 @@
 
   el.wishes.addEventListener("click", removeClick);
   el.mine.addEventListener("click", removeClick);
+  el.mine.addEventListener("click", answerClick);
+  async function answerClick(ev) {
+    var b = ev.target.closest && ev.target.closest("[data-ans]");
+    if (!b) return;
+    var id = b.getAttribute("data-ans");
+    [].forEach.call(el.mine.querySelectorAll('[data-ans="' + id + '"]'), function (x) { x.disabled = true; });
+    try {
+      await postJSON("/api/requests/" + encodeURIComponent(id), { action: "answer", choice: +b.getAttribute("data-choice"), token: (S.tokens[id] || {}).token });
+      if (!polling) setTimeout(refresh, 100);
+    } catch (e) {
+      showReply("Odpověď se nepodařilo odeslat: " + e.message, true, "");
+      if (!polling) setTimeout(refresh, 100);
+    }
+  }
   async function removeClick(ev) {
     var b = ev.target.closest && ev.target.closest("[data-rm]");
     if (!b) return;
@@ -1795,7 +1887,7 @@
   }
 
   async function restartApp() {
-    if (!confirm("Restartovat ytdj? Přehrávání se na pár vteřin přeruší.")) return;
+    if (!confirm("Restartovat Jukebox? Přehrávání se na pár vteřin přeruší.")) return;
     setMsg("Restartuji…");
     try {
       var res = await adminFetch("/api/restart", { method: "POST" });
@@ -1915,7 +2007,7 @@
           var f = cfg.fields.filter(function (x) { return x.key === k; })[0];
           return (f && f.label) || k;
         });
-        setMsg("Uloženo. Projeví se až po restartu ytdj: " + names.join(", ") + ".", "warn");
+        setMsg("Uloženo. Projeví se až po restartu jukeboxu: " + names.join(", ") + ".", "warn");
       } else {
         setMsg("Uloženo — " + keys.length + " " + plural(keys.length, "změna", "změny", "změn") + ".");
       }
@@ -2382,6 +2474,13 @@
   });
 
   route();
+
+  /* Chyby a nápady: počet otevřených u odkazu v hlavičce (jeden malý dotaz po načtení) */
+  fetch("/api/issues?limit=0", { cache: "no-store" }).then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (d) {
+      var n = d && d.counts ? d.counts.open : 0, c = $("#issuesCnt");
+      if (c && n > 0) { c.textContent = n; c.hidden = false; }
+    }).catch(function () {});
 
   el.btnSend.disabled = !el.prompt.value.trim();
   autosize();

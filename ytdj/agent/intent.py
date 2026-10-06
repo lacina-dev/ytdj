@@ -654,8 +654,14 @@ class Intent:
       song     `tracks` hned, pak rádio v jejich duchu (`seeds`)
       songs    jen `tracks` (hned, nebo po hrající — `play_next`); nálada zůstává
       mood     nové rádio ze `seeds` (nálada, žánr, období, "něco jako X")
+      album    celá `albums` v pořadí alba a jen ona (první skladby jako přání,
+               zbytek jako podkres alba — RadioPools.set_album)
       control  skip / pause / resume / stop / volume (`control`, `volume`)
       none     jen odpověď (otázka, pozdrav, `remember`)
+      ask      DJ si není jistý, co posluchač myslel, a katalog to nerozhodl:
+               `question` + 2–3 `options` (každá je hotový výklad — skladba,
+               interpret, nebo album; první je nejpravděpodobnější). Ptá se
+               jen fronta přání, jednou na přání (wishes.WishQueue._ask).
 
     `play_next` = zařadit až za hrající skladbu (nikdy ji neutnout).
     Postup: `CodexDJ.interpret()` → Intent, `CodexDJ.resolve()` → Plan
@@ -686,10 +692,18 @@ class Intent:
     favourites: str = ""
     fav_continuous: bool = True
     fav_alternate: bool = True
+    # alba, o která si posluchač řekl (interpret, název) — kind "album"
+    albums: list[Pair] = field(default_factory=list)
+    # posluchač výslovně chce vulgární / sprosté texty (rozhodl model): filtr
+    # explicitních se zvedne jen pro tohle přání a jeho podkres
+    explicit_ok: bool = False
+    # kind "ask": otázka a možnosti [{label, kind, artist, title}]
+    question: str = ""
+    options: list[dict] = field(default_factory=list)
 
     @property
     def changes_music(self) -> bool:
-        return self.kind in ("artist", "song", "songs", "mood")
+        return self.kind in ("artist", "song", "songs", "mood", "album")
 
 
 def _pairs(items: list[dict]) -> list[Pair]:
@@ -703,6 +717,60 @@ def _pairs(items: list[dict]) -> list[Pair]:
 
 
 _CONTROL = {"skip", "pause", "resume", "stop", "volume"}
+ASK_MAX_OPTIONS = 3
+
+
+def clean_options(items: Any) -> list[dict]:
+    """Možnosti upřesnění z rozhodnutí modelu: jen úplné a různé, nejvýš tři."""
+    out: list[dict] = []
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        kind = str(it.get("kind") or "").strip()
+        artist = str(it.get("artist") or "").strip()
+        title = str(it.get("title") or "").strip()
+        if kind not in ("song", "artist", "album") or not artist:
+            continue
+        if kind in ("song", "album") and not title:
+            continue
+        if kind == "artist":
+            title = ""
+        label = " ".join(str(it.get("label") or "").split())[:80]
+        if not label:
+            label = {"song": f"písnička {title} — {artist}", "artist": f"kapela {artist}",
+                     "album": f"album {title} — {artist}"}[kind]
+        opt = {"label": label, "kind": kind, "artist": artist, "title": title}
+        if all((o["kind"], norm(o["artist"]), norm(o["title"])) !=
+               (kind, norm(artist), norm(title)) for o in out):
+            out.append(opt)
+        if len(out) >= ASK_MAX_OPTIONS:
+            break
+    return out
+
+
+def option_decision(opt: dict) -> dict:
+    """Vybraná možnost → rozhodnutí ve tvaru modelu (hotové k provedení)."""
+    pair = {"artist": opt.get("artist", ""), "title": opt.get("title", "")}
+    data: dict = {"action": "start_radio", "seeds": [], "requested": [], "focus_artists": [],
+                  "albums": [], "explicit_ok": False, "after_current": False, "avoid": [],
+                  "mood": "", "volume": 0, "remember": "", "reply": ""}
+    if opt.get("kind") == "album":
+        data["albums"] = [pair]
+    elif opt.get("kind") == "artist":
+        data["focus_artists"] = [pair["artist"]]
+    else:
+        data["requested"] = [pair]
+        data["seeds"] = [pair]
+        data["mood"] = f"{pair['artist']} a podobné"
+    return data
+
+
+def option_intent(user_text: str, opt: dict, auto: bool = False) -> "Intent":
+    """Výklad přání podle jedné možnosti upřesnění (bez oprav — je jednoznačná)."""
+    intent = build_intent(user_text, option_decision(opt), auto=True)
+    intent.auto = auto
+    intent.note = "upřesnění: " + str(opt.get("label") or "")
+    return intent
 
 
 def build_intent(user_text: str, data: dict, auto: bool = False) -> Intent:
@@ -712,6 +780,16 @@ def build_intent(user_text: str, data: dict, auto: bool = False) -> Intent:
     jak ho model vyložil.
     """
     action = str(data.get("action") or "nothing")
+    if action == "ask":
+        options = clean_options(data.get("options"))
+        if len(options) >= 2 and not auto:
+            return Intent(kind="ask", text=user_text, question=" ".join(
+                str(data.get("question") or "").split())[:200], options=options,
+                remember=str(data.get("remember") or ""), reply=str(data.get("reply") or ""))
+        if options:
+            # jediná (nebo automatický tah): není na co se ptát — rovnou ji vzít
+            return option_intent(user_text, options[0], auto=auto)
+        action = "nothing"
     if action == "favourites":
         # oblíbené (hlasování kanceláře): skladby vybere aplikace, ne model
         # z historie (Pi 27. 9. 0:59: "co máme rádi" → Vojtaano a Depeche Mode
@@ -741,8 +819,14 @@ def build_intent(user_text: str, data: dict, auto: bool = False) -> Intent:
         action, focus, note = fix.action, fix.focus_artists, fix.note
         more_like = fix.more_like_current
 
+    albums = [(a, t) for a, t in _pairs(
+        [x for x in data.get("albums") or [] if isinstance(x, dict)]) if t]
     if action in _CONTROL:
         kind = "control"
+    elif albums and action in ("start_radio", "play_next"):
+        # album má přednost před interpretem: "metallica - album load" není
+        # "hraj Metallicu" (Pi 5. 10.: zazněly hity z jiných alb)
+        kind = "album"
     elif action == "start_radio" and focus:
         kind = "artist"
     elif action == "start_radio" and requested:
@@ -770,5 +854,7 @@ def build_intent(user_text: str, data: dict, auto: bool = False) -> Intent:
         remember=str(data.get("remember") or ""),
         reply=reply,
         auto=auto,
+        albums=albums if kind == "album" else [],
+        explicit_ok=bool(data.get("explicit_ok")) and kind in ("mood", "song", "songs", "artist"),
         note=note,
     )

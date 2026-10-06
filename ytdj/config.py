@@ -64,6 +64,11 @@ DEFAULTS: dict = {
     # ten ovšem bez PO tokenu nedostane formáty vůbec. Viz README.
     "player_client": "",
     "mpv_extra_args": [],
+    # Srovnání hlasitosti skladeb (ytdj/player/ytdl_loudness.py): každá skladba
+    # se ztlumí / zesílí na cílovou hlasitost (LUFS) podle hodnoty, kterou o ní
+    # má YouTube. Hlasitost (volume) je jiný stupeň a tímhle se nemění.
+    "loudness_normalize": True,
+    "loudness_target": -14,
     # Displej a web v kanceláři: sprostá slova ve jménech a textech přání se
     # nezobrazí (DJ je dostane beze změny). Seznam = kořeny slov navíc.
     "display_filter": True,
@@ -84,6 +89,10 @@ DEFAULTS: dict = {
     "wish_budget": 4,
     "wish_budget_panel": 3,
     "wish_artist_max": 12,
+    # Upřesnění přání: když si DJ opravdu není jistý (kapela, nebo písnička?),
+    # zeptá se autora přání a tolik sekund čeká na odpověď; pak vezme
+    # nejpravděpodobnější možnost sám. 0 = nikdy se neptat.
+    "wish_clarify_timeout": 25,
     # Import playlistu do oblíbených (ytdj/imports.py): nejvýš tolik písniček
     # z playlistů na člověka (všechny jeho playlisty dohromady).
     "playlist_import_max": 1000,
@@ -203,9 +212,12 @@ class Config:
     wish_budget: int = 4
     wish_budget_panel: int = 3
     wish_artist_max: int = 12
+    wish_clarify_timeout: int = 25
     playlist_import_max: int = 1000
     prefetch_first: int = 3
     prefetch_max: int = 10
+    loudness_normalize: bool = True
+    loudness_target: int = -14
 
     yt_dlp_path: str = ""
     node_bin: str | None = None

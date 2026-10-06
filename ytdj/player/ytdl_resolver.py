@@ -32,6 +32,10 @@ Protokol (unixový socket, jeden JSON řádek dotaz → jeden řádek odpověď)
                                  z urgentních vypadnou
   {"op": "drop", "ids": [...]}   mpv skladbu z téhle adresy nepřehrálo — hotové
                                  zahodit, příště vyřešit znovu
+  {"op": "gain", "target": -14}  srovnání hlasitosti: cíl v LUFS (null = vypnuto).
+                                 Skladba nese v JSONu změřenou hlasitost od
+                                 YouTube (ytdl_loudness) a "get" k ní připíše
+                                 zisk, který mpv nasadí (ytdj_gain.lua)
   {"op": "ping"}
 
 Stav a měření posílá na stderr strojově čitelnými řádky `EVENT {json}`, které
@@ -64,6 +68,11 @@ import sys
 import threading
 import time
 
+try:  # v testech (balíček ytdj)
+    from . import ytdl_loudness as loudness
+except ImportError:  # spuštěno jako skript: sousední soubor
+    import ytdl_loudness as loudness  # type: ignore[no-redef]
+
 # yt-dlp se importuje až ve workeru (_import_ytdlp): import sám trvá na Pi 3
 # vteřiny až desítky vteřin a socket s hotovými skladbami z cache musí
 # poslouchat hned po startu.
@@ -77,6 +86,8 @@ _JSC = False  # trvalý node pro JS výzvy (ytdl_jsc) zaregistrovaný
 # při importu a YoutubeDL se staví jen pod zámkem.
 _BUILD_LOCK = threading.Lock()
 _JSC_LOCAL = threading.local()  # výsledek JS výzvy poslední skladby tohoto vlákna
+_LOUD_LOCAL = threading.local()  # hlasitost od YouTube: (videoId, souhrn) tohoto vlákna
+_LOUD = False  # yt-dlp umí podat hlasitost skladby (ytdl_loudness.install)
 # Klient YouTube, se kterým se skladba řeší napřed (Premium opus 774 dává
 # i sám, s PO tokenem od bgutil). Výchozí výběr yt-dlp (web_creator + tv +
 # web_music) stál na Pi ~2 s navíc za dva klienty, které se nepoužijí. Když
@@ -133,6 +144,7 @@ def _import_ytdlp() -> None:
     except Exception as exc:  # starší yt-dlp: načte si je YoutubeDL() sám
         log(f"pluginy yt-dlp předem nejdou načíst: {exc}")
     _install_jsc()
+    _install_loudness()
     yt_dlp = mod
     _IMPORT_MS = int((time.monotonic() - t0) * 1000)
 
@@ -152,6 +164,30 @@ def _install_jsc() -> None:
     except Exception as exc:  # postaru: jednorázový node od yt-dlp
         log(f"trvalý node pro JS výzvy nejde: {exc}")
         _JSC = False
+
+
+def _install_loudness() -> None:
+    global _LOUD
+
+    def store(vid: str, summary: list) -> None:
+        _LOUD_LOCAL.last = (vid, summary)
+
+    try:
+        _LOUD = loudness.install(store)
+    except Exception as exc:  # jiná verze yt-dlp — hraje se dál, jen bez srovnání
+        log(f"hlasitost skladeb z yt-dlp nejde číst: {exc}")
+        _LOUD = False
+
+
+def _loudness(vid: str, format_id) -> float | None:
+    """Hlasitost (LUFS) skladby, kterou tohle vlákno právě vyřešilo."""
+    last = getattr(_LOUD_LOCAL, "last", None)
+    if not last or last[0] != vid:
+        return None
+    try:
+        return loudness.pick(last[1], format_id)
+    except Exception:
+        return None
 
 
 def template_key(argv: list[str]) -> tuple:
@@ -350,6 +386,8 @@ class Resolver:
         self.ydl_urgent = None  # vlastní YoutubeDL druhého vlákna (sdílet se nedá)
         self.ydl_urgent_for: list[str] | None = None
         self.lanes = 1  # kolik vláken řeší (serve() pustí i druhé, urgentní)
+        # Srovnání hlasitosti: cíl v LUFS, None = vypnuto (op "gain" / --gain-target)
+        self.gain_target: float | None = None
         self._plain: dict[str, tuple] = {}  # vlákno → (šablona, YoutubeDL bez rychlého klienta)
         self.waiting: dict[str, int] = {}  # vid → kolik "get" na něj čeká
         self.cancelled: set[str] = set()
@@ -522,6 +560,7 @@ class Resolver:
         Vrací (JSON, pole do resolver.resolve). Výjimka = selhalo obojí."""
         info: dict = {}
         _JSC_LOCAL.last = None
+        _LOUD_LOCAL.last = None
         try:
             data = ydl.extract_info(WATCH_URL.format(vid), download=False)
             out = json.dumps(ydl.sanitize_info(data))
@@ -559,6 +598,11 @@ class Resolver:
                         info.pop("client", None)
         if isinstance(data, dict) and data.get("format_id"):
             info["format"] = str(data.get("format_id"))[:20]
+        # hlasitost skladby od YouTube (z té odpovědi, ze které je výsledek)
+        loud = _loudness(vid, data.get("format_id") if isinstance(data, dict) else None)
+        if loud is not None:
+            out = loudness.tag(out, loudness.KEY_LOUD, loud)
+            info["loud"] = loud
         jsc = getattr(_JSC_LOCAL, "last", None)
         if jsc:
             info["jsc_ms"] = jsc[1]
@@ -596,7 +640,7 @@ class Resolver:
                 self.cv.notify_all()
             log(f"yt-dlp načteno za {_IMPORT_MS} ms ({'s' if _ejs else 'bez'} cache přehrávače)")
             emit("resolver.ready", import_ms=_IMPORT_MS, ejs_cache=_ejs is not None,
-                 jsc_server=_JSC, fast_client=FAST_CLIENT or None,
+                 jsc_server=_JSC, fast_client=FAST_CLIENT or None, loudness=_LOUD,
                  yt_dlp=getattr(getattr(yt_dlp, "version", None), "__version__", "?"))
         while True:
             self._run_one(urgent_only=False)
@@ -799,6 +843,8 @@ class Resolver:
                 # verified=False: podáno bez kontroly adresy (mladší než TRUST_AGE)
                 extra = {"verified": not trusted,
                          "age_s": int(time.time() - disk_t) if disk_t else None}
+            if data is not None:
+                data = self._with_gain(data, extra)
             # "hit" = mpv dostalo hotové ("disk" = hotové z cache před restartem),
             # "wait" = řešilo se, zatímco mpv čekalo
             emit("resolver.get", video_id=vid, hit=how in ("hit", "disk"), how=how,
@@ -806,6 +852,31 @@ class Resolver:
                  error=error, blocked_by=blocked_by, **extra)
             self._state()
             return data, error
+
+    def _with_gain(self, data: str, extra: dict) -> str:
+        """JSON pro mpv se ziskem pro tuhle skladbu (když se hlasitost srovnává
+        a YouTube ji řekl); do `extra` (resolver.get) hlasitost a zisk. V cache
+        zůstává jen hlasitost — cíl se může změnit, zisk se počítá při podání."""
+        try:
+            loud = loudness.read(data, loudness.KEY_LOUD)
+            if loud is not None:
+                extra["loud"] = loud
+            if self.gain_target is None:
+                return data
+            gain = loudness.gain_db(loud, self.gain_target)
+            if gain is None:
+                return data
+            extra["gain"] = gain
+            return loudness.tag(data, loudness.KEY_GAIN, gain)
+        except Exception:
+            return data
+
+    def set_gain(self, target) -> None:
+        """Cíl srovnání hlasitosti v LUFS; None = nesrovnávat."""
+        ok = isinstance(target, (int, float)) and not isinstance(target, bool)
+        with self.cv:
+            self.gain_target = float(target) if ok else None
+            emit("resolver.gain", target=self.gain_target)
 
     def _get(self, vid: str, argv: list[str], timeout: float):
         self.set_template(argv)
@@ -909,8 +980,9 @@ class Resolver:
             self.cv.notify_all()
 
 
-def serve(path: str, cache: str | None = None) -> None:
+def serve(path: str, cache: str | None = None, gain_target: float | None = None) -> None:
     resolver = Resolver(DiskCache(cache) if cache else None)
+    resolver.gain_target = gain_target
     resolver.load_disk()  # malý soubor v RAM — hotové se podávají hned od prvního dotazu
     try:
         os.unlink(path)
@@ -963,6 +1035,9 @@ def serve(path: str, cache: str | None = None) -> None:
                     elif op == "drop":
                         resolver.drop(list(req.get("ids") or []))
                         resp = {"ok": True}
+                    elif op == "gain":
+                        resolver.set_gain(req.get("target"))
+                        resp = {"ok": True}
                     elif op == "ping":
                         resp = {"ok": True, "template": resolver.template is not None,
                                 "loaded": resolver.loaded}
@@ -982,5 +1057,7 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--socket", required=True)
     p.add_argument("--cache", help="soubor pro hotové skladby (tmpfs, přežije restart služby)")
+    p.add_argument("--gain-target", type=float, default=None,
+                   help="srovnávat hlasitost skladeb na tolik LUFS (bez volby nesrovnávat)")
     a = p.parse_args()
-    serve(a.socket, a.cache)
+    serve(a.socket, a.cache, a.gain_target)

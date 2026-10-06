@@ -38,6 +38,8 @@ STATIC_DIR = Path(__file__).resolve().parent / "web" / "static"
 NAPOVEDA_HTML = STATIC_DIR / "napoveda.html"
 DOCS_HTML = STATIC_DIR / "jak-to-funguje.html"
 MANUAL_CSS = STATIC_DIR / "manual.css"
+ISSUES_HTML = STATIC_DIR / "hlaseni.html"  # Chyby a nápady (ytdj/issues.py)
+THEME_JS = STATIC_DIR / "theme.js"  # vzhled Auto / Den / Noc, společný všem stránkám (F-WEB-09)
 
 # oddíly JAK-TO-FUNGUJE.md, které nejsou úvodem oblasti
 AUTO_TITLE = "Automatiky, o kterých možná nevíš"
@@ -338,7 +340,8 @@ class Pages:
     """Hotové stránky v paměti, zabalené; znovu se složí jen po změně
     souborů nebo nastavení (ETag = otisk obsahu)."""
 
-    NAMES = {"napoveda": NAPOVEDA_HTML, "jak-to-funguje": DOCS_HTML, "manual.css": MANUAL_CSS}
+    NAMES = {"napoveda": NAPOVEDA_HTML, "jak-to-funguje": DOCS_HTML, "manual.css": MANUAL_CSS,
+             "hlaseni": ISSUES_HTML, "theme.js": THEME_JS}
 
     def __init__(self, funkce: Path = FUNKCE_MD, intro: Path = INTRO_MD) -> None:
         self.funkce = funkce
@@ -367,7 +370,9 @@ class Pages:
 
     def _build(self, name: str, src: Path, values: dict, labels: dict) -> Page:
         text = src.read_text(encoding="utf-8")
-        media = "text/css; charset=utf-8" if name.endswith(".css") else "text/html; charset=utf-8"
+        media = ("text/css; charset=utf-8" if name.endswith(".css")
+                 else "text/javascript; charset=utf-8" if name.endswith(".js")
+                 else "text/html; charset=utf-8")
         if name == "napoveda":
             text = fill_cfg(text, values)
         elif name == "jak-to-funguje":

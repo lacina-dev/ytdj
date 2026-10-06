@@ -307,6 +307,7 @@ class Candidate:
     duration: int | None = None
     views: int | None = None
     rank: int = 0
+    explicit: bool | None = None  # odznak E (ytmusic isExplicit), jinak None
 
     @property
     def artist(self) -> str:
@@ -438,6 +439,7 @@ def from_song(item: dict, rank_: int = 0) -> Candidate | None:
         duration=duration(item),
         views=parse_views(item.get("views")),
         rank=rank_,
+        explicit=True if item.get("isExplicit") else None,
     )
 
 

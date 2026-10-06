@@ -22,8 +22,10 @@
   --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 34px rgba(0,0,0,.38);
   --radius: 16px;
 }
+/* Vzhled (F-WEB-09): bez volby podle zařízení; ruční volba = <html data-theme="light|dark">
+   (theme.js). Tmavé barvy jsou základ výše, světlé jsou tu dvakrát — pro zařízení a pro volbu. */
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme]) {
     --bg: #faf7f2;
     --bg-glow: rgba(176, 124, 32, 0.10);
     --card: #fffdf9;
@@ -46,6 +48,30 @@
     --shadow: 0 1px 2px rgba(60,45,20,.07), 0 10px 30px rgba(60,45,20,.08);
   }
 }
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #faf7f2;
+  --bg-glow: rgba(176, 124, 32, 0.10);
+  --card: #fffdf9;
+  --surface: rgba(30, 24, 12, 0.04);
+  --surface-2: rgba(30, 24, 12, 0.075);
+  --line: rgba(30, 24, 12, 0.13);
+  --line-soft: rgba(30, 24, 12, 0.075);
+  --text: #1d1b17;
+  --text-dim: #555149;
+  --text-faint: #6b665c;
+  --accent: #9a6f1c;
+  --accent-soft: rgba(154, 111, 28, 0.12);
+  --accent-text: #83590f;
+  --btn: #8a6216;
+  --on-btn: #ffffff;
+  --ok: #3f7030;
+  --warn: #a0541f;
+  --err: #b03a3a;
+  --mark: rgba(176, 124, 32, 0.28);
+  --shadow: 0 1px 2px rgba(60,45,20,.07), 0 10px 30px rgba(60,45,20,.08);
+}
+:root[data-theme="dark"] { color-scheme: dark; }
 
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
@@ -251,3 +277,13 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
 footer.foot { margin-top: 30px; display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
 footer.foot a { display: inline-flex; align-items: center; min-height: 44px; padding: 8px 14px; border-radius: 10px;
                 color: var(--text-dim); font-size: .9rem; }
+
+/* přepínač vzhledu Auto / Den / Noc (F-WEB-09) — stejný na všech stránkách */
+.theme { margin-top: 10px; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px;
+         font-size: .86rem; color: var(--text-faint); }
+.theme .seg { display: inline-flex; padding: 3px; border-radius: 99px; border: 1px solid var(--line); background: var(--surface); }
+.theme button { min-height: 36px; min-width: 58px; padding: 4px 14px; border: 0; border-radius: 99px; background: none;
+                color: var(--text-dim); font-size: .86rem; font-weight: 600; }
+.theme button:hover { color: var(--text); }
+.theme button[aria-pressed="true"] { background: var(--btn); color: var(--on-btn); }
+@media (pointer: coarse) { .theme button { min-height: 44px; } }

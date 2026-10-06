@@ -77,6 +77,84 @@ class LinkTarget:
     tracks: list["Track"]
 
 
+@dataclass(slots=True)
+class Album:
+    """Album z katalogu: skladby v pořadí alba (jen ty, které jdou přehrát)."""
+
+    title: str
+    artist: str
+    tracks: list["Track"]
+    year: str = ""
+
+    def label(self) -> str:
+        return f"{self.artist} — {self.title}" if self.artist else self.title
+
+
+@dataclass(slots=True)
+class Probe:
+    """Co katalog vrátí na celý text přání — podklad pro model (ne rozhodnutí)."""
+
+    songs: list[str] = field(default_factory=list)
+    artists: list[str] = field(default_factory=list)
+    albums: list[str] = field(default_factory=list)
+    videos: list[str] = field(default_factory=list)
+    took_ms: int = 0
+
+    def __bool__(self) -> bool:
+        return bool(self.songs or self.artists or self.albums or self.videos)
+
+    def lines(self) -> list[str]:
+        out = []
+        for name, items in (("skladby", self.songs), ("interpreti", self.artists),
+                            ("alba", self.albums), ("videa", self.videos)):
+            if items:
+                out.append(f"  {name}: " + "; ".join(items))
+        return out
+
+
+# Jak moc edice alba sedí, když si o ni posluchač neřekl: studiová první,
+# pak remaster / výroční, živák a demo až nakonec.
+_EDITION_COST = {"live": 3, "demo": 3, "instrumental": 4, "cover": 4, "speed": 4,
+                 "remix": 2, "acoustic": 2, "extended": 1}
+
+
+def album_rank(found_title: str, found_type: str, wanted: str, rank: int) -> tuple | None:
+    """Klíč pro výběr edice alba (menší = lepší); None = jiné album.
+
+    Vlastní název (bez závorek a přívlastků edice) musí sedět. O jakou edici
+    jde, určuje zadání: "Live aus Berlin" nebo "Load (Remastered)" berou tu
+    jmenovanou; bez přívlastku vyhrává edice bez přívlastku (studiová).
+    """
+    f_base, f_tags = match.split_title(found_title)
+    w_base, w_tags = match.split_title(wanted)
+    f_full, w_full = _norm(found_title), _norm(wanted)
+    extra = 0
+    if f_full != w_full and _similar(_norm(f_base), _norm(w_base)) < 0.85 \
+            and _similar(f_full, w_full) < 0.85:
+        # Zadání s přívlastky navíc ("Live aus Berlin 1998 remastered" pro
+        # album "Live aus Berlin") nebo zkrácené ("All Is Violent" pro "All Is
+        # Violent, All Is Bright"): celý kratší název (aspoň dvě slova) musí
+        # ležet v delším.
+        f_tok, w_tok = _norm(f_base).split(), _norm(w_base).split()
+        short, long_ = (f_tok, w_tok) if len(f_tok) <= len(w_tok) else (w_tok, f_tok)
+        if len(short) >= 2 and " ".join(short) in " ".join(long_):
+            extra = len(long_) - len(short)
+        elif f_tok and set(w_tok) > set(f_tok) and set(w_tok) <= set(f_full.split()):
+            extra = 0  # "Load remastered" → "Load (Remastered Deluxe Box Set)"
+        else:
+            return None
+    exact = extra if f_full != w_full else 0
+    if f_full != w_full and not extra:
+        exact = 1
+    f_ver, w_ver = match.version_tags(f"{f_tags} {found_title}"), match.version_tags(
+        f"{w_tags} {wanted}")
+    cost = sum(_EDITION_COST.get(t, 1) for t in f_ver - w_ver) + 3 * len(w_ver - f_ver)
+    if not w_tags.strip() and f_tags.strip() and not f_ver:
+        cost += 1  # "(Remastered Deluxe Box Set)", "(Re-Armed)" — až po studiové
+    kind = 0 if (found_type or "Album").lower() == "album" else 1
+    return (cost, kind, exact, rank)
+
+
 def to_track(item: dict) -> Track | None:
     vid = item.get("videoId")
     title = item.get("title")
@@ -136,7 +214,8 @@ SEARCH_LANGUAGE = "en"
 
 def _track(c: match.Candidate) -> Track:
     return Track(
-        id=c.id, title=c.title, artist=c.artist, album=c.album, duration=c.duration
+        id=c.id, title=c.title, artist=c.artist, album=c.album, duration=c.duration,
+        explicit=getattr(c, "explicit", None),
     )
 
 
@@ -523,6 +602,102 @@ class Catalog:
         if mine:
             log.info("interpret %r nalezen jako kanál s videi (%d)", name, len(mine))
         return mine[:limit]
+
+    # ---- album ----
+
+    async def album_tracks(self, artist: str, title: str) -> Album | None:
+        """Celé album v pořadí skladeb, nebo None (album katalog nezná).
+
+        Hledá mezi alby "interpret název"; interpret (je-li zadaný) i vlastní
+        název musí sedět, edici vybírá `album_rank` podle zadání. Dva dotazy
+        (hledání + obsah alba).
+        """
+        artist, title = _clean(artist), _clean(title)
+        if not title:
+            return None
+        query = f"{artist} {title}".strip()
+        with telemetry.timer("catalog.album", artist=artist, title=title) as ev:
+            raw = await self._search(query, filter="albums", limit=8)
+            best: tuple[tuple, dict] | None = None
+            for n, item in enumerate(raw[:8]):
+                if not item.get("browseId") or not item.get("title"):
+                    continue
+                names = match.artist_names(item)
+                if artist and names and match.artist_score(tuple(names), artist)[0] < 0.75:
+                    continue
+                key = album_rank(str(item["title"]), str(item.get("type") or ""), title, n)
+                if key is not None and (best is None or key < best[0]):
+                    best = (key, item)
+            ev["candidates"] = len(raw)
+            if best is None:
+                ev["found"] = None
+                return None
+            item = best[1]
+            data = await self._call(self.yt.get_album, item["browseId"])
+            a_title = _clean(str(data.get("title") or item["title"]))
+            a_artist = ", ".join(match.artist_names(data) or match.artist_names(item)) or artist
+            tracks: list[Track] = []
+            for t in data.get("tracks") or []:
+                if not isinstance(t, dict) or t.get("isAvailable") is False:
+                    continue
+                tr = to_track({**t, "album": a_title})
+                if tr is None:
+                    continue
+                if not tr.artist:
+                    tr.artist = a_artist
+                if all(x.id != tr.id for x in tracks):
+                    tracks.append(tr)
+            ev.update(found=f"{a_artist} — {a_title}", n=len(tracks),
+                      year=str(data.get("year") or item.get("year") or "") or None)
+            if not tracks:
+                return None
+            return Album(a_title, a_artist, tracks, str(data.get("year") or item.get("year") or ""))
+
+    # ---- podklad pro model ----
+
+    async def probe(self, text: str, songs: int = 4, artists: int = 2, albums: int = 3,
+                    videos: int = 2) -> Probe:
+        """Jedno obecné hledání celého textu přání: co katalog pod těmi slovy
+        zná (skladby, interpreti, alba, videa). Model podle toho pozná, jestli
+        posluchač jmenoval skladbu, kapelu, nebo album — sám do katalogu nevidí.
+        Jeden dotaz (~0,5 s); chyba = prázdný výsledek, přání na něm nestojí."""
+        out = Probe()
+        text = _clean(text)[:200]
+        if not text:
+            return out
+        t0 = time.monotonic()
+        try:
+            raw = await self._search(text)
+        except Exception as exc:
+            log.info("podklad z katalogu pro %r selhal: %s", text[:60], exc)
+            raw = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            kind = item.get("resultType")
+            names = ", ".join(match.artist_names(item))
+            title = _clean(str(item.get("title") or ""))
+            if kind == "song" and title and len(out.songs) < songs:
+                label = f"{names} — {title}" if names else title
+                if item.get("album") and isinstance(item["album"], dict) and item["album"].get("name"):
+                    label += f" [album {_clean(item['album']['name'])}]"
+                out.songs.append(label)
+            elif kind == "artist" and len(out.artists) < artists:
+                name = _clean(str(item.get("artist") or title))
+                if name:
+                    out.artists.append(name)
+            elif kind == "album" and title and len(out.albums) < albums:
+                extra = ", ".join(x for x in (str(item.get("type") or ""),
+                                              str(item.get("year") or "")) if x)
+                out.albums.append((f"{names} — {title}" if names else title)
+                                  + (f" ({extra})" if extra else ""))
+            elif kind == "video" and title and len(out.videos) < videos:
+                out.videos.append(f"{names} — {title}" if names else title)
+        out.took_ms = int((time.monotonic() - t0) * 1000)
+        telemetry.event("catalog.probe", text=telemetry.clip(text, 120), songs=len(out.songs),
+                        artists=len(out.artists), albums=len(out.albums), videos=len(out.videos),
+                        first=out.songs[0] if out.songs else None, took_ms=out.took_ms)
+        return out
 
     async def radio(self, video_id: str, limit: int = 50) -> list[Track]:
         """Radio from a seed track. Returns a different mix every time — by design."""

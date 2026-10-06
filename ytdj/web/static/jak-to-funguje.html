@@ -6,8 +6,9 @@
 <meta name="color-scheme" content="dark light">
 <meta name="theme-color" content="#0e1013" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#faf7f2" media="(prefers-color-scheme: light)">
-<title>Jak to funguje — ytdj</title>
+<title>Jak to funguje — Jukebox</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%277%27 fill=%27%23d8a656%27/%3E%3Crect x=%279%27 y=%2713%27 width=%273%27 height=%279%27 rx=%271.5%27 fill=%27%23141414%27/%3E%3Crect x=%2714.5%27 y=%278%27 width=%273%27 height=%2714%27 rx=%271.5%27 fill=%27%23141414%27/%3E%3Crect x=%2720%27 y=%2711%27 width=%273%27 height=%2711%27 rx=%271.5%27 fill=%27%23141414%27/%3E%3C/svg%3E">
+<script src="/theme.js"></script>
 <link rel="stylesheet" href="/manual.css">
 </head>
 <body>
@@ -63,6 +64,14 @@
   </section>
 
   <footer class="foot"><a href="/">Zpět na jukebox</a><a href="/napoveda">Nápověda</a></footer>
+  <div class="theme" data-theme-switch role="group" aria-label="Vzhled stránky" hidden>
+    <span>Vzhled</span>
+    <span class="seg">
+      <button type="button" data-theme-set="auto" aria-pressed="true" title="Podle zařízení">Auto</button>
+      <button type="button" data-theme-set="light" aria-pressed="false" title="Světlý">Den</button>
+      <button type="button" data-theme-set="dark" aria-pressed="false" title="Tmavý">Noc</button>
+    </span>
+  </div>
 </div>
 
 <script>

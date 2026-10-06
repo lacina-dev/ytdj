@@ -70,6 +70,17 @@ if ! command -v bwrap > /dev/null && command -v apt-get > /dev/null; then
     sudo apt-get install -y bubblewrap
 fi
 
+# Druhé jméno v síti: vedle <hostname>.local i jukebox.local (jen na jukeboxu
+# s avahi). Skript jde mimo domovský adresář — služba běží pod DynamicUser.
+if [[ "$model" == Raspberry\ Pi* ]] && systemctl is-active -q avahi-daemon 2>/dev/null; then
+    command -v avahi-publish > /dev/null || sudo apt-get install -y avahi-utils
+    sudo install -D -m 755 "$repo/packaging/rpi/mdns-alias.sh" /usr/local/lib/ytdj/mdns-alias.sh
+    sudo install -m 644 "$repo/packaging/ytdj-mdns-alias.service" /etc/systemd/system/ytdj-mdns-alias.service
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now ytdj-mdns-alias.service
+    echo "unit:    /etc/systemd/system/ytdj-mdns-alias.service (jukebox.local)"
+fi
+
 if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || echo no)" != "yes" ]; then
     echo "zapínám linger (spuštění bez přihlášení) — vyžádá si heslo:"
     sudo loginctl enable-linger "$USER"

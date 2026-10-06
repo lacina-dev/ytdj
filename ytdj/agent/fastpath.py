@@ -65,7 +65,14 @@ def declined(word: str, token: str) -> bool:
     stem = word[:-1] if word[-1] in "aeiouy" else word
     if token == stem:
         return False  # "Olympic" není "Olympica" — koncovou samohlásku čeština nezahodí
-    return token.startswith(stem) and token[len(stem):] in _ENDINGS
+    if token.startswith(stem) and token[len(stem):] in _ENDINGS:
+        return True
+    # Množné číslo na -ci má v ostatních pádech -k- (Pondělníci → od Pondělníků,
+    # Pondělníky): Pi 5. 10. "… další věci od Pondělníků" se s kapelou nespojilo.
+    if len(word) >= 6 and word.endswith("ci"):
+        hard = word[:-2] + "k"
+        return token.startswith(hard) and token[len(hard):] in {"u", "y", "um", "ach", "ama"}
+    return False
 
 
 def name_matches(tokens: list[str], artist_name: str) -> bool:

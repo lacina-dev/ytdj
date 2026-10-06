@@ -112,11 +112,16 @@ RESUME_MAX_AGE = 15 * 60  # s — starší stav = studený start (Pi bylo vypnut
 RESTORE_MAX_AGE = 2 * 3600  # s — přání se po restartu služby obnoví, i když se nehraje
 QUIET_FROM, QUIET_TO = 22, 7  # v noci se sám nikdy nerozjede
 
-ACTIVE = ("waiting", "thinking", "queued", "playing")
+# "asking" = DJ se autora zeptal, co myslel, a čeká na odpověď (nejdéle
+# wish_clarify_timeout s); fronta ani hudba na to nečekají
+ACTIVE = ("waiting", "thinking", "asking", "queued", "playing")
+ASK_TIMEOUT = 25  # s — výchozí wish_clarify_timeout (0 = neptat se)
+ASK_TIMEOUT_MAX = 120
 FINAL = ("done", "notfound", "error", "removed", "replaced", "skipped")
 STATE_CS = {
     "waiting": "čeká",
     "thinking": "DJ vybírá",
+    "asking": "čeká na upřesnění",
     "queued": "ve frontě",
     "playing": "hraje",
     "done": "hotovo",
@@ -281,7 +286,7 @@ class Wish:
     state: str = "waiting"
     play_next: bool = False
     cut: bool = False
-    kind: str = ""  # artist | song | songs | mood | link | control | none | local
+    kind: str = ""  # artist | album | song | songs | mood | link | control | none | local
     summary: str = ""
     reply: str = ""
     via: str = ""  # fast | codex | link | local
@@ -293,6 +298,22 @@ class Wish:
     # (RadioPools.set_favourites; "mine" = 👍 tohohle člověka, Wish.key)
     fav: str = ""
     fav_alternate: bool = True  # napřeskáčku podle interpretů (rozhodl model)
+    # přání alba (kind album): `tracks` = první skladby alba (rozpočet přání),
+    # `rest` = zbytek alba pro podkres; `album_heard` = co z něj už zaznělo
+    # v podkresu (po cizím přání se pokračuje tam, kde se přestalo)
+    album_heard: set[str] = field(default_factory=set)
+    # posluchač výslovně chtěl vulgární texty — filtr explicitních je zvednutý
+    # jen pro tohle přání a jeho podkres (rozhodl model, Intent.explicit_ok)
+    explicit_ok: bool = False
+    # upřesnění: DJ se zeptal (`question`, `options` = hotové výklady, první
+    # je nejpravděpodobnější) a čeká do `ask_until` (epoch s); `asked` = na
+    # tohle přání už otázka padla (druhá nepadne nikdy)
+    question: str = ""
+    options: list[dict] = field(default_factory=list)
+    ask_until: float = 0.0
+    ask_mono: float = 0.0
+    asked: bool = False
+    context: str = ""  # dovětek pro model (odpověď na otázku DJe napsaná textem)
     done_ids: set[str] = field(default_factory=set)
     current: str | None = None  # videoId, které z přání právě hraje
     played: int = 0  # kolik skladeb začalo hrát
@@ -378,6 +399,10 @@ class Wish:
         # kdo to je, stabilně a bez prozrazení id klienta: barva jmenovky na
         # displeji i webu, "tvoje" na webu (= "tag" z /api/me)
         out["who_key"] = tag_of(self.key)
+        if self.state == "asking" and self.options:
+            out["question"] = self.question
+            out["options"] = [str(o.get("label") or "") for o in self.options]
+            out["ask_s"] = max(0, int(round(self.ask_until - time.time())))
         if self.restored:
             out["restored"] = True
         if self.skipped_by:
@@ -402,6 +427,9 @@ class Wish:
             "tracks": [_track_json(t) for t in self.tracks],
             "rest": [_track_json(t) for t in self.rest[:100]],
             "done": sorted(self.done_ids),
+            "album_heard": sorted(self.album_heard) or None,
+            "asked": self.asked or None,
+            "explicit_ok": self.explicit_ok or None,
         }
 
     @classmethod
@@ -430,6 +458,9 @@ class Wish:
         w.tracks = [t for t in (_track_from(x) for x in d.get("tracks") or []) if t]
         w.rest = [t for t in (_track_from(x) for x in d.get("rest") or []) if t]
         w.done_ids = {str(x) for x in d.get("done") or []}
+        w.album_heard = {str(x) for x in d.get("album_heard") or []}
+        w.explicit_ok = bool(d.get("explicit_ok"))
+        w.asked = bool(d.get("asked"))
         if isinstance(d.get("current"), str):
             w.was_current = d["current"]
         return w
@@ -743,6 +774,7 @@ class WishQueue:
         self._last_skip: tuple | None = None
         self.last_heard: dict[str, float] = {}  # Wish.seat → kdy mu naposledy začala skladba
         self._bg_tasks: set[asyncio.Task] = set()
+        self._ask_tasks: dict[str, asyncio.Task] = {}  # časovače upřesnění (id přání → úloha)
         self._boot = boot_id()
         self._pause_note = False
         self._cur_left: tuple[float, float] | None = None  # (zbývá s, kdy změřeno)
@@ -856,6 +888,9 @@ class WishQueue:
             d["text"] = c.clean(d["text"])
             if d.get("skipped_by"):
                 d["skipped_by"] = c.clean(d["skipped_by"])
+            if d.get("options"):
+                d["question"] = c.clean(d.get("question", ""))
+                d["options"] = [c.clean(o) for o in d["options"]]
         return out
 
     def people(self) -> list[str]:
@@ -934,6 +969,7 @@ class WishQueue:
             self.nicks.touch(cid)
         who = nick or clean_who(who, source, cid)
         n = norm(text)
+        answered = ""
         if cid:
             # Starší přání téhož klienta, na která DJ ještě ani nesáhl, se
             # zahodí hned — ale jen když je nové opravou ("ne, radši…",
@@ -952,6 +988,10 @@ class WishQueue:
                 drop = [x for x in waiting if near_same(text, x.text)]
             for x in drop:
                 self._replace_waiting(x)
+            # Nové přání téhož člověka, když jeho starší čeká na upřesnění, je
+            # odpověď: starší končí a DJ dostane k novému, na co se ptal.
+            for x in [x for x in self.wishes if x.cid == cid and x.state == "asking"]:
+                answered = self._replace_asking(x)
             mine = [w for w in self.wishes if w.cid == cid and w.active]
             if len(mine) >= MAX_ACTIVE:
                 raise TooMany(f"Máš rozpracovaných {len(mine)} přání — počkej, až některé dohraje.")
@@ -963,6 +1003,9 @@ class WishQueue:
             cid=cid,
         )
         w.settled = asyncio.Event()
+        if cid and answered:
+            w.asked = True  # žádné řetězení otázek
+            w.context = answered
         # Nové přání člověka jde PŘED jeho starší (chce to teď), ta zůstávají
         # za ním; "a pak …" / "přidej …" naopak za ně.
         own = [x for x in self.wishes if x.key == w.key and x.active]
@@ -1010,6 +1053,23 @@ class WishQueue:
         telemetry.event("request.replaced", id=x.id, who=x.who, source=x.source, by="submit",
                         played=0)
 
+    def _replace_asking(self, x: Wish) -> str:
+        """Přání čekající na upřesnění nahradil jeho autor novým textem.
+        Vrací dovětek pro model: na co se DJ ptal a k jakému přání."""
+        self._ask_cancel(x.id)
+        waited = int((time.monotonic() - x.ask_mono) * 1000) if x.ask_mono else None
+        labels = [str(o.get("label") or "") for o in x.options]
+        x.state = "replaced"
+        x.reply = "Nahrazeno novějším přáním."
+        x.done_at = time.time()
+        x.settle()
+        telemetry.event("request.answer", id=x.id, who=x.who, source=x.source, by="new_wish",
+                        choice=None, waited_ms=waited)
+        telemetry.event("request.replaced", id=x.id, who=x.who, source=x.source, by="submit",
+                        played=0, why="answer")
+        return (f" (Tohle je odpověď posluchače na tvou otázku „{x.question}“ k jeho přání "
+                f"„{x.text[:200]}“; nabídl jsi: {'; '.join(labels)}. Už se neptej, rozhodni.)")
+
     def _trim(self) -> None:
         now = time.time()
         keep = [w for w in self.wishes if w.active or now - (w.done_at or now) < DONE_TTL]
@@ -1040,7 +1100,114 @@ class WishQueue:
                         played=w.played)
         return True, "Odebráno."
 
+    # ---- upřesnění: "kapelu, nebo písničku?" ----
+
+    def ask_timeout(self) -> float:
+        """Kolik sekund čekat na odpověď (nastavení wish_clarify_timeout; 0 = neptat se)."""
+        try:
+            value = float(getattr(self.cfg, "wish_clarify_timeout", ASK_TIMEOUT))
+        except (TypeError, ValueError):
+            value = float(ASK_TIMEOUT)
+        return max(0.0, min(float(ASK_TIMEOUT_MAX), value))
+
+    def _ask_cancel(self, wid: str) -> None:
+        task = self._ask_tasks.pop(wid, None)
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+
+    def _ask(self, w: Wish, intent: Any) -> None:
+        """DJ si není jistý: přání čeká na jedno ťuknutí autora. Nic neblokuje —
+        worker jde na další přání, hudba hraje dál; po čase rozhodne DJ sám."""
+        timeout = self.ask_timeout()
+        w.kind = "ask"
+        w.state = "asking"
+        w.asked = True
+        w.options = [dict(o) for o in intent.options]
+        labels = [str(o.get("label") or "") for o in w.options]
+        w.question = (intent.question or "Co přesně myslíš?").strip()
+        w.ask_mono = time.monotonic()
+        w.ask_until = time.time() + timeout
+        w.reply = f"{w.question} ({' / '.join(labels)})"
+        w.settle()  # starý klient, který čeká na odpověď, dostane otázku
+        telemetry.event("request.ask", id=w.id, who=w.who, source=w.source,
+                        question=telemetry.clip(w.question, 200), options=labels,
+                        timeout_s=timeout)
+        log.info("přání %s: ptám se — %s %s", w.id, w.question, labels)
+        task = asyncio.get_running_loop().create_task(self._ask_expire(w, timeout),
+                                                      name=f"ytdj-ask-{w.id}")
+        self._ask_tasks[w.id] = task
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())
+        self._changed()
+
+    async def _ask_expire(self, w: Wish, timeout: float) -> None:
+        await asyncio.sleep(timeout)
+        if w.state == "asking":
+            await self._choose(w, 0, by="timeout")
+
+    async def answer(self, wid: str, token: Any, choice: Any) -> tuple[bool, str]:
+        """Autor přání vybral jednu z možností (jedno ťuknutí)."""
+        w = self.by_id(wid)
+        if w is None:
+            return False, "Takové přání neznám."
+        if not self._authorized(w, token):
+            return False, "Tohle přání ti nepatří."
+        if w.state != "asking":
+            return False, "Tohle přání už na upřesnění nečeká."
+        try:
+            idx = int(choice)
+        except (TypeError, ValueError):
+            idx = -1
+        if not 0 <= idx < len(w.options):
+            return False, "Takovou možnost nemám."
+        label = str(w.options[idx].get("label") or "")
+        self._ask_cancel(w.id)
+        task = asyncio.get_running_loop().create_task(self._choose(w, idx, by="author"),
+                                                      name=f"ytdj-answer-{w.id}")
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        return True, f"Beru: {label}."
+
+    async def _choose(self, w: Wish, idx: int, by: str) -> None:
+        """Provede vybraný výklad přání (autor ťukl / čas vypršel → první možnost)."""
+        from .agent.intent import option_intent
+
+        if w.state != "asking" or not w.options:
+            return
+        t0 = time.monotonic()
+        opt = w.options[max(0, min(idx, len(w.options) - 1))]
+        labels = [str(o.get("label") or "") for o in w.options]
+        label = str(opt.get("label") or "")
+        waited = int((t0 - w.ask_mono) * 1000) if w.ask_mono else None
+        w.state = "thinking"
+        self._ask_tasks.pop(w.id, None)
+        telemetry.event("request.answer", id=w.id, who=w.who, source=w.source, by=by,
+                        choice=idx, label=label, waited_ms=waited)
+        lead = ""
+        if by != "author":
+            # [truthful] rozhodl DJ, ne posluchač — říct to a jak to změnit
+            lead = (f"Nevěděl jsem, jestli myslíš {' nebo '.join(labels)}; vzal jsem "
+                    f"{label} — jestli jinak, napiš to znovu.")
+            w.lead = (w.lead + " " if w.lead else "") + lead
+        w.options, w.question = [], ""
+        self._changed()
+        try:
+            plan = await self.dj.resolve(option_intent(w.text, opt))
+        except Exception as exc:
+            log.warning("upřesněné přání %s selhalo: %s", w.id, exc)
+            w.reply = self._failure_text(exc)
+            self._finish(w, "error", t0)
+            return
+        self._prioritise(plan)
+        async with self._apply_lock:
+            if not w.active:
+                return
+            await self._apply(w, plan, t0)
+            if lead and lead not in w.reply:
+                w.reply = f"{lead} {w.reply}".strip()
+        self._changed()
+
     async def _drop(self, w: Wish, state: str, replan: bool = True) -> None:
+        self._ask_cancel(w.id)
         self._codex_done(w.id)
         was = w.state
         w.state = state
@@ -1113,7 +1280,9 @@ class WishQueue:
             self._saver = asyncio.create_task(self._save_loop(), name="ytdj-session")
 
     async def stop(self) -> None:
-        tasks = [self._worker, self._replan_task, self._saver, *self._inflight.values()]
+        tasks = [self._worker, self._replan_task, self._saver, *self._inflight.values(),
+                 *self._ask_tasks.values()]
+        self._ask_tasks.clear()
         for task in tasks:
             if task and not task.done():
                 task.cancel()
@@ -1276,10 +1445,13 @@ class WishQueue:
                 w.state = "thinking"
                 self._changed()
                 change = wants_change(w.text)
+                may_ask = not w.asked and self.ask_timeout() > 0
                 with contextlib.suppress(AttributeError):
                     self.dj.asker = w.key  # "moje oblíbené" = tohohle člověka (prompt)
+                    self.dj.may_ask = may_ask  # nejvýš jedna otázka na přání
                 try:
-                    intent = await self.dj.interpret(w.text + (CHANGE_HINT if change else ""))
+                    intent = await self.dj.interpret(
+                        w.text + (CHANGE_HINT if change else "") + w.context)
                 except Exception as exc:
                     log.warning("Codex pro přání %s selhal: %s", w.id, exc)
                     w.reply = self._failure_text(exc)
@@ -1288,6 +1460,14 @@ class WishQueue:
                 finally:
                     with contextlib.suppress(AttributeError):
                         self.dj.asker = ""  # automatické tahy nejsou ničí
+                        self.dj.may_ask = False
+            if getattr(intent, "kind", "") == "ask":
+                if may_ask and intent.options:
+                    self._ask(w, intent)  # nečeká se tu: worker jde na další přání
+                    return
+                # ptát se nesmí (druhá otázka, vypnuto): nejpravděpodobnější výklad
+                from .agent.intent import option_intent
+                intent = option_intent(w.text, intent.options[0]) if intent.options else intent
             steered = False
             if change:
                 before = intent
@@ -1326,7 +1506,8 @@ class WishQueue:
         wait = getattr(self.player, "wait_ready", None)
         if wait is None or plan is None or getattr(plan, "failed", ""):
             return
-        first = (plan.requested or plan.artist_tracks or [None])[0]
+        first = (plan.requested or plan.artist_tracks
+                 or getattr(plan, "album_tracks", None) or [None])[0]
         if first is not None:
             task = asyncio.create_task(wait(first.id, timeout=20.0))
             task.add_done_callback(lambda t: t.cancelled() or t.exception())
@@ -1496,10 +1677,26 @@ class WishQueue:
             return
 
         dj = self.dj
-        if intent.kind in ("artist", "song", "mood"):
+        if intent.kind in ("artist", "song", "mood", "album"):
             # nový výslovný pokyn: výjimky ("ale ne Pohodu") podle něj
             dj.avoid = list(intent.exclude)
         allowed = getattr(dj, "_allowed", lambda ts: ts)
+        explicit_ok = bool(getattr(intent, "explicit_ok", False))
+        if intent.changes_music:
+            # Filtr explicitních je zvednutý jen pro přání, které si o vulgární
+            # texty výslovně řeklo; s každým dalším přáním zase platí (F-ZVUK-11).
+            w.explicit_ok = explicit_ok
+            if getattr(self.pools, "explicit_ok", False) and not explicit_ok:
+                self.pools.explicit_ok = False
+                telemetry.event("radio.explicit_ok", on=False, by=w.id)
+        # cizí album v podkresu: přání jiného člověka ho jen přeruší, nepřeladí
+        # ("něco jiného" ale směr opravdu mění — F-PRANI-12 — a album tím končí)
+        change = intent.changes_music and wants_change(w.text)
+        if change:
+            for x in self.wishes:
+                if x.kind == "album":
+                    x.album_heard.update(t.id for t in x.rest)
+        held = self._album_held_from(w) and not change
 
         if intent.kind == "control":
             await self._control(intent)
@@ -1527,6 +1724,16 @@ class WishQueue:
             w.artist, w.artists = label, list(intent.artists)
             w.tracks, w.rest = every[:cap], every[cap:]
             w.summary = f"interpret: {label}"
+        elif intent.kind == "album":
+            # Album jako podkres (vlastník 6. 10. 2026): první skladby alba
+            # jsou přání (rozpočet F-FRONTA-02 se nemění), zbytek hraje dál
+            # v pořadí alba jako podkres (_maybe_hand_over / _follow).
+            every = allowed(_dedup(list(plan.album_tracks)))
+            cap = self.amounts.budget_of(w)
+            w.artist = plan.album_label
+            w.artists = list(getattr(plan, "album_artists", []) or [])
+            w.tracks, w.rest = every[:cap], every[cap:]
+            w.summary = f"album: {plan.album_label}"
         elif intent.kind == "songs":
             w.tracks = list(plan.requested)
             w.summary = "skladba: " + "; ".join(t.label() for t in plan.requested[:3])
@@ -1549,16 +1756,23 @@ class WishQueue:
                                                mood=intent.mood, who=w.who, wid=w.id,
                                                played=[t.id for t in w.tracks],
                                                alternate=w.fav_alternate)
-            elif seeds and not others:
+            elif seeds and not others and not held:
                 await self._set_background(seeds=seeds, mood=intent.mood, who=w.who, wid=w.id,
-                                           allow_long=True)
+                                           allow_long=True, explicit_ok=explicit_ok)
         elif intent.kind == "mood":
             w.summary = f"nálada: {intent.mood}" if intent.mood else "nálada"
+            stash = self._album_stash() if held else None
             await self._set_background(seeds=plan.seeds, mood=intent.mood, who=w.who, wid=w.id,
-                                       replace=False)
+                                       replace=False, explicit_ok=explicit_ok,
+                                       keep_album=stash is not None)
             # blok nálady patří autorovi — ať ji uslyší, i když čekají jiní
             w.tracks = await dj.next_tracks(self.amounts.block)
-            await self._replace_background()
+            if stash is not None:
+                # cizí album pokračuje za tímhle blokem tam, kde přestalo
+                self.pools.session_seen.update(t.id for t in w.tracks)
+                await self._album_restore(stash)
+            else:
+                await self._replace_background()
         # Co právě hraje, už hraje — do přání to nepatří. Pi 26. 9. 9:41: jediná
         # vyžádaná skladba byla ta hrající, přání se po jejím dohrání "splnilo"
         # a Depeche Mode, o které si Robert řekl taky, nezaznělo vůbec.
@@ -1632,6 +1846,8 @@ class WishQueue:
         ts = [t for t in w.tracks if t.id not in w.done_ids]
         shown = ", ".join(_label(t) for t in ts[:3])
         more = f" a další ({len(ts) - 3})" if len(ts) > 3 else ""
+        if w.kind == "album":
+            return self._confirm_album(w, notes, when)
         if w.kind == "artist":
             names = w.artists or [w.artist]
             both = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " a " + names[-1]
@@ -1658,6 +1874,78 @@ class WishQueue:
             parts.append("Potom podobná hudba.")
         parts.append(when)
         return " ".join(x for x in parts if x).strip()
+
+    def _confirm_album(self, w: Wish, notes: list[str], when: str) -> str:
+        """Pravdivě o albu: kolik má skladeb, kolik jde jako přání a co se zbytkem."""
+        total = len(_dedup(list(w.tracks) + list(w.rest)))
+        mine = len(w.tracks)
+        first = {1: "první", 2: "první dvě", 3: "první tři", 4: "první čtyři"}.get(
+            mine, f"prvních {mine}")
+        count = "1 skladba" if total == 1 else (
+            f"{total} skladby" if 2 <= total <= 4 else f"{total} skladeb")
+        head = f"Album {w.artist} ({count})"
+        rest = total - len(w.tracks)
+        if rest <= 0:
+            head += " — hraju ho celé jako tvoje přání."
+        elif self.bg_reason.get("id") == w.id and getattr(self.pools, "album", ""):
+            head += (f" — {first} jako tvoje přání, zbytek hraje dál jako podkres "
+                     "(v pořadí alba, nic jiného se do něj nemíchá).")
+        else:
+            head += (f" — {first} jako tvoje přání; čekají i další, takže zbytek alba "
+                     "naváže jako podkres, až na ně dojde řada.")
+        return " ".join(x for x in [w.lead, head, *notes, when] if x).strip()
+
+    # ---- album v podkresu ----
+
+    def _album_held_from(self, w: Wish) -> bool:
+        """Hraje v podkresu album, o které si řekl někdo jiný než autor `w`?"""
+        if not getattr(self.pools, "album", ""):
+            return False
+        key = self.bg_reason.get("key") or ""
+        return bool(key) and key != tag_of(w.key)
+
+    def _album_stash(self) -> dict | None:
+        """Stav alba v podkresu, než ho na chvíli vystřídá cizí přání."""
+        pools = self.pools
+        if not getattr(pools, "album", ""):
+            return None
+        every = list(getattr(pools, "_artist_all", []) or [])
+        left = {t.id for t in pools.album_remaining()}
+        return {"label": pools.album, "tracks": every,
+                "done": {t.id for t in every if t.id not in left},
+                "artists": list(getattr(pools, "_album_artists", []) or []),
+                "mood": pools.mood, "reason": dict(self.bg_reason)}
+
+    async def _album_restore(self, stash: dict) -> None:
+        reason = stash["reason"]
+        await self._set_background(
+            album=True, artist=stash["label"], mood=stash["mood"],
+            artist_tracks=stash["tracks"], artists=stash["artists"], done=stash["done"],
+            who=str(reason.get("who") or ""), kind=str(reason.get("kind") or "radio"),
+            wid=str(reason.get("id") or ""), from_key=str(reason.get("key") or ""))
+        telemetry.event("request.album_resumed", album=stash["label"],
+                        left=len(stash["tracks"]) - len(stash["done"]))
+
+    def _album_due(self, but_key: str = "") -> "Wish | None":
+        """Vyřízené přání alba, jehož zbytek ještě nezazněl a jehož autor si
+        mezitím neřekl o nic jiného — jeho album má pokračovat jako podkres."""
+        now = time.time()
+        music = ("artist", "song", "songs", "mood", "album")
+        best = None
+        for x in self.wishes:
+            if x.kind != "album" or x.state != "done" or x.played <= 0 or not x.rest:
+                continue
+            if now - (x.done_at or 0) >= DONE_TTL:
+                continue
+            if any(y is not x and y.key == x.key and y.mono > x.mono and y.kind in music
+                   and y.state in ("queued", "playing", "done") for y in self.wishes):
+                continue  # týž člověk chtěl potom něco jiného — album končí
+            heard = {t.id for t in x.tracks} | x.album_heard
+            if all(t.id in heard for t in x.rest):
+                continue
+            if best is None or x.done_at > best.done_at:
+                best = x
+        return best
 
     def _remember_wish(self, intent: Any) -> None:
         dj = self.dj
@@ -1758,14 +2046,32 @@ class WishQueue:
                               wid: str = "", max_tracks: int | None = BG_ARTIST_TRACKS,
                               until: float | None = None, from_key: str = "",
                               favourites: str = "", voter: str = "",
-                              played: list[str] | None = None, alternate: bool = True) -> None:
+                              played: list[str] | None = None, alternate: bool = True,
+                              album: bool = False, done: set[str] | None = None,
+                              explicit_ok: bool = False, keep_album: bool = False) -> None:
         focus: list[str] = []
+        playing = getattr(self.pools, "album", "")
+        if playing and not keep_album and not (album and artist == playing):
+            # podkres alba končí (jeho autor chtěl něco jiného, lidé ho
+            # odmítli, …) — přání alba už na zbytek nečeká
+            old = self.by_id(self.bg_reason.get("id", ""))
+            if old is not None and old.kind == "album":
+                old.album_heard.update(t.id for t in old.rest)
         set_fav = getattr(self.pools, "set_favourites", None)
         if favourites and set_fav is not None and (await set_fav(
                 favourites, voter, mood=mood, played=list(played or []),
                 alternate=alternate)).get("pool_size"):
             # režim oblíbených: bez limitu skladeb a času, do dalšího přání (F-FRONTA-20)
             mood, artist = self.pools.mood, ""
+        elif album and artist_tracks:
+            # album v podkresu: v pořadí alba, bez limitu skladeb a času,
+            # dokud neskončí (RadioPools.set_album)
+            favourites = ""
+            res = await self.pools.set_album(artist, artist_tracks, mood=mood or f"album {artist}",
+                                             done=done or set(), artists=artists)
+            if not res.get("pool_size"):
+                return  # nic z alba nezbývá — podkres zůstává, jak byl
+            mood = self.pools.mood
         elif artist_tracks:
             favourites = ""
             # podkres v režimu interpreta je vždycky omezený (skladby i čas)
@@ -1783,13 +2089,20 @@ class WishQueue:
             favourites = ""
             if not seeds:
                 return
-            await self.pools.set_seeds(seeds, mood=mood, allow_long=allow_long)
+            if explicit_ok:
+                await self.pools.set_seeds(seeds, mood=mood, allow_long=allow_long,
+                                           explicit_ok=True)
+                telemetry.event("radio.explicit_ok", on=True, by=wid or None)
+            else:
+                await self.pools.set_seeds(seeds, mood=mood, allow_long=allow_long)
             focus = []
         with contextlib.suppress(AttributeError):
             self.dj._focus_artists = focus
         self.bg_reason = {"kind": kind, "who": who, "text": mood or artist, "id": wid}
         if favourites:
             self.bg_reason["mode"] = "favourites"
+        elif album and getattr(self.pools, "album", ""):
+            self.bg_reason["mode"] = "album"
         # čí přání podkres určilo (jmenovka webu), i když přání mezitím zmizí
         src = self.by_id(wid) if wid else None
         key = tag_of(src.key) if src is not None else (from_key if who else "")
@@ -1837,7 +2150,7 @@ class WishQueue:
                 src = self.bg_reason.get("id", "")
                 if w.state in ("skipped", "removed") and src == w.id:
                     others = [x for x in self.wishes if x is not w and x.played > 0
-                              and x.kind in ("artist", "song", "songs", "mood")
+                              and x.kind in ("artist", "song", "songs", "mood", "album")
                               and (x.active or time.time() - (x.done_at or 0) < DONE_TTL)]
                     nxt = max(others, key=lambda x: self.last_heard.get(x.seat, 0.0), default=None)
                     if nxt is not None:
@@ -1857,9 +2170,21 @@ class WishQueue:
                     return  # rozhodne to, až skončí poslední z nich
                 now = time.time()
                 done = [x for x in self.wishes if x.state == "done" and x.played > 0
-                        and x.kind in ("artist", "song", "songs", "mood")
+                        and x.kind in ("artist", "song", "songs", "mood", "album")
                         and now - (x.done_at or 0) < DONE_TTL]
                 latest = max(done, key=lambda x: x.done_at, default=None)
+                # Album jako podkres: cizí přání ho jen přeruší. Hraje-li album
+                # v podkresu a poslední splněné přání je někoho jiného, album
+                # pokračuje; čeká-li nedohrané album (přání alba skončilo dřív
+                # než přání ostatních), naváže teď.
+                if latest is not None and self._album_held_from(latest):
+                    return
+                due = self._album_due()
+                if due is not None and latest is not None and (
+                        latest is due or latest.key != due.key):
+                    if not (src == due.id and getattr(self.pools, "album", "")):
+                        await self._follow(due, "album")
+                    return
                 if latest is None or latest.id == src or latest.done_at < self._bg_at:
                     return  # podkres už je jeho, nebo se od té doby změnil jinak
                 await self._follow(latest, "fulfilled" if latest is w else "fulfilled_last")
@@ -1876,6 +2201,11 @@ class WishQueue:
                                        mood="moje oblíbené" if x.fav == "mine" else "oblíbené kanceláře",
                                        who=x.who, wid=x.id, played=[t.id for t in x.tracks],
                                        alternate=x.fav_alternate)
+        elif x.kind == "album" and (x.tracks or x.rest):
+            every = _dedup(list(x.tracks) + list(x.rest))
+            await self._set_background(album=True, artist=x.artist, who=x.who, wid=x.id,
+                                       artist_tracks=every, artists=x.artists or None,
+                                       done={t.id for t in x.tracks} | x.album_heard)
         elif x.kind == "artist" and (x.tracks or x.rest):
             every = _dedup(list(x.tracks) + list(x.rest))
             await self._set_background(artist=x.artist, mood=x.artist, who=x.who, wid=x.id,
@@ -1887,13 +2217,13 @@ class WishQueue:
             if not seeds:
                 return
             await self._set_background(seeds=seeds, mood=x.summary.removeprefix("nálada: "),
-                                       who=x.who, wid=x.id)
+                                       who=x.who, wid=x.id, explicit_ok=x.explicit_ok)
         else:
             seeds = _dedup(list(x.tracks))[:4]
             if not seeds:
                 return
             await self._set_background(seeds=seeds, mood=f"{seeds[0].artist} a podobné", who=x.who,
-                                       wid=x.id, allow_long=True)
+                                       wid=x.id, allow_long=True, explicit_ok=x.explicit_ok)
         telemetry.event("request.background_follow", id=x.id, who=x.who, why=why,
                         intent_kind=x.kind)
 
@@ -2240,8 +2570,11 @@ class WishQueue:
         """
         live = [w for w in self.wishes if w.active]
         for w in live:
-            if w.kind != "artist" or w.handed or w.state not in ("queued", "playing"):
+            if w.kind not in ("artist", "album") or w.handed \
+                    or w.state not in ("queued", "playing"):
                 continue
+            if w.kind == "artist" and self._album_held_from(w):
+                continue  # cizí album v podkresu: interpret dohraje jen své přání
             others = [x for x in live if x is not w and (
                 x.state in ("waiting", "thinking") or x.pending() or x.current)]
             if others:
@@ -2259,7 +2592,15 @@ class WishQueue:
             w.handed = True
             self.pools.session_seen.update(t.id for t in w.tracks)
             telemetry.event("request.handover", id=w.id, who=w.who, source=w.source, artist=w.artist,
-                            kept=len(w.tracks), background=len(every) - len(w.tracks))
+                            kept=len(w.tracks), background=len(every) - len(w.tracks),
+                            album=True if w.kind == "album" else None)
+            if w.kind == "album":
+                # zbytek alba v pořadí; přání si drží své první skladby
+                w.rest = [t for t in every if all(t.id != k.id for k in w.tracks)]
+                await self._set_background(album=True, artist=w.artist, who=w.who, wid=w.id,
+                                           artist_tracks=every, artists=w.artists,
+                                           done={t.id for t in w.tracks} | w.album_heard)
+                continue
             await self._set_background(artist=w.artist, mood=w.artist, who=w.who, wid=w.id,
                                        artist_tracks=every, artists=w.artists)
 
@@ -2270,6 +2611,13 @@ class WishQueue:
         vid = ev.track.id if ev.track else None
         if kind == "start":
             self.current_vid = vid
+            if vid and getattr(self.pools, "album", ""):
+                # album v podkresu: co začalo hrát, se po přerušení neopakuje
+                self.pools.note_started(vid)
+                src = self.by_id(self.bg_reason.get("id", ""))
+                if src is not None and src.kind == "album" \
+                        and any(t.id == vid for t in src.rest):
+                    src.album_heard.add(vid)
             w = self._owner_of(vid)
             if w is not None:
                 new_turn = self.turns.start(w, self._turn_size(w))
@@ -2475,7 +2823,14 @@ class WishQueue:
     def session_state(self) -> dict:
         pools = self.pools
         bg: dict[str, Any] = {"mood": getattr(pools, "mood", ""), "reason": dict(self.bg_reason)}
-        if getattr(pools, "artist", "") and getattr(pools, "_artist_all", None):
+        if getattr(pools, "album", "") and getattr(pools, "_artist_all", None):
+            # album v podkresu: po restartu pokračuje tam, kde přestalo
+            left = {t.id for t in pools.album_remaining()}
+            bg.update(mode="album", artist=pools.album,
+                      artists=list(getattr(pools, "_album_artists", []) or []),
+                      tracks=[_track_json(t) for t in pools._artist_all[:100]],
+                      done=[t.id for t in pools._artist_all if t.id not in left])
+        elif getattr(pools, "artist", "") and getattr(pools, "_artist_all", None):
             bg.update(mode="artist", artist=pools.artist,
                       artists=list(getattr(self.dj, "_focus_artists", []) or []),
                       tracks=[_track_json(t) for t in pools._artist_all[:100]],
@@ -2744,7 +3099,17 @@ class WishQueue:
         bg = saved.get("bg") or {}
         reason = bg.get("reason") if isinstance(bg.get("reason"), dict) else {}
         try:
-            if bg.get("mode") == "artist":
+            if bg.get("mode") == "album":
+                tracks = [t for t in (_track_from(x) for x in bg.get("tracks") or []) if t]
+                if tracks:
+                    await self._set_background(
+                        album=True, artist=str(bg.get("artist") or ""),
+                        mood=str(bg.get("mood") or ""), artist_tracks=tracks,
+                        artists=[str(a) for a in bg.get("artists") or []] or None,
+                        done={str(x) for x in bg.get("done") or []},
+                        who=str(reason.get("who") or ""), kind=str(reason.get("kind") or "radio"),
+                        wid=str(reason.get("id") or ""), from_key=str(reason.get("key") or ""))
+            elif bg.get("mode") == "artist":
                 tracks = [t for t in (_track_from(x) for x in bg.get("tracks") or []) if t]
                 if tracks:
                     await self._restore_artist_bg(bg, reason, tracks, wall)

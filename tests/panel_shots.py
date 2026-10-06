@@ -78,7 +78,7 @@ WISH_STATES = {
     "wish-queue-empty": replace(WISH, page="queue", rows=(), count=0),
     "wish-sent-error": replace(
         WISH, page="sent", phase="error", wish="něco klidnějšího",
-        error="ytdj teď neodpovídá (možná se restartuje).",
+        error="Jukebox teď neodpovídá (možná se restartuje).",
     ),
 }
 

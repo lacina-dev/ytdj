@@ -208,7 +208,10 @@ class ConfigNeedsPin(Base):
     def test_music_stays_open_without_pin(self):
         guarded = {key for key, ep in self.routes.items() if getattr(ep, "admin_only", False)}
         self.assertEqual(guarded, {("/api/config", "GET"), ("/api/config", "HEAD"), ("/api/config", "POST"),
-                                   ("/api/restart", "POST")})
+                                   ("/api/restart", "POST"),
+                                   # Chyby a nápady: stav, řešení a mazání (F-HLASENI-05); psát smí každý
+                                   ("/api/issues/{iid}/resolve", "POST"), ("/api/issues/{iid}", "DELETE"),
+                                   ("/api/issues/{iid}/comments/{cid}", "DELETE")})
         for key in (("/api/prompt", "POST"), ("/api/control", "POST"), ("/api/me", "POST"),
                     ("/api/votes", "POST"), ("/api/status", "GET"), ("/api/requests/{rid}", "DELETE")):
             self.assertIn(key, self.routes)

@@ -28,7 +28,7 @@ import shutil
 import signal
 import time
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from ..config import DATA_DIR, Config
@@ -69,7 +69,8 @@ from .offline import (
 )
 from .fastpath import (SONG_BUDGET, FastResult, enforce_requested, find_artists, find_song,
                        other_version)
-from .intent import Intent, ListenerIntent, Pair, build_intent, track_avoided
+from .intent import (Intent, ListenerIntent, Pair, build_intent, option_intent,
+                     track_avoided)
 from .prompts import ROLE, render_state
 
 log = logging.getLogger(__name__)
@@ -104,6 +105,9 @@ DECISION_SCHEMA = {
                 "resume",
                 "volume",
                 "nothing",
+                # zeptat se posluchače (jen při skutečné nejistotě): `question`
+                # + `options`; první možnost je ta nejpravděpodobnější
+                "ask",
                 # oblíbené (hlasování, ytdj/votes.py) — vybere je aplikace;
                 # čí, jak dlouho a jak: favourites_scope / continuous / alternate_artists
                 "favourites",
@@ -144,6 +148,40 @@ DECISION_SCHEMA = {
         },
         # Režim interpreta: "hraj X" = jen X, dokud posluchač neřekne jinak.
         "focus_artists": {"type": "array", "items": {"type": "string"}},
+        # Celá alba, o která si posluchač řekl (jedno i víc) — hrají se
+        # v pořadí alba a jen ona; název tak, jak ho řekl (i edice: "Live
+        # aus Berlin", "Load (Remastered)"). Jinak prázdné.
+        "albums": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "artist": {"type": "string"},
+                    "title": {"type": "string"},
+                },
+                "required": ["artist", "title"],
+                "additionalProperties": False,
+            },
+        },
+        # true = posluchač VÝSLOVNĚ chce vulgární / sprosté / nekorektní
+        # texty; jen pro tohle přání se pak z rádia nevyřazují explicitní skladby
+        "explicit_ok": {"type": "boolean"},
+        # akce ask: krátká otázka a 2–3 hotové výklady přání (jinak "" / [])
+        "question": {"type": "string"},
+        "options": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "label": {"type": "string"},
+                    "kind": {"type": "string", "enum": ["song", "artist", "album"]},
+                    "artist": {"type": "string"},
+                    "title": {"type": "string"},
+                },
+                "required": ["label", "kind", "artist", "title"],
+                "additionalProperties": False,
+            },
+        },
         # true = až po hrající skladbě; jinak vyžádané začne hned
         "after_current": {"type": "boolean"},
         # co posluchač výslovně nechce ("Kabát, ale ne Pohodu")
@@ -169,6 +207,10 @@ DECISION_SCHEMA = {
         "seeds",
         "requested",
         "focus_artists",
+        "albums",
+        "explicit_ok",
+        "question",
+        "options",
         "after_current",
         "avoid",
         "mood",
@@ -185,6 +227,10 @@ DECISION_SCHEMA = {
 
 # Jak dlouho nechat hrát starou skladbu, než se nová vyřeší (pak se utne tak jako tak).
 FIRST_TRACK_WAIT = 15.0  # s
+# Jak dlouho smí tah modelu čekat na podklad z katalogu (Catalog.probe). Běží
+# už od příchodu přání souběžně s rychlou cestou (ta trvá ≥ 1 s), takže se
+# tu obvykle nečeká vůbec; jeden dotaz do katalogu je ~0,5 s.
+PROBE_WAIT = 1.5  # s
 
 
 class CodexUnavailable(RuntimeError):
@@ -257,6 +303,11 @@ class Plan:
     seeds: list[Track] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     failed: str = ""
+    # kind == "album": skladby všech vyžádaných alb za sebou, v pořadí alb;
+    # `album_label` je jejich název pro odpověď a štítky ("Metallica — Load")
+    album_tracks: list[Track] = field(default_factory=list)
+    album_label: str = ""
+    album_artists: list[str] = field(default_factory=list)
 
 
 def parse_output(raw: str) -> dict:
@@ -320,12 +371,63 @@ class CodexDJ:
         # hlasování kanceláře (ytdj/votes.py, zapojí App) — None = bez něj
         self.votes = None
         self.asker = ""  # id klienta toho, jehož přání se právě vykládá (wishes)
+        # smí se model u tohohle tahu zeptat? Nastavuje jen fronta přání (má
+        # komu a jak otázku ukázat); jinak se bere nejpravděpodobnější výklad.
+        self.may_ask = False
         # kdy naposledy přišlo přání posluchače (time.time()) — drží Codex teplý
         self._last_wish_at = 0.0
+        # podklad z katalogu pro model (Catalog.probe): text přání a úloha,
+        # která běží souběžně s rychlou cestou — tah modelu na ni skoro nečeká
+        self._probe: tuple[str, asyncio.Task] | None = None
 
     # ---- calling Codex ----
 
-    async def _build_prompt(self, user_input: str) -> str:
+    # ---- podklad z katalogu pro model ----
+
+    def probe_start(self, text: str) -> None:
+        """Spustí hledání celého textu přání v katalogu (na pozadí, ve vlákně).
+
+        Volá se hned, jak přání dorazí — souběžně s rychlou cestou; až (a
+        jestli) přijde na řadu model, bývá výsledek hotový.
+        """
+        text = (text or "").strip()
+        probe = getattr(self.catalog, "probe", None)
+        if not text or probe is None:
+            return
+        old = self._probe
+        if old is not None:
+            if old[0] == text:
+                return
+            if not old[1].done():
+                old[1].cancel()
+        try:
+            task = asyncio.get_running_loop().create_task(probe(text), name="ytdj-probe")
+        except RuntimeError:
+            return
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())
+        self._probe = (text, task)
+
+    async def _probe_lines(self, user_input: str) -> list[str]:
+        """Řádky "co katalog zná pod textem přání" — nejdéle PROBE_WAIT s."""
+        cur = self._probe
+        if cur is None or not user_input.startswith(cur[0]):
+            self.probe_start(user_input)
+            cur = self._probe
+        if cur is None:
+            return []
+        t0 = time.monotonic()
+        try:
+            res = await asyncio.wait_for(asyncio.shield(cur[1]), PROBE_WAIT)
+        except Exception:  # timeout, chyba katalogu — přání na tom nestojí
+            res = None
+        waited = int((time.monotonic() - t0) * 1000)
+        telemetry.event("dj.probe", ok=bool(res), waited_ms=waited,
+                        probe_ms=getattr(res, "took_ms", None))
+        if self._probe is cur:
+            self._probe = None
+        return res.lines() if res else []
+
+    async def _build_prompt(self, user_input: str, probe: list[str] | None = None) -> str:
         st = await self.player.status()
         # [loop] čtení ze state.db a taste.md mimo event loop (SD karta pod zátěží)
         recent, taste, top = await asyncio.to_thread(
@@ -339,7 +441,9 @@ class CodexDJ:
             taste=taste,
             requested=[r.label() for r in top],
             intent=self.wish.describe(),
-            focus=self.focus,
+            focus="" if getattr(self.pools, "album", "") else self.focus,
+            album=getattr(self.pools, "album", ""),
+            catalog=probe or [],
             # kdo píše (id klienta, nastaví fronta přání) — jeho vlastní oblíbené
             office=self.votes.describe(asker=self.asker) if self.votes is not None else "",
         )
@@ -529,6 +633,8 @@ class CodexDJ:
                 artist_tracks=len(plan.artist_tracks) if intent.kind == "artist" else None,
                 seeds_asked=len(intent.seeds),
                 seeds_resolved=len(plan.seeds),
+                album=plan.album_label or None,
+                album_tracks=len(plan.album_tracks) or None,
                 notes=plan.notes or None,
                 failed=plan.failed or None,
             )
@@ -538,6 +644,9 @@ class CodexDJ:
         plan = Plan(intent=intent)
         if not intent.changes_music:
             return plan
+
+        if intent.kind == "album":
+            return await self._resolve_albums(plan)
 
         plan.requested, missing = await self._resolve_pairs(intent.tracks)
         if intent.seed_tracks and not intent.tracks:
@@ -570,9 +679,24 @@ class CodexDJ:
             per_artist = [await self._artist_tracks(a) for a in intent.artists]
             unknown = [a for a, ts in zip(intent.artists, per_artist) if not ts]
             if unknown:
+                # Jméno, které katalog jako interpreta nezná, bývá název
+                # skladby (Pi 5. 10.: "nerdíci v neklidu" → focus_artists, a
+                # "nic jsem nenašel", ač skladba v katalogu je). Silná shoda
+                # celého názvu → je to vyžádaná skladba.
+                unknown = await self._names_as_titles(plan, unknown, per_artist)
+            if unknown:
                 plan.notes.append("Od " + ", ".join(unknown) + " jsem v katalogu nic nenašel.")
             plan.artist_tracks = interleave(per_artist)
             if not plan.artist_tracks:
+                if plan.requested:
+                    # žádný interpret nezbyl: skladba hned a pak podobné
+                    t = plan.requested[0]
+                    plan.intent = replace(
+                        intent, kind="song", artists=[], mood=f"{t.artist} a podobné",
+                        note=(intent.note + "; " if intent.note else "") + "interpret → skladba",
+                        reply="")
+                    plan.seeds = list(plan.requested[:3])
+                    return plan
                 plan.failed = " ".join(plan.notes)
             return plan
 
@@ -590,6 +714,82 @@ class CodexDJ:
                 )
             else:
                 plan.failed = "Ani jednu z navržených skladeb se nepodařilo najít."
+        return plan
+
+    async def _names_as_titles(self, plan: Plan, unknown: list[str],
+                               per_artist: list[list[Track]]) -> list[str]:
+        """Neznámí "interpreti" zkusení jako názvy skladeb; vrací ty, které
+        nejsou ani to. Nalezené jdou do plan.requested a z interpretů přání pryč."""
+        intent = plan.intent
+        hits = await asyncio.gather(
+            *(other_version(self.catalog, name) for name in unknown), return_exceptions=True)
+        still: list[str] = []
+        found: list[str] = []
+        for name, hit in zip(unknown, hits):
+            if hit is None or isinstance(hit, BaseException) or not hit.artist:
+                still.append(name)  # skladba bez interpreta není nález z katalogu
+                continue
+            found.append(name)
+            if all(t.id != hit.id for t in plan.requested):
+                plan.requested.append(hit)
+            # [truthful] posluchač (nebo model) to bral jako kapelu — říct, co hraje
+            plan.notes.append(f"„{name}“ neznám jako interpreta, je to skladba: {hit.label()}.")
+            telemetry.event("dj.artist_as_title", name=name, track=hit.label())
+            log.info("%r není interpret, ale skladba: %s", name, hit.label())
+        if found:
+            if not intent.tracks:
+                # "nenašel jsem" platilo pro doslovný text přání ("X, poté
+                # další věci" od Y) — skladba se teď našla, lhalo by to
+                plan.notes[:] = [n for n in plan.notes if not n.startswith(
+                    ("Nenašel jsem:", "Místo toho hraju"))]
+            keep = [(a, ts) for a, ts in zip(intent.artists, per_artist) if a not in found]
+            intent.artists = [a for a, _ in keep]
+            per_artist[:] = [ts for _, ts in keep]
+            intent.tracks = list(intent.tracks) + [
+                (t.artist, t.title) for t in plan.requested
+                if (t.artist, t.title) not in intent.tracks]
+            if intent.mood in found or any(n in intent.mood for n in found):
+                intent.mood = ", ".join(intent.artists)
+            intent.reply = ""  # odpověď modelu mluvila o "interpretovi"
+        return still
+
+    async def _resolve_albums(self, plan: Plan) -> Plan:
+        """Přání alba: skladby jmenovaných alb v pořadí (nejvýš 3 alba)."""
+        intent = plan.intent
+        finder = getattr(self.catalog, "album_tracks", None)
+
+        async def one(artist: str, title: str):
+            if finder is None:
+                return None
+            try:
+                return await finder(artist, title)
+            except Exception as exc:
+                log.warning("album %r selhalo: %s", f"{artist} {title}", exc)
+                return None
+
+        pairs = [(a, t) for a, t in intent.albums[:3] if t.strip()]
+        found = await asyncio.gather(*(one(a, t) for a, t in pairs))
+        labels: list[str] = []
+        missing: list[str] = []
+        for (artist, title), alb in zip(pairs, found):
+            if alb is None or not alb.tracks:
+                missing.append(f"{artist} — {title}" if artist else title)
+                continue
+            labels.append(alb.label())
+            for a in [x.strip() for x in alb.artist.split(",") if x.strip()]:
+                if a not in plan.album_artists:
+                    plan.album_artists.append(a)
+            plan.album_tracks += [t for t in alb.tracks
+                                  if all(t.id != x.id for x in plan.album_tracks)]
+        if missing:
+            plan.notes.append(("Album " if len(missing) == 1 else "Alba ")
+                              + "; ".join(missing) + " jsem v katalogu nenašel.")
+        if not plan.album_tracks:
+            plan.failed = " ".join(plan.notes) or "Album jsem v katalogu nenašel."
+            return plan
+        plan.album_label = " + ".join(labels)
+        if not intent.mood or intent.note:
+            intent.mood = f"album {plan.album_label}"
         return plan
 
     # ---- fronta ----
@@ -658,10 +858,13 @@ class CodexDJ:
             return ""
 
         notes = list(plan.notes)
-        if intent.kind in ("artist", "song", "mood"):
+        if intent.kind in ("artist", "song", "mood", "album"):
             await self._play_radio(plan, interrupt)
             if intent.kind == "artist":
                 notes.append(f"Hraju {self.focus} — jen to, dokud neřekneš jinak.")
+            elif intent.kind == "album":
+                notes.append(f"Hraju album {plan.album_label} "
+                             f"({len(plan.album_tracks)} skladeb), v pořadí alba.")
         elif intent.kind == "songs":
             self._record_requests(plan.requested)
             st = await self.player.status()
@@ -713,6 +916,14 @@ class CodexDJ:
         if intent.kind == "artist":
             label = ", ".join(intent.artists)
             await self.pools.set_artist(label, plan.artist_tracks, mood=intent.mood or label)
+        elif intent.kind == "album":
+            await self.pools.set_album(plan.album_label, plan.album_tracks,
+                                       mood=f"album {plan.album_label}",
+                                       artists=plan.album_artists)
+        elif intent.explicit_ok:
+            await self.pools.set_seeds(
+                plan.seeds, mood=intent.mood, allow_long=bool(plan.requested), explicit_ok=True
+            )
         else:
             await self.pools.set_seeds(
                 plan.seeds, mood=intent.mood, allow_long=bool(plan.requested)
@@ -812,6 +1023,7 @@ class CodexDJ:
         """Rychlá cesta jako plán (nic nepřehrává) — pro frontu přání."""
         self.note_wish()
         self.prewarm()  # [app-server] kdyby přání šlo k modelu, ať Codex už běží
+        self.probe_start(text)  # podklad pro model souběžně s rychlou cestou
         t0 = time.monotonic()
         try:
             res = await find_artists(self.catalog, text)
@@ -1148,7 +1360,9 @@ class CodexDJ:
             self.note_wish()
         if not self.breaker.allow():
             return await self._offline_intent(user_input, auto, None)
-        prompt = await self._build_prompt(user_input)
+        # zadání od aplikace (přeseedování, rozjezd) nejsou slova posluchače
+        probe = [] if auto else await self._probe_lines(user_input)
+        prompt = await self._build_prompt(user_input, probe)
         budget = AUTO_BUDGET if auto else LISTENER_BUDGET
         cold = app_server_enabled() and not (self.app is not None and self.app.ready)
         if cold and not auto:
@@ -1185,12 +1399,22 @@ class CodexDJ:
             seeds=_labels(data.get("seeds")),
             requested=_labels(data.get("requested")),
             focus_artists=data.get("focus_artists") or None,
+            albums=_labels(data.get("albums")),
+            explicit_ok=bool(data.get("explicit_ok")) or None,
+            question=str(data.get("question") or "")[:200] or None,
+            options=[str(o.get("label") or "")[:80] for o in data.get("options") or []
+                     if isinstance(o, dict)] or None,
             avoid=_labels(data.get("avoid")),
             after_current=bool(data.get("after_current")),
             mood=str(data.get("mood") or "")[:120],
             remember=str(data.get("remember") or "")[:200] or None,
         )
         intent = build_intent(user_input, data, auto=auto)
+        if intent.kind == "ask" and not self.may_ask:
+            # nemá se ptát (přímé volání, druhá otázka k témuž přání, vypnuto)
+            # → nejpravděpodobnější výklad, a je to vidět v logu
+            intent = option_intent(user_input, intent.options[0], auto=auto)
+            intent.note = "ask → první možnost (ptát se nesmí)"
         if intent.note:
             log.info("oprava rozhodnutí: %s", intent.note)
         log.info(
@@ -1206,6 +1430,8 @@ class CodexDJ:
             exclude=[f"{a} — {t}" for a, t in intent.exclude] or None,
             play_next=intent.play_next, more_like_current=intent.more_like_current,
             control=intent.control or None, mood=intent.mood[:120],
+            albums=[f"{a} — {t}" for a, t in intent.albums] or None,
+            explicit_ok=intent.explicit_ok or None,
             repaired=intent.note or None,
         )
         return intent

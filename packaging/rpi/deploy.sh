@@ -4,6 +4,7 @@
 #   packaging/rpi/deploy.sh                 # rsync + venv refresh + restart ytdj
 #   PI=lacina@192.168.0.24 packaging/rpi/deploy.sh
 #   NO_RESTART=1 packaging/rpi/deploy.sh
+#   SSH_OPTS="-o HostKeyAlias=…" PI=lacina@ytdj.local packaging/rpi/deploy.sh
 #
 # Runs on the laptop. One-time setup of the Pi (uv, yt-dlp, codex, bgutil,
 # cookies, services) is described in packaging/rpi/NOTES.md.
@@ -13,7 +14,9 @@ PI="${PI:-lacina@10.42.0.149}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/lacina_deploy}"
 DEST="${DEST:-ytdj}"                     # relative to the Pi user's home
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-ssh_cmd=(ssh -i "$SSH_KEY" -o ConnectTimeout=10)
+# SSH_OPTS: další volby ssh, např. SSH_OPTS="-o HostKeyAlias=<jméno, pod kterým je klíč Pi v known_hosts>"
+read -r -a ssh_extra <<< "${SSH_OPTS:-}"
+ssh_cmd=(ssh -i "$SSH_KEY" -o ConnectTimeout=10 "${ssh_extra[@]}")
 
 echo "==> rsync $repo -> $PI:~/$DEST"
 rsync -az --delete \

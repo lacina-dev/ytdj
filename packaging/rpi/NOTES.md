@@ -69,6 +69,31 @@ dependencies on the Pi. `canvas` downloads a linux-arm64 prebuild there:
   `wpctl set-default`: a pinned default overrides the priorities.
 - Swap is already zram (`/dev/zram0`, about 900 MB) on this image.
 
+## Web on port 80 (`ytdj-port80.service`)
+
+ytdj runs as an ordinary user and cannot open port 80, so the kernel redirects it: a oneshot
+unit loads one nftables table, `ip ytdj_web`, with `tcp dport 80 redirect to :<web_port>` for
+connections to the Pi's own addresses (from the network and from the Pi itself). It is a
+rewrite inside the kernel, not a proxy — the web still sees the real client address (the PIN
+brake and the per-client limits depend on it). Port 8765 keeps working.
+
+- Only that one table is ever touched (created, replaced in one transaction, deleted). No
+  filter rules, nothing is blocked, `nftables.service` and `/etc/nftables.conf` are not used.
+- The port comes from `web_port` in `~/.config/ytdj/config.toml`. After changing it:
+  `sudo systemctl reload ytdj-port80` (the screens notice by themselves when port 80 stops
+  answering and show the address with the port again).
+- IPv4 only, like the web itself (it listens on `0.0.0.0`) and like `jukebox.local`.
+- Look: `sudo nft list table ip ytdj_web`. Dry run of what would be loaded:
+  `/usr/local/lib/ytdj/port80.sh print ~/.config/ytdj/config.toml | sudo nft -c -f -`
+- Off / rollback: `sudo systemctl disable --now ytdj-port80` (removes the table; the web is
+  on `:8765` as before). `YTDJ_PORT80=0 ./packaging/install-service.sh` skips it.
+- HTTPS (443) is not served: there is no certificate for a `.local` name. The admin PIN still
+  crosses the LAN unencrypted.
+
+The TV screen and the touch panel show an address only after checking that it answers
+(`ytdj/panel/webaddr.py`, every few minutes): `jukebox.local`, else `<hostname>.local`, else
+the IP — without a port only while port 80 is really served.
+
 ## TV over HDMI („právě hraje“, `ytdj-tv.service`)
 
 `install-service.sh` installs `ytdj-tv.service` on a Pi that has `/dev/fb0` and Pillow
@@ -104,6 +129,35 @@ driver and no extra GPU memory: `gpu_mem=16` and the commented-out `vc4-kms-v3d`
     either remove `console=tty1` (boot messages only on the serial console), or keep it and
     add `quiet logo.nologo vt.global_cursor_default=0` (short boot text, no logo, no cursor).
 - Sound stays on the USB soundbar: HDMI has the lowest WirePlumber priority (see above).
+
+### Clips on the TV (optional, switched on in the browser)
+
+With „Klipy na telce“ on, a playing track that is itself an official video shows its picture
+(muted, in step with the music) instead of the now-playing screen. `ytdj-tv` starts a second,
+low-priority mpv for it and stops it again; the music's mpv and resolver are not involved.
+
+This needs the GPU driver and the hardware H.264 decoder, which `slim.sh` normally turns off.
+The lines in `/boot/firmware/config.txt` (set by hand on the jukebox on 6 Oct, reboot needed;
+no script edits this file for video):
+
+    gpu_mem=64
+    dtoverlay=vc4-kms-v3d,cma-128
+    max_framebuffers=2
+
+- Back to the lean setup: restore the backup (`/boot/firmware/config.txt.ytdj-pred-videem`) or
+  run `YTDJ_SLIM_NO_VIDEO=1 packaging/rpi/slim.sh`, then reboot. Without that variable `slim.sh`
+  sees `dtoverlay=vc4-kms-v3d` and leaves the three lines alone.
+- Nothing is assumed: at runtime the TV process looks for `/dev/dri/card0`, a connected
+  `card0-HDMI-A-1` and `/dev/video10`, and the web's switch says what is missing.
+- The player's options are fixed in `ytdj/tv/video.py` (`--vo=gpu --gpu-context=drm
+  --hwdec=v4l2m2m --drm-draw-plane=overlay --drm-drmprime-video-plane=primary`, H.264 ≤ 720p).
+  Never `--vo=drm` or `v4l2m2m-copy`: scaling in software took the Pi to 84 °C and throttling.
+- It turns itself off (and says why in the switch's note) at ≥ 78 °C, under 260 MB of free
+  memory, on any current throttling/under-voltage bit, when the music's audio drops out while a
+  clip runs, when the picture stutters, or when the player crashes — for 5 minutes, doubling up
+  to 30. It comes back only below 72 °C and with ≥ 420 MB free.
+- Events: `tv.video_start/stop/seek/guard/skip` in `/var/log/ytdj-tv/events.jsonl`,
+  `tv.video_switch` and `tv.video_resolve` in the jukebox's own events.
 - Logs: `journalctl -u ytdj-tv`, events in `/var/log/ytdj-tv/events.jsonl` (`tv.screen` says the
   size and pixel format it found, `tv.no_screen` why it idles, `tv.paint` what drawing costs).
 

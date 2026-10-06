@@ -40,6 +40,8 @@ DOCS_HTML = STATIC_DIR / "jak-to-funguje.html"
 MANUAL_CSS = STATIC_DIR / "manual.css"
 ISSUES_HTML = STATIC_DIR / "hlaseni.html"  # Chyby a nápady (ytdj/issues.py)
 THEME_JS = STATIC_DIR / "theme.js"  # vzhled Auto / Den / Noc, společný všem stránkám (F-WEB-09)
+IDENTITY_JS = STATIC_DIR / "identity.js"  # tentýž člověk na všech adresách jukeboxu (F-NICK-07…)
+IDENTITY_HTML = STATIC_DIR / "identity.html"  # mezistránka pro předání účtu mezi adresami
 
 # oddíly JAK-TO-FUNGUJE.md, které nejsou úvodem oblasti
 AUTO_TITLE = "Automatiky, o kterých možná nevíš"
@@ -341,7 +343,8 @@ class Pages:
     souborů nebo nastavení (ETag = otisk obsahu)."""
 
     NAMES = {"napoveda": NAPOVEDA_HTML, "jak-to-funguje": DOCS_HTML, "manual.css": MANUAL_CSS,
-             "hlaseni": ISSUES_HTML, "theme.js": THEME_JS}
+             "hlaseni": ISSUES_HTML, "theme.js": THEME_JS,
+             "identity.js": IDENTITY_JS, "identity": IDENTITY_HTML}
 
     def __init__(self, funkce: Path = FUNKCE_MD, intro: Path = INTRO_MD) -> None:
         self.funkce = funkce

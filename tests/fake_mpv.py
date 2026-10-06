@@ -41,6 +41,7 @@ class FakeMpv:
         self.time_pos = 0.0
         self.duration = 0.0
         self.seeks: list[float] = []
+        self.props: dict[str, object] = {}
 
     # ---- pohled pro testy ----
 
@@ -163,6 +164,7 @@ class FakeMpv:
         if name == "get_property":
             return self._prop(cmd[1])
         if name == "set_property":
+            self.props[cmd[1]] = cmd[2]  # co ytdj naposledy nastavilo (volume, mute, pause…)
             return None
         if name in ("load-script", "script-message-to", "script-message"):
             return None  # skript srovnání hlasitosti (ytdj_gain.lua) — jen do logu

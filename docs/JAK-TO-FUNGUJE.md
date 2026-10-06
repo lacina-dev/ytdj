@@ -77,7 +77,8 @@ automatika ne.
 Přezdívka je jen popisek, aby bylo vidět, čí písnička hraje. Člověka pozná
 aplikace podle prohlížeče (nebo relace na displeji), ne podle jména ani
 adresy — dva kolegové za jednou sítí jsou dva lidé a nikdo nepřevezme cizí
-přání tím, že si dá stejné jméno.
+přání tím, že si dá stejné jméno. Na jednom zařízení jsi tentýž člověk, ať
+jukebox otevřeš pod kteroukoli jeho adresou.
 
 ## Hlasování
 
@@ -102,8 +103,13 @@ dlouho nic nehraje, ztlumí se a ukáže QR kód na web.
 Když je k jukeboxu přes HDMI připojená telka, ukazuje velkou obrazovku
 „právě hraje": obal, název, od koho přání je, co bude hrát dál a QR kód
 s adresou webu, ať si každý může pustit svoje. Je jen na dívání — nic se
-přes ni neovládá a hudbu neovlivní, ani kdyby přestala fungovat. Video se
-zatím nepřehrává.
+přes ni neovládá a hudbu neovlivní, ani kdyby přestala fungovat.
+
+Na hlavní stránce je vypínač „Klipy na telce“ — smí ho přepnout kdokoli
+a platí pro všechny. Když je zapnutý a hraje skladba, která sama je
+oficiální klip, pustí se na telce její obraz, bez zvuku a srovnaný s hudbou
+(zvuk jde dál stejnou cestou). U ostatních skladeb zůstává obrazovka „právě
+hraje“. Když je jukebox horký nebo mu dochází paměť, klip se sám vypne.
 
 ## Web
 
@@ -127,6 +133,10 @@ jen správce (s PINem z displeje), aby seznam zůstal pravdivý.
 Jukebox jde připojit k síti bez klávesnice a monitoru: na displeji se vybere
 Wi-Fi a zadá heslo. Přehled sítě ukáže adresu webu a QR kód, i když samotná
 hudební služba zrovna neběží.
+
+Web najdeš na `http://jukebox.local` — bez čísla portu; stará adresa
+s `:8765` funguje dál. Telka i displej ukazují vždy jen adresu, o které si
+jukebox ověřil, že opravdu odpovídá.
 
 ## Výpadky (YouTube, Codex, síť)
 
@@ -180,6 +190,8 @@ jukeboxu a restart chtějí PIN správce, který je na displeji na obrazovce Sí
 - **F-RESTART-02** Přání přežijí restart služby
 - **F-RESTART-11** Po vypnutí nebo výpadku proudu se týž den vrátí fronta i místo ve skladbě — a čeká na ▶
 - **F-TV-05** Obrazovka na telce se proti vypálení občas o kousek posune a v tichu ztlumí
+- **F-TV-09** Klip na telce se pustí jen u skladby, která sama je oficiální klip — písnička se za klip nezaměňuje
+- **F-TV-11** Klip se sám vypne, když je jukebox horký, dochází paměť nebo by lupal zvuk
 - **F-HLAS-05** Hlasitost si jukebox pamatuje i přes restart
 - **F-FRONTA-02** Dlouhé přání má rozpočet skladeb, pak pustí ostatní
 - **F-FRONTA-11** Kdo dlouho nic neslyšel a ozve se, jde hned na řadu
@@ -208,6 +220,8 @@ jukeboxu a restart chtějí PIN správce, který je na displeji na obrazovce Sí
 - **F-DISPLEJ-06** Displej se po 5 minutách ticha ztlumí a ukáže QR
 - **F-START-04** Úmyslnou pauzu nové přání samo nezruší
 - **F-WEB-03** Stará otevřená stránka se po aktualizaci obnoví sama
+- **F-NICK-07** Pod jinou adresou jukeboxu tě web pozná sám, na přezdívku se znovu neptá
+- **F-NICK-09** Dva účty z jednoho prohlížeče se spojí do staršího i s hlasy
 - **F-BEZP-10** Po 5 špatných PINech se nastavení na 5 minut zamkne
 
 ## Nastavení u pravidel

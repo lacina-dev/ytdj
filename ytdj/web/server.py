@@ -45,7 +45,7 @@ from .. import adminpin
 from .. import config as cfgmod
 from .. import manual
 from .. import telemetry
-from . import issues_api, votes_api
+from . import identity_api, issues_api, tv_api, votes_api
 
 if TYPE_CHECKING:  # circular import — we pull in App for typing only
     from ..__main__ import App
@@ -661,9 +661,12 @@ class WebServer:
             # vzhled Auto / Den / Noc pro všechny stránky (F-WEB-09)
             Route("/theme.js", _safe(self._manual), methods=["GET"]),
             *votes_api.routes(self),  # hlasování kanceláře (PLAN H)
+            *tv_api.routes(self),  # vypínač „Klipy na telce“ (POZADAVKY #71)
             # Chyby a nápady kolegů (POZADAVKY #52, F-HLASENI-01…)
             Route("/hlaseni", _safe(self._manual), methods=["GET"]),
             *issues_api.routes(self),
+            # tentýž člověk na všech adresách jukeboxu (POZADAVKY #69, F-NICK-07…)
+            *identity_api.routes(self),
             Mount(
                 "/static",
                 StaticFiles(directory=str(STATIC_DIR), check_dir=False),
@@ -740,6 +743,7 @@ class WebServer:
         playing = paused = buffering = False
         position = duration = 0.0
         volume = 100
+        muted = False
         quality = ""
         outage = None
         try:
@@ -752,6 +756,7 @@ class WebServer:
             duration = float(st.duration or 0.0)
             queue = [_track_dict(t) for t in st.queue]
             volume = int(st.volume)
+            muted = bool(getattr(st, "muted", False))
             quality = st.quality
             # výpadek YouTube / sítě: {reason, since, detail} — fronta čeká
             outage = getattr(st, "outage", None) or None
@@ -820,6 +825,8 @@ class WebServer:
             last = wq_last
         brain = self._brain()
         extra["dj_offline"] = brain is not None and not brain.get("online", True)
+        if (tv := tv_api.public(self.app)) is not None:
+            extra["tv"] = tv  # klipy na telce: vypínač a co telka zrovna dělá
         if brain is not None:
             extra["dj_brain"] = brain
         return {
@@ -833,6 +840,7 @@ class WebServer:
             "queue": queue,
             "pools": pools,
             "volume": volume,
+            "muted": muted,  # ztlumeno: hudba běží, není slyšet; volume zůstává
             "quality": quality,
             "mood": mood,
             "busy": busy,
@@ -1318,6 +1326,8 @@ class WebServer:
                 # strop 100 všude (web, displej, přání, povely); 101–130 od
                 # starších klientů se ořízne, ne odmítne
                 await player.set_volume(min(VOLUME_MAX, int(value)))
+            elif action == "mute":
+                return await self._mute(data, rec)
             elif action == "seek":
                 return await self._seek(data, rec)
             elif action == "jump":
@@ -1357,6 +1367,34 @@ class WebServer:
         times.append(now)
         self._seeks[key] = times
         return True
+
+    async def _mute(self, data: dict, rec: dict[str, Any]) -> Response:
+        """{"action": "mute", "value": true | false} (bez hodnoty = přepnout) →
+        200 {"ok", "muted", "volume"} | 400 | 429. Smí kdokoli, jako hlasitost.
+
+        Jen zvuk: hudba běží dál, hlasitost se nemění (F-HLAS-08)."""
+        value = data.get("value")
+        if value is not None and not isinstance(value, bool):
+            return _json_error("Ztlumení je ano / ne.", 400)
+        player = self.app.player
+        set_mute = getattr(player, "set_mute", None)
+        if set_mute is None:
+            return _json_error("Tenhle přehrávač ztlumit neumí.", 409)
+        cid = str(data.get("client") or "")[:40]
+        if not self._seek_allowed("mute:" + (cid or str(rec.get("ip") or "?"))):
+            rec["error"] = "rate"
+            return _json_error("Moc ťuknutí naráz — zkus to za vteřinku.", 429)
+        muted = bool(await set_mute(value))
+        panel = rec.get("ua") == "panel"
+        wq = getattr(self.app, "wishes", None)
+        by = self._by(data, rec) if wq is not None else ("displej" if panel else "někdo")
+        rec["muted"] = muted
+        telemetry.event("player.mute", muted=muted, by=by, cid=cid[-6:] or None,
+                        source="panel" if panel else "web",
+                        volume=getattr(player, "_volume", None))
+        self.poke()
+        self.poke(later=0.3)
+        return JSONResponse({"ok": True, "muted": muted, "volume": getattr(player, "_volume", None)})
 
     async def _seek(self, data: dict, rec: dict[str, Any]) -> Response:
         """{"action": "seek", "value": <s od začátku>} nebo {"delta": <±s>} →

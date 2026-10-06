@@ -43,8 +43,12 @@ class NetController:
         now: float | None = None,
         count: Callable[[str], None] | None = None,
         pin_reader: Callable[[], str] | None = None,
+        reach: Callable[[], object] | None = None,
     ) -> None:
         self.backend = backend
+        # co o adrese webu víme z ověření (webaddr.Reach): jede port 80? které
+        # jméno opravdu odpovídá? Bez něj (testy, starý způsob) se nic neověřuje.
+        self.reach = reach
         # PIN správce webu (F-BEZP-11): čte se ze souboru vedle config.toml,
         # mimo hlavní vlákno, při otevření přehledu a s každým stavem sítě
         if pin_reader is None:
@@ -254,14 +258,24 @@ class NetController:
         if st is None:
             return ()
         out = []
-        # Wi-Fi first: a phone that scans the code is on Wi-Fi, not on a cable
+        reach = self.reach() if self.reach is not None else None
+        # port se píše, jen když je potřeba: s ověřeným portem 80 stačí adresa
+        suffix = "" if getattr(reach, "port80", False) or self.web_port == 80 \
+            else f":{self.web_port}"
+        # Wi-Fi first: a phone that scans the code is on Wi-Fi, not on a cable.
+        # The address stays first (and in the QR code): it works on every
+        # phone, a .local name doesn't.
         for kind in ("wifi", "ethernet"):
             link = st.link(kind)
             if link is not None and link.up:
-                url = f"http://{link.ip4}:{self.web_port}"
+                url = f"http://{link.ip4}{suffix}"
                 if url not in out:
                     out.append(url)
-        if out and st.mdns and st.hostname:
+        if reach is not None:
+            # jen jména, která při posledním ověření opravdu odpověděla
+            out += [f"http://{name}{suffix}" for name in getattr(reach, "names", ())
+                    if out and f"http://{name}{suffix}" not in out]
+        elif out and st.mdns and st.hostname:
             out.append(f"http://{st.hostname}.local:{self.web_port}")
         return tuple(out)
 
@@ -283,7 +297,10 @@ class NetController:
         pressed = self.pressed if self.inside else None
         conn_url = ""
         if self.result and self.result.ip4:
-            conn_url = f"http://{self.result.ip4}:{self.web_port}"
+            reach = self.reach() if self.reach is not None else None
+            conn_url = f"http://{self.result.ip4}" + (
+                "" if getattr(reach, "port80", False) or self.web_port == 80
+                else f":{self.web_port}")
         can_connect = (not self.secure) or 8 <= len(self.password) <= MAX_PASSWORD
         return NetView(
             page=self.page or "overview",

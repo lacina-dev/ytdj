@@ -93,6 +93,24 @@ if ! command -v bwrap > /dev/null && command -v apt-get > /dev/null; then
     sudo apt-get install -y bubblewrap
 fi
 
+# Web i na běžném portu 80 (http://jukebox.local bez :8765) — jen na jukeboxu
+# (Raspberry Pi) s nftables. Jádro přesměruje port 80 na port webu z config.toml;
+# sahá se jen na vlastní tabulku "ip ytdj_web" a port webu funguje dál.
+# YTDJ_PORT80=0 to vynechá. Zrušení: sudo systemctl disable --now ytdj-port80
+port80=no
+if [ "${YTDJ_PORT80:-1}" != 0 ] && [[ "$model" == Raspberry\ Pi* ]] \
+        && { command -v nft > /dev/null || [ -x /usr/sbin/nft ]; }; then
+    port80=yes
+    sudo install -D -m 755 "$repo/packaging/rpi/port80.sh" /usr/local/lib/ytdj/port80.sh
+    sed -e "s|@HOME@|$HOME|g" "$repo/packaging/ytdj-port80.service" |
+        sudo tee /etc/systemd/system/ytdj-port80.service > /dev/null
+    sudo systemctl daemon-reload
+    sudo systemctl enable ytdj-port80.service
+    # běží-li už, jen znovu nahrát: pravidla se nahradí naráz, port 80 nevypadne
+    sudo systemctl reload-or-restart ytdj-port80.service
+    echo "unit:    /etc/systemd/system/ytdj-port80.service (web i na portu 80)"
+fi
+
 # Druhé jméno v síti: vedle <hostname>.local i jukebox.local (jen na jukeboxu
 # s avahi). Skript jde mimo domovský adresář — služba do něj nevidí. Běží pod
 # běžným uživatelem (ne DynamicUser: toho si D-Bus na Pi nedohledá a avahi ho

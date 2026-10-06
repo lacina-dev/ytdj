@@ -268,7 +268,22 @@
          max-width: 280px; color: var(--text-faint); }
   .vol svg { width: 18px; height: 18px; flex: none; }
   .vol output { font-size: .8rem; font-variant-numeric: tabular-nums; min-width: 2.2em; text-align: right; }
-  @media (max-width: 330px) { .vol { flex-basis: 100%; max-width: none; margin-left: 0; } }
+  @media (max-width: 380px) { .vol { flex-basis: 100%; max-width: none; margin-left: 0; } }
+  /* ztlumit jedním ťuknutím (F-HLAS-08): reproduktor u hlasitosti je tlačítko; hudba běží dál */
+  .mute { flex: none; width: 44px; height: 44px; margin: 0 -4px 0 0; padding: 0; border: 0; border-radius: 50%;
+          background: transparent; color: inherit; display: grid; place-items: center; }
+  .mute:hover { background: var(--surface-2); color: var(--text); }
+  .mute[aria-pressed="true"] { color: var(--warn); background: color-mix(in srgb, var(--warn) 16%, transparent); }
+  .vol.muted input[type=range] { opacity: .4; }
+  .vol.muted output { text-decoration: line-through; }
+  /* klipy na telce: jeden vypínač pro celý jukebox (POZADAVKY #71) */
+  .tvrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; padding-top: 12px;
+           border-top: 1px solid var(--line); font-size: .92rem; }
+  .tvbtn { flex: none; min-height: 40px; padding: 0 14px; border: 1px solid var(--line); border-radius: 999px;
+           background: var(--surface-2); color: var(--text); font: inherit; font-weight: 600; cursor: pointer; }
+  .tvbtn[aria-pressed="true"] { border-color: var(--accent); color: var(--accent-text); }
+  .tvbtn:disabled { opacity: .55; cursor: default; }
+  .tvnote { color: var(--text-dim); flex: 1 1 12em; }
 
   input[type=range] { -webkit-appearance: none; appearance: none; flex: 1; min-width: 0; height: 30px;
                       background: transparent; margin: 0; }
@@ -695,13 +710,23 @@
           <button class="ctl" id="btnNext" type="button" aria-label="Další skladba" title="Další skladba">
             <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 5.4v13.2c0 .8.9 1.2 1.5.8l9.3-6.6c.5-.4.5-1.2 0-1.6L7.5 4.6C6.9 4.2 6 4.6 6 5.4z"/><rect x="17.6" y="4.6" width="2.6" height="14.8" rx="1.3"/></svg>
           </button>
-          <div class="vol">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M4 9.5h3.2L12 5.6v12.8L7.2 14.5H4z" fill="currentColor" stroke="none"/><path d="M15.6 9.4a3.6 3.6 0 0 1 0 5.2"/><path d="M18.2 7a7 7 0 0 1 0 10"/>
-            </svg>
+          <div class="vol" id="volBox">
+            <button class="mute" id="btnMute" type="button" aria-pressed="false" aria-label="Ztlumit zvuk (hudba běží dál)" title="Ztlumit (hudba běží dál)">
+              <svg id="icoVol" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M4 9.5h3.2L12 5.6v12.8L7.2 14.5H4z" fill="currentColor" stroke="none"/><path d="M15.6 9.4a3.6 3.6 0 0 1 0 5.2"/><path d="M18.2 7a7 7 0 0 1 0 10"/>
+              </svg>
+              <svg id="icoMute" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" hidden>
+                <path d="M4 9.5h3.2L12 5.6v12.8L7.2 14.5H4z" fill="currentColor" stroke="none"/><path d="M15.4 9.3l5 5.4M20.4 9.3l-5 5.4"/>
+              </svg>
+            </button>
             <input type="range" id="vol" min="0" max="100" step="1" value="100" aria-label="Hlasitost">
             <output id="volOut" for="vol">100</output>
           </div>
+        </div>
+        <div class="tvrow" id="tvRow" hidden>
+          <button class="tvbtn" id="tvBtn" type="button" aria-pressed="false"
+                  title="Když hraje skladba, která je sama oficiální klip, pustí se na telce její obraz (bez zvuku). Platí pro všechny.">Klipy na telce: vypnuto</button>
+          <span class="tvnote" id="tvNote" aria-live="polite"></span>
         </div>
       </section>
 
@@ -883,6 +908,7 @@
   </div>
 </aside>
 
+<script src="/identity.js"></script>
 <script>
 (function () {
   "use strict";
@@ -971,6 +997,7 @@
     title: "",
     volDragging: false, volHoldUntil: 0,
     seekDrag: false, seekHold: 0, seekLock: "",   // moving within the track (the bar, −10 / +10)
+    muted: false, muteHold: 0,                    // sound off with one tap (the music keeps running)
     lastUpdate: 0,
     connected: false,
     nick: "", tag: "",
@@ -991,6 +1018,8 @@
     elapsed: $("#elapsed"), total: $("#total"),
     btnPlay: $("#btnPlay"), icoPlay: $("#icoPlay"), icoPause: $("#icoPause"), btnNext: $("#btnNext"),
     vol: $("#vol"), volOut: $("#volOut"),
+    tvRow: $("#tvRow"), tvBtn: $("#tvBtn"), tvNote: $("#tvNote"),
+    volBox: $("#volBox"), btnMute: $("#btnMute"), icoVol: $("#icoVol"), icoMute: $("#icoMute"),
     prompt: $("#prompt"), btnSend: $("#btnSend"), playNext: $("#playNext"),
     chips: $("#chips"), reply: $("#reply"),
     mineSec: $("#mineSec"), mine: $("#mine"),
@@ -1159,7 +1188,27 @@
   function closeNickIfFirst() { if (!nickState.editing && !el.nickModal.hasAttribute("hidden")) closeNick(); }
 
   renderMe();
-  if (!S.nick) openNick(false, load("ytdj.who") || "");
+  // Tentýž člověk na všech adresách jukeboxu (F-NICK-07…): /identity.js nejdřív srovná id
+  // s cookie a s ostatními adresami; na přezdívku se ptáme, až když účet opravdu nikde není.
+  var idReady = (window.ytdjIdentity && window.ytdjIdentity.ready) || Promise.resolve(null);
+  function startMe() {
+    idReady.then(function (r) {
+      if (r && r.client && r.client !== S.client) {
+        S.client = r.client;
+        try { S.tokens = JSON.parse(load("ytdj.tokens") || "{}") || {}; } catch (e) {}
+      }
+      if (r && r.tag) S.tag = r.tag;
+      if (r && r.nick && r.nick !== S.nick) setNick(r.nick, r.tag);
+      if (!S.nick) openNick(false, load("ytdj.who") || "");
+      var note = window.ytdjIdentity ? window.ytdjIdentity.note(r) : "";
+      if (note) {  // věta o účtu je delší než běžná hláška — nechat ji vidět déle
+        toast(note);
+        clearTimeout(V.toastT);
+        V.toastT = setTimeout(function () { vel.toast.classList.remove("show"); }, 12000);
+      }
+      initMe();
+    });
+  }
 
   /* ------------------------------------------------------------------ */
   /* connection: SSE, falling back to polling on trouble                 */
@@ -1398,6 +1447,9 @@
         el.volOut.textContent = String(v);
       }
     }
+    // ztlumeno: stav pro všechny; úroveň hlasitosti na posuvníku zůstává
+    if (nowMs() > S.muteHold) showMuted(!!s.muted);
+    showTv(s.tv);
 
     el.btnSend.disabled = S.sending || !el.prompt.value.trim();
     var reqs = s.requests || [];
@@ -1707,6 +1759,41 @@
   /* controls                                                            */
   /* ------------------------------------------------------------------ */
 
+  // Klipy na telce: vypínač pro celý jukebox — přepne kdokoli, stav vidí všichni.
+  // Když telka klipy neumí (není připojená, chybí dekodér), řekne to a nejde zapnout.
+  function showTv(tv) {
+    setHidden(el.tvRow, !tv);
+    if (!tv) return;
+    if (nowMs() < (S.tvHold || 0)) return;  // právě jsem přepnul — starý stav to nevrátí
+    var on = !!tv.on;
+    el.tvBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    el.tvBtn.textContent = "Klipy na telce: " + (on ? "zapnuto" : "vypnuto");
+    el.tvBtn.disabled = !tv.can && !on;  // vypnout jde vždy
+    var note = "";
+    if (!tv.can) note = (tv.why || "Telka klipy neumí.") + (on ? " Zapnuto zůstává pro později." : "");
+    else if (!on) note = "Obraz jen u skladeb, které jsou samy klip. Zvuk se nemění.";
+    else if (tv.blocked) note = "Teď obrazovka „právě hraje“: " + tv.blocked + ".";
+    else if (tv.mode === "video") note = "Na telce běží klip." + (tv.by ? " Zapnul(a) " + tv.by + "." : "");
+    else if (tv.pending) note = "Tahle skladba je klip — obraz se chystá.";
+    else note = "Tahle skladba klip není — na telce je „právě hraje“." + (tv.by ? " Zapnul(a) " + tv.by + "." : "");
+    el.tvNote.textContent = note;
+  }
+  el.tvBtn.addEventListener("click", async function () {
+    var on = el.tvBtn.getAttribute("aria-pressed") !== "true";
+    S.tvHold = nowMs() + 1500;
+    el.tvBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    el.tvBtn.textContent = "Klipy na telce: " + (on ? "zapnuto" : "vypnuto");
+    try {
+      var r = await postJSON("/api/tv", { video: on, who: S.nick, client: S.client });
+      S.tvHold = 0;
+      if (r && r.tv) showTv(r.tv);
+    } catch (e) {
+      S.tvHold = 0;
+      showReply("Přepnutí klipů se nepovedlo: " + e.message, true, "");
+      if (S.status) showTv(S.status.tv);
+    }
+  });
+
   async function control(action, value) {
     try {
       // kdo přeskočil — vlastník přeskočeného přání to uvidí
@@ -1748,10 +1835,37 @@
 
   // volume: while dragging only the label updates, POST only on release
   el.vol.addEventListener("input", function () { S.volDragging = true; el.volOut.textContent = el.vol.value; });
+  // ztlumit / zapnout zvuk jedním ťuknutím; hudba běží dál a hlasitost se nemění
+  function showMuted(on) {
+    if (S.muted === on) return;
+    S.muted = on;
+    el.btnMute.setAttribute("aria-pressed", on ? "true" : "false");
+    var label = on ? "Zapnout zvuk (je ztlumeno, hudba běží dál)" : "Ztlumit zvuk (hudba běží dál)";
+    el.btnMute.setAttribute("aria-label", label);
+    el.btnMute.title = on ? "Ztlumeno — hudba běží dál. Ťukni a zvuk se vrátí." : "Ztlumit (hudba běží dál)";
+    setHidden(el.icoVol, on);
+    setHidden(el.icoMute, !on);
+    el.volBox.classList.toggle("muted", on);
+  }
+  // The server's old state must not flip the button back before it has the
+  // command; afterwards the newest state wins again (somebody else may have
+  // tapped meanwhile — a state that came during the hold is not lost).
+  function holdMuted(on) {
+    S.muteHold = nowMs() + 1500;
+    showMuted(on);
+    clearTimeout(S.muteT);
+    S.muteT = setTimeout(function () { if (S.status) showMuted(!!S.status.muted); }, 1600);
+  }
+  el.btnMute.addEventListener("click", function () {
+    var on = !S.muted;
+    holdMuted(on);
+    control("mute", on);
+  });
   function commitVolume() {
     if (!S.volDragging) return;
     S.volDragging = false;
     S.volHoldUntil = nowMs() + 2000;
+    if (S.muted) holdMuted(false);  // sahat na hlasitost = chci slyšet
     control("volume", Math.min(100, parseInt(el.vol.value, 10)));
   }
   el.vol.addEventListener("change", commitVolume);
@@ -2658,7 +2772,7 @@
   autosize();
   refresh();
   startSSE();
-  initMe();
+  startMe();
 })();
 </script>
 </body>

@@ -435,6 +435,55 @@ class VoteBook:
                 n += 1
         return n
 
+    # ---- dva účty jednoho člověka (ytdj/identity.py, F-NICK-09) ----
+
+    def first_seen(self, voter: str) -> float | None:
+        """Nejstarší stopa člověka v hlasování (vlastní hlas nebo import); None = žádná."""
+        ts = [b.ts for ballots in self.items.values()
+              for v, b in ballots.items() if v == voter and not b.src]
+        ts += [imp.created for imp in self._imports_by.get(voter, ())]
+        return min(ts) if ts else None
+
+    def merge_voter(self, loser: str, winner: str) -> dict:
+        """Hlasy a importy účtu `loser` připíše účtu `winner` (tentýž člověk na
+        jiné adrese jukeboxu). Kde hlasovaly oba účty, platí hlas `winner` —
+        z jednoho člověka se tím nikdy nestanou dva hlasy. Zápis přes Store."""
+        out = {"moved": 0, "dropped": 0, "imports": 0}
+        if not loser or not winner or loser == winner:
+            return out
+        for imp in list(self._imports_by.get(loser, ())):
+            self.drop_import(imp.id)
+            imp.client = winner
+            self.put_import(imp)
+            out["imports"] += 1
+            if self.store is not None:
+                with contextlib.suppress(Exception):
+                    self.store.save_import(imp.meta(), imp.rows())
+        now = self.clock()
+        for (target, key), ballots in list(self.items.items()):
+            lb = ballots.pop(loser, None)
+            if lb is None:
+                continue
+            wb = ballots.get(winner)
+            if lb.src or lb.vote == 0 or (wb is not None and not wb.src and wb.vote != 0):
+                out["dropped"] += 1
+            else:
+                ballots[winner] = Ballot(winner, lb.vote, lb.who, lb.ts, lb.video_id, lb.artist, lb.title)
+                out["moved"] += 1
+                if self.store is not None:
+                    with contextlib.suppress(Exception):
+                        self.store.save_vote(target, key, winner, lb.vote, lb.who, lb.video_id,
+                                             lb.artist, lb.title, lb.ts)
+            if not lb.src and self.store is not None:
+                with contextlib.suppress(Exception):  # starý účet: hlas stažen
+                    self.store.save_vote(target, key, loser, 0, lb.who, lb.video_id, lb.artist,
+                                         lb.title, now)
+            if not ballots:
+                del self.items[(target, key)]
+        self._rate.pop(loser, None)
+        self._version += 1
+        return out
+
     # ---- prahy a stav ----
 
     def thresholds(self) -> tuple[int, int]:

@@ -199,6 +199,13 @@ class App:
         from .issues import wire as wire_issues
 
         self.issues = wire_issues(self)
+        # ---- klipy na telce (POZADAVKY #71, ytdj/tvvideo.py) ----
+        # Jen vypínač, druh skladby a adresa obrazu; přehrávače se nedotkne.
+        from .config import RUNTIME_DIR
+        from .tvvideo import TvVideo
+
+        self.tvvideo = TvVideo(cfg, self.catalog, self.player, DATA_DIR / "tv-video.json",
+                               RUNTIME_DIR / "tv-video", on_change=self._poke_web)
         self._start_task: asyncio.Task | None = None
 
     def _poke_web(self) -> None:
@@ -552,6 +559,8 @@ class App:
         from .issues import aload_quietly as aload_issues
 
         await aload_issues(self.issues)  # state.db a seed ve vlákně
+        await self.tvvideo.load()  # stav vypínače z disku, ve vlákně
+        self.tvvideo.start()
         if self._player_start is not None:
             # shield: SIGTERM během startu nezruší rozjezd mpv napůl — _shutdown ho
             # nechá dostartovat a pak řádně zastaví
@@ -659,6 +668,8 @@ class App:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(self.wishes.refresh_playing(), 2)
         await self.wishes.stop()
+        with contextlib.suppress(Exception):
+            await self.tvvideo.stop()
         if self.loopwatch is not None:
             await self.loopwatch.stop()
         # the web must go down before the store — SSE would otherwise touch

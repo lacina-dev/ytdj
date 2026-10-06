@@ -10,14 +10,30 @@ cfg=/boot/firmware/config.txt
 
 # --- config.txt: bez GPU ovladače, minimum paměti pro GPU, bez bluetooth ---
 # Obraz jde na KeDei přes náš ovladač (ytdj/panel/kedei.c), HDMI se nepoužívá.
+#
+# Výjimka: klipy na telce (POZADAVKY #71) potřebují grafický ovladač a dekodér
+# (gpu_mem=64, dtoverlay=vc4-kms-v3d,cma-128 — viz NOTES.md). Když je v config.txt
+# někdo zapnul, je to výslovná volba a tenhle skript ji NEVRACÍ; zpátky na
+# úsporné nastavení jen s YTDJ_SLIM_NO_VIDEO=1.
+video_on=no
+if grep -Eq '^dtoverlay=vc4-kms-v3d' "$cfg" && [ "${YTDJ_SLIM_NO_VIDEO:-0}" != 1 ]; then
+    video_on=yes
+    echo "pozn.:   v $cfg je zapnutá grafika pro klipy na telce — nechávám ji (YTDJ_SLIM_NO_VIDEO=1 ji vypne)"
+fi
 sudo sed -i \
     -e 's/^camera_auto_detect=1$/camera_auto_detect=0/' \
     -e 's/^display_auto_detect=1$/display_auto_detect=0/' \
-    -e 's/^dtoverlay=vc4-kms-v3d$/#dtoverlay=vc4-kms-v3d  # ytdj: GPU nepotřebujeme/' \
-    -e 's/^max_framebuffers=2$/#max_framebuffers=2/' \
     "$cfg"
-# config.txt končí sekcí [all], takže přidané řádky platí pro všechny modely
-grep -qx 'gpu_mem=16' "$cfg" || echo 'gpu_mem=16' | sudo tee -a "$cfg" > /dev/null
+if [ "$video_on" = no ]; then
+    sudo sed -i \
+        -e 's/^dtoverlay=vc4-kms-v3d.*$/#&  # ytdj: GPU nepotřebujeme/' \
+        -e 's/^max_framebuffers=2$/#max_framebuffers=2/' \
+        "$cfg"
+    # výslovný návrat z klipů: paměť pro grafiku zpátky na minimum
+    [ "${YTDJ_SLIM_NO_VIDEO:-0}" = 1 ] && sudo sed -i -e 's/^gpu_mem=.*$/gpu_mem=16/' "$cfg"
+    # config.txt končí sekcí [all], takže přidané řádky platí pro všechny modely
+    grep -qx 'gpu_mem=16' "$cfg" || echo 'gpu_mem=16' | sudo tee -a "$cfg" > /dev/null
+fi
 grep -qx 'dtoverlay=disable-bt' "$cfg" || echo 'dtoverlay=disable-bt' | sudo tee -a "$cfg" > /dev/null
 
 # --- systémové služby, které jukebox nepotřebuje ---

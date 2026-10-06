@@ -186,6 +186,7 @@
   </div>
 </div>
 
+<script src="/identity.js"></script>
 <script>
 (function () {
   "use strict";
@@ -469,6 +470,17 @@
   $("#backList").addEventListener("click", function (ev) { ev.preventDefault(); location.hash = ""; });
   window.addEventListener("hashchange", route);
   route();
+  // Tentýž člověk na všech adresách jukeboxu (F-NICK-07…): když /identity.js zjistí,
+  // že tu má být jiné id nebo přezdívka, stránka je převezme a seznam načte znovu.
+  if (window.ytdjIdentity && window.ytdjIdentity.ready) {
+    window.ytdjIdentity.ready.then(function (r) {
+      if (!r) return;
+      var changed = (r.client && r.client !== client) || (r.nick && r.nick !== nick);
+      if (r.client) client = r.client;
+      if (r.nick) { nick = r.nick; $("#asWho").textContent = "Píšeš jako " + nick + "."; }
+      if (changed) route();
+    });
+  }
 })();
 </script>
 </body>

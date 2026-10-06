@@ -876,8 +876,9 @@ class Page(unittest.TestCase):
         self.assertLess(len(gzip.compress(raw, 6)), 9 * 1024)
         page = raw.decode("utf-8")
         self.assertEqual(re.findall(r"""(?:src|href)=["'](https?:)?//""", page), [])  # nic zvenku
-        # žádné knihovny — jen vlastní malý skript vzhledu, společný všem stránkám (F-WEB-09)
-        self.assertEqual(re.findall(r"<script[^>]+src=[\"']?([^\"' >]*)", page), ["/theme.js"])
+        # žádné knihovny — jen vlastní malé skripty společné stránkám: vzhled (F-WEB-09)
+        # a tentýž člověk na všech adresách jukeboxu (F-NICK-07)
+        self.assertEqual(re.findall(r"<script[^>]+src=[\"']?([^\"' >]*)", page), ["/theme.js", "/identity.js"])
         self.assertIn('<link rel="stylesheet" href="/manual.css">', page)  # barvy den / noc jako jinde
         self.assertIn('name="viewport" content="width=device-width, initial-scale=1', page)
         self.assertIn('<meta name="color-scheme" content="dark light">', page)

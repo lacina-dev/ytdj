@@ -71,7 +71,7 @@ class TvView:
     note_who: str = ""
     detail: str = ""  # outage / offline reason
     clock: str = ""
-    address: str = "jukebox.local:8765"
+    address: str = ""  # what to type into a browser; "" = not known (nothing is shown)
     art: bool = False  # the cover is ready
     dim: bool = False
     shift: int = 0
@@ -94,7 +94,7 @@ def view_from(state: dict | None, *, offline: str = "", now: float | None = None
     """
     now = time.time() if now is None else now
     mono = time.monotonic() if mono is None else mono
-    base = dict(address=address or "jukebox.local:8765",
+    base = dict(address=address,
                 clock=time.strftime("%H:%M", time.localtime(now)) if clock is None else clock,
                 shift=int(now // SHIFT_EVERY) % len(SHIFTS),
                 dim=idle_since is not None and mono - idle_since >= DIM_AFTER)
@@ -502,6 +502,11 @@ class Renderer:
         w, h = tile.size
         u = self.u
         d.line((0, 0, w, 0), fill=LINE, width=max(1, round(2 * u)))
+        if not v.address:
+            # no address is confirmed to work yet — better none than a wrong one
+            d.text((w, h * 0.45), "Adresu webu zjišťuji…", font=self.font(24), fill=FAINT,
+                   anchor="rm")
+            return
         pad = round(16 * u)
         side = h - 2 * pad
         if self._qr[0] != v.address:

@@ -90,6 +90,7 @@
     <h2 id="h-prezdivka"><span class="ico" aria-hidden="true">🙂</span>Přezdívka</h2>
     <p>Při prvním otevření se web zeptá, jak ti říkat (2–20 znaků). Přezdívka se ukáže u tvých přání a hlasů, aby kolegové věděli, čí písnička hraje. Změníš ji ťuknutím na své jméno vpravo nahoře. Bez přezdívky hlasovat nejde.</p>
     <p class="dim">Prohlížeč si ji pamatuje — na jiném telefonu nebo počítači jsi pro jukebox jiný člověk.</p>
+    <p class="dim" id="adresy">Když jukebox otevřeš pod jinou adresou (jiné jméno, číselná adresa, s číslem portu nebo bez), jsi pořád tentýž člověk: prohlížeč si při první návštěvě na okamžik odskočí na ostatní adresy, které mu odpovídají, a účet si odtud vezme — na přezdívku se znovu neptá. Měl(a)-li jsi na dvou adresách dva účty, spojí se do staršího i s hlasy a web ti to jednou větou řekne.</p>
   </section>
 
   <section class="sec card" id="displej" aria-labelledby="h-displej">
@@ -119,7 +120,9 @@
       <div><b>Červená tečka vpravo nahoře</b>Web ztratil spojení s jukeboxem a zkouší se znovu připojit. Když to trvá, dej vědět správci.</div>
       <div><b>Ráno nebo v noci ticho</b>Po restartu v noci (22:00–7:00) nebo po zapnutí jukeboxu se hudba sama nerozehraje, aby nehrála do prázdné kanceláře. Stačí zmáčknout ▶.</div>
       <div><b>Po vypnutí nebo výpadku proudu</b>Jukebox si pamatuje, kde skončil: po zapnutí vrátí čekající přání, podkres i místo ve skladbě a čeká v pauze. Zmáčkni ▶ a pokračuje se tam, kde se přestalo. Platí to týž den — druhý den začíná načisto.</div>
-      <div><b>Telka na zdi</b>Když je k jukeboxu připojená telka, ukazuje, co právě hraje, od koho to je, co bude dál a QR kód na tenhle web. Je jen na dívání; video se nepřehrává.</div>
+      <div><b>Adresa jukeboxu</b>V kancelářské síti stačí napsat <strong>jukebox.local</strong> — bez čísla za dvojtečkou; stará adresa s <strong>:8765</strong> funguje dál. Když jméno na tvém zařízení nejde, použij adresu z displeje jukeboxu (obrazovka Síť) nebo naskenuj QR kód.</div>
+      <div><b>Telka na zdi</b>Když je k jukeboxu připojená telka, ukazuje, co právě hraje, od koho to je, co bude dál a QR kód na tenhle web. Je jen na dívání.</div>
+      <div><b>Klipy na telce</b>Pod ovládáním přehrávače je vypínač <strong>Klipy na telce</strong> — přepne ho kdokoli a platí pro všechny. Když je zapnutý a hraje skladba, která sama je oficiální klip, pustí se na telce její obraz (bez zvuku, zvuk hraje dál z repráku). U ostatních skladeb zůstává obrazovka „právě hraje“. Když je jukebox horký nebo mu dochází paměť, klip se sám vypne a vypínač napíše proč.</div>
       <div><b>Nastavení chce PIN</b>Nastavení jukeboxu a restart jsou pro správce: chtějí PIN, který je na displeji jukeboxu na obrazovce Síť. Přání, Další, hlasitost a hlasování jdou bez PINu. Po 5 špatných PINech je nastavení na 5 minut zamčené.</div>
       <div><b>Moje přání pořád nehraje</b>Zeptej se: „kdy bude moje písnička?“ — DJ odpoví podle fronty. Kdo 10 minut nic svého neslyšel a zeptá se, jde na řadu hned po hrající skladbě.</div>
       <div id="hlaseni"><b>Našel(a) jsi chybu nebo máš nápad?</b>Napiš to na stránku <a href="/hlaseni">Chyby a nápady</a> (💡 nahoře na hlavní stránce) — bez přihlášení, pod svou přezdívkou. K cizí položce přidáš komentář nebo <strong>+1</strong> („taky se mi to děje“, „taky to chci“). U každé pak uvidíš stav a <strong>Jak to bylo vyřešeno</strong>; ty zapisuje správce (s PINem).</div>
@@ -140,6 +143,7 @@
       <li>Další u cizího přání: když ho ostatní přeskočí dvakrát, přání skončí. Přeskakuj ohleduplně — tvoje Další se připíše tobě.</li>
       <li>V tichu stačí ▶ a DJ vybere hudbu sám podle času, dne a toho, co tu obvykle hraje.</li>
       <li>Písničky se samy srovnávají na stejnou hlasitost — kvůli tiché staré nahrávce nemusíš přidávat a po ní zase ubírat. Hlasitost, kterou nastavíš, platí pro všechny stejně.</li>
+      <li>Potřebuješ na chvíli ticho (telefon, porada)? Ťukni na reproduktor u hlasitosti — zvuk se ztlumí a dalším ťuknutím se vrátí přesně tam, kde byl. Hudba mezitím běží dál; kdo pohne hlasitostí, zvuk tím zase zapne.</li>
       <li>Chceš, aby DJ znal tvůj vkus? <a href="#playlist">Importuj svůj playlist</a> do oblíbených na stránce <b>Hlasování</b>. (Odkaz na playlist vložený do přání z něj jen zahraje pár písniček jako přání — do oblíbených nic nepřidá.)</li>
       <li id="vzhled">Světlá, nebo tmavá stránka? Úplně dole na každé stránce je <b>Vzhled</b>: <b>Auto</b> (podle tvého zařízení), <b>Den</b> nebo <b>Noc</b>. Volbu si pamatuje jen to zařízení, na kterém ji uděláš.</li>
     </ul>

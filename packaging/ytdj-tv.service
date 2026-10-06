@@ -16,7 +16,11 @@ Type=simple
 # Systémová služba, ale NE root: obyčejný uživatel a k němu jen skupina
 # `video` kvůli /dev/fb0.
 User=@USER@
-SupplementaryGroups=video
+SupplementaryGroups=video render
+# stavový soubor pro vypínač na webu (umí telka klipy? co zrovna dělá) a socket
+# přehrávače klipů — /run/ytdj-tv, čitelné pro jukebox
+RuntimeDirectory=ytdj-tv
+RuntimeDirectoryMode=0755
 WorkingDirectory=@INSTALL_DIR@
 # Stejný venv jako ytdj (na Pi se --system-site-packages, Pillow je z aptu).
 ExecStart=@INSTALL_DIR@/.venv/bin/python -u -m ytdj.tv
@@ -49,7 +53,7 @@ SyslogIdentifier=ytdj-tv
 Nice=10
 OOMScoreAdjust=900
 
-# Co nejmíň práv: žádný root, žádné nové, ze zařízení jen framebuffer a tty1,
+# Co nejmíň práv: žádný root, žádné nové, ze zařízení jen obrazovka, tty1 a dekodér,
 # systém i domovský adresář jen ke čtení a tajemství jukeboxu vůbec.
 NoNewPrivileges=yes
 CapabilityBoundingSet=
@@ -57,6 +61,11 @@ AmbientCapabilities=
 DevicePolicy=closed
 DeviceAllow=/dev/fb0 rw
 DeviceAllow=/dev/tty1 rw
+# klipy (jen když jsou v prohlížeči povolené): obraz přes DRM, hardwarový
+# dekodér H.264 a dotaz firmwaru na přiškrcení procesoru
+DeviceAllow=char-drm rw
+DeviceAllow=char-video4linux rw
+DeviceAllow=/dev/vchiq rw
 ProtectSystem=strict
 ProtectHome=read-only
 InaccessiblePaths=-@HOME@/.config/ytdj/cookies.txt -@HOME@/.config/ytdj/env -@HOME@/.config/ytdj/admin-pin -@HOME@/.codex -@HOME@/.ssh
@@ -69,7 +78,8 @@ RestrictNamespaces=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictRealtime=yes
 LockPersonality=yes
-MemoryDenyWriteExecute=yes
+# (MemoryDenyWriteExecute tu není: přehrávač klipů používá grafické knihovny,
+# které si spustitelnou paměť vyžádat smějí — s ním by se klip nemusel spustit)
 
 [Install]
 WantedBy=multi-user.target

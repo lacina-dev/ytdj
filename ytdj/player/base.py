@@ -34,6 +34,9 @@ class PlayerStatus:
     # Výpadek (síť / YouTube / cookies): {"reason", "since", "detail"}. Mezitím
     # se nehraje, fronta i přání čekají a přehrávač zkouší spojení.
     outage: dict | None = None
+    # Ztlumeno (F-HLAS-08): hudba běží dál, jen není slyšet; `volume` se tím
+    # nemění — po zapnutí zvuku hraje přesně tak hlasitě jako předtím.
+    muted: bool = False
 
 
 @dataclass(slots=True)

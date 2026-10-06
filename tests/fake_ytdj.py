@@ -79,6 +79,7 @@ class FakeYtdj:
         self.index = 0
         self.paused = False
         self.volume = 65
+        self.muted = False  # sound off; the level stays
         self.pos = 12.0
         self.pos_at = time.monotonic()
         self.mood = "klidný večer, český rock"
@@ -182,7 +183,7 @@ class FakeYtdj:
                     **base,
                     "playing": False, "paused": False, "buffering": False, "current": None,
                     "position": 0.0, "duration": 0.0, "queue": [], "pools": "",
-                    "volume": self.volume, "quality": "", "mood": "", "busy": busy,
+                    "volume": self.volume, "muted": self.muted, "quality": "", "mood": "", "busy": busy,
                     "history": [], "dj": self._dj(busy),
                 }
             cur = dict(self._current())
@@ -220,6 +221,7 @@ class FakeYtdj:
                 "queue": queue,
                 "pools": "",
                 "volume": self.volume,
+                "muted": self.muted,
                 "quality": "opus 251 kb/s",
                 "mood": self.mood,
                 "busy": busy,
@@ -696,6 +698,10 @@ class FakeYtdj:
                 if not 0 <= int(value) <= 130:
                     return 400, {"error": "Hlasitost musí být v rozsahu 0–100."}
                 self.volume = min(100, int(value))  # strop 100 jako skutečný server
+                self.muted = False  # sahat na hlasitost = zapnout zvuk
+            elif action == "mute":
+                self.muted = (not self.muted) if value is None else bool(value)
+                return 200, {"ok": True, "muted": self.muted, "volume": self.volume}
             elif action == "seek":
                 # like the real server: absolute, clamped, never in somebody else's wish
                 cid = str(data.get("client") or "")

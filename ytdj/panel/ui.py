@@ -245,6 +245,7 @@ class View:
     duration: int = 0
     volume: int = 0
     vol_max: int = 100
+    muted: bool = False  # sound off from the web (the music runs on, the level stays)
     mood: str = ""
     busy: bool = False
     note: str = ""  # short-lived error
@@ -575,7 +576,7 @@ class Renderer:
             ("play", PLAY, lambda v: (v.online, v.running, v.pressed == "play"), self._draw_play),
             ("next", NEXT, lambda v: (v.online and v.can_next, v.pressed == "next"), self._draw_next),
             ("vol_down", VOL_DOWN, lambda v: (v.online, v.pressed == "vol_down"), self._draw_vol_down),
-            ("vol", VOL, lambda v: (v.online, v.volume, v.vol_max, v.pressed == "vol"), self._draw_vol),
+            ("vol", VOL, lambda v: (v.online, v.volume, v.vol_max, v.pressed == "vol", v.muted), self._draw_vol),
             ("vol_up", VOL_UP, lambda v: (v.online, v.pressed == "vol_up"), self._draw_vol_up),
         ]
 
@@ -1093,8 +1094,13 @@ class Renderer:
         cy = h // 2
         dragging = v.pressed == "vol"
         self._button(d, size, SURFACE)
-        num_color = (ACCENT_TEXT if dragging else TEXT) if v.online else FAINT
+        muted = v.muted and v.online
+        num_color = (WARN if muted else ACCENT_TEXT if dragging else TEXT) if v.online else FAINT
         d.text((VOL_NUM_W - 6, cy), str(v.volume) if v.online else "–", font=self.fonts.volume, fill=num_color, anchor="rm")
+        if muted:
+            # ztlumeno: číslo (úroveň zůstává) je přeškrtnuté a lišta šedá
+            tw = d.textlength(str(v.volume), font=self.fonts.volume)
+            d.line((VOL_NUM_W - 9 - tw, cy + 1, VOL_NUM_W - 3, cy + 1), fill=WARN, width=3)
 
         x0, x1 = VOL_TRACK_X
         d.rounded_rectangle((x0, cy - 4, x1, cy + 4), radius=4, fill=SURFACE_HI)
@@ -1102,9 +1108,9 @@ class Renderer:
             return
         frac = min(1.0, max(0.0, v.volume / max(1, v.vol_max)))
         kx = round(x0 + (x1 - x0) * frac)
-        d.rounded_rectangle((x0, cy - 4, kx, cy + 4), radius=4, fill=ACCENT)
+        d.rounded_rectangle((x0, cy - 4, kx, cy + 4), radius=4, fill=FAINT if muted else ACCENT)
         r = KNOB_R + (2 if dragging else 0)
-        d.ellipse((kx - r, cy - r, kx + r, cy + r), fill=ACCENT_TEXT if dragging else TEXT)
+        d.ellipse((kx - r, cy - r, kx + r, cy + r), fill=DIM if muted else ACCENT_TEXT if dragging else TEXT)
 
 
 # ---- the full-screen QR page ("📱" in the status strip) ----

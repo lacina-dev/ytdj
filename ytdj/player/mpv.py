@@ -372,6 +372,10 @@ class MpvPlayer(Player):
         self.is_protected: Callable[[str], bool] | None = None
         self._paused = False
         self._volume = _clamp_volume(cfg.volume)
+        # Ztlumení je vlastnost `mute` v mpv, ne hlasitost 0: úroveň zůstává.
+        # Nikam se neukládá — mpv startuje vždy se zvukem (po restartu nikdy
+        # "potichu bez viditelného důvodu").
+        self._muted = False
         # Zápis hlasitosti do configu se odkládá: tažení slideru i držené "+"
         # v REPL by jinak přepisovaly soubor několikrát za vteřinu.
         self._volume_save: asyncio.Task | None = None
@@ -606,7 +610,7 @@ class MpvPlayer(Player):
     async def _observe(self) -> None:
         for i, prop in enumerate(
             ("playlist-pos", "playlist-count", "pause", "volume", "time-pos", "core-idle",
-             "playlist", "audio-params", "audio-out-params", "duration"), 1
+             "playlist", "audio-params", "audio-out-params", "duration", "mute"), 1
         ):
             await self._send({"command": ["observe_property", i, prop]}, wait=False)
         await self._sync()
@@ -752,6 +756,8 @@ class MpvPlayer(Player):
                         self._schedule_prefetch(now=True)
             elif name == "volume" and isinstance(data, (int, float)):
                 self._volume = int(data)
+            elif name == "mute" and isinstance(data, bool):
+                self._muted = data
             elif name == "time-pos" and isinstance(data, (int, float)):
                 self._time_pos = float(data)
             elif name == "duration":
@@ -1777,6 +1783,19 @@ class MpvPlayer(Player):
         await self._command("set_property", "volume", volume, wait=False)
         self._volume = volume
         self._remember_volume(volume)
+        if self._muted:
+            # kdo sahá na hlasitost (web, displej, kolečko, povel), chce slyšet
+            await self.set_mute(False)
+
+    async def set_mute(self, muted: bool | None = None) -> bool:
+        """Ztlumit / zapnout zvuk (None = přepnout). Vrací nový stav.
+
+        Jen vlastnost `mute` v mpv: hlasitost (`volume`, i ta uložená) se
+        nemění, přehrávání běží dál — žádná pauza, žádný konec skladby."""
+        target = (not self._muted) if muted is None else bool(muted)
+        await self._command("set_property", "mute", target, wait=False)
+        self._muted = target
+        return target
 
     # ---------- posun ve skladbě a skok na skladbu z fronty ----------
 
@@ -2513,6 +2532,7 @@ class MpvPlayer(Player):
             volume=self._volume,
             quality=self._quality,
             outage=self.outage,
+            muted=self._muted,
         )
 
     @property

@@ -10,6 +10,7 @@ looks again once a minute.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 import time
@@ -18,7 +19,9 @@ from typing import Callable
 from ..panel.art import ArtCache
 from ..panel.client import Api, StatusFeed
 from ..panel.stats import emit
+from ..panel.webaddr import Watch
 from .screen import PROGRESS_STEP, Renderer, TvView, cover_tile, view_from
+from .video import Director, want_from
 
 log = logging.getLogger(__name__)
 
@@ -31,13 +34,24 @@ SEEK_JUMP = 4.0  # s — a position this far from where we thought it was is a s
 
 
 class TvApp:
-    def __init__(self, open_screen: Callable[[], object], url: str, address: str,
-                 art_url: str = ART_URL, agent: str = "ytdj-tv") -> None:
+    def __init__(self, open_screen: Callable[[], object], url: str, address: str = "",
+                 art_url: str = ART_URL, agent: str = "ytdj-tv",
+                 watch: Watch | None = None, director: Director | None = None) -> None:
         self.open_screen = open_screen
-        self.address = address
+        # klip místo obrazovky (video.Director) — jen na skutečné telce; bez
+        # něj se nic nemění a kreslí se pořád
+        self.director = director
+        self._video = False
         self.stop = threading.Event()
         self.wake = threading.Event()
         self.api = Api(url, agent=agent)
+        # Adresa na obrazovce: pevná jen když ji někdo výslovně zadal, jinak
+        # ta, která při posledním ověření opravdu odpověděla (webaddr.Watch —
+        # vlastní vlákno, jednou za pár minut).
+        self.address = address
+        self.watch = watch
+        if not address and watch is None:
+            self.watch = Watch(self.api.port, self.stop, on_change=lambda _r: self.wake.set())
         self.feed = StatusFeed(self.api, self._on_state, self._on_offline, self.stop)
         self.art_url = art_url
         self.art: ArtCache | None = None
@@ -105,7 +119,8 @@ class TvApp:
         with self._lock:
             state, offline, got_at, idle = self._state, self._offline, self._got_at, self._idle_since
         art = self.art
-        return view_from(state, offline=offline, got_at=got_at, address=self.address,
+        address = self.address or (self.watch.reach.address() if self.watch else "")
+        return view_from(state, offline=offline, got_at=got_at, address=address,
                          idle_since=idle,
                          art_ready=(lambda vid: art.get(vid) is not None) if art else None)
 
@@ -157,24 +172,75 @@ class TvApp:
             self.paint_ms += (time.perf_counter() - t0) * 1000
         return px
 
+    def music(self) -> tuple[dict | None, float]:
+        """The jukebox's status and where the music is right now (seconds)."""
+        with self._lock:
+            state, offline, got_at = self._state, self._offline, self._got_at
+        if offline or not isinstance(state, dict):
+            return None, 0.0
+        try:
+            pos = float(state.get("position") or 0.0)
+        except (TypeError, ValueError):
+            pos = 0.0
+        if isinstance(state.get("current"), dict) and not state.get("paused") \
+                and not state.get("buffering"):
+            pos += max(0.0, time.monotonic() - got_at)
+        return state, pos
+
+    def video_step(self) -> bool:
+        """Lets the director start, steer or stop the clip; True while it shows
+        (then the screen must not draw — the display is the player's)."""
+        if self.director is None:
+            return False
+        state, pos = self.music()
+        try:
+            return self.director.step(want_from(state, pos)) == "video"
+        except Exception as exc:  # the clip is expendable; the screen is not
+            log.warning("klip: %s", exc, exc_info=log.isEnabledFor(logging.DEBUG))
+            emit("tv.video_error", error=f"{type(exc).__name__}: {exc}"[:160])
+            with contextlib.suppress(Exception):
+                self.director.close()
+            return False
+
     def _tick(self) -> float:
         """Seconds until something on screen can change by itself."""
+        if self.director is not None and (self.director.session is not None or self._wants_video()):
+            return 1.0  # the clip is steered once a second
         with self._lock:
             state, offline = self._state, self._offline
         now = time.time()
         to_minute = 60.0 - now % 60.0 + 0.05
         playing = (not offline and isinstance(state, dict) and isinstance(state.get("current"), dict)
                    and not state.get("paused"))
-        return min(to_minute, float(PROGRESS_STEP)) if playing else to_minute
+        wait = min(to_minute, float(PROGRESS_STEP)) if playing else to_minute
+        # with the director the status file for the web's switch is kept fresh
+        return min(wait, 30.0) if self.director is not None else wait
+
+    def _wants_video(self) -> bool:
+        with self._lock:
+            tv = (self._state or {}).get("tv") if isinstance(self._state, dict) else None
+        return isinstance(tv, dict) and tv.get("on") is True and bool(tv.get("video"))
 
     def run(self) -> None:
         self.feed.start()
+        if self.watch is not None and not self.watch.is_alive():
+            self.watch.start()
         full = True
         checked = reported = time.monotonic()
         while not self.stop.is_set():
             if not self._ensure_screen():
                 self.stop.wait(RETRY_SCREEN)
                 continue
+            if self.video_step():
+                # the clip owns the display: nothing is drawn underneath it
+                self._video = True
+                self.wake.wait(self._tick())
+                self.wake.clear()
+                continue
+            if self._video:
+                self._video = False
+                full = True  # back from the clip: the whole screen again
+                checked = time.monotonic()
             try:
                 now = time.monotonic()
                 if now - checked >= MODE_CHECK:

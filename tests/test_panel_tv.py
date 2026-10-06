@@ -31,7 +31,6 @@ from PIL import Image  # noqa: E402
 from ytdj.tv import app as tvapp  # noqa: E402
 from ytdj.tv import console as tvconsole  # noqa: E402
 from ytdj.tv import screen as tvscreen  # noqa: E402
-from ytdj.tv.__main__ import default_address  # noqa: E402
 from ytdj.tv.fb import FbError, FbInfo, Framebuffer, PngScreen, pack  # noqa: E402
 from ytdj.tv.screen import BG, Renderer, TvView, view_from  # noqa: E402
 from tv_shots import NOW, SIZES, STATES, WISH  # noqa: E402
@@ -416,12 +415,14 @@ class OnlyWatches(unittest.TestCase):
     def test_never_controls_the_jukebox_or_the_player(self):
         """Jen čte stav: žádné povely, žádné přání, žádné mpv ani zvuk."""
         src = "".join(p.read_text(encoding="utf-8") for p in (ROOT / "ytdj" / "tv").glob("*.py"))
-        for banned in ("Commander", ".control(", ".prompt(", "POST", "mpv", "subprocess",
-                       "/dev/mem", "import numpy", "import socket"):
+        for banned in ("Commander", ".control(", ".prompt(", "POST", "MPV_SOCKET", "mpv.sock",
+                       "/dev/mem", "import numpy", "pactl", "wpctl", "--ao=", "audio-device"):
             self.assertNotIn(banned, src, banned)
-        self.assertEqual(default_address({}), "jukebox.local:8765")
-        self.assertEqual(default_address({"web_port": 80}), "jukebox.local")
-        self.assertEqual(default_address({"web_port": "x"}), "jukebox.local:8765")
+        # jediný přehrávač, který tu běží, je vlastní němý přehrávač klipu (video.py)
+        for name in ("app.py", "screen.py", "fb.py", "console.py", "__main__.py"):
+            text = (ROOT / "ytdj" / "tv" / name).read_text(encoding="utf-8")
+            self.assertNotIn("subprocess", text, name)
+        self.assertIn('"--no-audio"', (ROOT / "ytdj" / "tv" / "video.py").read_text())
 
 
 class OnlyTheJukebox(unittest.TestCase):
@@ -482,13 +483,15 @@ class Packaging(unittest.TestCase):
         unit.read(ROOT / "packaging" / "ytdj-tv.service", encoding="utf-8")
         s = unit["Service"]
         self.assertEqual(s["User"], "@USER@")  # obyčejný uživatel, ne root
-        self.assertEqual(s["SupplementaryGroups"], "video")
+        self.assertEqual(s["SupplementaryGroups"], "video render")  # obrazovka a dekodér
         self.assertEqual(s["NoNewPrivileges"], "yes")
         self.assertEqual(s["CapabilityBoundingSet"], "")
         self.assertEqual(s["DevicePolicy"], "closed")
         raw = (ROOT / "packaging" / "ytdj-tv.service").read_text(encoding="utf-8")
         allowed = [ln.split("=", 1)[1] for ln in raw.splitlines() if ln.startswith("DeviceAllow=")]
-        self.assertEqual(allowed, ["/dev/fb0 rw", "/dev/tty1 rw"])  # nic dalšího
+        # obrazovka a konzole; pro klipy navíc jen grafika, dekodér a dotaz firmwaru
+        self.assertEqual(allowed, ["/dev/fb0 rw", "/dev/tty1 rw", "char-drm rw",
+                                   "char-video4linux rw", "/dev/vchiq rw"])
         self.assertEqual((s["ProtectSystem"], s["ProtectHome"]), ("strict", "read-only"))
         self.assertIn("cookies.txt", s["InaccessiblePaths"])
         self.assertIn("admin-pin", s["InaccessiblePaths"])

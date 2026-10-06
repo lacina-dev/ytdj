@@ -1,0 +1,34 @@
+[Unit]
+Description=ytdj — web jukeboxu i na portu 80 (přesměrování v jádře)
+Documentation=https://github.com/lacina-dev/ytdj
+# Na nftables.service nezávisí a jeho pravidla nečte ani nemění: nahrává jen
+# vlastní tabulku "ip ytdj_web". Na ytdj taky ne — pravidlo může platit, i když
+# web zrovna neběží (pak port 80 odmítá spojení stejně jako port webu).
+After=network-pre.target
+ConditionPathExists=/usr/local/lib/ytdj/port80.sh
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# skript je mimo domovský adresář; port webu si čte z konfigurace jukeboxu
+ExecStart=/usr/local/lib/ytdj/port80.sh start @HOME@/.config/ytdj/config.toml
+ExecReload=/usr/local/lib/ytdj/port80.sh start @HOME@/.config/ytdj/config.toml
+ExecStop=/usr/local/lib/ytdj/port80.sh stop
+SyslogIdentifier=ytdj-port80
+
+# Pravidla jádra smí měnit jen root — ale jen s tímhle: správa sítě a čtení
+# konfigurace v cizím domovském adresáři. Nic dalšího, žádný zápis na disk.
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_DAC_READ_SEARCH
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_NETLINK AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

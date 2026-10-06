@@ -27,6 +27,7 @@ from .hw import Screen, Touch, TouchEvent
 from .netapp import NetController
 from .netui import NetRenderer, NetView
 from .stats import PanelStats, emit
+from .webaddr import Watch
 from .touchpress import Gesture, Press, centre_offset, closest, decide, nearest
 from .ui import VOL, VOL_TRACK_W, knob_x, ART, ART_SIDE, STRINGS, TARGETS, QrRenderer, Renderer, View, merge_boxes, volume_at, vote_mark
 from .wishapp import WishController
@@ -95,6 +96,7 @@ class PanelApp:
         url: str,
         lang: str = "cs",
         vol_max: int = 100,
+        check_address: bool = False,
         media_keys: bool = False,
         net_backend=None,
     ) -> None:
@@ -117,7 +119,14 @@ class PanelApp:
 
             net_backend = NmcliBackend()
         # the network screens; web_port is what a phone on the LAN should open
-        self.net = NetController(net_backend, self.events.put, lang, self.api.port, count=self.stats.count)
+        # která adresa webu opravdu funguje (port 80? jméno?) — ověřuje vlastní
+        # vlákno jednou za pár minut, obrazovky jen čtou výsledek
+        # (jen na skutečném displeji — `check_address`; jinak adresy jako dřív)
+        self.webaddr = Watch(self.api.port, self.stop,
+                             on_change=lambda _r: self.events.put(("webaddr",))) \
+            if check_address else None
+        self.net = NetController(net_backend, self.events.put, lang, self.api.port, count=self.stats.count,
+                                 reach=(lambda: self.webaddr.reach) if self.webaddr else None)
         # the wish screens borrow the network screens' fonts — no second copy in RAM
         self.wish = WishController(
             self.api, self.events.put, lang, share=self.net.renderer, count=self.stats.count, stop=self.stop,
@@ -250,6 +259,8 @@ class PanelApp:
     def run(self) -> None:
         self.feed.start()
         self.commander.start()
+        if self.webaddr is not None:
+            self.webaddr.start()
         if self.touch is not None:
             threading.Thread(target=self._touch_loop, name="panel-touch", daemon=True).start()
         if self.media_keys:
@@ -631,6 +642,8 @@ class PanelApp:
             duration=int(duration),
             volume=volume,
             vol_max=self.vol_max,
+            # a finger on the volume (−, +, the bar) turns the sound back on at the server
+            muted=bool(st.get("muted")) and not self.hold_volume,
             mood=str(st.get("mood") or "").strip(),
             busy=bool(st.get("busy")),
             note=self.note.value if self.note else "",

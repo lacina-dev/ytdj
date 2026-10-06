@@ -17,17 +17,6 @@ import time
 from ..panel.__main__ import _config, _default_url
 from ..panel.stats import emit
 
-DEFAULT_NAME = "jukebox.local"
-
-
-def default_address(cfg: dict) -> str:
-    """What colleagues type into a browser: jukebox.local and the web's port."""
-    port = cfg.get("web_port")
-    if not isinstance(port, int) or isinstance(port, bool) or not 0 < port < 65536:
-        port = 8765
-    return DEFAULT_NAME if port == 80 else f"{DEFAULT_NAME}:{port}"
-
-
 def _size(text: str) -> tuple[int, int]:
     w, _, h = text.lower().partition("x")
     return int(w), int(h)
@@ -38,8 +27,10 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m ytdj.tv", description=__doc__.splitlines()[0])
     p.add_argument("--url", default=_default_url(cfg), help="ytdj web API (default: %(default)s)")
     p.add_argument("--fb", default="/dev/fb0", help="framebuffer device (default: %(default)s)")
-    p.add_argument("--address", default=os.environ.get("YTDJ_TV_ADDRESS") or default_address(cfg),
-                   help="the web address shown with the QR code (default: %(default)s)")
+    p.add_argument("--address", default=os.environ.get("YTDJ_TV_ADDRESS") or "",
+                   help="a fixed web address to show with the QR code; by default the screen "
+                        "shows the one that really answers (the alias, <hostname>.local "
+                        "or the IP — without a port when port 80 is served)")
     p.add_argument("--sim-out", help="draw to this PNG instead of the framebuffer")
     p.add_argument("--sim-fb", help="draw RGB565 to this plain file as if it were a framebuffer "
                                     "(measuring the real drawing path without hardware)")
@@ -73,14 +64,35 @@ def main(argv: list[str] | None = None) -> int:
         def open_screen():
             return Framebuffer(args.fb)
 
-    app = TvApp(open_screen, args.url, args.address)
+    director = None
+    if not (args.sim_out or args.sim_fb):
+        # Klipy (POZADAVKY #71): jen na skutečné telce. Jestli to stroj umí
+        # (KMS, HDMI, dekodér), zjišťuje se za běhu — nic se nepředpokládá.
+        from .video import Director
+
+        uid_dir = os.environ.get("YTDJ_TV_VIDEO_DIR") or f"/run/user/{os.getuid()}/ytdj/tv-video"
+        run_dir = os.environ.get("RUNTIME_DIRECTORY", "/run/ytdj-tv").split(":")[0]
+
+        def fb_size():
+            try:
+                with open("/sys/class/graphics/fb0/virtual_size") as fh:
+                    w, h = fh.read().strip().split(",")
+                return int(w), int(h)
+            except (OSError, ValueError):
+                return None
+
+        from pathlib import Path
+
+        director = Director(Path(uid_dir), os.path.join(run_dir, "video.sock"), fb_size, emit=emit,
+                            status_file=Path(run_dir) / "status.json")
+    app = TvApp(open_screen, args.url, args.address, director=director)
     signal.signal(signal.SIGTERM, lambda *_: app.shutdown())
     signal.signal(signal.SIGINT, lambda *_: app.shutdown())
     log.info("obrazovka „právě hraje“ běží (%s), ytdj na %s",
              args.sim_out or args.sim_fb or args.fb, args.url)
     emit("tv.startup", fb=None if args.sim_out or args.sim_fb else args.fb,
          sim=bool(args.sim_out or args.sim_fb) or None,
-         url=args.url, address=args.address, pid=os.getpid())
+         url=args.url, address=args.address or "auto", pid=os.getpid())
     # Na telce má být jen jukebox: textová konzole (login, kurzor, hlášky jádra)
     # kreslí do téhož framebufferu, tak ji po dobu běhu přepneme do grafického
     # režimu. Jde to jen s terminálem od systemd (TTYPath v unitě), jinak nic.
@@ -100,6 +112,8 @@ def main(argv: list[str] | None = None) -> int:
         app.run()
     finally:
         emit("tv.stop", uptime_s=int(time.monotonic() - started), reconnects=app.reconnects)
+        if director is not None:
+            director.close()
         app._drop_screen()
         if grabbed:
             console.release()

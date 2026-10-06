@@ -706,6 +706,16 @@ class Catalog:
         )
         return [t for t in (to_track(i) for i in res.get("tracks", [])) if t]
 
+    async def video_type(self, video_id: str) -> str | None:
+        """Druh skladby podle YouTube Music: MUSIC_VIDEO_TYPE_OMV (oficiální
+        klip), …_ATV (písnička s obalem), …_UGC (nahrál někdo). Jedno volání
+        katalogu; vyhledávání ani rádio tenhle údaj u Track nenesou."""
+        res = await self._call(self.yt.get_watch_playlist, videoId=video_id, limit=1)
+        for item in res.get("tracks", []) if isinstance(res, dict) else []:
+            if isinstance(item, dict) and item.get("videoId") == video_id:
+                return item.get("videoType") or None
+        return None
+
     async def mood_categories(self) -> dict[str, list[dict]]:
         """params change over time — never hardcode them, fetch at runtime."""
         return await self._call(self.yt.get_mood_categories)

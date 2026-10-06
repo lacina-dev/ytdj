@@ -91,6 +91,11 @@ KEEPALIVE = 15.0
 # JavaScript, so a paused player looked like a dead connection to the web UI.
 # The panel's reader ignores it (the data isn't a JSON object).
 PING = "event: ping\ndata: 1\n\n"
+# Posun ve skladbě: nejvýš tolik povelů za vteřinu od jednoho klienta — tažení
+# po liště nesmí zahltit mpv (stránka posílá až po puštění, tohle je pojistka).
+SEEK_RATE = 3
+SEEK_WINDOW = 1.0
+VIDEO_ID_RE = re.compile(r"[\w-]{11}")
 SOURCES = frozenset({"web", "panel", "repl"})  # who sent a wish (POST /api/prompt "source")
 
 NO_INDEX_HTML = """<!doctype html><meta charset="utf-8">
@@ -600,6 +605,7 @@ class WebServer:
         self.busy = False
         self.build = build_ids()
         self._hist: tuple | None = None  # (skladba, kdy, historie)
+        self._seeks: dict[str, list[float]] = {}  # klient → časy posledních posunů
         self._sse_clients = 0
         # what the DJ is working on and how the last wish went — every client
         # sees it, not only the one that asked (status "dj")
@@ -1028,11 +1034,14 @@ class WebServer:
         source = data.get("source")
         source = source if isinstance(source, str) and source in SOURCES else "web"
         rec["source"] = source
+        wq = getattr(self.app, "wishes", None)
+        if data.get("replay") is not None:
+            # „Zahrát znovu" z Odehráno: přání přesně té skladby, bez textu
+            return await self._replay(data, source, rec)
         if not text:
             rec["error"] = "prázdný text"
             return _json_error("Chybí text požadavku.", 400)
 
-        wq = getattr(self.app, "wishes", None)
         if wq is not None:
             return await self._wish(data, text, source, rec, request)
 
@@ -1135,6 +1144,47 @@ class WebServer:
             return JSONResponse({"reply": "DJ na přání ještě pracuje — odpověď uvidíš ve frontě.",
                                  "id": w.id, "state": w.state}, status_code=202)
         return JSONResponse({"reply": w.reply or "Hotovo.", "id": w.id, "state": w.state})
+
+    async def _replay(self, data: dict, source: str, rec: dict[str, Any]) -> Response:
+        """POST /api/prompt {"replay": <videoId>, "who", "client"} → 202 jako přání.
+
+        Skladbu si server najde sám v tom, co ukazuje v Odehráno (název a
+        interpreta od klienta nebere); 404 = už tam není, 409 = nezařadí se
+        (vyřazená hlasováním, už ji ve frontě máš), 429 = moc přání naráz."""
+        wq = getattr(self.app, "wishes", None)
+        vid = data.get("replay")
+        rec["replay"] = telemetry.clip(vid, 16)
+        if wq is None or not hasattr(wq, "replay"):
+            return _json_error("Fronta přání tu není.", 404)
+        if not isinstance(vid, str) or not VIDEO_ID_RE.fullmatch(vid):
+            return _json_error("Tuhle skladbu neznám.", 400)
+        row = next((r for r in await self._history() if getattr(r, "video_id", "") == vid), None)
+        if row is None:
+            rec["error"] = "not_in_history"
+            return _json_error("Tahle skladba už v Odehráno není.", 404)
+        if getattr(row, "outcome", "") == "error":
+            rec["error"] = "unplayable"
+            return _json_error("Tuhle skladbu se nepodařilo přehrát — znovu ji nezařadím.", 409)
+        from ..music.catalog import Track
+
+        known = getattr(self.app.player, "_tracks", {}).get(vid)
+        track = known if known is not None else Track(vid, row.title or "", row.artist or "")
+        try:
+            w = wq.replay(track, data.get("who"), source,
+                          client={"ip": rec.get("ip"), "ua": rec.get("ua"), "id": data.get("client")})
+        except Exception as exc:  # Refused, TooMany — věta pro člověka
+            name = type(exc).__name__
+            if name not in ("Refused", "TooMany"):
+                raise
+            rec["error"] = "too_many" if name == "TooMany" else "refused"
+            return _json_error(str(exc), 429 if name == "TooMany" else 409)
+        rec["id"], rec["who"], rec["text"] = w.id, w.who, telemetry.clip(w.text, 300)
+        self.poke()
+        return JSONResponse(
+            {"id": w.id, "token": w.token, "who": w.who, "state": w.state,
+             "request": w.public(), "reply": ""},
+            status_code=202,
+        )
 
     async def _requests(self, request: Request) -> Response:
         wq = getattr(self.app, "wishes", None)
@@ -1268,6 +1318,10 @@ class WebServer:
                 # strop 100 všude (web, displej, přání, povely); 101–130 od
                 # starších klientů se ořízne, ne odmítne
                 await player.set_volume(min(VOLUME_MAX, int(value)))
+            elif action == "seek":
+                return await self._seek(data, rec)
+            elif action == "jump":
+                return await self._jump(data, rec)
             else:
                 rec["error"] = "neznámý povel"
                 return _json_error(f"Neznámý povel: {action!r}", 400)
@@ -1280,6 +1334,87 @@ class WebServer:
         self.poke()
         self.poke(later=0.3)
         return JSONResponse({"ok": True})
+
+    def _by(self, data: dict, rec: dict[str, Any]) -> str:
+        """Kdo to dělá (jméno pro pravidla autora): přezdívka klienta, displej
+        jen od displeje — z webu se za displej vydávat nejde."""
+        wq = self.app.wishes
+        panel = rec.get("ua") == "panel"
+        by = wq.name_for(data.get("client"), " ".join(str(data.get("who") or "").split())[:24])
+        if by == "displej" and not panel:
+            by = ""
+        return by or ("displej" if panel else "někdo")
+
+    def _seek_allowed(self, key: str) -> bool:
+        """Nejvýš SEEK_RATE posunů za SEEK_WINDOW od jednoho klienta."""
+        now = time.monotonic()
+        if len(self._seeks) > 200:  # staré klienty zahodit — paměť neroste
+            self._seeks = {k: v for k, v in self._seeks.items() if v and now - v[-1] < 60}
+        times = [t for t in self._seeks.get(key, []) if now - t < SEEK_WINDOW]
+        if len(times) >= SEEK_RATE:
+            self._seeks[key] = times
+            return False
+        times.append(now)
+        self._seeks[key] = times
+        return True
+
+    async def _seek(self, data: dict, rec: dict[str, Any]) -> Response:
+        """{"action": "seek", "value": <s od začátku>} nebo {"delta": <±s>} →
+        200 {"ok", "position", "duration"} | 403 cizí přání | 409 nejde | 429."""
+        value, delta = data.get("value"), data.get("delta")
+
+        def num(x: Any) -> float | None:
+            if isinstance(x, bool) or not isinstance(x, (int, float)) or x != x \
+                    or abs(x) > 86400:
+                return None
+            return float(x)
+
+        pos, step = num(value), num(delta)
+        if (pos is None or pos < 0) and step is None:
+            return _json_error("Posun musí být číslo (vteřiny).", 400)
+        if pos is not None and pos >= 0:
+            step = None
+        else:
+            pos = None
+            rec["delta"] = step
+        cid = str(data.get("client") or "")[:40]
+        if not self._seek_allowed(cid or str(rec.get("ip") or "?")):
+            rec["error"] = "rate"
+            return _json_error("Moc posunů naráz — zkus to za vteřinku.", 429)
+        wq = getattr(self.app, "wishes", None)
+        if wq is not None and hasattr(wq, "seek"):
+            ok, msg, info = await wq.seek(pos, step, by=self._by(data, rec), client=data.get("client"))
+        else:
+            seek = getattr(self.app.player, "seek", None)
+            info = (await seek(position=pos, delta=step) if seek else None) or {}
+            ok, msg = bool(info), "Teď posunout nejde."
+        if not ok:
+            rec["error"] = info.get("why") or "refused"
+            return _json_error(msg, 403 if info.get("why") == "foreign_wish" else 409)
+        rec["to"] = info.get("to")
+        self.poke()  # nová pozice všem hned, ne až s dalším tikem
+        self.poke(later=0.3)
+        return JSONResponse({"ok": True, "position": info.get("to"), "duration": info.get("duration")})
+
+    async def _jump(self, data: dict, rec: dict[str, Any]) -> Response:
+        """{"action": "jump", "video_id": <skladba z Hraje dál>} → 200 {"ok",
+        "mode": "now" | "next", "message"} | 403 předběhl by cizí přání | 409."""
+        wq = getattr(self.app, "wishes", None)
+        vid = data.get("video_id")
+        rec["video_id"] = telemetry.clip(vid, 16)
+        if wq is None or not hasattr(wq, "play_queued"):
+            return _json_error("Fronta přání tu není.", 404)
+        if not isinstance(vid, str) or not VIDEO_ID_RE.fullmatch(vid):
+            return _json_error("Tuhle skladbu neznám.", 400)
+        ok, msg, info = await wq.play_queued(vid, by=self._by(data, rec), client=data.get("client"))
+        if not ok:
+            rec["error"] = info.get("why") or "refused"
+            foreign = info.get("why") in ("foreign_track", "jumps_wish")
+            return _json_error(msg, 403 if foreign else 409)
+        rec["mode"] = info.get("mode")
+        self.poke()
+        self.poke(later=0.3)
+        return JSONResponse({"ok": True, "mode": info.get("mode"), "message": msg})
 
     # ---- co je pod kapotou ----
 

@@ -1,7 +1,7 @@
 """Falešné mpv na unixovém socketu — JSON IPC v rozsahu, který používá MpvPlayer.
 
 Playlist, `current`, loadfile (append / append-play / insert-next / insert-at),
-playlist-clear / -move / -remove / -next, get/set/observe_property a události
+playlist-clear / -move / -remove / -next, seek, get/set/observe_property a události
 start-file / end-file / idle. Každý příkaz může mít náhodné zpoždění, aby se
 souběžné korutiny ytdj opravdu proplétaly.
 
@@ -36,6 +36,11 @@ class FakeMpv:
         self.fail_once: set[str] = set()  # jen při prvním pokusu (vypršelá adresa)
         self.started: list[str] = []  # co opravdu začalo hrát
         self.loadfile_options: dict[int, dict] = {}  # index v log → volby loadfile
+        # posun ve skladbě: co mpv hlásí jako pozici / délku hrající položky
+        # (délka 0 = proud bez délky) a kam se naposledy skočilo
+        self.time_pos = 0.0
+        self.duration = 0.0
+        self.seeks: list[float] = []
 
     # ---- pohled pro testy ----
 
@@ -110,7 +115,11 @@ class FakeMpv:
             return self.cur is None
         if name == "path":
             return self.playlist[self.cur]["filename"] if self.cur is not None else None
-        if name in ("time-pos", "duration", "volume"):
+        if name == "time-pos":
+            return self.time_pos
+        if name == "duration":
+            return self.duration
+        if name == "volume":
             return 0
         if name == "pause":
             return False
@@ -127,6 +136,7 @@ class FakeMpv:
                 self._send({"event": "idle"})
                 return
             entry = self.playlist[idx]
+            self.time_pos = 0.0
             self._send({"event": "start-file", "playlist_entry_id": entry["id"]})
             v = entry["filename"].rsplit("v=", 1)[-1]
             if v not in self.fail and v not in self.fail_once:
@@ -177,6 +187,12 @@ class FakeMpv:
                 raise _Err("invalid parameter")
             self._notify()
             return {"playlist_entry_id": entry["id"]}
+        if name == "seek":
+            if self.cur is None or "absolute" not in cmd[2:]:
+                raise _Err("error running command")
+            self.time_pos = float(cmd[1])
+            self.seeks.append(self.time_pos)
+            return None
         if name == "playlist-clear":
             if self.cur is None:
                 self.playlist = []
@@ -238,6 +254,10 @@ class FakeMpv:
             self._notify()
             return None
         raise _Err(f"unknown command {name}")
+
+    def sound(self) -> None:
+        """Hrající položka opravdu hraje (teče zvuk): core-idle → false."""
+        self._send({"event": "property-change", "name": "core-idle", "data": False})
 
     def finish_current(self) -> None:
         """Skladba dohrála (eof) → další."""

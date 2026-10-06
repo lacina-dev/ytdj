@@ -51,6 +51,7 @@ import contextlib
 import hmac
 import json
 import logging
+import os
 import re
 import secrets
 import time
@@ -111,6 +112,10 @@ TRACK_GUESS = 210  # s — délka skladby, když ji katalog nezná (odhad ETA)
 RESUME_MAX_AGE = 15 * 60  # s — starší stav = studený start (Pi bylo vypnuté)
 RESTORE_MAX_AGE = 2 * 3600  # s — přání se po restartu služby obnoví, i když se nehraje
 QUIET_FROM, QUIET_TO = 22, 7  # v noci se sám nikdy nerozjede
+# Po zapnutí Pi (jiný boot) se stav obnoví potichu, ale jen z téhož dne — a den
+# jde soudit až podle hodin seřízených ze sítě (Pi nemá hodiny s baterií).
+CLOCK_WAIT = 90.0  # s — nejdéle se na seřízení hodin čeká (Pi 1. 10.: 15 s po startu ytdj)
+CLOCK_SYNC_FLAG = Path("/run/systemd/timesync/synchronized")  # založí systemd-timesyncd
 
 # "asking" = DJ se autora zeptal, co myslel, a čeká na odpověď (nejdéle
 # wish_clarify_timeout s); fronta ani hudba na to nečekají
@@ -183,6 +188,10 @@ DJ_FAILED_TEXT = "DJ teď neodpověděl — zkus to prosím za chvíli znovu. Hu
 # stížnost, ve které je i přání ("nefér, chci Olympic") — přání se zařadí a
 # odpověď to poctivě řekne (pravidla fronty řeší otázka bez přání)
 META_LEAD = "Beru to jako přání."
+
+
+class Refused(Exception):
+    """Přání se nepřijalo — věta pro člověka (vyřazená skladba, už ji má ve frontě)."""
 
 
 class TooMany(Exception):
@@ -314,6 +323,8 @@ class Wish:
     ask_mono: float = 0.0
     asked: bool = False
     context: str = ""  # dovětek pro model (odpověď na otázku DJe napsaná textem)
+    # „Zahrát znovu" z Odehráno: přání přesně téhle skladby — bez výkladu (DJe)
+    replay: Track | None = None
     done_ids: set[str] = field(default_factory=set)
     current: str | None = None  # videoId, které z přání právě hraje
     played: int = 0  # kolik skladeb začalo hrát
@@ -430,6 +441,7 @@ class Wish:
             "album_heard": sorted(self.album_heard) or None,
             "asked": self.asked or None,
             "explicit_ok": self.explicit_ok or None,
+            "replay": _track_json(self.replay) if self.replay is not None else None,
         }
 
     @classmethod
@@ -461,6 +473,7 @@ class Wish:
         w.album_heard = {str(x) for x in d.get("album_heard") or []}
         w.explicit_ok = bool(d.get("explicit_ok"))
         w.asked = bool(d.get("asked"))
+        w.replay = _track_from(d.get("replay"))
         if isinstance(d.get("current"), str):
             w.was_current = d["current"]
         return w
@@ -704,6 +717,48 @@ def should_resume(saved: dict | None, now: datetime | None = None,
     return True, "fresh"
 
 
+def clock_synced() -> bool:
+    """Seřídil už systém hodiny ze sítě? (soubor v /run = RAM, neblokuje)"""
+    try:
+        return CLOCK_SYNC_FLAG.exists()
+    except OSError:
+        return False
+
+
+def is_cold(saved: dict | None, boot: str | None = None) -> bool:
+    """Je uložený stav z jiného běhu jádra (Pi bylo vypnuté / restartované)?"""
+    if not saved or not isinstance(saved, dict):
+        return False
+    boot = boot_id() if boot is None else boot
+    return bool(saved.get("boot") and boot and saved.get("boot") != boot)
+
+
+def cold_restore(saved: dict | None, synced: bool,
+                 now: datetime | None = None) -> tuple[bool, str]:
+    """Obnovit po zapnutí Pi frontu, podkres a místo ve skladbě? (ano/ne, proč)
+
+    Jen z téhož kalendářního dne — včerejší nedohraná přání se nevrací. Den
+    jde ale soudit jen podle hodin seřízených ze sítě, a to teď i tehdy, když
+    se stav ukládal (Pi 29. 9. běželo 39 minut s hodinami o den pozadu). Bez
+    toho je stáří neznámé a stav se obnoví: kvůli špatným hodinám se nezahodí.
+    Hudbu to nikdy nespustí (should_resume po zapnutí vrací "reboot").
+    """
+    if not saved or not isinstance(saved, dict):
+        return False, "no_state"
+    try:
+        then = datetime.fromtimestamp(float(saved.get("saved") or 0)).date()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return True, "age_unknown"
+    if not synced or saved.get("clock") is not True:
+        return True, "age_unknown"
+    today = (now or datetime.now()).date()
+    if then < today:
+        return False, "earlier_day"
+    if then > today:
+        return True, "age_unknown"  # stav "z budoucnosti" — hodinám nejde věřit
+    return True, "same_day"
+
+
 # --------------------------------------------------------------------------
 # fronta
 # --------------------------------------------------------------------------
@@ -775,7 +830,16 @@ class WishQueue:
         self.last_heard: dict[str, float] = {}  # Wish.seat → kdy mu naposledy začala skladba
         self._bg_tasks: set[asyncio.Task] = set()
         self._ask_tasks: dict[str, asyncio.Task] = {}  # časovače upřesnění (id přání → úloha)
+        # klik do fronty: (videoId, kdo, id klienta) skladby podkresu "jako další"
+        self._pin: tuple[str, str, str | None] | None = None
         self._boot = boot_id()
+        # obnova po zapnutí Pi čeká na seřízení hodin; Hrát ji nenechá čekat
+        self.restoring = False
+        self._restore_now = asyncio.Event()
+        self._restore_done = asyncio.Event()
+        self._clock_ok = False  # hodiny už jednou seřízené byly (do stavu jako "clock")
+        self._now_id: str | None = None  # co hraje nebo stojí v pauze (do stavu jako "now")
+        self._sync_key: tuple | None = None  # co už je na kartě opravdu zapsané (fsync)
         self._pause_note = False
         self._cur_left: tuple[float, float] | None = None  # (zbývá s, kdy změřeno)
         self._censor_key: tuple | None = None
@@ -958,7 +1022,10 @@ class WishQueue:
     # ---- přijetí ----
 
     def submit(self, text: str, who: Any = "", source: str = "web",
-               play_next: bool = False, client: dict | None = None) -> Wish:
+               play_next: bool = False, client: dict | None = None,
+               replay: Track | None = None) -> Wish:
+        """`replay` = přání přesně téhle skladby („Zahrát znovu" z Odehráno):
+        text je jen popisek, nevykládá se (ani jako oprava, „hned" nebo povel)."""
         text = " ".join(str(text or "").split())[:TEXT_MAX]
         source = source if source in ("web", "panel", "repl") else "web"
         cid = clean_cid((client or {}).get("id")) or ("repl" if source == "repl" else "")
@@ -978,7 +1045,9 @@ class WishQueue:
             # "Zahraj … Budulínek" — Robert chtěl obojí).
             waiting = sorted((x for x in self.wishes if x.cid == cid and x.state == "waiting"),
                              key=lambda x: x.mono)
-            if wants_change(text):
+            if replay is not None:
+                drop = [x for x in waiting if x.replay is not None and x.replay.id == replay.id]
+            elif wants_change(text):
                 drop = waiting
             elif corrects(text):
                 drop = waiting[-1:]  # "ne, radši…" opravuje to poslední
@@ -990,17 +1059,18 @@ class WishQueue:
                 self._replace_waiting(x)
             # Nové přání téhož člověka, když jeho starší čeká na upřesnění, je
             # odpověď: starší končí a DJ dostane k novému, na co se ptal.
-            for x in [x for x in self.wishes if x.cid == cid and x.state == "asking"]:
+            for x in [x for x in self.wishes if x.cid == cid and x.state == "asking"
+                      and replay is None]:
                 answered = self._replace_asking(x)
             mine = [w for w in self.wishes if w.cid == cid and w.active]
             if len(mine) >= MAX_ACTIVE:
                 raise TooMany(f"Máš rozpracovaných {len(mine)} přání — počkej, až některé dohraje.")
-        cut = bool(_CUT.search(n))
-        play_next = bool(play_next) or cut or bool(_NEXT.search(n))
+        cut = replay is None and bool(_CUT.search(n))
+        play_next = bool(play_next) or cut or (replay is None and bool(_NEXT.search(n)))
         w = Wish(
             id=secrets.token_hex(4), token=secrets.token_urlsafe(12), who=who, source=source,
             text=text, created=time.time(), mono=time.monotonic(), play_next=play_next, cut=cut,
-            cid=cid,
+            cid=cid, replay=replay,
         )
         w.settled = asyncio.Event()
         if cid and answered:
@@ -1009,7 +1079,7 @@ class WishQueue:
         # Nové přání člověka jde PŘED jeho starší (chce to teď), ta zůstávají
         # za ním; "a pak …" / "přidej …" naopak za ně.
         own = [x for x in self.wishes if x.key == w.key and x.active]
-        if own and not additive(text):
+        if own and (replay is not None or not additive(text)):
             w.order = min(x.rank for x in own) - 1.0
         w.client = {k: str(v)[:60] for k, v in (client or {}).items() if k in ("ip", "ua")}
         if cid:
@@ -1026,6 +1096,7 @@ class WishQueue:
         telemetry.event(
             "request.created", id=w.id, who=w.who, source=source, text=telemetry.clip(text, 300),
             len=len(text), play_next=w.play_next or None, cut=cut or None, **w.client,
+            replay=replay.id if replay is not None else None,
             waiting=sum(1 for x in self.wishes if x.state in ("waiting", "thinking")),
             active_people=len({x.key for x in self.wishes if x.active}),
         )
@@ -1373,6 +1444,20 @@ class WishQueue:
         # Kabátu, kterou její přání vzápětí vyřadilo).
         self._nudge_prefetch()
 
+        if w.replay is not None:
+            # „Zahrát znovu" z Odehráno: přesná skladba — bez povelů, rychlé
+            # cesty i modelu; dál jako každé přání (fronta, rozpočet, střídání)
+            from .agent.codex import Plan
+            from .agent.intent import Intent
+
+            self._codex_done(w.id)
+            w.via = "replay"
+            plan = Plan(intent=Intent(kind="songs", text=w.text), requested=[w.replay])
+            self._prioritise(plan)
+            async with self._apply_lock:
+                if w.active:
+                    await self._apply(w, plan, t0)
+            return
         if (cmd := local_command(w.text)) is not None:
             w.via, w.kind = "local", "control"
             w.reply = await self.local(cmd, w.who, w.cid)
@@ -1651,6 +1736,7 @@ class WishQueue:
         w.kind = intent.kind
         own = [x for x in self.wishes if w.cid and x.cid == w.cid]
         newer = [x for x in own if x.mono > w.mono and x.state not in ("removed", "replaced")
+                 and x.replay is None
                  and (wants_change(x.text) or near_same(x.text, w.text) or (
                      corrects(x.text) and not any(w.mono < y.mono < x.mono for y in own)))]
         if newer and intent.changes_music:
@@ -1985,6 +2071,8 @@ class WishQueue:
         """
         if not intent.changes_music or w.play_next or additive(w.text):
             return []
+        if w.replay is not None:
+            return []  # „Zahrát znovu": text je jen popisek skladby, nic neopravuje
         mine = [x for x in self.wishes
                 if x is not w and x.key == w.key and x.active and x.mono < w.mono]
         fix = replaces(w.text)
@@ -2554,7 +2642,7 @@ class WishQueue:
             for w, t in self._order:
                 self.owner[t.id] = w.id
             if desired:
-                await self.player.arrange_front(desired)
+                await self.player.arrange_front(self._pinned(upcoming, self._order) + desired)
             if new:
                 mark = getattr(self.player, "mark_requested", None)
                 if mark:
@@ -2611,6 +2699,8 @@ class WishQueue:
         vid = ev.track.id if ev.track else None
         if kind == "start":
             self.current_vid = vid
+            if (getattr(self, "_pin", None) or ("",))[0] == vid:
+                self._pin = None
             if vid and getattr(self.pools, "album", ""):
                 # album v podkresu: co začalo hrát, se po přerušení neopakuje
                 self.pools.note_started(vid)
@@ -2769,6 +2859,187 @@ class WishQueue:
                 await self.replan()
         await self.player.skip()
 
+    # ---- posun ve skladbě, klik do fronty, „Zahrát znovu" ----
+
+    def _wish_playing(self) -> Wish | None:
+        """Čí přání právě hraje (None = podkres nebo ticho)."""
+        vid = self.current_vid
+        if not vid:
+            return None
+        w = self.by_id(self.owner.get(vid, ""))
+        if w is None or not w.active:
+            w = next((x for x in self.wishes if x.active and x.current == vid), None)
+        return w
+
+    def foreign_current(self, by: str = "", client: Any = None) -> Wish | None:
+        """Hraje teď přání někoho jiného, než kdo se ptá? Pak do něj nesmí
+        zasahovat (posouvat v něm, utnout ho klikem do fronty) — vrací to
+        přání; None = hraje podkres nebo jeho vlastní přání.
+
+        Kdo je autor, určuje totéž co u Další (_is_owner, F-PRESKOK-05): id
+        klienta, displej u přání z displeje. Cizí přání se neutíná (F-FRONTA-05).
+        """
+        w = self._wish_playing()
+        if w is None or self._is_owner(w, by, clean_cid(client) or None):
+            return None
+        return w
+
+    async def seek(self, position: Any = None, delta: Any = None, by: str = "",
+                   client: Any = None) -> tuple[bool, str, dict]:
+        """Posun v hrající skladbě (web: lišta a ±10 s). Vrací (šlo to, věta
+        pro člověka, {"from", "to", "duration", "video_id"}).
+
+        Jen posun: žádné přeskočení, hlas, historie ani rádio se tím nemění."""
+        cid = clean_cid(client)
+        other = self.foreign_current(by, client)
+        if other is not None:
+            who = self.censor.clean(other.who)
+            telemetry.event("player.seek_refused", by=by or None, cid=cid[-6:] or None,
+                            video_id=self.current_vid, why="foreign_wish", wish=other.id)
+            return (False, f"Teď hraje, co si přeje {who} — v cizím přání se neposouvá.",
+                    {"why": "foreign_wish"})
+        fn = getattr(self.player, "seek", None)
+        res = await fn(position=position, delta=delta) if fn is not None else None
+        if not res:
+            telemetry.event("player.seek_refused", by=by or None, cid=cid[-6:] or None,
+                            video_id=self.current_vid, why="not_seekable")
+            return (False, "Teď posunout nejde — skladba se načítá, právě končí, nebo nemá délku.",
+                    {"why": "not_seekable"})
+        own = self._wish_playing()
+        telemetry.event("player.seek", by=by or None, cid=cid[-6:] or None,
+                        video_id=res.get("video_id"), from_s=res.get("from"), to_s=res.get("to"),
+                        duration_s=res.get("duration"), wish=own.id if own is not None else None)
+        self._changed()
+        return True, "", res
+
+    async def play_queued(self, vid: Any, by: str = "", client: Any = None) -> tuple[bool, str, dict]:
+        """Klik na skladbu v „Hraje dál": hned, ale férově (vlastník 6. 10. 2026).
+
+        Smí se, když se tím nepředběhne nikdo jiný: skladba je z vlastního
+        přání nebo z podkresu a mezi hrající a ní není skladba cizího přání.
+        Přeskočené skladby zůstávají ve frontě hned za ní ve svém pořadí.
+        Hrající skladbu to utne jen, když je to podkres nebo vlastní přání
+        (cizí přání se neutíná — F-FRONTA-05) a skladba je připravená; jinak
+        zahraje jako další. Vrací (šlo to, věta, {"mode": "now" | "next"}).
+        """
+        vid = str(vid or "")
+        key = clean_cid(client) or None
+        jump = getattr(self.player, "play_from_queue", None)
+        c = self.censor
+
+        def refuse(text: str, why: str, wish: Wish | None = None) -> tuple[bool, str, dict]:
+            telemetry.event("queue.jump_refused", by=by or None, cid=(key or "")[-6:] or None,
+                            video_id=vid[:16] or None, why=why,
+                            wish=wish.id if wish is not None else None)
+            return False, text, {"why": why}
+
+        if jump is None or not vid:
+            return refuse("Tahle skladba už ve frontě není.", "unsupported")
+        async with queue_transaction(self.player):
+            st = await self.player.status()
+            if getattr(st, "outage", None):
+                return refuse("YouTube teď nejede — fronta čeká, až se spojení vrátí.", "outage")
+            queue = list(st.queue)
+            idx = next((i for i, t in enumerate(queue) if t.id == vid), -1)
+            if idx < 0 or st.current is None:
+                return refuse("Tahle skladba už ve frontě není.", "gone")
+            track = queue[idx]
+            target = self._owner_of(vid)
+            if target is not None and not self._is_owner(target, by, key):
+                who = c.clean(target.who)
+                return refuse(f"Tohle je přání od {who} — dřív si ho může pustit jen {who}.",
+                              "foreign_track", target)
+            for t in queue[:idx]:
+                o = self._owner_of(t.id)
+                if o is not None and not self._is_owner(o, by, key):
+                    return refuse(f"Nejdřív dohraje přání od {c.clean(o.who)}.", "jumps_wish", o)
+            blocker = self.foreign_current(by, client)
+            ready_fn = getattr(self.player, "ready_now", None)
+            ready = bool(ready_fn(vid)) if ready_fn is not None else True
+            cut = blocker is None and ready
+            mode = await jump(vid, cut)
+            if mode is None:
+                return refuse("Tahle skladba už ve frontě není.", "gone")
+            if target is not None:
+                # pořadí uvnitř vlastního přání podle fronty: tahle první,
+                # ostatní za ní, jak byly (jinak by ji přeplánování vrátilo)
+                rest = [t for t in target.tracks if t.id != vid]
+                at = next((i for i, t in enumerate(rest)
+                           if t.id not in target.done_ids and t.id != target.current), len(rest))
+                target.tracks = rest[:at] + [track] + rest[at:]
+            # skladba podkresu, která má hrát jako další: přeplánování ji
+            # nechá před vlastními přáními toho, kdo klikl (viz _pinned)
+            self._pin = (vid, by, key) if mode == "next" and target is None else None
+        title = f"„{track.title}“"
+        why = ""
+        if mode == "now":
+            text = "Hraje hned."
+        elif blocker is not None:
+            why = "foreign_current"
+            text = (f"Teď hraje, co si přeje {c.clean(blocker.who)} — to se nepřerušuje. "
+                    f"{title} zahraje hned potom.")
+        elif not ready:
+            why = "not_ready"
+            text = f"{title} se ještě připravuje — zahraje hned po téhle skladbě."
+        else:
+            why = "ending"
+            text = f"Skladba právě končí — {title} zahraje hned po té, která už nabíhá."
+        if st.paused:
+            if self._respect_pause():
+                text += " Hudba je pozastavená — pusť ji ▶."
+            else:
+                await self.player.toggle_pause(False)  # klik = chce ji slyšet
+        telemetry.event("queue.jump", by=by or None, cid=(key or "")[-6:] or None, video_id=vid,
+                        mode=mode, why=why or None, jumped=idx or None,
+                        own_wish=target.id if target is not None else None,
+                        cut_id=st.current.id if mode == "now" else None)
+        self._changed()
+        if mode == "next":
+            self.kick()  # odhady "na řadě za…" podle nového pořadí
+        return True, text, {"mode": mode, "video_id": vid}
+
+    def _pinned(self, upcoming: list[Track], order: list[tuple[Wish, Track]]) -> list[Track]:
+        """Skladba podkresu, kterou si někdo klikem dal jako další (hrající
+        se utnout nesměla / nebyla připravená): drží první místo před jeho
+        vlastními přáními. Jakmile je ve frontě přání někoho jiného, neplatí —
+        podkres před cizí přání nepatří (F-FRONTA-12)."""
+        pin = getattr(self, "_pin", None)
+        if pin is None:
+            return []
+        vid, by, key = pin
+        t = next((t for t in upcoming if t.id == vid), None)
+        if t is None or vid in self.owner or any(not self._is_owner(w, by, key) for w, _ in order):
+            self._pin = None
+            return []
+        return [t]
+
+    def replay(self, track: Track, who: Any = "", source: str = "web",
+               client: dict | None = None) -> Wish:
+        """„Zahrát znovu" z Odehráno: přání přesně téhle skladby.
+
+        Normální přání téhož člověka (fronta, rozpočet, střídání, strop
+        rozpracovaných přání → TooMany), jen bez výkladu — skladba je daná.
+        Skladbu vyřazenou hlasováním nezařadí (Refused s poctivou větou), ani
+        tu, kterou ten člověk už ve frontě má.
+        """
+        votes = getattr(self.dj, "votes", None)
+        if votes is not None and getattr(votes, "items", None):
+            note = votes.ban_note(track)
+            if note:
+                telemetry.event("request.replay_refused", video_id=track.id, why="banned")
+                inner = note.removeprefix("(pozn.: ").removesuffix(")")
+                raise Refused(f"Tohle znovu nezařadím — {inner}.")
+        cid = clean_cid((client or {}).get("id"))
+        if cid:
+            for x in self.wishes:
+                if x.cid == cid and x.active and (
+                        (x.replay is not None and x.replay.id == track.id
+                         and x.state in ("waiting", "thinking"))
+                        or any(t.id == track.id for t in x.pending())):
+                    telemetry.event("request.replay_refused", video_id=track.id, why="queued")
+                    raise Refused(f"„{track.title}“ už ve frontě máš.")
+        return self.submit(f"Znovu: {track.label()}", who, source, client=client, replay=track)
+
     def _owner_of(self, vid: str | None) -> Wish | None:
         if not vid:
             return None
@@ -2846,11 +3117,19 @@ class WishQueue:
         elif getattr(pools, "pools", None):
             bg.update(mode="seeds", allow_long=bool(getattr(pools, "allow_long", False)),
                       seeds=[_track_json(p.seed) for p in pools.pools[:5]])
+        if not self._clock_ok:
+            self._clock_ok = clock_synced()
         return {
             "v": 1,
             "saved": time.time(),
             "boot": self._boot,
+            # byl čas uložení změřen seřízenými hodinami? (jinak se po zapnutí
+            # Pi nedá říct, z kterého dne stav je)
+            "clock": self._clock_ok,
             "playing": self._playing,
+            # co hraje nebo stojí v pauze — pozná se podle toho, že pozice na
+            # kartě (playback.json) patří k tomuhle stavu a ne ke starší skladbě
+            "now": self._now_id,
             "bg": bg,
             # i rozpracovaná (čeká / DJ vybírá) — po restartu se zpracují znovu
             "wishes": [w.to_json() for w in self.wishes if w.active],
@@ -2880,33 +3159,65 @@ class WishQueue:
             return None
         return data, sig
 
+    @staticmethod
+    def _important(data: dict) -> tuple:
+        """To, co se po výpadku proudu nesmí ztratit: kdo si co přál a v jakém
+        je to stavu, a jaký podkres hraje. Pozice, pořadí a čas ne."""
+        bg = data.get("bg") or {}
+        # "queued" ↔ "playing" se střídá s každou skladbou — to důležitá změna není
+        return (tuple((w.get("id"), w.get("state") in ("queued", "playing"),
+                       len(w.get("tracks") or []))
+                      for w in data.get("wishes") or [] if isinstance(w, dict)),
+                bg.get("mode"), bg.get("artist"), bg.get("which"), bg.get("mood"))
+
     def save(self) -> None:
         snap = self._snapshot_for_save()
         if snap is not None:
-            self._write_state(*snap)
+            self._write_state(*snap, sync=True)  # konec běhu: ať to na kartě opravdu je
 
     async def save_async(self) -> None:
-        """Stav se složí v event loopu, na SD kartu se píše ve vlákně."""
+        """Stav se složí v event loopu, na SD kartu se píše ve vlákně. Důležitá
+        změna (přání, podkres) se nechá kartou potvrdit (fsync) — taky ve
+        vlákně; běžný zápis a zápis kvůli stáří ne, ať se karta nezdržuje."""
         snap = self._snapshot_for_save()
         if snap is not None:
-            await asyncio.to_thread(self._write_state, *snap)
+            sync = self._important(snap[0]) != self._sync_key
+            await asyncio.to_thread(self._write_state, *snap, sync)
 
-    def _write_state(self, data: dict, sig: str) -> None:
+    def _write_state(self, data: dict, sig: str, sync: bool = False) -> None:
         assert self.state_file is not None
+        t0 = time.monotonic()
         try:
             self.state_file.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.state_file.with_suffix(".tmp")
-            tmp.write_text(json.dumps(data, ensure_ascii=False))
+            text = json.dumps(data, ensure_ascii=False)
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.write(text)
+                if sync:
+                    fh.flush()
+                    os.fsync(fh.fileno())
             tmp.replace(self.state_file)
+            if sync:
+                fd = os.open(self.state_file.parent, os.O_RDONLY)  # i přejmenování
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+                self._sync_key = self._important(data)
             self._saved_sig = sig
             self._saved_at = time.time()
         except OSError:
             log.warning("stav pro obnovu po restartu se nepodařilo uložit", exc_info=True)
+            return
+        if sync:
+            telemetry.event("request.state_sync", took_ms=int((time.monotonic() - t0) * 1000),
+                            chars=len(text), wishes=len(data.get("wishes") or []))
 
     async def refresh_playing(self) -> None:
         with contextlib.suppress(Exception):
             st = await self.player.status()
             self._playing = st.current is not None and not st.paused
+            self._now_id = st.current.id if st.current is not None else None
 
     async def _save_loop(self) -> None:
         while True:
@@ -2914,20 +3225,41 @@ class WishQueue:
             await self.refresh_playing()
             await self.save_async()
 
-    async def _resume_interrupted(self) -> str | None:
-        """Skladba, kterou restart služby přerušil, hraje dál od svého místa.
+    async def _resume_interrupted(self, silent: bool = False, cold: bool = False,
+                                  session: dict | None = None) -> tuple[str, float] | None:
+        """Skladba, kterou restart přerušil, pokračuje od svého místa.
 
         Resolver ji má hotovou z cache v RAM, takže kancelář slyší hudbu do
         pár vteřin — dřív se po restartu vybírala nová skladba a její řešení
         stálo ~19 s ticha. Patří-li k obnovenému přání, přání ji bere jako
         právě hrající (replan ji tak nezařadí podruhé).
+
+        `silent` = hudba se sama nerozjede (pauza, noc, zapnutí Pi): přehrávač
+        už stojí v pauze a skladba se do něj načte pozastavená na svém místě —
+        Hrát pak pokračuje tam, kde se přestalo. `cold` = po zapnutí Pi: místo
+        se čte z kopie na SD kartě a jeho stáří se nesoudí (o tom rozhodl
+        cold_restore); kopie starší než stav přání, ve které je jiná skladba,
+        než podle stavu hrála, se nepoužije (skladba se mezitím změnila).
+        Vrací (videoId, pozice), nebo None.
         """
         saved = getattr(self.player, "saved_playback", None)
         play = getattr(self.player, "resume_track", None)
         if saved is None or play is None:
             return None
         try:
-            got = saved(RESUME_MAX_AGE)
+            if cold:
+                got = await asyncio.to_thread(saved, None, True, True)  # SD karta — ve vlákně
+                snap = await asyncio.to_thread(self._playback_snapshot, True)
+                was = (session or {}).get("now")
+                if got and snap and isinstance(was, str) and was != got[0].id \
+                        and snap[1] < float((session or {}).get("saved") or 0):
+                    telemetry.event("request.resume_position", used=False, why="other_track",
+                                    video_id=got[0].id, session_now=was)
+                    got = None
+            elif silent:
+                got = saved(RESTORE_MAX_AGE, True)
+            else:
+                got = saved(RESUME_MAX_AGE)
             if not got:
                 return None
             track, pos = got
@@ -2944,8 +3276,9 @@ class WishQueue:
         except Exception:
             log.exception("přerušenou skladbu se po restartu nepodařilo navázat")
             return None
-        log.info("po restartu navazuji: %s od %d s", track.label(), int(pos))
-        return track.id
+        log.info("po restartu navazuji%s: %s od %d s", " (v pauze)" if silent else "",
+                 track.label(), int(pos))
+        return track.id, pos
 
     async def _restore_artist_bg(self, bg: dict, reason: dict, tracks: list[Track],
                                  wall: float | None) -> None:
@@ -2979,9 +3312,10 @@ class WishQueue:
         seeds = [t for t in _dedup(tracks)][:3]
         await self._set_background(seeds=seeds, mood=f"{artist} a podobné")
 
-    def _playback_snapshot(self) -> tuple[str, float] | None:
-        """(videoId, kdy uloženo) z playback.json přehrávače, nebo None."""
-        path = getattr(self.player, "playback_file", None)
+    def _playback_snapshot(self, cold: bool = False) -> tuple[str, float] | None:
+        """(videoId, kdy uloženo) z playback.json přehrávače, nebo None.
+        `cold` = po zapnutí Pi z kopie na SD kartě (tmpfs je prázdný)."""
+        path = getattr(self.player, "playback_disk" if cold else "playback_file", None)
         if path is None:
             return None
         try:
@@ -3009,7 +3343,7 @@ class WishQueue:
         return {v for v, r in latest.items() if r.outcome in ("finished", "skipped", "error")
                 and (r.ts >= saved_at or v in playing_then)}
 
-    async def _ended_since(self, saved: dict) -> set[str]:
+    async def _ended_since(self, saved: dict, cold: bool = False) -> set[str]:
         """Co z uložených přání mezitím dohrálo, ač to session.json neví.
 
         session.json a playback.json se píšou v jiných chvílích (každých 5 s,
@@ -3022,12 +3356,16 @@ class WishQueue:
         playing_then = {str(d["current"]) for d in saved.get("wishes") or []
                         if isinstance(d, dict) and isinstance(d.get("current"), str)}
         ended = await asyncio.to_thread(self._history_ended, saved_at, playing_then)
-        snap = self._playback_snapshot()
+        snap = await asyncio.to_thread(self._playback_snapshot, True) if cold \
+            else self._playback_snapshot()
         if snap is not None:
             vid, at = snap
             if at >= saved_at:
                 ended |= playing_then - {vid}
-            ended.discard(vid)  # co hraje teď (naváže se), neskončilo
+            # co hraje teď (naváže se), neskončilo — kopie z karty jen když
+            # není starší než stav přání s jinou skladbou (ta se nenaváže)
+            if not cold or at >= saved_at or saved.get("now") in (None, vid):
+                ended.discard(vid)
         return ended
 
     def _reconcile(self, w: Wish, ended: set[str]) -> None:
@@ -3040,17 +3378,83 @@ class WishQueue:
         telemetry.event("request.resume_reconciled", id=w.id, who=w.who, done=sorted(gone))
         log.info("přání %s: po restartu už dohrálo %d skladeb", w.id, len(gone))
 
+    async def _wait_clock(self) -> tuple[bool, int]:
+        """Po zapnutí Pi počkat na hodiny seřízené ze sítě — nejdéle CLOCK_WAIT,
+        a jen do chvíle, kdy někdo stiskne Hrát (restore_now). Čeká se
+        v event loopu, ne v něm: web i displej mezitím běží. (seřízeno?, ms)"""
+        t0 = time.monotonic()
+        while not clock_synced():
+            left = CLOCK_WAIT - (time.monotonic() - t0)
+            if left <= 0 or self._restore_now.is_set():
+                return False, int((time.monotonic() - t0) * 1000)
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._restore_now.wait(), min(1.0, left))
+        return True, int((time.monotonic() - t0) * 1000)
+
+    async def restore_now(self, timeout: float = 10.0) -> None:
+        """Někdo chce hrát a obnova po zapnutí ještě čeká na hodiny: nečekat
+        (stáří stavu pak zůstane neznámé a stav se obnoví) a dát jí doběhnout."""
+        if not self.restoring:
+            return
+        self._restore_now.set()
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(self._restore_done.wait(), timeout)
+
     async def resume(self, saved: dict | None = None, now: datetime | None = None,
-                     wall: float | None = None) -> str:
-        """Po startu ytdj: přání obnovit vždy, když je stav čerstvý a Pi se
-        mezitím nerestartovalo (can_restore); hudbu rozjet jen podle
-        should_resume — jinak zůstane pozastavená a přání čekají ve frontě."""
-        saved = self.load_state() if saved is None else saved
-        restore, why_r = can_restore(saved, wall)
+                     wall: float | None = None, synced: bool | None = None) -> str:
+        """Po startu ytdj obnovit, co bylo, a nenechat se rozbitým stavem
+        (výpadek proudu uprostřed zápisu) shodit ani zaseknout frontu."""
+        self.restoring = True
+        self._restore_done.clear()
+        info: dict[str, Any] = {}
+        try:
+            if saved is None:
+                saved = await asyncio.to_thread(self.load_state)  # SD karta — ve vlákně
+            return await self._resume(saved, now, wall, synced, info)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("stav po startu se nepodařilo obnovit — začínám načisto")
+            # napůl obnovená přání by ve frontě strašila bez skladeb
+            for w in [w for w in self.wishes if w.restored]:
+                self.wishes.remove(w)
+            info.update(restore=False, restore_reason="error")
+            self._changed()
+            return "error"
+        finally:
+            self.restoring = False
+            self._restore_done.set()
+            if info:
+                telemetry.event("request.resume", **info)
+
+    async def _resume(self, saved: dict | None, now: datetime | None, wall: float | None,
+                      synced: bool | None, info: dict[str, Any]) -> str:
+        """Dvě cesty. Restart služby (stejný boot): přání obnovit, když je stav
+        čerstvý (can_restore), hudbu rozjet jen podle should_resume. Zapnutí
+        Pi (jiný boot): fronta, podkres i místo ve skladbě se obnoví, když je
+        stav z téhož dne nebo se to nedá poznat (cold_restore) — vždy potichu,
+        hudbu pustí až Hrát."""
+        cold = is_cold(saved, self._boot)
         ok, why = should_resume(saved, now, wall)
-        telemetry.event("request.resume", resume=ok, reason=why, restore=restore,
-                        restore_reason=why_r,
-                        wishes=len((saved or {}).get("wishes") or []) or None)
+        if cold:
+            if synced is None:
+                synced, waited = await self._wait_clock()
+                info.update(clock_wait_ms=waited)
+            restore, why_r = cold_restore(saved, synced, now)
+            if restore:
+                await self.refresh_playing()
+                if self.wishes or self._now_id or self.starting:
+                    # při čekání na hodiny si už někdo něco pustil — nepřebíjet
+                    restore, why_r = False, "superseded"
+        else:
+            restore, why_r = can_restore(saved, wall)
+        bg_saved = (saved or {}).get("bg") if isinstance((saved or {}).get("bg"), dict) else {}
+        info.update(resume=ok, reason=why, restore=restore, restore_reason=why_r,
+                    cold=cold or None, clock_synced=synced if cold else None,
+                    wishes=len((saved or {}).get("wishes") or []) or None,
+                    saved_bg=bg_saved.get("mode"),
+                    age_s=int(time.time() - float(saved.get("saved") or 0))
+                    if why_r in ("fresh", "stale", "same_day", "earlier_day") and saved else None)
         if not restore or saved is None:
             log.info("po startu nic neobnovuji (%s)", why_r)
             return why_r if why_r != "fresh" else why
@@ -3068,7 +3472,7 @@ class WishQueue:
                 last[seat] = max(last.get(seat, 0), int(v))
             self.turns = Turns(int(turns.get("turn_no") or 0), last)
         rethink = False
-        ended = await self._ended_since(saved)
+        ended = await self._ended_since(saved, cold)
         for d in saved.get("wishes") or []:
             w = Wish.from_json(d) if isinstance(d, dict) else None
             if w is None:
@@ -3093,8 +3497,10 @@ class WishQueue:
         if rethink:
             self._wake.set()
             self._ensure_worker()
-        if ok:
-            await self._resume_interrupted()
+        # skladba, která hrála (nebo stála v pauze), zpátky na své místo — když
+        # se hudba sama rozjet nemá, načte se pozastavená
+        at = await self._resume_interrupted(silent=not ok, cold=cold, session=saved)
+        info.update(track=at[0] if at else None, pos_s=round(at[1], 1) if at else None)
         await self.replan()  # přání první — podkres se řadí až za ně
         bg = saved.get("bg") or {}
         reason = bg.get("reason") if isinstance(bg.get("reason"), dict) else {}
@@ -3131,11 +3537,24 @@ class WishQueue:
                         from_key=str(reason.get("key") or ""))
         except Exception:
             log.exception("podkres se po restartu nepodařilo obnovit")
-        if not self.pools.pools and not self.has_requests():
+        info.update(restored_wishes=len(self.active()),
+                    restored_bg=getattr(self.pools, "mood", "") or None, paused=not ok)
+        if not self.pools.pools and not self.has_requests() and not at:
+            info.update(restore_reason="nothing_to_resume")
             return "nothing_to_resume"
         if ok:
             await self.player.toggle_pause(False)
         log.info("po restartu obnoveno: %d přání, podkres %s, hraje: %s", len(self.active()),
                  getattr(self.pools, "mood", ""), ok)
+        if cold:
+            # ať je na webu i na displeji vidět, proč je ticho a co bude po Hrát
+            n = len(self.active())
+            what = [f"{n} přání"] if n else []
+            if mood := getattr(self.pools, "mood", ""):
+                what.append(f"podkres „{mood}“")
+            self.note_last(text="▶ po zapnutí", source="start", reply=(
+                "Po zapnutí jsem obnovil, co tu bylo"
+                + (f" ({', '.join(what)})" if what else "")
+                + ". Hudba čeká na ▶ a pokračuje tam, kde přestala."))
         self._changed()
-        return why
+        return why_r if cold else why

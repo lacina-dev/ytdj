@@ -228,6 +228,28 @@
                       transform-origin: 0 50%; transform: scaleX(0); }
   .times { display: flex; justify-content: space-between; margin-top: 6px; font-size: .78rem;
            color: var(--text-faint); font-variant-numeric: tabular-nums; }
+  /* posun ve skladbě: lišta je posuvník (nad kresbou průběhu) a −10 / +10 s po stranách */
+  .seekrow { display: flex; align-items: center; gap: 8px; }
+  .seekbar { position: relative; flex: 1; min-width: 0; display: flex; align-items: center; }
+  .seekbar .track-bar { position: absolute; left: 8px; right: 8px; top: 50%; margin-top: -2.5px; pointer-events: none; }
+  #seek { position: relative; width: 100%; cursor: pointer; }
+  #seek::-webkit-slider-runnable-track { background: transparent; }
+  #seek::-moz-range-track { background: transparent; }
+  #seek::-webkit-slider-thumb { background: var(--accent); }
+  #seek::-moz-range-thumb { background: var(--accent); }
+  .sk { flex: none; width: 44px; height: 44px; padding: 0; border-radius: 50%; border: 1px solid var(--line);
+        background: var(--surface); color: var(--text-dim); display: grid; place-items: center;
+        font-size: .76rem; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+  .sk:hover { background: var(--surface-2); color: var(--text); }
+  .sk:active { transform: scale(.94); }
+  /* cizí přání: v něm se neposouvá — knoflík zmizí, tlačítka zešednou (ťuknutí řekne proč) */
+  .progress.locked #seek { cursor: default; }
+  .progress.locked #seek::-webkit-slider-thumb { opacity: 0; }
+  .progress.locked #seek::-moz-range-thumb { opacity: 0; }
+  .progress.locked .sk { opacity: .45; }
+  @media (pointer: coarse) {
+    .seekbar .track-bar { left: 12px; right: 12px; }
+  }
 
   .controls { display: flex; align-items: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
   .ctl {
@@ -346,6 +368,16 @@
   .thumb { --h: 38; flex: none; width: 40px; height: 40px; border-radius: 8px; overflow: hidden; position: relative;
            background: linear-gradient(135deg, hsl(var(--h) 40% 45% / .55), hsl(calc(var(--h) + 40) 40% 30% / .55)); }
   .thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  /* obal ve frontě je tlačítko „přehrát hned" (klik do fronty); .blocked = předběhlo by cizí přání */
+  button.thumb { display: block; padding: 0; border: 0; color: var(--text); cursor: pointer; }
+  .qplay .pl { position: absolute; inset: 0; display: grid; place-items: center;
+               background: color-mix(in srgb, var(--bg) 46%, transparent); }
+  .qplay .pl svg { width: 18px; height: 18px; }
+  .qplay:hover .pl { background: color-mix(in srgb, var(--bg) 20%, transparent); }
+  .qplay.blocked .pl { color: var(--text-faint); background: color-mix(in srgb, var(--bg) 66%, transparent); }
+  .qplay[disabled] { opacity: .5; cursor: progress; }
+  @media (pointer: coarse) { button.thumb { width: 44px; height: 44px; } }
+  .rv.rp svg { width: 20px; height: 20px; }
   .empty { font-size: .88rem; color: var(--text-faint); padding: 4px 0 2px; margin: 0; }
 
   .who { --h: 38; display: inline-block; max-width: 11em; overflow: hidden; text-overflow: ellipsis; vertical-align: middle;
@@ -644,8 +676,14 @@
         <p class="idle-hint" id="idleHint" hidden>Stiskni ▶ a DJ vybere hudbu podle času a dne — nebo mu níž napiš, co chceš slyšet.</p>
 
         <div class="progress" id="progress" hidden>
-          <div class="track-bar" role="progressbar" id="bar" aria-label="Pozice ve skladbě"
-               aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="barFill"></span></div>
+          <div class="seekrow">
+            <button class="sk" id="btnBack" type="button" aria-label="O 10 vteřin zpět" title="O 10 s zpět">−10</button>
+            <div class="seekbar">
+              <div class="track-bar" id="bar" aria-hidden="true"><span id="barFill"></span></div>
+              <input type="range" id="seek" min="0" max="0" step="1" value="0" aria-label="Pozice ve skladbě">
+            </div>
+            <button class="sk" id="btnFwd" type="button" aria-label="O 10 vteřin dopředu" title="O 10 s dopředu">+10</button>
+          </div>
           <div class="times"><span id="elapsed">0:00</span><span id="total">0:00</span></div>
         </div>
 
@@ -932,6 +970,7 @@
     finSeen: {},         // id → when this page first saw our wish finished (card lingers a bit)
     title: "",
     volDragging: false, volHoldUntil: 0,
+    seekDrag: false, seekHold: 0, seekLock: "",   // moving within the track (the bar, −10 / +10)
     lastUpdate: 0,
     connected: false,
     nick: "", tag: "",
@@ -948,6 +987,7 @@
     art: $("#art"), artImg: $("#artImg"),
     title: $("#title"), artist: $("#artist"), idleHint: $("#idleHint"), reason: $("#reason"),
     progress: $("#progress"), bar: $("#bar"), barFill: $("#barFill"),
+    seek: $("#seek"), btnBack: $("#btnBack"), btnFwd: $("#btnFwd"),
     elapsed: $("#elapsed"), total: $("#total"),
     btnPlay: $("#btnPlay"), icoPlay: $("#icoPlay"), icoPause: $("#icoPause"), btnNext: $("#btnNext"),
     vol: $("#vol"), volOut: $("#volOut"),
@@ -1175,6 +1215,7 @@
       if (!S.connected) setConnected(true);
       if (!Array.isArray(p) || typeof p[0] !== "number" || !S.status) return;
       S.status.position = p[0];
+      if (seekBusy()) return;  // the listener has just moved it — the server's old place would pull it back
       var diff = p[0] - predictPos();
       if (Math.abs(diff) > 1.5) setBase(p[0]);
       else setBase(Math.max(predictPos() - 0.15, predictPos() + diff * 0.25));
@@ -1296,9 +1337,11 @@
     S.loading = S.running && !!s.buffering;
 
     if (id !== S.trackId || S.loading || wasLoading) {
-      if (id !== S.trackId) renderArt(cur);
+      if (id !== S.trackId) { renderArt(cur); S.seekHold = 0; S.seekDrag = false; }
       S.trackId = id;
       setBase(serverPos);
+    } else if (seekBusy()) {
+      // just moved by this listener: keep the new place until the server reports it
     } else {
       var predicted = predictPos();
       var diff = serverPos - predicted;
@@ -1332,6 +1375,11 @@
     }
     setHidden(el.progress, !(cur && dur > 0));
     el.total.textContent = dur > 0 ? fmtTime(dur) : "–:––";
+    // posun: v cizím přání se neposouvá (server to stejně hlídá) — lišta je pak jen ukazatel
+    var max = String(Math.max(0, Math.floor(dur)));
+    if (el.seek.max !== max) el.seek.max = max;
+    S.seekLock = seekLockText(cur);
+    el.progress.classList.toggle("locked", !!S.seekLock);
 
     // --- controls ---
     var showPause = S.running;
@@ -1511,11 +1559,18 @@
     pruneTokens(list);
   }
 
-  function thumb(t) {
+  var ICO_PLAY = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.2v13.6c0 .8.9 1.3 1.6.9l10.4-6.8c.6-.4.6-1.4 0-1.8L9.6 4.3c-.7-.4-1.6.1-1.6.9z"/></svg>';
+  var ICO_AGAIN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 12a7.5 7.5 0 1 0 2.4-5.5"/><path d="M4.2 4.2v3.6h3.6"/><path d="M10.4 9.3v5.4l4.4-2.7z" fill="currentColor" stroke="none"/></svg>';
+  // play: { jump: row, open: nobody would be jumped } → the cover is a button "play now"
+  function thumb(t, play) {
     var url = coverUrl(t.id);
-    return '<span class="thumb" style="--h:' + hue(t.artist || t.title) + '" aria-hidden="true">' +
-           (url ? '<img src="' + esc(url) + '" alt="" loading="lazy" decoding="async" onload="ytdjThumb(this)" onerror="this.remove()">' : "") +
-           "</span>";
+    var pic = url ? '<img src="' + esc(url) + '" alt="" loading="lazy" decoding="async" onload="ytdjThumb(this)" onerror="this.remove()">' : "";
+    if (!play) return '<span class="thumb" style="--h:' + hue(t.artist || t.title) + '" aria-hidden="true">' + pic + "</span>";
+    var name = (t.artist ? t.artist + " — " : "") + (t.title || "");
+    return '<button class="thumb qplay' + (play.open ? "" : " blocked") + '" type="button" data-jump="' + play.jump +
+           '" style="--h:' + hue(t.artist || t.title) + '" aria-label="' + esc((play.open ? "Přehrát hned: " : "Přehrát dřív (čeká přání někoho jiného): ") + name) +
+           '" title="' + (play.open ? "Přehrát hned" : "Nejdřív dohraje přání někoho jiného") + '">' + pic +
+           '<span class="pl">' + ICO_PLAY + "</span></button>";
   }
 
   function renderQueue(q, reqs) {
@@ -1528,10 +1583,14 @@
     el.queueCount.textContent = q.length ? "· " + q.length : "";
     setHidden(el.queueEmpty, q.length > 0);
     el.queueEmpty.textContent = S.connected ? "Zatím nic — napiš DJovi, co pustit." : "Fronta teď není vidět — jukebox neodpovídá.";
+    // Klik na obal = zahrát hned, ale férově: jde to až po první skladbu cizího
+    // přání (tu ani nic za ní předběhnout nejde — server to hlídá, tady se jen kreslí).
+    var open = true;
     el.queue.innerHTML = q.slice(0, 12).map(function (t, i) {
-      var mine = t.req && mineIds[t.req.id];
+      var mine = t.req && (mineIds[t.req.id] || (S.tag && t.req.who_key === S.tag));
+      if (t.req && !mine) open = false;
       var marks = voteMarks(t.votes);
-      return '<li class="' + (mine ? "mine" : "") + '">' + thumb(t) +
+      return '<li class="' + (mine ? "mine" : "") + '">' + thumb(t, { jump: i, open: open }) +
              '<span class="meta"><span class="t">' + esc(t.title || "Neznámá skladba") + "</span>" +
              '<span class="a">' + esc(t.artist || "") + "</span>" +
              (t.req || marks ? '<span class="req">' + (t.req ? whoChip(t.req.who, mine, t.req.who_key) : "") + marks + "</span>" : "") +
@@ -1615,23 +1674,31 @@
              '<span class="meta"><span class="t">' + esc(t.title || "Neznámá skladba") + "</span>" +
              (t.artist ? '<span class="a">' + esc(t.artist) + "</span>" : "") +
              (marks ? '<span class="vss">' + marks + "</span>" : "") + "</span>" +
+             (canReplay(t) ? '<button class="rv rp" type="button" data-replay="' + i + '" aria-label="Zahrát znovu: ' +
+                             esc((t.artist ? t.artist + " — " : "") + (t.title || "")) + '" title="Zahrát znovu">' + ICO_AGAIN + "</button>" : "") +
              (t.title ? rowVoteBtn("h", i, t) : "") + "</li>";
     }).join("");
   }
+  // „Zahrát znovu": jen co jde zahrát — známé video, které se nepokazilo
+  function canReplay(t) { return !!coverUrl(t.id) && t.outcome !== "error"; }
 
   /* smooth position — 4× a second is plenty; the page may stay open all day */
   var last = { pct: -1, txt: "", aria: "" };
+  function renderPos() {
+    // while the thumb is being dragged the bar shows where it would land
+    var p = S.seekDrag ? Number(el.seek.value) || 0 : predictPos();
+    var pct = S.duration > 0 ? Math.max(0, Math.min(100, (p / S.duration) * 100)) : 0;
+    var rounded = Math.round(pct * 10) / 10;
+    if (rounded !== last.pct) { last.pct = rounded; el.barFill.style.transform = "scaleX(" + (rounded / 100).toFixed(4) + ")"; }
+    var txt = fmtTime(p);
+    if (txt !== last.txt) { last.txt = txt; el.elapsed.textContent = txt; }
+    var sec = String(Math.round(p));
+    if (!S.seekDrag && el.seek.value !== sec) el.seek.value = sec;
+    var aria = txt + " z " + fmtTime(S.duration);
+    if (aria !== last.aria) { last.aria = aria; el.seek.setAttribute("aria-valuetext", aria); }
+  }
   function tick() {
-    if (!document.hidden) {
-      var p = predictPos();
-      var pct = S.duration > 0 ? Math.max(0, Math.min(100, (p / S.duration) * 100)) : 0;
-      var rounded = Math.round(pct * 10) / 10;
-      if (rounded !== last.pct) { last.pct = rounded; el.barFill.style.transform = "scaleX(" + (rounded / 100).toFixed(4) + ")"; }
-      var aria = String(Math.round(pct));
-      if (aria !== last.aria) { last.aria = aria; el.bar.setAttribute("aria-valuenow", aria); }
-      var txt = fmtTime(p);
-      if (txt !== last.txt) { last.txt = txt; el.elapsed.textContent = txt; }
-    }
+    if (!document.hidden) renderPos();
     setTimeout(tick, S.running && !S.loading ? 250 : 1000);
   }
   tick();
@@ -1692,6 +1759,67 @@
   el.vol.addEventListener("touchend", commitVolume);
   el.vol.addEventListener("blur", commitVolume);
 
+  /* posun ve skladbě: lišta (ťuknutí, tažení, šipky) a −10 / +10 s */
+  var SEEK_END = 3;        // the server never jumps into the last seconds (the audio in reserve)
+  var SEEK_EVERY = 350;    // ms — at most this often to the server (it allows 3 a second)
+  var seekT = null, seekWant = null, seekSent = 0;
+  function seekBusy() { return S.seekDrag || nowMs() < S.seekHold; }
+  // whose wish plays now, when it is not the viewer's own: there the bar only shows
+  function seekLockText(cur) {
+    var r = cur && cur.reason;
+    if (!r || r.kind !== "wish") return "";
+    var mine = !!(S.tag && r.who_key === S.tag) || !!S.tokens[r.id] ||
+               ((S.status && S.status.requests) || []).some(function (x) { return x.id === r.id && isMine(x); });
+    return mine ? "" : "Teď hraje, co si přeje " + (r.who || "někdo jiný") + " — v cizím přání se neposouvá.";
+  }
+  function seekTo(sec) {
+    if (!(S.duration > 0) || !S.status || !S.status.current) return;
+    if (S.seekLock) { toast(S.seekLock, true); renderPos(); return; }
+    sec = Math.max(0, Math.min(Math.max(0, S.duration - SEEK_END), sec));
+    setBase(sec);
+    S.seekHold = nowMs() + 1500;
+    renderPos();
+    seekWant = sec;
+    if (!seekT) seekT = setTimeout(sendSeek, Math.max(0, SEEK_EVERY - (nowMs() - seekSent)));
+  }
+  async function sendSeek() {
+    var want = seekWant;
+    seekT = null; seekWant = null; seekSent = nowMs();
+    if (want == null) return;
+    try {
+      var d = await postJSON("/api/control", { action: "seek", value: Math.round(want * 10) / 10,
+                                               who: S.nick, client: S.client });
+      if (seekWant == null && typeof d.position === "number") { setBase(d.position); S.seekHold = nowMs() + 600; }
+    } catch (e) {
+      S.seekHold = 0;
+      if (e.status !== 429) toast(e.message, true);  // 429: the next one is already on its way
+      if (!polling) refresh();
+    }
+  }
+  el.seek.addEventListener("input", function () {
+    if (S.seekLock) return;
+    S.seekDrag = true;
+    renderPos();
+  });
+  function commitSeek() {
+    if (!S.seekDrag && !S.seekLock) return;
+    S.seekDrag = false;
+    seekTo(Number(el.seek.value) || 0);
+  }
+  el.seek.addEventListener("change", commitSeek);
+  el.seek.addEventListener("pointerup", commitSeek);
+  el.seek.addEventListener("touchend", commitSeek);
+  el.seek.addEventListener("blur", function () { if (S.seekDrag) commitSeek(); });
+  // šipky na liště po 5 s (jeden krok posuvníku je vteřina — pro tažení)
+  el.seek.addEventListener("keydown", function (ev) {
+    var step = ev.key === "ArrowLeft" || ev.key === "ArrowDown" ? -5 : ev.key === "ArrowRight" || ev.key === "ArrowUp" ? 5 : 0;
+    if (!step) return;
+    ev.preventDefault();
+    seekTo(predictPos() + step);
+  });
+  el.btnBack.addEventListener("click", function () { seekTo(predictPos() - 10); });
+  el.btnFwd.addEventListener("click", function () { seekTo(predictPos() + 10); });
+
   document.addEventListener("keydown", function (ev) {
     if (ev.key === "Escape" && el.settings.classList.contains("show")) { closeSettings(); return; }
     if (ev.key === "Escape" && !el.voteSheet.hasAttribute("hidden")) { closeSheet(); return; }
@@ -1716,6 +1844,22 @@
   }
   function hideReply() { el.reply.classList.remove("show"); }
 
+  // the server accepted a wish of this browser (typed, a chip, "Zahrát znovu"):
+  // remember its token and show its card at once, before the next state arrives
+  function adoptWish(data, stay) {
+    if (!data || !data.id) return;
+    S.tokens[data.id] = { token: data.token, at: Date.now() };
+    store("ytdj.tokens", S.tokens);
+    // stay: sent from down the page (Odehráno) — a note says it, the page doesn't jump away
+    S.scrollTo = !stay && /^[A-Za-z0-9_-]+$/.test(String(data.id)) ? String(data.id) : "";
+    hideReply();
+    if (S.status && data.request) {
+      var reqs = (S.status.requests || []).filter(function (r) { return r.id !== data.id; });
+      reqs.unshift(data.request);
+      renderMine(reqs);
+    }
+  }
+
   // opts.quiet: not typed in the field (a chip)
   async function send(text, opts) {
     opts = opts || {};
@@ -1732,16 +1876,7 @@
       if (!opts.quiet) { el.prompt.value = ""; autosize(); }
       el.playNext.checked = false;
       if (data && data.id) {
-        S.tokens[data.id] = { token: data.token, at: Date.now() };
-        store("ytdj.tokens", S.tokens);
-        S.scrollTo = /^[A-Za-z0-9_-]+$/.test(String(data.id)) ? String(data.id) : "";
-        hideReply();
-        // show the card at once, before the next state arrives
-        if (S.status && data.request) {
-          var reqs = (S.status.requests || []).filter(function (r) { return r.id !== data.id; });
-          reqs.unshift(data.request);
-          renderMine(reqs);
-        }
+        adoptWish(data);
       } else {
         showReply((data && data.reply) || "Hotovo.", false, text);  // "další", "hlasitěji"…
       }
@@ -2284,6 +2419,43 @@
   }
   el.queue.addEventListener("click", rowClick("q"));
   el.history.addEventListener("click", rowClick("h"));
+
+  /* klik do fronty: skladba hned (když se tím nikdo nepředběhne) — rozhoduje server a řekne jak */
+  el.queue.addEventListener("click", async function (ev) {
+    var b = ev.target.closest && ev.target.closest("[data-jump]");
+    if (!b || b.disabled) return;
+    var t = (S.queueItems || [])[Number(b.getAttribute("data-jump"))];
+    if (!t || !t.id) return;
+    b.disabled = true;
+    try {
+      var d = await postJSON("/api/control", { action: "jump", video_id: t.id, who: S.nick, client: S.client });
+      toast(d.message || "Hraje hned.");
+      hideBanner();
+    } catch (e) {
+      toast(e.message, true);
+    }
+    if (b.isConnected) b.disabled = false;
+    if (!polling) setTimeout(refresh, 120);
+  });
+
+  /* „Zahrát znovu" v Odehráno: přání přesně té skladby — do fronty jako každé jiné */
+  el.history.addEventListener("click", async function (ev) {
+    var b = ev.target.closest && ev.target.closest("[data-replay]");
+    if (!b || b.disabled) return;
+    var t = (S.histItems || [])[Number(b.getAttribute("data-replay"))];
+    if (!t || !t.id) return;
+    if (!S.nick) { openNick(false, ""); return; }
+    b.disabled = true;
+    try {
+      var data = await postJSON("/api/prompt", { replay: t.id, who: S.nick, source: "web", wait: false, client: S.client });
+      adoptWish(data, true);
+      toast("Zařazeno mezi tvoje přání: " + (t.title || "skladba"));
+    } catch (e) {
+      toast(e.message, true);
+    }
+    setTimeout(function () { if (b.isConnected) b.disabled = false; }, 1000);
+    if (!polling) refresh();
+  });
 
   /* ---- the Hlasování page ---- */
   function showVotes(on) {

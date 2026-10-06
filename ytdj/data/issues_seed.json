@@ -22,69 +22,79 @@
     {
       "key": "pozadavek-53",
       "kind": "chyba",
-      "state": "resi_se",
+      "state": "nasazeni",
       "who": "kolega",
       "created": "2026-10-06",
       "title": "DJ nenašel píseň „Nerdíci v neklidu“ od kapely Pondělníci",
       "body": "Kolegovi to nenašlo píseň „Nerdíci v neklidu“ od kapely Pondělníci — „to je problém“.\n\nPOZADAVKY #53.",
-      "resolution": "Píseň na YouTube Music je; DJ ji nepoznal, protože holý název bral jako jméno kapely a po neúspěchu ho už nezkusil jako skladbu. Nově dostane ke každému přání kandidáty z katalogu (skladby i interprety) a rozhodne podle nich; neznámý „interpret“ se navíc zkusí jako název písně. „Píseň a pak další od kapely“ zahraje nejdřív tu píseň. V kódu a otestováno na původních textech přání; zbývá ověřit se skutečným modelem a nasadit.",
+      "resolution": "Píseň na YouTube Music je; DJ ji nepoznal, protože holý název bral jako jméno kapely a po neúspěchu ho už nezkusil jako skladbu. Nově dostane ke každému přání kandidáty z katalogu (skladby i interprety) a rozhodne podle nich; neznámý „interpret“ se navíc zkusí jako název písně. „Píseň a pak další od kapely“ zahraje nejdřív tu píseň. V kódu a otestováno na původních textech přání; se skutečným modelem ověřeno 6. 10., čeká na nasazení.",
       "resolved": "2026-10-06"
     },
     {
       "key": "pozadavek-54",
       "kind": "napad",
-      "state": "nove",
+      "state": "nasazeni",
       "who": "kolega",
       "created": "2026-10-06",
       "title": "Posouvání v písničce tam a zpět",
-      "body": "Možnost posouvat se v písničce, tam a zpět.\n\nPOZADAVKY #54."
+      "body": "Možnost posouvat se v písničce, tam a zpět.\n\nPOZADAVKY #54.",
+      "resolution": "Lišta pod hrající skladbou je teď posuvník — jde táhnout nebo na ni ťuknout — a vedle ní jsou tlačítka −10 a +10 vteřin. Posouvat jde v rádiu a ve vlastním přání; v cizím přání jen jeho autor. Na displeji u repráku posun zatím není.",
+      "resolved": "2026-10-06"
     },
     {
       "key": "pozadavek-55",
       "kind": "napad",
-      "state": "nove",
+      "state": "nasazeni",
       "who": "kolega",
       "created": "2026-10-06",
       "title": "Znovu zahrát, co už hrálo",
-      "body": "Mít možnost nechat zahrát to, co bylo přehráno.\n\nPOZADAVKY #55."
+      "body": "Mít možnost nechat zahrát to, co bylo přehráno.\n\nPOZADAVKY #55.",
+      "resolution": "V seznamu Odehráno má každá skladba tlačítko „Zahrát znovu“ (⟲). Zařadí se jako tvoje přání přesně té skladby a jde do fronty jako každé jiné, střídá se s přáními ostatních. Skladbu vyřazenou hlasováním takhle znovu nepustíš.",
+      "resolved": "2026-10-06"
     },
     {
       "key": "pozadavek-56",
       "kind": "napad",
-      "state": "nove",
+      "state": "nasazeni",
       "who": "kolega",
       "created": "2026-10-06",
       "title": "Kliknutím přehrát písničku z fronty, která teprve bude",
-      "body": "Možnost kliknutím přehrát z playlistu i písničku, co teprve bude.\n\nPOZADAVKY #56."
+      "body": "Možnost kliknutím přehrát z playlistu i písničku, co teprve bude.\n\nPOZADAVKY #56.",
+      "resolution": "V seznamu Hraje dál ťukni na obal skladby (▶) a zahraje hned — pokud tím nikoho nepředběhneš: jde to u tvého přání a u rádia, dokud před ní nečeká skladba někoho jiného. Skladby, které přeskočíš, z fronty nezmizí a zahrají hned po ní. Cizí přání se nepřeruší; tvoje vybraná pak zahraje hned po něm.",
+      "resolved": "2026-10-06"
     },
     {
       "key": "pozadavek-57",
       "kind": "chyba",
-      "state": "resi_se",
+      "state": "nasazeni",
       "who": "kolega",
       "created": "2026-10-06",
       "title": "Přání „jen jedno album“ DJ nedodrží a hraje i jiná alba",
       "body": "Když uživatel zadá, že chce hrát jen jedno album, DJ se toho nedrží a hraje i jiná alba.\n\nPrověřit na datech z jukeboxu. POZADAVKY #57.",
-      "resolution": "Aplikace pojem alba neznala — DJ album pochopil, ale uměl pustit jen „interpreta“, takže hrály jeho nejznámější skladby. Nově umí album: první čtyři skladby jdou jako tvoje přání, zbytek alba hraje dál v pořadí jako podkres; přání někoho jiného má přednost a album pak pokračuje, kde přestalo. Dvě alba = jen ta dvě. V kódu a otestováno (Load, Primo Victoria + The Art of War, Live aus Berlin); zbývá ověřit se skutečným modelem a nasadit.",
+      "resolution": "Aplikace pojem alba neznala — DJ album pochopil, ale uměl pustit jen „interpreta“, takže hrály jeho nejznámější skladby. Nově umí album: první čtyři skladby jdou jako tvoje přání, zbytek alba hraje dál v pořadí jako podkres; přání někoho jiného má přednost a album pak pokračuje, kde přestalo. Dvě alba = jen ta dvě. V kódu a otestováno (Load, Primo Victoria + The Art of War, Live aus Berlin); se skutečným modelem ověřeno 6. 10., čeká na nasazení.",
       "resolved": "2026-10-06"
     },
     {
       "key": "pozadavek-58",
       "kind": "napad",
-      "state": "nove",
+      "state": "nasazeni",
       "who": "kolega",
       "created": "2026-10-06",
       "title": "Videa z YouTube Music na televizi přes HDMI",
-      "body": "Přehrávat i videa z YT Music na telce připojené přes HDMI; jinak by tam ukazovalo písničku, co hraje.\n\nPOZADAVKY #58."
+      "body": "Přehrávat i videa z YT Music na telce připojené přes HDMI; jinak by tam ukazovalo písničku, co hraje.\n\nPOZADAVKY #58.",
+      "resolution": "Zatím první půlka: na telce připojené přes HDMI bude velká obrazovka „právě hraje“ — obal, název, od koho přání je, co bude dál a QR kód na web. Je jen na dívání a hudbu nijak neovlivní. Video zatím ne: jukebox (Raspberry Pi 3) na něj teď nemá zapnutý dekodér ani paměť, většina toho, co hraje, jsou písničky bez klipu, a klip bývá jiná nahrávka než písnička. Jestli půjde aspoň u skladeb s oficiálním klipem, se nejdřív změří, aby to nerozbilo zvuk. Obrazovka je v kódu, čeká na nasazení a vyzkoušení se skutečnou telkou.",
+      "resolved": "2026-10-06"
     },
     {
       "key": "pozadavek-59",
       "kind": "napad",
-      "state": "nove",
+      "state": "nasazeni",
       "who": "kolega",
       "created": "2026-10-06",
       "title": "Po vypnutí a zapnutí pokračovat tam, kde se skončilo",
-      "body": "Pamatovat si aktuální stav, aby to i po vypnutí a opětovném startu pokračovalo tam, kde to bylo.\n\nČást už funguje (po restartu služby skladba naváže) — ověřit, co chybí. POZADAVKY #59."
+      "body": "Pamatovat si aktuální stav, aby to i po vypnutí a opětovném startu pokračovalo tam, kde to bylo.\n\nČást už funguje (po restartu služby skladba naváže) — ověřit, co chybí. POZADAVKY #59.",
+      "resolution": "Dřív se po vypnutí nebo výpadku proudu zahodilo všechno (1. 10. tak po třech minutách bez proudu zmizelo přání i režim interpreta). Nově si jukebox pamatuje čekající přání, podkres i místo ve skladbě (na ~15–25 vteřin přesně) a po zapnutí je vrátí. Hudba se ale sama nerozehraje — čeká v pauze, stačí zmáčknout ▶ a pokračuje se tam, kde se přestalo. Platí to týž den; druhý den ráno začíná jukebox načisto. V kódu a otestováno, čeká na nasazení a zkoušku na jukeboxu.",
+      "resolved": "2026-10-06"
     },
     {
       "key": "pozadavek-60",
@@ -111,12 +121,12 @@
     {
       "key": "pozadavek-62",
       "kind": "chyba",
-      "state": "resi_se",
+      "state": "nasazeni",
       "who": "kolega",
       "created": "2026-10-06",
       "title": "Přání „nejvulgárnější a nejsprostší“ pustilo Mötley Crüe",
       "body": "Kolega chtěl „nejvulgárnější a nejsprostší prasárnu, co DJ zná“ a pustilo mu to Mötley Crüe — čekal spíš Záviše a píseň s vulgárními texty.\n\nPrověřit na datech z jukeboxu. POZADAVKY #62.",
-      "resolution": "DJ vybral rozumně (i Záviše zná), ale jukebox z rádia vyřazoval všechny skladby označené jako vulgární, takže zbyl „čistý“ zbytek. Nově platí: když si o vulgární nebo sprosté texty někdo výslovně řekne, filtr se pro to jedno přání vypne a dalším přáním zase zapne; běžný podkres zůstává čistý. DJ také ví, že hraje v české kanceláři, a u přání na texty sáhne spíš po českých interpretech. V kódu a otestováno; zbývá ověřit se skutečným modelem a nasadit.",
+      "resolution": "DJ vybral rozumně (i Záviše zná), ale jukebox z rádia vyřazoval všechny skladby označené jako vulgární, takže zbyl „čistý“ zbytek. Nově platí: když si o vulgární nebo sprosté texty někdo výslovně řekne, filtr se pro to jedno přání vypne a dalším přáním zase zapne; běžný podkres zůstává čistý. DJ také ví, že hraje v české kanceláři, a u přání na texty sáhne spíš po českých interpretech. V kódu a otestováno; se skutečným modelem ověřeno 6. 10., čeká na nasazení.",
       "resolved": "2026-10-06"
     },
     {
@@ -133,12 +143,12 @@
     {
       "key": "pozadavek-64",
       "kind": "napad",
-      "state": "resi_se",
+      "state": "nasazeni",
       "who": "vlastník",
       "created": "2026-10-06",
       "title": "DJ se má zeptat, když si není jistý, co člověk myslí",
       "body": "„Nebylo by od věci, kdyby se DJ, pokud si není jistý, co user myslí, mohl usera zeptat nebo ho to nechat upřesnit, třeba jestli myslí kapelu nebo písničku.“ — ptát se jen pokud je to nezbytné.\n\nPOZADAVKY #64.",
-      "resolution": "DJ se nově může zeptat — jen když katalog nabízí dva stejně dobré výklady. U přání se objeví dvě až tři volby na jedno ťuknutí (web i displej). Fronta mezitím nečeká; po 25 s bez odpovědi DJ vezme nejpravděpodobnější možnost a napíše, co vybral. Nejvýš jedna otázka na přání. V kódu a otestováno; zbývá ověřit se skutečným modelem, jak zřídka se ptá, a nasadit.",
+      "resolution": "DJ se nově může zeptat — jen když katalog nabízí dva stejně dobré výklady. U přání se objeví dvě až tři volby na jedno ťuknutí (web i displej). Fronta mezitím nečeká; po 25 s bez odpovědi DJ vezme nejpravděpodobnější možnost a napíše, co vybral. Nejvýš jedna otázka na přání. V kódu a otestováno; se skutečným modelem ověřeno 6. 10., čeká na nasazení.",
       "resolved": "2026-10-06"
     },
     {
@@ -150,6 +160,17 @@
       "title": "Jukebox v síti i pod jménem jukebox.local",
       "body": "„ytdj.local je ok, ale bylo by fajn, kdyby bylo i jukebox.local.“\n\nPOZADAVKY #65.",
       "resolution": "Jukebox se v síti hlásí pod oběma jmény; při změně adresy se jukebox.local vyhlásí znovu.",
+      "resolved": "2026-10-06"
+    },
+    {
+      "key": "pozadavek-66",
+      "kind": "chyba",
+      "state": "nasazeni",
+      "who": "vlastník",
+      "created": "2026-10-06",
+      "title": "„Největší pecky od Foo Fighters“ zahrálo Pecku od jiné kapely",
+      "body": "„Teď jsem dal přání ‚Zahraj největší pecky od Foo Fighters‘ a zahrálo to Pecka od Divokej Bill. To není to, co jsem si přál. Špatně to vyhodnotil.“\n\nPOZADAVKY #66.",
+      "resolution": "Přání se vůbec nedostalo k DJovi: zkratka pro „písnička od interpreta“ vzala „pecky“ jako název písně, u Foo Fighters ji nenašla a sama dosadila stejnojmennou píseň od někoho jiného. Nově zkratka zahraje jen písničku, kterou katalog opravdu má od jmenovaného interpreta; ve všech ostatních případech rozhoduje DJ, který vidí celé přání i to, co je v katalogu — „největší pecky od…“ tak znamená hrát toho interpreta. Když chceš písničku od někoho, kdo ji nenahrál, DJ dál zahraje existující verzi a řekne to. V kódu a otestováno; se skutečným modelem ověřeno 6. 10., čeká na nasazení.",
       "resolved": "2026-10-06"
     }
   ]

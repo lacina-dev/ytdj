@@ -69,6 +69,12 @@ CASES = [
     ("něco od Metallicy, klidně i z novějších alb", {"not_kind": "album", "explicit_ok": False}),
     ("zahraj nějaký pořádný český punk", {"kind": "mood", "explicit_ok": False}),
     ("něco klidného k práci", {"kind": "mood", "explicit_ok": False}),
+    # words that describe a selection are not a title (the Pi played "Pecka" by another band)
+    ("Zahraj nejvetsi pecky od Foo Fighters", {"kind": "artist", "artists": ["Foo Fighters"]}),
+    ("to nejlepší od Kabátu", {"kind": "artist", "artists": ["Kabát"]}),
+    ("hity od Queen", {"kind": "artist", "artists": ["Queen"]}),
+    # the named artist does not have it → the existing version, with an honest note
+    ("Holky z naší školky od Olympicu", {"plays_first": "Holky z naší školky", "note": "ji nemám"}),
     # genuinely ambiguous — the same words are a song and an album (or a band):
     # here, and only here, a question is the right answer
     ("Paranoid", {"ask": True}),
@@ -141,6 +147,11 @@ def verdict(want: dict, intent, plan, first: list[str], asked: bool = False) -> 
         ok &= len(intent.albums) == want["albums"] and bool(plan.album_tracks)
     if "explicit_ok" in want:
         ok &= bool(intent.explicit_ok) == want["explicit_ok"]
+    if "artists" in want:
+        ok &= [a.lower() for a in intent.artists] == [a.lower() for a in want["artists"]]
+        ok &= bool(first) and all(want["artists"][0].lower() in f.lower() for f in first)
+    if "note" in want:
+        ok &= any(want["note"] in n for n in plan.notes)
     if "plays_first" in want:
         ok &= bool(first) and want["plays_first"].lower() in first[0].lower()
     return bool(ok)

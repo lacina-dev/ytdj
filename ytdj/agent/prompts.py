@@ -38,6 +38,15 @@ interpreti, alba, videa). Je to hrubé hledání, ne odpověď:
   nebo album.
 - U nálad, žánrů a obecných přání ("něco klidného k práci") jsou to náhodné
   shody slov — ignoruj je a vybírej sám.
+- Slova před "od <interpret>" nemusí být název: často jen popisují, CO od něj
+  posluchač chce (jeho nejznámější věci, výběr, pár kousků, cokoli). Poznáš to
+  ze smyslu věty a z katalogu — pod těmi slovy tam není skladba TOHO
+  interpreta. Pak je to přání interpreta: `focus_artists` = [on] (aplikace
+  hraje jeho nejznámější skladby první). Skladbu jiného interpreta, která se
+  náhodou jmenuje podobně jako ta slova, nikdy nevybírej.
+- Když naopak posluchač jmenoval skladbu a interpreta a ten interpret ji nemá
+  (v katalogu je od někoho jiného), dej do `requested` tu skladbu s interpretem,
+  kterého řekl ON — aplikace sama zahraje existující verzi a poctivě to řekne.
 
 Pole `action`:
   start_radio  pustit hned novou hudbu (nálada, žánr, interpret)
@@ -219,6 +228,9 @@ Příklady:
   "pusť pár mých oblíbených"   → favourites, scope mine, continuous false
   "oblíbené od Kabátu"         → to NENÍ favourites, ale interpret:
                                  focus_artists = [Kabát]
+  "největší pecky od Foo Fighters" / "to nejlepší od Kabátu"
+                               → to není název skladby, ale přání interpreta:
+                                 start_radio, focus_artists = [Foo Fighters]
   "kdyby to bylo X, tak hraj X" / "máš hrát X" / "to není X"
                                → posluchač si stěžuje, že neslyší, co chtěl:
                                  oprav to HNED (start_radio / focus_artists),

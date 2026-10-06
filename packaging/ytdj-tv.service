@@ -1,0 +1,60 @@
+[Unit]
+Description=ytdj — obrazovka „právě hraje“ na telce (HDMI, /dev/fb0)
+Documentation=https://github.com/lacina-dev/ytdj
+# Samostatný malý proces: s ytdj mluví jen přes lokální HTTP API a kreslí do
+# framebufferu. Přehrávače ani zvuku se nedotkne; když ytdj neběží nebo není
+# telka, jen čeká. Závislost na ytdj.service (běží pod uživatelem) tu není.
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# Systémová služba, ale NE root: obyčejný uživatel a k němu jen skupina
+# `video` kvůli /dev/fb0.
+User=@USER@
+SupplementaryGroups=video
+WorkingDirectory=@INSTALL_DIR@
+# Stejný venv jako ytdj (na Pi se --system-site-packages, Pillow je z aptu).
+ExecStart=@INSTALL_DIR@/.venv/bin/python -u -m ytdj.tv
+# Konfigurace (port webu) je ta uživatelova.
+Environment=XDG_CONFIG_HOME=@HOME@/.config
+Environment=YTDJ_LOG=info
+# Provozní log zvlášť, ať se nepere s logem ytdj; malý (obrazovka toho moc neříká).
+LogsDirectory=ytdj-tv
+LogsDirectoryMode=0755
+UMask=0022
+Environment=YTDJ_EVENTS_FILE=/var/log/ytdj-tv/events.jsonl
+Environment=YTDJ_EVENTS_MAX_MB=1
+Environment=YTDJ_EVENTS_KEEP=2
+Restart=always
+RestartSec=10
+TimeoutStopSec=5
+SyslogIdentifier=ytdj-tv
+
+# Hudba má vždy přednost: nízká priorita a při nedostatku paměti jde první.
+Nice=10
+OOMScoreAdjust=900
+
+# Co nejmíň práv: žádný root, žádné nové, ze zařízení jen framebuffer,
+# systém i domovský adresář jen ke čtení a tajemství jukeboxu vůbec.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+DevicePolicy=closed
+DeviceAllow=/dev/fb0 rw
+ProtectSystem=strict
+ProtectHome=read-only
+InaccessiblePaths=-@HOME@/.config/ytdj/cookies.txt -@HOME@/.config/ytdj/env -@HOME@/.config/ytdj/admin-pin -@HOME@/.codex -@HOME@/.ssh
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

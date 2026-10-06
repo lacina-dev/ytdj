@@ -97,6 +97,14 @@ Hrát/Pauza, Další, hlasitost a přání z klávesnice. Celý displej se v po�
 počítá jako jeden člověk, aby neměl přednost před lidmi u počítačů. Když
 dlouho nic nehraje, ztlumí se a ukáže QR kód na web.
 
+## Telka (HDMI)
+
+Když je k jukeboxu přes HDMI připojená telka, ukazuje velkou obrazovku
+„právě hraje": obal, název, od koho přání je, co bude hrát dál a QR kód
+s adresou webu, ať si každý může pustit svoje. Je jen na dívání — nic se
+přes ni neovládá a hudbu neovlivní, ani kdyby přestala fungovat. Video se
+zatím nepřehrává.
+
 ## Web
 
 Web vidí všichni stejně a živě — co hraje, co bude dál a čí přání čekají.
@@ -134,6 +142,11 @@ stejného místa skladby a se stejnou frontou přání. V noci (22–7 h) nebo p
 zapnutí celého Pi se ale sama nerozehraje, aby jukebox nezačal hrát
 v prázdné kanceláři.
 
+Jukebox si pamatuje, co se dělo, i přes vypnutí nebo výpadek proudu: po
+zapnutí vrátí čekající přání, podkres i místo ve skladbě (na pár vteřin
+přesně) a čeká v pauze — stačí zmáčknout ▶ a pokračuje se. Platí to jen
+týž den; druhý den ráno začíná načisto.
+
 ## Chytrý start
 
 Když nic nehraje a někdo zmáčkne Hrát, DJ vybere hudbu sám: podle času, dne
@@ -165,6 +178,8 @@ jukeboxu a restart chtějí PIN správce, který je na displeji na obrazovce Sí
 - **F-RESTART-01** V noci a po zapnutí Pi se hudba sama nerozehraje
 - **F-RESTART-03** Po restartu služby skladba pokračuje od místa, kde byla
 - **F-RESTART-02** Přání přežijí restart služby
+- **F-RESTART-11** Po vypnutí nebo výpadku proudu se týž den vrátí fronta i místo ve skladbě — a čeká na ▶
+- **F-TV-05** Obrazovka na telce se proti vypálení občas o kousek posune a v tichu ztlumí
 - **F-HLAS-05** Hlasitost si jukebox pamatuje i přes restart
 - **F-FRONTA-02** Dlouhé přání má rozpočet skladeb, pak pustí ostatní
 - **F-FRONTA-11** Kdo dlouho nic neslyšel a ozve se, jde hned na řadu
@@ -177,6 +192,9 @@ jukeboxu a restart chtějí PIN správce, který je na displeji na obrazovce Sí
 - **F-FRONTA-20** Oblíbené hrají dál napřeskáčku, dokud si někdo nepřeje něco jiného
 - **F-ZVUK-11** Vulgární skladby se samy do podkresu nedostanou
 - **F-FRONTA-21** Z alba jsou první 4 skladby přání, zbytek hraje dál jako podkres
+- **F-FRONTA-23** Skladby, které přeskočíš klikem do fronty, nezmizí — zahrají hned potom
+- **F-FRONTA-24** Klik do fronty nikdy neutne cizí přání — tvoje skladba pak hraje jako další
+- **F-ZVUK-27** V cizím přání posouvá skladbu jen jeho autor
 - **F-PRANI-20** Název, který není kapela, ale písnička, se zahraje jako písnička
 - **F-PRANI-24** Když na otázku DJe neodpovíš, vybere po chvíli sám a řekne to
 - **F-ZVUK-12** Nepřehratelná skladba se na týden vynechá

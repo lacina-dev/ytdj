@@ -259,6 +259,80 @@ class PiReplays(unittest.TestCase):
         self.assertIn("od Olympicu", reply)
         self.assertNotIn("Pouštím", reply)
 
+    def test_other_version_note_when_model_names_the_asked_artist(self):
+        """F-PRANI-07 celou cestou modelu: model vrátí skladbu od jmenovaného
+        interpreta, ten ji nemá → hraje existující verze s poctivou poznámkou."""
+        vagner = T("hv", "Karel Vágner, Stanislav Hložek, Petr Kotvald", "Holky z naší školky")
+
+        async def search(artist, title, strict=False):
+            if "olympic" in artist.lower():
+                return None if strict else T("jz", "Olympic", "Jasná zpráva")  # "aspoň něco od něj"
+            return vagner if "holky" in title.lower() else None
+
+        dj, player, _ = make(current=T("c", "Someone"))
+        dj.catalog.search_song = search
+        _, reply = run(go(dj, "pusť Holky z naší školky od Olympicu", decision(
+            action="play_next", requested=[{"artist": "Olympic", "title": "Holky z naší školky"}])))
+        self.assertEqual(player.current.id, "hv")
+        self.assertIn(f"Od Olympicu ji nemám — hraju verzi {vagner.artist}.", reply)
+        self.assertNotIn("Nenašel jsem", reply)  # našla se — žádné "katalog nabídl…"
+        # trvá na interpretovi → nenašel jsem, nic se nezmění
+        dj, player, _ = make(current=T("c", "Someone"))
+        dj.catalog.search_song = search
+        _, reply = run(go(dj, "pusť Holky z naší školky jen od Olympicu", decision(
+            action="play_next", requested=[{"artist": "Olympic", "title": "Holky z naší školky"}])))
+        self.assertEqual(player.current.id, "c")
+        self.assertIn("Nenašel jsem", reply)
+
+    def test_greatest_hits_of_an_artist_never_play_somebody_elses_song(self):
+        """Pi 6. 10. 16:35 "Zahraj nejvetsi pecky od Foo Fighters" → Pecka od jiné
+        kapely. Ať model rozhodne jakkoli rozumně, cizí "Pecka" se nezahraje."""
+        pecka = T("dbp", "Divokej Bill", "Pecka")
+        foo = [T(f"ff{i}", "Foo Fighters", t) for i, t in enumerate(
+            ["Everlong", "The Pretender", "Best of You", "My Hero", "Learn to Fly"])]
+        text = "Zahraj nejvetsi pecky od Foo Fighters"
+
+        def rig():
+            dj, player, _ = make(current=T("c", "Someone"))
+            asked = []
+
+            async def search(artist, title, strict=False):
+                asked.append((artist, title))
+                if not artist and title.lower().startswith("peck"):
+                    return pecka  # hledání jen podle názvu ji zná
+                return next((t for t in foo if artist.lower().startswith("foo")
+                             and t.title.lower() == title.lower()), None)
+
+            async def tracks(name, limit=50):
+                return list(foo) if name.lower() == "foo fighters" else []
+
+            dj.catalog.search_song, dj.catalog.artist_tracks = search, tracks
+            return dj, player, asked
+
+        # 1) model: režim interpreta (to, co má vrátit)
+        dj, player, asked = rig()
+        intent, reply = run(go(dj, text, decision(action="start_radio", focus_artists=["Foo Fighters"])))
+        self.assertEqual(intent.kind, "artist")
+        self.assertEqual(dj.focus, "Foo Fighters")
+        self.assertEqual(player.current.artist, "Foo Fighters")
+        self.assertTrue(all(t.artist == "Foo Fighters" for t in player.queue))
+        self.assertNotIn("ji nemám", reply)
+        self.assertNotIn(("", "pecky"), asked)  # vzor "X od Y" sám nic nehledá
+        # 2) model: pár jejich hitů jako vyžádané skladby
+        dj, player, _ = rig()
+        run(go(dj, text, decision(action="play_next", requested=[
+            {"artist": "Foo Fighters", "title": "Everlong"},
+            {"artist": "Foo Fighters", "title": "The Pretender"}])))
+        self.assertEqual([t.id for t in [player.current] + player.queue][:2], ["ff0", "ff1"])
+        # 3) model si název vymyslel ("Největší pecky"): nenašel jsem — ne Pecka
+        dj, player, _ = rig()
+        _, reply = run(go(dj, text, decision(action="play_next", requested=[
+            {"artist": "Foo Fighters", "title": "Největší pecky"}])))
+        self.assertEqual(player.current.id, "c")
+        self.assertNotIn("Divokej Bill", reply)
+        self.assertIn("Nenašel jsem", reply)
+        self.assertNotIn(pecka, player.queue)
+
     def test_named_artist_version_is_found_instead(self):
         vagner = T("hv", "Karel Vágner, Stanislav Hložek, Petr Kotvald", "Holky z naší školky")
         olympic = T("ho", "Olympic", "Holky z naší školky")

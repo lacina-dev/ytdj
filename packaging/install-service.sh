@@ -63,6 +63,24 @@ if [ "$panel" = yes ]; then
     fi
 fi
 
+# Obrazovka „právě hraje“ na telce přes HDMI — jen na Raspberry Pi s Pillow
+# a s framebufferem (/dev/fb0). YTDJ_TV=0 ji vynechá, YTDJ_TV=1 vynutí.
+# Systémová služba pod obyčejným uživatelem (skupina video), ne root. Do
+# config.txt se tu NESAHÁ: když telka při startu Pi neběží, viz
+# packaging/rpi/NOTES.md (volitelné hdmi_force_hotplug).
+tv=no
+case "${YTDJ_TV:-auto}" in
+    1) tv=yes ;;
+    auto) [[ "$model" == Raspberry\ Pi* ]] && [ -e /dev/fb0 ] \
+              && "$repo/.venv/bin/python" -c "import PIL" 2>/dev/null && tv=yes ;;
+esac
+if [ "$tv" = yes ]; then
+    sed -e "s|@INSTALL_DIR@|$repo|g" -e "s|@HOME@|$HOME|g" -e "s|@USER@|$USER|g" \
+        "$repo/packaging/ytdj-tv.service" |
+        sudo tee /etc/systemd/system/ytdj-tv.service > /dev/null
+    echo "unit:    /etc/systemd/system/ytdj-tv.service"
+fi
+
 # Sandbox Codexu: na Linuxu izoluje příkazy přes bubblewrap, bez něj read-only
 # sandbox neplatí a přání od kohokoli ze sítě jdou modelu bez izolace.
 if ! command -v bwrap > /dev/null && command -v apt-get > /dev/null; then
@@ -94,9 +112,15 @@ if [ "$panel" = yes ]; then
     sudo systemctl enable ytdj-panel.service
     sudo systemctl restart ytdj-panel.service
 fi
+if [ "$tv" = yes ]; then
+    sudo systemctl daemon-reload
+    sudo systemctl enable ytdj-tv.service
+    sudo systemctl restart ytdj-tv.service
+fi
 echo
 systemctl --user --no-pager --lines=0 status ytdj.service || true
 echo
 echo "log:     journalctl --user -u ytdj -f"
 [ "$panel" = yes ] && echo "panel:   journalctl -u ytdj-panel -f"
+[ "$tv" = yes ] && echo "telka:   journalctl -u ytdj-tv -f"
 echo "web:     http://127.0.0.1:8765"

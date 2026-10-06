@@ -47,7 +47,9 @@ class _NoStream(Exception):
 
 
 class Api:
-    def __init__(self, base_url: str) -> None:
+    def __init__(self, base_url: str, agent: str = "ytdj-panel") -> None:
+        # jak se klient serveru představí (obrazovka na telce není displej)
+        self.agent = agent
         parts = urlsplit(base_url if "//" in base_url else f"http://{base_url}")
         if parts.scheme not in ("http", ""):
             raise ValueError(f"podporuji jen http://, ne {parts.scheme}://")
@@ -66,7 +68,7 @@ class Api:
         conn = self.connection(timeout)
         try:
             data = json.dumps(body).encode() if body is not None else None
-            headers = {"User-Agent": "ytdj-panel", **({"Content-Type": "application/json"} if data else {})}
+            headers = {"User-Agent": self.agent, **({"Content-Type": "application/json"} if data else {})}
             conn.request(method, self.prefix + path, body=data, headers=headers)
             resp = conn.getresponse()
             raw = resp.read()
@@ -165,7 +167,7 @@ class StatusFeed(threading.Thread):
                 "GET",
                 self.api.prefix + "/api/events",
                 headers={"Accept": "text/event-stream", "Cache-Control": "no-cache",
-                         "User-Agent": "ytdj-panel"},
+                         "User-Agent": self.api.agent},
             )
             resp = conn.getresponse()
             ctype = resp.getheader("Content-Type", "")

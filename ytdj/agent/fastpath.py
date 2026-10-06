@@ -563,34 +563,72 @@ async def _scan(catalog, artist: str, title: str) -> Any:
 
 
 async def _find_song(catalog, parsed: SongParse, res: SongResult) -> SongResult:
+    """Přijme JEN jistotu: katalog potvrdí ten název OD JMENOVANÉHO interpreta.
+
+    Když ho jmenovaný interpret nemá, rychlá cesta končí (`artist_lacks_title`)
+    a rozhodne model — s celým textem přání a s podkladem z katalogu. Dřív tu
+    rychlá cesta sama dosadila "jinou verzi" od kohokoli: Pi 6. 10. 16:35
+    "Zahraj nejvetsi pecky od Foo Fighters" → vzor "X od Y" vzal "pecky" jako
+    název, Foo Fighters ho nemají, a zahrála se Pecka od jiné kapely (11
+    dotazů, 2,5 s, model se k tomu vůbec nedostal). Jestli slova před "od"
+    jsou název skladby, nebo popis výběru, je věc porozumění, ne vzoru; záměnu
+    interpreta (F-PRANI-07) proto dělá až ověření rozhodnutí modelu
+    (`enforce_requested`).
+
+    Dotazy: 1. kolo = přání doslova + obyčejné hledání + existuje ten
+    interpret? (3 dotazy naráz). Když interpret existuje a skladba se
+    nenašla, už jen jeho jméno z katalogu s tvary názvu (nejvýš 3 dotazy) a
+    konec. Tvary jména a profil se zkoušejí jen u interpreta, kterého katalog
+    pod napsaným jménem nezná.
+    """
     try:
         for artist, title in parsed.pairs:
-            queries = _queries(artist, title)
-            res.lookups += len(queries)
-            hit, scanned = await asyncio.gather(
-                _search_verified(catalog, artist, title, queries),
+            a_tok = _clean_words(artist)
+
+            async def known() -> Any:
+                try:
+                    return await catalog.find_artist(artist)
+                except Exception:
+                    return None
+
+            res.lookups += 3
+            hit, scanned, found = await asyncio.gather(
+                _search_verified(catalog, artist, title, [(artist, title)]),
                 _scan(catalog, artist, title),
+                known(),
             )
-            res.lookups += 1
             hit = hit or scanned
-            if hit is None:
-                # Přes profil: katalog dá 1. pád a celé jméno ("Nohavici" →
-                # Jaromír Nohavica); hledání skladeb samo příjmení neveme.
-                hit = await _via_profile(catalog, artist, title, res)
+            canons = [found.name] if found is not None and _artist_ok(a_tok, found.name) else []
+            if hit is None and not canons:
+                # skloněné jméno ("od Olympicu"): existuje interpret pod 1. pádem?
+                guesses = [g for g in variants(a_tok)[1:3] if g != " ".join(a_tok)]
+                res.lookups += len(guesses)
+                for f in await asyncio.gather(*(catalog.find_artist(g) for g in guesses),
+                                              return_exceptions=True):
+                    if f is not None and not isinstance(f, BaseException) \
+                            and _artist_ok(a_tok, f.name) and f.name not in canons:
+                        canons.append(f.name)  # "Olympicu" může být Olympic i Olympica
+            if hit is None and canons:
+                # interpret existuje: zbývá jen jeho jméno z katalogu a tvary názvu
+                titles = [title] + variants(_clean_words(title))[1:3 if len(canons) == 1 else 2]
+                more = [(c, t) for c in canons for t in titles if (c, t) != (artist, title)][:4]
+                if more:
+                    res.lookups += len(more)
+                    hit = await _search_verified(catalog, artist, title, more)
+                if hit is None:
+                    res.reason = f"artist_lacks_title:{' / '.join(canons)} — {title}"
+                    continue
+            elif hit is None:
+                # jméno katalog takhle nezná (skloněné, příjmení): jeho tvary a profil
+                queries = [q for q in _queries(artist, title) if q != (artist, title)]
+                res.lookups += len(queries)
+                hit = await _search_verified(catalog, artist, title, queries)
+                if hit is None:
+                    hit = await _via_profile(catalog, artist, title, res)
             if hit is not None:
                 res.track, res.artist, res.title, res.reason = hit, artist, title, ""
                 return res
             res.reason = f"no_strict_match:{artist} — {title}"
-        # Jmenovaný interpret ji nemá. Když posluchač netrval na něm a skladba
-        # zjevně existuje od někoho jiného, nejspíš si spletl interpreta.
-        if len(parsed.pairs) == 1 and not parsed.insist:
-            artist, title = parsed.pairs[0]
-            res.lookups += 2
-            other = await other_version(catalog, title)
-            if other is not None:
-                res.track, res.artist, res.title, res.reason = other, artist, title, ""
-                res.note = other_version_note(artist, other)
-                return res
     except Exception as exc:  # katalog umí selhat na čemkoli
         res.track = None
         res.reason = f"error:{type(exc).__name__}"
@@ -681,7 +719,14 @@ async def enforce_requested(
     parsed = parse_song(text)
     if not parsed or len(parsed.pairs) != 1:
         return ok, wrong, notes
+    if not any(ti for _a, ti in pairs):
+        # Model žádnou skladbu nejmenoval (interpret, nálada, album): slova
+        # před "od" tedy nebral jako název a vzor "X od Y" to za něj nerozhodne
+        # ("největší pecky od Foo Fighters" není píseň Pecka).
+        return ok, wrong, notes
     who, asked_title = parsed.pairs[0]
+    # název, jak ho řekl model — jen ten se smí hledat u jiných interpretů
+    model_title = next((ti for _a, ti in pairs if ti), "")
     from ..music.match import split_title
 
     good: list[Any] = []
@@ -709,12 +754,16 @@ async def enforce_requested(
             continue
         other = t if t is not None and title_strong(title, t.title) else None
         if other is None:
-            other = await other_version(catalog, title)
+            other = await other_version(catalog, title if t is not None else model_title)
         if other is not None:
             good.append(other)
             notes.append(other_version_note(who, other))
         else:
             wrong.append(f"„{title}“ od {who}")
+    if good and not ok and len([1 for _a, ti in pairs if ti]) == 1:
+        # jediná vyžádaná skladba se nakonec našla (u něj, nebo jiná verze
+        # s poznámkou) — "nenašel jsem …, katalog nabídl …" by teď lhalo
+        wrong = []
     return good, wrong, notes
 
 

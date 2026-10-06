@@ -186,10 +186,10 @@ class Rig:
         # testy identity posílají `client` samy.
         raw_submit = self.wq.submit
 
-        def submit(text, who="", source="web", play_next=False, client=None):
+        def submit(text, who="", source="web", play_next=False, client=None, **kw):
             if client is None and who:
                 client = {"id": "client-" + "".join(c for c in who.casefold() if c.isalnum())}
-            return raw_submit(text, who, source, play_next=play_next, client=client)
+            return raw_submit(text, who, source, play_next=play_next, client=client, **kw)
 
         self.wq.submit = submit  # type: ignore[method-assign]
         return self
@@ -600,12 +600,15 @@ class Queue(unittest.TestCase):
                 self.assertEqual({w.who for w in rig3.wq.active()}, {"Petr", "Jana"})
                 self.assertTrue(rig3.player._paused)
                 self.assertTrue(all(w.restored for w in rig3.wq.active()))
-            # po restartu Pi (jiné boot_id) hodiny bez RTC lžou → nic
+            # po zapnutí Pi (jiné boot_id) se přání obnoví taky, ale potichu —
+            # hudbu pustí až Hrát (podrobně tests/test_restore_cold.py)
             async with Rig() as rig4:
-                why = await rig4.wq.resume({**saved, "boot": "jiny-boot"},
-                                           now=datetime(2026, 9, 25, 10, 0))
-                self.assertEqual(why, "reboot")
-                self.assertEqual(rig4.wq.active(), [])
+                why = await rig4.wq.resume({**saved, "boot": "jiny-boot", "clock": False},
+                                           now=datetime(2026, 9, 25, 10, 0), synced=True)
+                self.assertEqual(why, "age_unknown")
+                await rig4.settle(0.2)
+                self.assertEqual({w.who for w in rig4.wq.active()}, {"Petr", "Jana"})
+                self.assertTrue(rig4.player._paused)
 
         run(go())
 
@@ -638,12 +641,15 @@ class Queue(unittest.TestCase):
                 self.assertNotIn(playing, rig2.fake.upcoming())
                 self.assertEqual(rig2.fake.ids().count(playing), 1)
                 self.assertTrue(any(k == "player.resume_track" for k, _ in rig2.events))
-            # v noci (hudba se sama nerozjede) se nenavazuje
+            # v noci se hudba sama nerozjede: skladba čeká pozastavená na svém
+            # místě a Hrát pokračuje tam, kde se přestalo
             async with Rig() as rig3:
                 rig3.player.playback_file = pb
                 await rig3.wq.resume(saved, now=datetime(2026, 9, 25, 23, 0))
                 await rig3.settle(0.2)
-                self.assertFalse(rig3.fake.loadfile_options)
+                self.assertTrue(rig3.player._paused)
+                self.assertEqual(list(rig3.fake.loadfile_options.values()), [{"start": "40.0"}])
+                self.assertEqual(rig3.fake.ids().count(playing), 1)
 
         run(go())
 

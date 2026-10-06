@@ -230,6 +230,9 @@ class App:
         chytrý rozjezd (C7) podle času, dne, kanceláře a historie — jako
         tah DJe, ne jako přání posluchače. Vrací "play" | "starting".
         """
+        # Po zapnutí Pi obnova ještě může čekat na seřízení hodin — kdo chce
+        # hrát, nečeká: obnoví se hned a pokračuje se tam, kde se přestalo.
+        await self.wishes.restore_now()
         st = await self.player.status()
         if st.current is not None or st.queue or self.wishes.has_requests():
             await self.player.toggle_pause(False)
@@ -697,6 +700,8 @@ async def start_app(cfg: Config, clock: StartClock | None = None,
     Obsluhy událostí se zaregistrují v App.run; do té doby v mpv nic nehraje.
     """
     player = MpvPlayer(cfg)
+    # místo ve skladbě i na SD kartu (vedle session.json): tmpfs vypnutí Pi nepřežije
+    player.playback_disk = DATA_DIR / "playback.json"
     started = asyncio.create_task(player.start(), name="ytdj-player-start")
     if clock is not None:
         clock.mark("player_call")

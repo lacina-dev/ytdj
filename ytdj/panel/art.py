@@ -84,11 +84,13 @@ class ArtCache:
         stop: threading.Event,
         fetch: Callable[[str, float], bytes] | None = None,
         url: str = URL,
+        tile: Callable[[bytes, int], Image.Image] | None = None,
     ) -> None:
         self.side = side
         self.on_ready = on_ready
         self.stop = stop
         self.fetch = fetch or _http_get
+        self.tile = tile or square_tile  # JPEG bytes → the tile (the TV screen crops differently)
         self.url = url
         self._tiles: OrderedDict[str, Image.Image] = OrderedDict()
         self._failed: dict[str, float] = {}
@@ -145,7 +147,7 @@ class ArtCache:
             try:
                 data = self.fetch(self.url.format(id=vid), TIMEOUT)
                 t1 = time.perf_counter()
-                tile = square_tile(data, self.side)
+                tile = self.tile(data, self.side)
                 t2 = time.perf_counter()
                 self.stats["fetched"] += 1
                 self.stats["fetch_ms"] += (t1 - t0) * 1000

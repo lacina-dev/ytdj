@@ -202,8 +202,8 @@ class FakeYtdj:
                 if b:
                     q["votes"] = b
             history = [
-                {"id": "l1", "artist": "Lucie", "title": "Amerika", "outcome": "finished"},
-                {"id": "k2", "artist": "Kabát", "title": "Pohoda", "outcome": "skipped"},
+                {"id": "lucieAmerik", "artist": "Lucie", "title": "Amerika", "outcome": "finished"},
+                {"id": "kabatPohoda", "artist": "Kabát", "title": "Pohoda", "outcome": "skipped"},
             ]
             for h in history:
                 b = self.brief(h)
@@ -511,12 +511,12 @@ class FakeYtdj:
         put("song", holky, "web-jana0001", "Jana", 1, "Olympic", "Holky z naší školky", "o1", 3600)
         put("song", holky, "web-karel001", "Karel", 1, "Olympic", "Holky z naší školky", "o1", 1800)
         pohoda = self.song_key("Kabát", "Pohoda")
-        put("song", pohoda, "web-jana0001", "Jana", -1, "Kabát", "Pohoda", "k2", 90000)
-        put("song", pohoda, "web-karel001", "Karel", -1, "Kabát", "Pohoda", "k2", 7200)
+        put("song", pohoda, "web-jana0001", "Jana", -1, "Kabát", "Pohoda", "kabatPohoda", 90000)
+        put("song", pohoda, "web-karel001", "Karel", -1, "Kabát", "Pohoda", "kabatPohoda", 7200)
         put("artist", "calm trio", "web-karel001", "Karel", -1, "Calm Trio", ago=600)
         put("artist", "olympic", "web-jana0001", "Jana", 1, "Olympic", ago=2400)  # oblíbený interpret
         put("song", self.song_key("Lucie", "Amerika"), "web-jana0001", "Jana", -1, "Lucie", "Amerika",
-            "l1", 300)
+            "lucieAmerik", 300)
         # Karel's playlist in favourites: his 👍 carry the source
         put("song", self.song_key("Mig 21", "Snadné je žít"), "web-karel001", "Karel", 1, "Mig 21",
             "Snadné je žít", "m1", 5400)
@@ -560,7 +560,66 @@ class FakeYtdj:
                 self.playing_req = None
                 self._next()
 
+    HISTORY = {"lucieAmerik": ("Lucie", "Amerika"), "kabatPohoda": ("Kabát", "Pohoda")}
+
+    def replay(self, data: dict) -> tuple[int, dict]:
+        """„Zahrát znovu" from Odehráno — like the real server: a wish for that track."""
+        vid = str(data.get("replay") or "")
+        if vid not in self.HISTORY:
+            return 404, {"error": "Tahle skladba už v Odehráno není."}
+        artist, title = self.HISTORY[vid]
+        with self.lock:
+            self.prompts.append(dict(data))
+            if vid == "kabatPohoda" and self.votes.get(("song", self.song_key(artist, title))):
+                return 409, {"error": "Tohle znovu nezařadím — vyřazená hlasováním — Jana, Karel."}
+            cid = str(data.get("client") or "")
+            who = self.nicks.get(cid) or str(data.get("who") or "").strip() or "host"
+            r = self.add_request(f"Znovu: {artist} — {title}", who, "web", state="queued",
+                                 reply=f"Zařadil jsem: {artist} — {title}.")
+            r["cid"] = cid
+            r["track"] = {"id": vid, "title": title, "artist": artist, "album": None, "duration": 200}
+            return 202, {"id": r["id"], "token": r["token"], "who": who, "state": r["state"],
+                         "request": self._public(r), "reply": ""}
+
+    def jump(self, data: dict) -> tuple[int, dict]:
+        """Klik do fronty — like the real server: only when nobody is jumped."""
+        vid, cid = str(data.get("video_id") or ""), str(data.get("client") or "")
+        queued = self._queued()
+        mine = lambda r: bool(cid) and r.get("cid") == cid  # noqa: E731
+        for i, r in enumerate(queued):
+            if not mine(r):
+                if r["track"]["id"] == vid:
+                    return 403, {"error": f"Tohle je přání od {r['who']} — dřív si ho může pustit jen {r['who']}."}
+                break
+            if r["track"]["id"] == vid:
+                if self.playing_req is not None and not mine(self.playing_req):
+                    r["play_next"] = True
+                    return 200, {"ok": True, "mode": "next", "message":
+                                 f"Teď hraje, co si přeje {self.playing_req['who']} — to se nepřerušuje. "
+                                 f"„{r['track']['title']}“ zahraje hned potom."}
+                if self.playing_req is not None:
+                    self.playing_req["state"], self.playing_req["done_at"] = "done", time.time()
+                self.playing_req, r["state"] = r, "playing"
+                self.pos, self.pos_at = 0.0, time.monotonic()
+                return 200, {"ok": True, "mode": "now", "message": "Hraje hned."}
+        other = next((r for r in queued if not mine(r)), None)
+        if other is not None:
+            return 403, {"error": f"Nejdřív dohraje přání od {other['who']}."}
+        for i in (1, 2):
+            if TRACKS[(self.index + i) % len(TRACKS)]["id"] == vid:
+                if self.playing_req is not None and not mine(self.playing_req):
+                    return 200, {"ok": True, "mode": "next", "message": "Zahraje hned potom."}
+                if self.playing_req is not None:
+                    self.playing_req["state"], self.playing_req["done_at"] = "done", time.time()
+                    self.playing_req = None
+                self.index = (self.index + i) % len(TRACKS)
+                self.pos, self.pos_at = 0.0, time.monotonic()
+                return 200, {"ok": True, "mode": "now", "message": "Hraje hned."}
+        return 409, {"error": "Tahle skladba už ve frontě není."}
+
     def prompt(self, data: dict) -> tuple[int, dict]:
+        if data.get("replay") is not None:
+            return self.replay(data)
         text = str(data.get("text") or "").strip()
         if not text:
             return 400, {"error": "Chybí text požadavku."}
@@ -637,6 +696,20 @@ class FakeYtdj:
                 if not 0 <= int(value) <= 130:
                     return 400, {"error": "Hlasitost musí být v rozsahu 0–100."}
                 self.volume = min(100, int(value))  # strop 100 jako skutečný server
+            elif action == "seek":
+                # like the real server: absolute, clamped, never in somebody else's wish
+                cid = str(data.get("client") or "")
+                r = self.playing_req
+                if r is not None and not (cid and r.get("cid") == cid):
+                    return 403, {"error": f"Teď hraje, co si přeje {r['who']} — v cizím přání se neposouvá."}
+                dur = float(self._current()["duration"])
+                delta = data.get("delta")
+                want = float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) \
+                    else self._position() + float(delta or 0)
+                self.pos, self.pos_at = max(0.0, min(dur - 3.0, want)), time.monotonic()
+                return 200, {"ok": True, "position": self.pos, "duration": dur}
+            elif action == "jump":
+                return self.jump(data)
             else:
                 return 400, {"error": f"Neznámý povel: {action!r}"}
         return 200, {"ok": True}

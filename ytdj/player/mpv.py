@@ -199,6 +199,12 @@ def runtime_file(name: str) -> Path | None:
 PLAYBACK_EVERY = 5.0  # s — jak často se zapisuje (tmpfs, pár set bajtů)
 RESUME_REWIND = 2.0  # s — navázat kousek před místem, kde to skončilo
 RESUME_TAIL = 15.0  # s — skladbu, které zbývá méně, už nenavazovat
+# Tatáž pozice na SD kartu, ať přežije i vypnutí Pi (tmpfs ho nepřežije): hned
+# při změně skladby nebo pauzy, jinak jen jednou za DISK_EVERY — na kartu jde
+# pár set bajtů ~4× za minutu, a jen dokud se hraje.
+DISK_EVERY = 15.0
+DISK_SLOW_MS = 250  # pomalejší zápis na kartu se zaloguje hned
+DISK_REPORT = 40  # jinak souhrn po tolika zápisech (≈ 10 min hraní)
 
 # mpv nad 130 stejně nepustí a ručně zapsaná hodnota v configu by ho jinak
 # odmítla nastartovat
@@ -225,6 +231,15 @@ OUTAGE_MAX_DELAY = 60.0  # …nejvýš po minutě
 OUTAGE_MAX_RESUMES = 2  # po tolika obnoveních, kdy tatáž skladba zase selže, se přeskočí
 SLOW_HANDLER = 0.15  # s — handler události, který déle blokuje event loop, do logu
 SMART_LOCK_WAIT = 0.3  # s — déle na zámek playlistu chytré Další nečeká
+# Posun ve skladbě (F-ZVUK-26): do posledních vteřin se neskáče — konec skladby
+# hraje ze zásoby (AUDIO_BUFFER) a mezitím se otevírá další; skok až tam by
+# zásobu vyprázdnil těsně před koncem a výstup by běžel naprázdno (xruny).
+# Zásoba + 1 s: skok přesně na "délka − zásoba" skončí hned koncem souboru
+# (měřeno na mpv 0.37: konec ohlášen do 0,1 s po skoku), s vteřinou navíc
+# skladba po skoku ještě normálně hraje a konec proběhne jako vždy.
+SEEK_END_GUARD = AUDIO_BUFFER + 1.0
+SEEK_MIN_DURATION = 2 * SEEK_END_GUARD  # kratší (nebo neznámá délka) = neposouvá se
+SEEK_SETTLE = 1.5  # s — po posunu mpv chvíli plní zásobu; není to výpadek ani "načítám"
 URGENT_NEXT = 2  # kolik nejbližších skladeb se řeší i během tahu Codexu (hold)
 
 
@@ -398,6 +413,11 @@ class MpvPlayer(Player):
         self.playback_file: Path | None = None
         self._playback_task: asyncio.Task | None = None
         self._playback_sig: tuple | None = None
+        # tatáž pozice na SD kartě (přežije vypnutí Pi) — nastaví aplikace
+        self.playback_disk: Path | None = None
+        self._disk_sig: tuple | None = None
+        self._disk_at = 0.0
+        self._disk_ms: list[int] = []
         # ---- srovnání hlasitosti skladeb ----
         self._gain_script = False  # skript ytdj_gain.lua v mpv běží
         self._gain_sent = self._gain_target()  # cíl, který zná resolver (None = vypnuto)
@@ -405,6 +425,8 @@ class MpvPlayer(Player):
         self._gain_retried: set[int] = set()  # položky už jednou puštěné znovu bez filtru
         self._retry_why: dict[int, str] = {}  # položka → proč se načítá znovu
         self._gain_unsent: tuple | None = None  # cíl, který resolver zatím nepřevzal
+        # poslední posun ve skladbě: {"entry", "to", "t0"} — stav hned ukáže novou pozici
+        self._seek: dict[str, Any] | None = None
 
     # ---------- lifecycle ----------
 
@@ -534,7 +556,7 @@ class MpvPlayer(Player):
 
         self.sampler = SystemSampler(self._telemetry_context, self._telemetry_pids)
         self.sampler.start()
-        if self.playback_file is not None:
+        if self.playback_file is not None or self.playback_disk is not None:
             self._playback_task = asyncio.create_task(self._playback_loop())
 
     async def _connect_mpv(self, t0: float, wall0: float) -> dict[str, Any]:
@@ -609,6 +631,9 @@ class MpvPlayer(Player):
         self._stopping = True
         self._flush_volume()
         self._save_playback()  # poslední pozice před restartem (tmpfs, okamžitě)
+        job = self._disk_job(force=True)  # a na kartu — vypnutí Pi tmpfs smaže
+        if job is not None:
+            self._write_disk(*job)
         if self.sampler:
             with suppress(Exception):
                 await self.sampler.stop()
@@ -1069,6 +1094,7 @@ class MpvPlayer(Player):
             self._req = None
         if req and now - req["t0"] > REQUEST_MAX_AGE:
             req = None
+        self._seek = None  # posun patřil předchozí skladbě
         self._load = {
             "entry": entry_id, "vid": self._entries.get(entry_id), "t_start": now,
             "t_loaded": None, "t_play": None, "req": req, "paused": self._paused,
@@ -1103,8 +1129,8 @@ class MpvPlayer(Player):
                     load["stall_ms"] += ms
                     telemetry.event("track.stall", video_id=load["vid"], stall_ms=ms,
                                     pos_s=round(self._time_pos, 1))
-        elif load["t_play"] is not None and not self._paused:
-            load["stall_t0"] = now
+        elif load["t_play"] is not None and not self._paused and not self._seeking(now):
+            load["stall_t0"] = now  # (plnění zásoby po posunu není výpadek streamu)
 
     def _t_emit_start(self, load: dict[str, Any]) -> None:
         try:
@@ -1744,6 +1770,106 @@ class MpvPlayer(Player):
         self._volume = volume
         self._remember_volume(volume)
 
+    # ---------- posun ve skladbě a skok na skladbu z fronty ----------
+
+    def _seeking(self, now: float | None = None) -> bool:
+        """Právě proběhl posun — mpv chvíli plní zásobu od nového místa."""
+        s = self._seek
+        return bool(s) and (time.monotonic() if now is None else now) - s["t0"] < SEEK_SETTLE
+
+    async def seek(self, position: float | None = None,
+                   delta: float | None = None) -> dict[str, Any] | None:
+        """Posune hrající skladbu na `position` (s od začátku), nebo o `delta` s.
+
+        Vždy absolutní skok na místo oříznuté do 0 … délka − SEEK_END_GUARD.
+        Vrací {"video_id", "from", "to", "duration"}, nebo None, když posouvat
+        nejde: nic nehraje, skladba se teprve načítá, dohrává ze zásoby
+        (mpv už je u další), stojí se kvůli výpadku, nebo proud nemá délku.
+
+        Pro mpv je to jen `seek` v téže položce: žádný konec skladby, takže
+        ani přeskočení, historie, hlasy nebo rádio — a playlist se nemění.
+        """
+        if self._outage is not None or self._tail_active():
+            return None
+        entry, vid, load = self._cur_entry, self._current_id, self._load
+        if entry is None or vid is None or self._entries.get(entry) != vid:
+            return None  # mpv je mezi skladbami
+        if load is None or load.get("entry") != entry or load.get("t_play") is None:
+            return None  # ještě nehraje (načítá se)
+        duration = await self._get("duration")
+        now_pos = await self._get("time-pos")
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)) \
+                or duration < SEEK_MIN_DURATION:
+            return None  # živý proud / neznámá délka
+        if isinstance(now_pos, bool) or not isinstance(now_pos, (int, float)):
+            now_pos = self._time_pos
+        try:
+            want = float(position) if position is not None else float(now_pos) + float(delta or 0)
+        except (TypeError, ValueError):
+            return None
+        if want != want:  # NaN
+            return None
+        to = round(max(0.0, min(float(duration) - SEEK_END_GUARD, want)), 2)
+        if self._cur_entry != entry:
+            return None  # skladba mezitím skončila — další se neposouvá
+        res = await self._command("seek", to, "absolute")
+        if not _ok(res):
+            return None
+        self._seek = {"entry": entry, "to": to, "t0": time.monotonic()}
+        self._time_pos = to
+        if load.get("stall_t0") is not None:
+            load["stall_t0"] = None
+        return {"video_id": vid, "from": round(float(now_pos), 1), "to": to,
+                "duration": round(float(duration), 1)}
+
+    def ready_now(self, video_id: str) -> bool:
+        """Dostane mpv tuhle skladbu hned (z cache resolveru), bez ticha?
+
+        Bez resolveru (mpv jede přes yt-dlp samo) se dopředu nechystá nic —
+        pak není na co čekat."""
+        return self._resolver is None or video_id in self._res_ready
+
+    async def play_from_queue(self, video_id: str, cut: bool) -> str | None:
+        """Skladbu z fronty dát hned za hrající; `cut` = a hned na ni přejít.
+
+        Skladby, které stály před ní, zůstanou ve frontě hned za ní ve svém
+        pořadí (jen se posunou o jedno místo) — nic se neodebírá ani
+        nepřeskakuje. Přechod je `skip(by_user=False)`: hrající skladbu
+        odsunula volba z fronty, ne Další ("replaced", nepočítá se jako
+        přeskočení). Vrací "now" (hraje), "next" (hraje jako další), nebo
+        None, když skladba ve frontě není / nic nehraje / je výpadek.
+        """
+        if self._outage is not None:
+            return None
+        async with self._mutex:
+            await self._sync()
+            cur = self._cur_index()
+            if cur < 0:
+                return None
+            tail = self._tail_active()
+            if tail and self._playlist[cur][1] == video_id and video_id != self._current_id:
+                # dohrává konec předchozí a tahle už nabíhá: jen utnout doznívání
+                if cut:
+                    await self.skip(by_user=False)
+                return "now" if cut else "next"
+            src = next((j for j in range(cur + 1, len(self._playlist))
+                        if self._playlist[j][1] == video_id), -1)
+            if src < 0:
+                return None
+            if src != cur + 1:
+                res = await self._command("playlist-move", src, cur + 1)
+                await self._sync()
+                if not _ok(res) or self._cur_index() < 0 \
+                        or self.upcoming_ids()[:1] != [video_id]:
+                    return None
+            if tail or not cut:
+                # dohrávající konec skladby: mpv už hraje další — ta se neutíná,
+                # jinak by z fronty zmizela skladba, kterou nikdo neslyšel
+                self._schedule_prefetch(now=True)
+                return "next"
+            await self.skip(by_user=False)
+        return "now"
+
     # ---------- streamy dopředu ----------
 
     def _ytdl_shim(self) -> str:
@@ -2074,13 +2200,67 @@ class MpvPlayer(Player):
         while True:
             await asyncio.sleep(PLAYBACK_EVERY)
             self._save_playback()
+            job = self._disk_job()
+            if job is not None:
+                # SD karta je pomalá — zápis ve vlákně, smyčka nečeká
+                await asyncio.to_thread(self._write_disk, *job)
 
-    def saved_playback(self, max_age: float) -> tuple[Track, float] | None:
-        """Co hrálo před restartem služby a kde: (skladba, pozice), nebo None.
+    def _disk_job(self, force: bool = False) -> tuple[Path, dict | None, tuple | None] | None:
+        """Co teď zapsat na kartu (jen paměť): (cesta, stav, podpis), nebo None.
 
-        Jen čerstvé (≤ max_age), ne pauza a ne skladba těsně před koncem.
+        Změna skladby nebo pauzy hned; samotná pozice nejvýš jednou za
+        DISK_EVERY. Když nic nehraje, soubor se jednou smaže (ať se po
+        zapnutí nenaváže skladba, která dávno dohrála).
         """
-        path = self.playback_file
+        path = self.playback_disk
+        if path is None or self._tail_active():
+            return None
+        data = self._playback_state()
+        if data is None:
+            return (path, None, None) if self._disk_sig is not None else None
+        sig = (data["track"]["id"], int(data["pos"]), data["paused"])
+        old = self._disk_sig
+        if sig == old:
+            return None
+        switched = old is None or (sig[0], sig[2]) != (old[0], old[2])
+        if not (force or switched or time.monotonic() - self._disk_at >= DISK_EVERY):
+            return None
+        return path, data, sig
+
+    def _write_disk(self, path: Path, data: dict | None, sig: tuple | None) -> None:
+        """Zápis na SD kartu (volat ve vlákně): dočasný soubor a přejmenování,
+        takže výpadek proudu nenechá půl souboru. Měří se, jak dlouho trval."""
+        t0 = time.monotonic()
+        try:
+            if data is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(data, ensure_ascii=False))
+                tmp.replace(path)
+        except OSError:
+            log.debug("pozici se na kartu nepodařilo uložit", exc_info=True)
+            return
+        self._disk_sig, self._disk_at = sig, time.monotonic()
+        ms = int((time.monotonic() - t0) * 1000)
+        self._disk_ms.append(ms)
+        if ms >= DISK_SLOW_MS or len(self._disk_ms) >= DISK_REPORT:
+            took, self._disk_ms = self._disk_ms, []
+            telemetry.event("player.snapshot_disk", n=len(took), max_ms=max(took),
+                            avg_ms=round(sum(took) / len(took), 1),
+                            slow=ms >= DISK_SLOW_MS or None)
+
+    def saved_playback(self, max_age: float | None, paused_ok: bool = False,
+                       disk: bool = False) -> tuple[Track, float] | None:
+        """Co hrálo před restartem a kde: (skladba, pozice), nebo None.
+
+        Jen čerstvé (≤ max_age; None = stáří se nesoudí — po zapnutí Pi se
+        hodinám bez baterie nevěří) a ne skladba těsně před koncem. Pauza jen
+        s `paused_ok` (skladba se pak načte pozastavená). `disk` = kopie
+        z SD karty: tmpfs vypnutí Pi nepřežije.
+        """
+        path = self.playback_disk if disk or self.playback_file is None else self.playback_file
         if path is None:
             return None
         try:
@@ -2097,7 +2277,9 @@ class MpvPlayer(Player):
             return None
         if not re.fullmatch(r"[\w-]{11}", track.id):
             return None
-        if age < 0 or age > max_age or data.get("paused"):
+        if max_age is not None and (age < 0 or age > max_age):
+            return None
+        if data.get("paused") and not paused_ok:
             return None
         if track.duration and pos > track.duration - RESUME_TAIL:
             return None
@@ -2304,6 +2486,14 @@ class MpvPlayer(Player):
             nxt = self._tracks.get(cur_vid or "")
             if nxt is not None and cur_vid != self._current_id:
                 upcoming = [nxt] + upcoming
+        seek = self._seek
+        if tail is None and seek is not None and self._seeking() \
+                and seek["entry"] == self._cur_entry:
+            # hned po posunu: mpv ještě může hlásit staré místo (hledá ve
+            # streamu) a plní zásobu — navenek platí místo, kam se skočilo
+            ran = 0.0 if (self._paused or idle) else time.monotonic() - seek["t0"]
+            if abs(position - seek["to"]) > ran + 1.0:
+                position = seek["to"]
         return PlayerStatus(
             buffering=idle and not self._paused and current is not None,
             playing=count > 0 and not self._paused and self._outage is None,

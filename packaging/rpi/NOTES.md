@@ -69,6 +69,32 @@ dependencies on the Pi. `canvas` downloads a linux-arm64 prebuild there:
   `wpctl set-default`: a pinned default overrides the priorities.
 - Swap is already zram (`/dev/zram0`, about 900 MB) on this image.
 
+## TV over HDMI („právě hraje“, `ytdj-tv.service`)
+
+`install-service.sh` installs `ytdj-tv.service` on a Pi that has `/dev/fb0` and Pillow
+(`YTDJ_TV=0` skips it). It is a system unit running as the ordinary user plus group `video`,
+draws to the firmware framebuffer and only reads `http://127.0.0.1:8765`. It needs no GPU
+driver and no extra GPU memory: `gpu_mem=16` and the commented-out `vc4-kms-v3d` stay as
+`slim.sh` left them. After a deploy restart it by hand (`sudo systemctl restart ytdj-tv`);
+`deploy.sh` restarts only ytdj.
+
+- The firmware sizes the framebuffer once, at boot. With a TV that is on at boot it is the TV's
+  own mode; without one it is 720×480 (composite) and a TV switched on later may show nothing.
+  If the TV is often off at boot, the owner can pin HDMI in `/boot/firmware/config.txt`
+  (optional, by hand, needs a reboot — the code never edits it):
+
+      hdmi_force_hotplug=1
+      hdmi_group=1          # CEA (TVs)
+      hdmi_mode=4           # 1280x720 60 Hz; 16 = 1920x1080 60 Hz
+
+- The text console (`console=tty1`, `getty@tty1`) shares the framebuffer: a login prompt or a
+  kernel message can scribble over the picture until the next full redraw (every ten minutes at
+  the latest, or on the next track). If that shows, `sudo systemctl disable --now getty@tty1`
+  and remove `console=tty1` from `/boot/firmware/cmdline.txt` (again by hand).
+- Sound stays on the USB soundbar: HDMI has the lowest WirePlumber priority (see above).
+- Logs: `journalctl -u ytdj-tv`, events in `/var/log/ytdj-tv/events.jsonl` (`tv.screen` says the
+  size and pixel format it found, `tv.no_screen` why it idles, `tv.paint` what drawing costs).
+
 ## Přihlášení (vlastní pro Pi, nezávislé na notebooku)
 
 Pi má vlastní přihlášení ke Codexu i k YouTube — nic nesdílí s notebookem,

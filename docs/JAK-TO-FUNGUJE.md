@@ -57,6 +57,10 @@ Když si DJ ani tak není jistý (stejné jméno je kapela i známá písnička)
 se: u tvého přání se objeví dvě tři tlačítka a stačí ťuknout. Ptá se jen
 výjimečně; bez odpovědi do půl minuty vybere sám a řekne, co vzal.
 
+Chceš se na hudbu i dívat? Řekni si o klip nebo o video („pusť klip k …",
+„ukaž mi na telce …") — DJ vybere oficiální klipy a zapne Klipy na
+telce. Bez takového přání hraje vždy písnička, ne klip.
+
 Co se nenajde, DJ nezahraje a přizná to. Potvrzení („Zařadil jsem: …") skládá
 aplikace z toho, co se opravdu zařadilo, takže DJ nemůže slíbit něco, co
 neumí.
@@ -209,6 +213,7 @@ jukeboxu a restart chtějí PIN správce, který je na displeji na obrazovce Sí
 - **F-ZVUK-27** V cizím přání posouvá skladbu jen jeho autor
 - **F-PRANI-20** Název, který není kapela, ale písnička, se zahraje jako písnička
 - **F-PRANI-24** Když na otázku DJe neodpovíš, vybere po chvíli sám a řekne to
+- **F-PRANI-32** Přání klipu samo zapne Klipy na telce
 - **F-ZVUK-12** Nepřehratelná skladba se na týden vynechá
 - **F-ZVUK-15** Automatika nikdy sama nepřeskočí skladbu bez důvodu
 - **F-ZVUK-24** Všechny skladby hrají stejně hlasitě, tichá i hlasitá nahrávka

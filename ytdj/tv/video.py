@@ -42,7 +42,14 @@ NUDGE_UP_TO = 1.0  # s — small drift: ±5 % speed, invisible on a muted pictur
 CHASE_UP_TO = 6.0  # s — bigger drift: ±25 % until it is caught, no re-seek
 NUDGE, CHASE = 0.05, 0.25
 SEEK_LEAD = 0.5  # s — a seek lands a little ahead: seeking itself takes time
-START_LEAD = 2.0  # s — the player needs about this long to show its first frame
+# The player is started paused a little AHEAD of the music and let go when the
+# music gets there — so the picture starts in step instead of starting late and
+# jumping (first clip on the Pi, 6 Oct: first frame after 11 s, then a 9 s jump).
+# How far ahead is learnt from how long the start really takes.
+START_LEAD = 6.0  # s — first guess; then it follows the measured start-up
+LEAD_MIN, LEAD_MAX = 2.0, 15.0
+LEAD_SPARE = 0.7  # s on top of the measured start-up
+DRIFT_REPORT = 60.0  # s — how often the worst drift goes to the log
 SEEK_EVERY = 5.0  # s — at most one re-seek in this time (no seek storms)
 SYNC_EVERY = 2.0  # s between looks at the drift
 CHECK_EVERY = 5.0  # s between looks at temperature, memory, dropped frames
@@ -232,7 +239,10 @@ def player_args(url: str, sock: str, size: tuple[int, int] | None, start: float,
         "--osc=no", "--osd-level=0", "--input-default-bindings=no", "--input-vo-keyboard=no",
         "--vo=gpu", "--gpu-context=drm", "--hwdec=v4l2m2m",
         "--drm-draw-plane=overlay", "--drm-drmprime-video-plane=primary",
-        "--keep-open=no", "--idle=no", "--hr-seek=no", "--cache=yes",
+        "--keep-open=no", "--idle=no", "--cache=yes",
+        # a muted, expendable picture: start showing at once, keep little ahead
+        "--cache-pause=no", "--cache-secs=6", "--demuxer-readahead-secs=3",
+        "--demuxer-lavf-analyzeduration=0.5", "--network-timeout=10",
         "--demuxer-max-bytes=24MiB", "--demuxer-max-back-bytes=4MiB",
         "--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_delay_max=5",
         f"--input-ipc-server={sock}", f"--start={max(0.0, start):.2f}",
@@ -312,6 +322,9 @@ class Session:
         self.proc = popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.ipc: Ipc | None = None
         self.started_at = time.monotonic()
+        # where the time to the first frame goes (ms from the start), for the log
+        self.ipc_ms: int | None = None  # the player is up and talks
+        self.open_ms: int | None = None  # the stream is open (format known)
         self.showing = False
         self.speed = 1.0
         self.paused = paused
@@ -329,6 +342,8 @@ class Session:
                 self.ipc = Ipc(self.sock_path)
             except OSError:
                 return False
+            if self.ipc_ms is None:
+                self.ipc_ms = int((time.monotonic() - self.started_at) * 1000)
         return True
 
     def position(self) -> float | None:
@@ -336,6 +351,8 @@ class Session:
         if not self._connect():
             return None
         try:
+            if self.open_ms is None and self.ipc.get("file-format"):
+                self.open_ms = int((time.monotonic() - self.started_at) * 1000)
             pos = self.ipc.get("time-pos")
         except OSError:
             self.ipc = None
@@ -344,6 +361,15 @@ class Session:
             self.showing = True
             return float(pos)
         return None
+
+    def hwdec(self) -> str:
+        """Which hardware decoder really decodes ("" / "no" = the CPU does)."""
+        if self.ipc is None:
+            return ""
+        try:
+            return str(self.ipc.get("hwdec-current") or "")
+        except OSError:
+            return ""
 
     def dropped(self) -> int | None:
         if self.ipc is None:
@@ -355,6 +381,8 @@ class Session:
         return int(a or 0) + int(b or 0) if isinstance(a, int) or isinstance(b, int) else None
 
     def set_pause(self, paused: bool) -> None:
+        if not self._connect():
+            return
         if self.ipc is not None and paused != self.paused:
             try:
                 self.ipc.set("pause", bool(paused))
@@ -440,6 +468,13 @@ class Director:
     can: Callable[[], tuple[bool, str]] = capability
     readings: Callable[[], Readings] = lambda: Readings(read_temp(), read_mem_avail(), read_throttled())
     start_session: Callable[..., Any] = Session
+    # A picture decoded by the CPU is stopped at once (software decoding and
+    # scaling took the Pi to 84 °C and throttling); off only for tests without
+    # a hardware decoder.
+    require_hwdec: bool = True
+    # the last moment before the held picture is let go is waited out right here
+    # (at most 1.5 s, on the screen's own thread, which draws nothing meanwhile)
+    sleep: Callable[[float], None] = time.sleep
     clock: Callable[[], float] = time.monotonic
     emit: Callable[..., None] = lambda kind, **f: None
     status_file: Path | None = STATUS_FILE
@@ -455,6 +490,13 @@ class Director:
     _status_at: float = float("-inf")
     _refused: str = ""  # a clip we already gave up on (no stream file) — don't retry every tick
     last_drift: float = 0.0
+    lead: float = START_LEAD  # how far ahead of the music the player is started
+    _hold: float | None = None  # the music position at which the held picture is let go
+    _synced: bool = False
+    _drift_max: float = 0.0
+    _drift_n: int = 0
+    _seeks: int = 0
+    _drift_at: float = float("-inf")
 
     def capable(self) -> tuple[bool, str]:
         now = self.clock()
@@ -479,10 +521,26 @@ class Director:
         if s is None:
             return
         was = self.mode
+        self._drift_report(s, final=True)
         s.stop()
         self.mode = "screen"
+        self._hold = None
         self.emit("tv.video_stop", video_id=s.vid, reason=why, shown=was == "video",
                   ran_s=int(self.clock() - s.started_at) if hasattr(s, "started_at") else None)
+
+    def _drift_report(self, s: Any, final: bool = False) -> None:
+        """The worst drift since the last report — to judge the ±150 ms target from data."""
+        now = self.clock()
+        if self._drift_n and (final or now - self._drift_at >= DRIFT_REPORT):
+            self.emit("tv.video_sync", video_id=s.vid, max_ms=int(self._drift_max * 1000),
+                      n=self._drift_n, seeks=self._seeks or None, speed=getattr(s, "speed", None))
+            self._drift_max, self._drift_n, self._seeks, self._drift_at = 0.0, 0, 0, now
+
+    def _release(self, s: Any, paused: bool) -> None:
+        """The music reached the held picture: let it run."""
+        if self.session is s and self._hold is not None:
+            self._hold = None
+            s.set_pause(paused)
 
     def step(self, want: Want) -> str:
         """Advance one tick; returns the mode ("video" = the screen must not draw)."""
@@ -517,15 +575,46 @@ class Director:
                 s = None
         # 2. look after what runs
         if s is not None:
-            s.set_pause(want.paused)
             pos = s.position()
             if s.showing and self.mode != "video":
                 self.mode = "video"
                 r = self.readings()
                 r.xruns, r.dropped = want.xruns, s.dropped()
                 self.guard.started(r)
-                self.emit("tv.video_start", video_id=s.vid, startup_ms=int((now - s.started_at) * 1000))
-            if pos is not None and not want.paused and now - self._sync_at >= SYNC_EVERY:
+                startup = now - s.started_at
+                late = max(0.0, want.position - self._hold) if self._hold is not None else 0.0
+                self.emit("tv.video_start", video_id=s.vid, startup_ms=int(startup * 1000),
+                          ipc_ms=getattr(s, "ipc_ms", None), open_ms=getattr(s, "open_ms", None),
+                          lead_ms=int(self.lead * 1000), late_ms=int(late * 1000))
+                hw = s.hwdec() if hasattr(s, "hwdec") else "?"
+                if self.require_hwdec and hw in ("", "no"):
+                    self.guard.trip("obraz by dekódoval procesor")
+                    self.emit("tv.video_guard", video_id=s.vid, reason="obraz by dekódoval procesor",
+                              cooldown_s=int(self.guard.blocked_until - now))
+                    self._stop("no_hwdec")
+                    self._refused = s.vid
+                    self.blocked = self.guard.reason
+                    self._report(can, why_not)
+                    return self.mode
+                # next time start as far ahead as the start really takes
+                self.lead = min(LEAD_MAX, max(LEAD_MIN, 0.5 * self.lead + 0.5 * (startup + LEAD_SPARE)))
+                self._synced, self._drift_at = False, now
+                self._drift_max, self._drift_n, self._seeks = 0.0, 0, 0
+            if self._hold is not None:
+                # started paused ahead of the music: hold the first frame until
+                # the music gets there, then let go exactly on time
+                left = self._hold - want.position
+                if not s.showing or want.paused:
+                    pass
+                elif left <= 1.5:
+                    if left > 0.05:
+                        self.sleep(left)
+                    self._release(s, False)
+                    self._sync_at = self.clock()  # the first look at the drift a moment later
+            else:
+                s.set_pause(want.paused)
+            if pos is not None and self._hold is None and not want.paused \
+                    and now - self._sync_at >= SYNC_EVERY:
                 self._sync_at = now
                 drift = pos - want.position
                 action, value = sync_action(drift)
@@ -533,10 +622,20 @@ class Director:
                     if now - s.last_seek >= SEEK_EVERY:
                         s.set_speed(1.0)
                         s.seek(want.position + value)
+                        self._seeks += 1
                         self.emit("tv.video_seek", video_id=s.vid, drift_ms=int(drift * 1000))
                 else:
                     s.set_speed(value)
+                    if not self._synced and abs(drift) <= TOLERANCE:
+                        self._synced = True
+                        self.emit("tv.video_synced", video_id=s.vid,
+                                  after_ms=int((now - s.started_at) * 1000),
+                                  drift_ms=int(drift * 1000))
+                    if self._synced:
+                        self._drift_max = max(self._drift_max, abs(drift))
+                        self._drift_n += 1
                 self.last_drift = drift
+                self._drift_report(s)
             if now - self._check_at >= CHECK_EVERY:
                 self._check_at = now
                 r = self.readings()
@@ -558,9 +657,10 @@ class Director:
                     self.emit("tv.video_skip", video_id=want.vid, reason="no_stream")
                 else:
                     try:
+                        # paused, `lead` ahead of the music; released when the music arrives
+                        self._hold = want.position + self.lead
                         self.session = self.start_session(
-                            want.vid, stream, want.position + START_LEAD, want.paused,
-                            self.size(), self.sock)
+                            want.vid, stream, self._hold, True, self.size(), self.sock)
                         self._sync_at = self._check_at = now
                     except OSError as exc:
                         self.guard.trip("přehrávač videa nejde spustit")

@@ -295,7 +295,11 @@ def repair_decision(
             title = (r.get("title") or "").strip()
             if not artist or not mentions(user_text, artist, any_word=True):
                 continue
-            if title and mentions(user_text, title):
+            # název z katalogu nese i hosty a verzi ("Uptown Funk (feat. Bruno
+            # Mars)") — posluchač řekl jen vlastní název
+            base = re.sub(r"\s*[\(\[][^\)\]]*[\)\]]|\s+(?:feat\.?|ft\.?|featuring)\s.*$", "",
+                          title, flags=re.I).strip()
+            if title and (mentions(user_text, title) or (base and mentions(user_text, base))):
                 continue  # název padl → chtěl tu skladbu
             if artist not in promoted:
                 promoted.append(artist)
@@ -697,6 +701,9 @@ class Intent:
     # posluchač výslovně chce vulgární / sprosté texty (rozhodl model): filtr
     # explicitních se zvedne jen pro tohle přání a jeho podkres
     explicit_ok: bool = False
+    # posluchač chce hudbu i s OBRAZEM (klipy na telce) — rozhodl model: hrají
+    # se oficiální klipy (jiná nahrávka než písnička), jen pro tohle přání
+    want_video: bool = False
     # kind "ask": otázka a možnosti [{label, kind, artist, title}]
     question: str = ""
     options: list[dict] = field(default_factory=list)
@@ -856,5 +863,7 @@ def build_intent(user_text: str, data: dict, auto: bool = False) -> Intent:
         auto=auto,
         albums=albums if kind == "album" else [],
         explicit_ok=bool(data.get("explicit_ok")) and kind in ("mood", "song", "songs", "artist"),
+        want_video=bool(data.get("want_video")) and not auto
+        and kind in ("mood", "song", "songs", "artist"),
         note=note,
     )

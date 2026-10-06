@@ -64,6 +64,10 @@ class RadioPools:
         # výslovně řekl o vulgární texty (rozhodl model, `explicit_ok`).
         # Každé další naplnění poolů (set_seeds / set_artist / …) ho vrací.
         self.explicit_ok = False
+        # Přání "i s obrazem" (klipy na telce): do podkresu jen oficiální klipy
+        # (Track.video_type OMV). Platí jen pro to přání a jeho podkres —
+        # každé další naplnění poolů to vrací, stejně jako explicit_ok.
+        self.video_only = False
         # Album v podkresu ("pusť album Load"): skladby alba v pořadí, každá
         # jednou, bez rádia a bez jiných interpretů, dokud album neskončí —
         # viz set_album(). "" = není. Jede přes stejný stav jako režim
@@ -113,7 +117,7 @@ class RadioPools:
 
     async def set_seeds(
         self, seeds: list[Track], mood: str = "", allow_long: bool = False,
-        explicit_ok: bool = False,
+        explicit_ok: bool = False, video_only: bool = False,
     ) -> dict:
         """Replaces the pools with new seeds and pulls in radios for them.
 
@@ -126,6 +130,7 @@ class RadioPools:
         self.mood = mood
         self.allow_long = allow_long
         self.explicit_ok = bool(explicit_ok)
+        self.video_only = bool(video_only)
         self.favourites = ""
         self.artist = ""
         self.album = ""
@@ -154,6 +159,7 @@ class RadioPools:
             )
         telemetry.event(
             "radio.seeds", mood=mood, allow_long=allow_long, explicit_ok=explicit_ok or None,
+            video_only=video_only or None,
             seeds=[p["seed"] for p in summary],
             pool_sizes=[p["pool_size"] for p in summary],
         )
@@ -197,6 +203,7 @@ class RadioPools:
         self.mood = mood or name
         self.allow_long = True
         self.explicit_ok = False
+        self.video_only = False
         self.favourites = ""
         self.artist = name
         self.album = ""
@@ -239,6 +246,7 @@ class RadioPools:
         self.mood = mood or f"album {label}"
         self.allow_long = True
         self.explicit_ok = False
+        self.video_only = False
         self.favourites = ""
         self.artist = label
         self.album = label
@@ -295,6 +303,7 @@ class RadioPools:
         self.mood = "vlastní oblíbené" if mine else "oblíbené kanceláře"
         self.allow_long = False
         self.explicit_ok = False
+        self.video_only = False
         self.artist = ""
         self.album = ""
         self._album_artists, self._album_done = [], set()
@@ -422,7 +431,12 @@ class RadioPools:
             self.album, self._album_artists, self._album_done = "", [], set()
             self.artist_left = self.artist_until = None
             return True
-        await self.set_seeds(seeds, mood=f"{name} a podobné")
+        # interpret hrál jako klipy (přání "i s obrazem"): i "… a podobné" drží klipy
+        clips = bool(every) and all(t.video_type == "MUSIC_VIDEO_TYPE_OMV" for t in every)
+        if clips:
+            await self.set_seeds(seeds, mood=f"{name} a podobné", video_only=True)
+        else:
+            await self.set_seeds(seeds, mood=f"{name} a podobné")
         return True
 
     async def next_tracks(self, count: int) -> list[Track]:
@@ -568,6 +582,10 @@ class RadioPools:
             # (opakování, délka, strop na interpreta); každá skladba je
             # v poolu jednou, takže se neopakuje
             return None
+        if self.video_only and not self.artist and not self.favourites \
+                and track.video_type != "MUSIC_VIDEO_TYPE_OMV":
+            # přání "i s obrazem": do podkresu jen skladby, které samy jsou klip
+            return "no_video"
         if track.explicit and not self.artist and not (self.allow_explicit or self.explicit_ok):
             # vulgární texty do podkresu ne; vyžádaný interpret / skladba jménem
             # ano — a taky přání, které si o vulgární texty výslovně řeklo

@@ -7,7 +7,8 @@
       kód — id klienta se do adresy nepíše. Kódy přijme jen stránka, která cestu sama
       začala (značka v sessionStorage), a jen mezi adresami, které vyjmenoval server.
    Nikdy nenaviguje na adresu, kterou si těsně předtím neověřil. Bez úložiště, bez
-   odpovědi serveru nebo bez dalších adres se nic neděje a stránka jede jako dřív. */
+   odpovědi serveru nebo bez dalších adres se nic neděje a stránka jede jako dřív.
+   Co se dělo (které adresy odpověděly, cesta začala / skončila), hlásí jukeboxu do logu. */
 (function () {
   "use strict";
   var K = { client: "ytdj.client", nick: "ytdj.nick", who: "ytdj.who", tag: "ytdj.tag",
@@ -15,7 +16,10 @@
   var GO = "ytdj.id.go", NOTE = "ytdj.id.note";
   var PROBE_MS = 2500, SYNC_MS = 6000;
   var TRY_GAP = 10 * 60 * 1000;      // další pokus o cestu nejdřív za 10 minut (žádné smyčky)
-  var MISS_GAP = 6 * 3600 * 1000;    // adresu, která neodpověděla, zkusit znovu až za 6 hodin
+  // Adresa, která neodpověděla: jméno (.local) zkusit znovu už za 2 minuty — jména se v síti
+  // hledají oběžníkem, který se ztrácí, takže chvíli odpovídají a chvíli ne (2 min = jak dlouho
+  // si je zařízení pamatuje). Číselná adresa se takhle nemění: tu až za hodinu.
+  var MISS_NAME = 2 * 60 * 1000, MISS_ADDR = 60 * 60 * 1000;
   var HOPS_MAX = 8;
 
   function lget(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
@@ -81,10 +85,23 @@
     return "";
   }
   function isOrigin(o) { return typeof o === "string" && /^http:\/\/[a-z0-9.-]+(:\d{1,5})?$/.test(o); }
+  function missGap(o) { return /^http:\/\/\d+\.\d+\.\d+\.\d+(:\d+)?$/.test(o) ? MISS_ADDR : MISS_NAME; }
+  // Do provozního logu jukeboxu: co se dělo v prohlížeči (jen výčty a vlastní adresy; server
+  // nic jiného nevezme). Neblokuje a přežije odchod ze stránky.
+  function tell(event, data) {
+    try {
+      data = data || {};
+      data.event = event;
+      data.client = validCid(lget(K.client)) ? lget(K.client) : "";
+      fetch("/api/identity/report", { method: "POST", cache: "no-store", credentials: "same-origin", keepalive: true,
+                                      headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) })
+        .catch(function () {});
+    } catch (e) {}
+  }
 
   /* ---------- běžná stránka ---------- */
 
-  var interacted = false;
+  var interacted = false, leaving = false;
   function boot() {
     var local = lget(K.client);
     if (!validCid(local)) { local = newCid(); lset(K.client, local); }
@@ -93,7 +110,12 @@
       ["pointerdown", "keydown"].forEach(function (name) {
         window.addEventListener(name, function () { interacted = true; }, true);
       });
+      // Zpět z cesty, která nedoběhla (adresa po cestě přestala odpovídat): prohlížeč vrátí
+      // tuhle stránku z paměti ve stavu "odcházím" — načíst ji znovu, ať zase žije.
+      window.addEventListener("pageshow", function (ev) { if (ev && ev.persisted && leaving) location.reload(); });
     } catch (e) {}
+    var lost = parse(sget(GO), null);  // cesta odsud začala a nevrátila se
+    if (lost && lost.t) { sdel(GO); tell("trip_lost", { ms: Date.now() - lost.t }); }
     return post("/api/identity/sync", { client: local }).then(function (d) {
       adopt(d);
       var res = { client: validCid(d.client) ? d.client : before, nick: d.nick || "", tag: d.tag || "",
@@ -109,27 +131,45 @@
   function plan(d, known) {
     var here = d.here, own = (d.origins || []).filter(isOrigin), linked = d.linked || [];
     if (!here || own.indexOf(here) < 0 || here !== location.origin) return Promise.resolve(false);
-    if (!lset(K.miss, lget(K.miss) || "{}") || !sset(GO + ".test", "1")) return Promise.resolve(false);  // bez úložiště nic
+    var todo = own.filter(function (o) { return o !== here && linked.indexOf(o) < 0; });
+    if (!todo.length) return Promise.resolve(false);
+    if (!lset(K.miss, lget(K.miss) || "{}") || !sset(GO + ".test", "1")) {  // bez úložiště nic
+      tell("skip", { why: "storage", n: todo.length });
+      return Promise.resolve(false);
+    }
     sdel(GO + ".test");
     var now = Date.now();
-    if (now - (+lget(K.tried) || 0) < TRY_GAP) return Promise.resolve(false);
     var miss = parse(lget(K.miss), {});
-    var cand = own.filter(function (o) {
-      return o !== here && linked.indexOf(o) < 0 && !(miss[o] && now - miss[o] < MISS_GAP);
-    }).slice(0, HOPS_MAX);
+    var cand = todo.filter(function (o) { return !(miss[o] && now - miss[o] < missGap(o)); }).slice(0, HOPS_MAX);
     if (!cand.length) return Promise.resolve(false);
     return Promise.all(cand.map(function (o) { return probe(o, d.jukebox); })).then(function (ok) {
       var route = [], fresh = {};
       Object.keys(miss).forEach(function (o) { if (own.indexOf(o) >= 0) fresh[o] = miss[o]; });
       cand.forEach(function (o, i) { if (ok[i]) { route.push(o); delete fresh[o]; } else fresh[o] = Date.now(); });
       lset(K.miss, JSON.stringify(fresh));
+      tell("probe", { results: cand.map(function (o, i) { return { o: o, ok: !!ok[i] }; }),
+                      ms: Date.now() - now, known: !!known });
       if (!route.length) return false;
-      if (known && interacted) return false;  // člověk už něco dělá — nepřerušovat, příště
+      if (Date.now() - (+lget(K.tried) || 0) < TRY_GAP) {  // nedávno jsme cestu zkoušeli — žádné smyčky
+        tell("skip", { why: "recent", n: route.length });
+        return false;
+      }
+      if (known && interacted) {  // člověk už něco dělá — nepřerušovat, příště
+        tell("skip", { why: "interacting", n: route.length });
+        return false;
+      }
       var n = hex(16);
-      if (!n || !sset(GO, JSON.stringify({ n: n, back: location.href, t: Date.now() }))) return false;
+      if (!n || !sset(GO, JSON.stringify({ n: n, back: location.href, t: Date.now() }))) {
+        tell("skip", { why: "session", n: route.length });
+        return false;
+      }
       lset(K.tried, String(Date.now()));
-      location.replace(route[0] + "/identity#give&to=" + encodeURIComponent(here) + "&n=" + n +
-                       "&r=" + encodeURIComponent(route.slice(1).join(",")) + "&c=");
+      tell("trip_start", { route: route, known: !!known });
+      leaving = true;
+      // assign, ne replace: kdyby adresa po cestě přestala odpovídat, je tahle stránka
+      // v historii a tlačítko Zpět na ni vrátí (mezistránky se už navzájem nahrazují).
+      location.assign(route[0] + "/identity#give&to=" + encodeURIComponent(here) + "&n=" + n +
+                      "&r=" + encodeURIComponent(route.slice(1).join(",")) + "&c=");
       return true;
     });
   }
@@ -167,22 +207,24 @@
       var mine = validCid(d.client) ? d.client : "";
       return post("/api/identity/offer", { client: mine, theme: lget(K.theme) || "", tokens: parse(lget(K.tokens), {}) })
         .then(function (o) { if (o && o.code) codes.push(o.code); }, function () {})
-        .then(function () { return onward(d, p, route, codes); });
+        .then(function () { return onward(d, p, route, codes, [], !!d.known); });
     }, function () {
       say("Jukebox teď neodpovídá. Zkus to prosím za chvíli.");
       return "stopped";
     });
   }
   // Další adresa v cestě, která z tohohle prohlížeče odpovídá; jinak zpátky tam, odkud cesta vyšla.
-  function onward(d, p, route, codes) {
+  function onward(d, p, route, codes, skipped, account) {
     if (!route.length) {
+      tell("hop", { next: "back", skipped: skipped, account: account });
       location.replace(p.to + "/identity#take&n=" + p.n + "&c=" + codes.join(","));
       return Promise.resolve("back");
     }
     var next = route[0], rest = route.slice(1);
-    if (next === d.here || next === p.to) return onward(d, p, rest, codes);
+    if (next === d.here || next === p.to) return onward(d, p, rest, codes, skipped, account);
     return probe(next, d.jukebox).then(function (ok) {
-      if (!ok) return onward(d, p, rest, codes);
+      if (!ok) return onward(d, p, rest, codes, skipped.concat([next]), account);
+      tell("hop", { next: next, skipped: skipped, account: account });
       location.replace(next + "/identity#give&to=" + encodeURIComponent(p.to) + "&n=" + p.n +
                        "&r=" + encodeURIComponent(rest.join(",")) + "&c=" + codes.join(","));
       return "next";
@@ -195,7 +237,11 @@
     sdel(GO);
     var back = go && typeof go.back === "string" && go.back.indexOf(location.origin + "/") === 0 &&
                go.back.indexOf("/identity") !== location.origin.length ? go.back : "/";
-    if (!go || !go.n || go.n !== p.n) { location.replace("/"); return Promise.resolve("ignored"); }
+    if (!go || !go.n || go.n !== p.n) {
+      tell("trip_done", { how: "ignored", codes: codesOf(p.c).length });
+      location.replace("/");
+      return Promise.resolve("ignored");
+    }
     var local = lget(K.client);
     if (!validCid(local)) { local = newCid(); lset(K.client, local); }
     return post("/api/identity/redeem", { client: local, codes: codesOf(p.c) }).then(function (d) {
@@ -203,7 +249,11 @@
       var text = noteText(d.note);
       if (text) sset(NOTE, text);
       return "taken";
-    }, function () { return "failed"; }).then(function (how) { location.replace(back); return how; });
+    }, function () { return "failed"; }).then(function (how) {
+      tell("trip_done", { how: how, ms: Date.now() - (go.t || Date.now()), codes: codesOf(p.c).length });
+      location.replace(back);
+      return how;
+    });
   }
 
   var api = { ready: null, done: null };
@@ -212,6 +262,17 @@
     var text = (res && res.note) || sget(NOTE) || "";
     sdel(NOTE);
     return text;
+  };
+  // Stránka zůstala otevřená a účet se mezitím spojil jinde (jiná záložka, jiná adresa):
+  // zeptat se s id, které stránka drží; null = beze změny, jinak nový účet a věta pro člověka.
+  api.check = function (current) {
+    if (!validCid(current)) return Promise.resolve(null);
+    return post("/api/identity/sync", { client: current }).then(function (d) {
+      if (!validCid(d.client) || d.client === current) return null;
+      adopt(d);
+      tell("moved", {});
+      return { client: d.client, nick: d.nick || "", tag: d.tag || "", changed: true, note: noteText(d.note) };
+    }).catch(function () { return null; });
   };
   if (location.pathname === "/identity") {
     var p = params();

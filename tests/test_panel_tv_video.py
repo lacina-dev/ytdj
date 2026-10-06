@@ -85,6 +85,11 @@ class FakeSession:
     def dropped(self):
         return self.drops
 
+    hw = "v4l2m2m"
+
+    def hwdec(self):
+        return self.hw
+
     def set_pause(self, paused):
         self.paused = paused
 
@@ -109,12 +114,14 @@ class Rig:
         self.can = can
         self.readings = readings
         self.events: list[tuple[str, dict]] = []
+        self.slept: list[float] = []
         self.guard = Guard(limits, self.clock)
         self.d = Director(self.dir / "streams", str(self.dir / "video.sock"), lambda: (1920, 1080),
                           guard=self.guard, can=lambda: self.can,
                           readings=lambda: Readings(self.readings.temp_c, self.readings.mem_avail_mb,
                                                     self.readings.throttled),
                           start_session=FakeSession, clock=self.clock,
+                          sleep=lambda s: self.slept.append(round(s, 2)),
                           emit=lambda kind, **f: self.events.append((kind, f)),
                           status_file=self.dir / "status.json")
         (self.dir / "streams").mkdir()
@@ -139,12 +146,15 @@ class Rig:
         return json.loads((self.dir / "status.json").read_text())
 
     def showing(self, vid=CLIP, pos=30.0) -> FakeSession:
-        """Klip běží a je vidět."""
+        """Klip běží a je vidět: nastartoval napřed, počkal na hudbu a jede s ní."""
         self.picture(vid)
         self.step(vid, pos)
         s = self.s
-        s.pos = pos
+        s.pos = s.start  # první snímek, drží se v pauze na místě před hudbou
         assert self.step(vid, pos) == "video"
+        assert s.paused
+        self.step(vid, s.start)  # hudba tam došla → pustit
+        assert not s.paused
         return s
 
 
@@ -169,6 +179,7 @@ class Sync(unittest.TestCase):
         s = rig.showing(pos=30.0)
         self.assertEqual(s.start, 30.0 + video.START_LEAD)  # start s náskokem na rozjezd
         self.assertEqual(s.size, (1920, 1080))
+        self.assertEqual(s.seeks, [])  # žádný skok hned po startu
         # obraz 0,6 s pozadu → zrychlit; pak srovnáno → normální rychlost
         s.pos = 39.4
         rig.step(pos=40.0, dt=2.0)
@@ -203,6 +214,145 @@ class Sync(unittest.TestCase):
         w = want_from({"current": {"id": CLIP}, "buffering": True,
                        "tv": {"on": True, "video": CLIP}}, 12.0)
         self.assertTrue(w.paused)
+
+
+class StartUp(unittest.TestCase):
+    """Rozjezd klipu: napřed, v pauze, pustit přesně s hudbou; a kam jde čas."""
+
+    def test_starts_ahead_paused_and_is_released_when_the_music_arrives(self):
+        rig = Rig()
+        rig.picture(CLIP)
+        rig.step(pos=30.0)
+        s = rig.s
+        self.assertEqual((s.start, s.paused), (30.0 + video.START_LEAD, True))
+        self.assertEqual(rig.step(pos=31.0), "screen")  # ještě nenaběhl: obrazovka dál
+        s.pos = s.start  # první snímek je venku (po ~3 s) a drží
+        self.assertEqual(rig.step(pos=33.0), "video")
+        self.assertTrue(s.paused)
+        rig.step(pos=34.0)
+        self.assertTrue(s.paused)  # hudba ještě nedošla
+        rig.step(pos=35.2)  # zbývá 0,8 s: dočkat přesně a pustit
+        self.assertEqual(rig.slept, [0.8])
+        self.assertFalse(s.paused)
+        self.assertEqual(s.seeks, [])  # žádný skok — začal ve správném místě
+        # hudba mezitím v pauze: obraz drží, i když už je vidět
+        rig2 = Rig()
+        rig2.picture(CLIP)
+        rig2.step(pos=10.0, paused=True)
+        s2 = rig2.s
+        s2.pos = s2.start
+        for _ in range(4):
+            rig2.step(pos=10.0, paused=True)
+        self.assertTrue(s2.paused)
+        self.assertEqual(rig2.slept, [])
+
+    def test_late_start_is_let_go_at_once_and_chased_not_restarted(self):
+        rig = Rig()
+        rig.picture(CLIP)
+        rig.step(pos=30.0)
+        s = rig.s
+        for i in range(9):  # rozjezd trval 10 s, náskok byl 6 s
+            rig.step(pos=31.0 + i)
+        s.pos = s.start
+        self.assertEqual(rig.step(pos=40.0), "video")
+        self.assertFalse(s.paused)  # hudba už je dál → hned pustit
+        ev = [f for k, f in rig.events if k == "tv.video_start"][-1]
+        self.assertEqual((ev["startup_ms"], ev["lead_ms"], ev["late_ms"]), (10000, 6000, 4000))
+        s.pos = 37.0
+        rig.step(pos=42.0, dt=2.0)
+        self.assertEqual((s.speed, s.seeks), (1.25, []))  # dohání, neskáče
+        # příště startuje s náskokem podle skutečnosti (a v mezích)
+        self.assertAlmostEqual(rig.d.lead, 0.5 * 6.0 + 0.5 * (10.0 + video.LEAD_SPARE))
+        rig.d.lead = 6.0
+        for startup, expect in ((60.0, video.LEAD_MAX), (0.1, None)):
+            rig.d.lead = min(video.LEAD_MAX, max(video.LEAD_MIN,
+                                                 0.5 * rig.d.lead + 0.5 * (startup + video.LEAD_SPARE)))
+            self.assertTrue(video.LEAD_MIN <= rig.d.lead <= video.LEAD_MAX)
+
+    def test_picture_decoded_by_the_cpu_is_stopped_at_once(self):
+        """Kdyby hardwarový dekodér nenaběhl, obraz by počítal procesor (84 °C na Pi)."""
+        rig = Rig()
+        rig.picture(CLIP)
+        rig.step(pos=30.0)
+        s = rig.s
+        s.hw = "no"
+        s.pos = s.start
+        self.assertEqual(rig.step(pos=31.0), "screen")
+        self.assertTrue(s.stopped)
+        self.assertEqual(rig.report()["blocked"], "obraz by dekódoval procesor")
+        for _ in range(5):
+            rig.step(pos=32.0)
+        self.assertEqual(len(FakeSession.made), 1)
+
+    def test_phases_and_drift_go_to_the_log(self):
+        rig = Rig()
+        rig.picture(CLIP)
+        rig.step(pos=30.0)
+        s = rig.s
+        s.ipc_ms, s.open_ms = 900, 2400  # přehrávač běží / proud je otevřený
+        s.pos = s.start
+        rig.step(pos=31.0)
+        ev = [f for k, f in rig.events if k == "tv.video_start"][-1]
+        self.assertEqual((ev["ipc_ms"], ev["open_ms"], ev["startup_ms"], ev["late_ms"]),
+                         (900, 2400, 1000, 0))
+        rig.step(pos=s.start)  # puštěno
+        # první srovnání v toleranci
+        s.pos = 40.05
+        rig.step(pos=40.0, dt=2.0)
+        synced = [f for k, f in rig.events if k == "tv.video_synced"]
+        self.assertEqual(len(synced), 1)
+        self.assertIn(synced[0]["drift_ms"], (49, 50))
+        # největší rozdíl za minutu (po prvním srovnání), jednou za minutu
+        for i, drift in enumerate((0.02, -0.12, 0.31, 0.08) * 8):
+            s.pos = 50.0 + i * 2 + drift
+            rig.step(pos=50.0 + i * 2, dt=2.0)
+        reports = [f for k, f in rig.events if k == "tv.video_sync"]
+        self.assertEqual(len(reports), 1)
+        self.assertIn(reports[0]["max_ms"], (309, 310))
+        self.assertEqual(reports[0]["video_id"], CLIP)
+        self.assertGreaterEqual(reports[0]["n"], 25)
+        rig.step(vid="")  # konec skladby: zbytek se dopíše
+        self.assertEqual(len([1 for k, _ in rig.events if k == "tv.video_sync"]), 2)
+        self.assertEqual(len([1 for k, _ in rig.events if k == "tv.video_synced"]), 1)
+
+    def test_screen_says_the_clip_is_loading(self):
+        from tv_shots import NOW, WISH
+        from ytdj.tv.screen import Renderer, view_from
+
+        base = {**WISH, "tv": {"on": True, "video": None, "pending": True}}
+        self.assertTrue(view_from(base, now=NOW).clip)  # obraz se hledá
+        ready = {**WISH, "tv": {"on": True, "video": WISH["current"]["id"]}}
+        self.assertTrue(view_from(ready, now=NOW).clip)  # přehrávač nabíhá
+        for tv in ({"on": False, "video": None, "pending": True}, {"on": True, "video": None},
+                   {"on": True, "video": "jinajinajin"}, None,
+                   {"on": True, "video": WISH["current"]["id"], "blocked": "jukebox je horký"}):
+            self.assertFalse(view_from({**WISH, "tv": tv}, now=NOW).clip, tv)
+        r = Renderer((1280, 720))
+        r.render(view_from({**WISH, "tv": {"on": True}}, now=NOW), full=True)
+        boxes = r.render(view_from(base, now=NOW))
+        head = next(x.box for x in r.regions if x.name == "head")
+        self.assertTrue(boxes)  # nápis přibyl — jen v hlavičce
+        for b in boxes:
+            self.assertTrue(head[0] <= b[0] and head[1] <= b[1] and b[2] <= head[2] and b[3] <= head[3])
+        self.assertIn("klip se načítá", (ROOT / "ytdj" / "tv" / "screen.py").read_text(encoding="utf-8"))
+        # během rozjezdu se přehrávač hlídá často, pak jednou za vteřinu
+        app = tvapp.TvApp(lambda: PngScreen(_TMP / "t.png", (720, 480)), "http://127.0.0.1:9",
+                          "jukebox.local", director=rig_director_with(showing=False))
+        self.assertEqual(app._tick(), 0.2)
+        app.director.session.showing = True
+        self.assertEqual(app._tick(), 1.0)
+
+
+def rig_director_with(showing: bool):
+    class D:
+        session = type("S", (), {"showing": showing})()
+
+        def step(self, want):
+            return "screen"
+
+        def close(self):
+            pass
+    return D()
 
 
 class Wanting(unittest.TestCase):
@@ -245,9 +395,9 @@ class Wanting(unittest.TestCase):
         rig.step(CLIP2, 0.0)  # další skladba je taky klip: starý pryč a nový hned
         self.assertTrue(s1.stopped)
         s2 = rig.s
-        self.assertEqual((s2.vid, s2.start), (CLIP2, 0.0 + video.START_LEAD))
-        s2.pos = 3.0
-        self.assertEqual(rig.step(CLIP2, 3.0), "video")
+        self.assertEqual((s2.vid, s2.start), (CLIP2, 0.0 + rig.d.lead))
+        s2.pos = s2.start
+        self.assertEqual(rig.step(CLIP2, 1.0), "video")
         self.assertEqual(rig.step(vid="", on=False), "screen")  # někdo to vypnul
         self.assertTrue(s2.stopped)
         self.assertEqual(rig.events[-1][1]["reason"], "switch_off")
@@ -265,6 +415,7 @@ class Wanting(unittest.TestCase):
             rig.step(vid="")
             self.assertEqual(rig.step(CLIP2), "screen")
             self.assertIsNone(rig.s)
+
 
     def test_clip_that_ran_out_is_not_restarted_and_a_crash_backs_off(self):
         rig = Rig()
@@ -438,6 +589,9 @@ class CommandLine(unittest.TestCase):
         args = player_args("https://rr1.googlevideo.com/v?x=1", "/run/ytdj-tv/video.sock",
                            (1920, 1080), 41.26, False, {"User-Agent": "UA", "Referer": "https://r/"})
         self.assertEqual(args[0], "mpv")
+        for opt in ("--cache-pause=no", "--cache-secs=6", "--demuxer-readahead-secs=3"):
+            self.assertIn(opt, args, opt)  # rychlý rozjezd němého obrazu
+        self.assertNotIn("--hr-seek=no", args)  # start přesně na místě, ne na klíčovém snímku
         for opt in ("--no-config", "--no-audio", "--vo=gpu", "--gpu-context=drm", "--hwdec=v4l2m2m",
                     "--drm-draw-plane=overlay", "--drm-drmprime-video-plane=primary",
                     "--ytdl=no", "--load-scripts=no", "--drm-mode=1920x1080", "--start=41.26",
@@ -486,7 +640,7 @@ class RealPlayer(unittest.TestCase):
         d = Director(_TMP / "streams-real", str(_TMP / "real.sock"), lambda: None,
                      can=lambda: (True, ""), readings=lambda: Readings(60.0, 600, 0),
                      start_session=NullSession, emit=lambda k, **f: events.append((k, f)),
-                     status_file=None)
+                     status_file=None, require_hwdec=False)
         (_TMP / "streams-real").mkdir(exist_ok=True)
         (_TMP / "streams-real" / f"{CLIP}.json").write_text(json.dumps(
             {"id": CLIP, "url": "https://example.invalid/x", "headers": {}}))

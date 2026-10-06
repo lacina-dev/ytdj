@@ -42,6 +42,11 @@ CODE_TTL = 120.0  # s — kód pro předání účtu platí jen chvíli a jen je
 CODES_MAX = 300
 KEEP = 3000  # nejvýš tolik starých id / záznamů (nejstarší vypadnou)
 TOKENS_MAX = 20
+REPORT_MAX, REPORT_WINDOW = 40, 60.0  # hlášení stránky do logu: nejvýš 40 za minutu z jedné adresy
+QUIET_EVERY = 1800.0  # běžné načtení stránky známého člověka do logu nejvýš jednou za půl hodiny
+PAGE_EVENTS = ("probe", "trip_start", "hop", "trip_done", "trip_lost", "skip", "moved")
+SKIP_WHY = ("storage", "recent", "interacting", "session")
+DONE_HOW = ("taken", "failed", "ignored")
 LOOK_SCHEDULE = (0.0, 20.0, 90.0)  # po startu ještě nabíhá síť a přesměrování portu 80
 LOOK_EVERY = 300.0
 
@@ -160,6 +165,7 @@ class OwnOrigins:
             return
         if self._found != before:
             log.info("adresy jukeboxu pro předání účtu: %s", ", ".join(self._found) or "žádné")
+            telemetry.event("identity.origins", origins=list(self._found), n=len(self._found))
 
 
 class Identity:
@@ -177,6 +183,8 @@ class Identity:
         self.linked: dict[str, list[str]] = {}  # id → adresy, mezi kterými už je účet předaný
         self.gone: dict[str, str] = {}  # staré id, které bylo účtem → jeho přezdívka (pro větu člověku)
         self.codes: dict[str, dict] = {}
+        self._reports: dict[str, list[float]] = {}
+        self._said: dict[str, float] = {}
         self._lock = threading.Lock()
         self._gen = self._written = 0
         self._writer: threading.Thread | None = None
@@ -266,6 +274,10 @@ class Identity:
                 log.warning("spojené účty se nepodařilo uložit", exc_info=True)
 
     def flush(self, timeout: float = 5.0) -> None:
+        """Při ukončení služby: dopsat, co čeká (i zápis odložený kvůli čtení souboru)."""
+        if self.path is not None and not self._loaded.is_set():
+            self._loaded.wait(timeout)
+        self._take_loaded()
         w = self._writer
         if w is not None and w.is_alive():
             w.join(timeout)
@@ -323,6 +335,30 @@ class Identity:
     def me(self, cid: str) -> dict:
         return {"client": cid, "nick": self.nick(cid), "tag": tag_of(cid)}
 
+    def allow(self, who: str, limit: int = REPORT_MAX, window: float = REPORT_WINDOW) -> bool:
+        """Brzda hlášení stránek do logu: nejvýš `limit` za `window` s na jednoho odesílatele."""
+        now = self.mono()
+        times = self._reports.setdefault(who, [])
+        times[:] = [t for t in times if now - t < window]
+        if len(self._reports) > 500:
+            for k in [k for k, v in self._reports.items() if not v or now - v[-1] > window]:
+                self._reports.pop(k, None)
+        if len(times) >= limit:
+            return False
+        times.append(now)
+        return True
+
+    def quiet(self, key: str, every: float = QUIET_EVERY) -> bool:
+        """True, když se o tomhle (běžné načtení stránky známého člověka) psalo nedávno."""
+        now = self.mono()
+        last = self._said.get(key)
+        if last is not None and now - last < every:
+            return True
+        if len(self._said) > 2000:
+            self._said.clear()
+        self._said[key] = now
+        return False
+
     # ---- spojení účtů ----
 
     def merge(self, cids: Iterable[str], here: str = "") -> tuple[str, dict | None]:
@@ -360,11 +396,13 @@ class Identity:
                 self.gone[loser] = moved["nick"]
                 if loser == local:
                     note = {"kind": "merged", "dropped": moved["nick"], "kept": self.nick(winner)}
-                telemetry.event("identity.merge", loser=loser[-6:], winner=winner[-6:], here=here or None,
-                                votes=moved["moved"], dropped=moved["dropped"], imports=moved["imports"],
-                                wishes=moved["wishes"])
-                log.info("účty spojeny: …%s → …%s (%s hlasů, %s importů, %s přání)", loser[-6:],
-                         winner[-6:], moved["moved"], moved["imports"], moved["wishes"])
+                # do logu jen veřejné značky (F-BEZP-04), nikdy id klienta
+                telemetry.event("identity.merge", younger=tag_of(loser), older=tag_of(winner),
+                                here=here or None, votes=moved["moved"], conflicts=moved["dropped"],
+                                imports=moved["imports"], wishes=moved["wishes"],
+                                older_since=int(self.first_seen(winner) or 0) or None)
+                log.info("účty spojeny: %s → %s (%s hlasů, %s importů, %s přání)", tag_of(loser),
+                         tag_of(winner), moved["moved"], moved["imports"], moved["wishes"])
             self.alias[loser] = winner
             self.since.pop(loser, None)
             for o in self.linked.pop(loser, []):
@@ -430,10 +468,17 @@ class Identity:
         """Vyzvedne kódy (každý jen jednou) a spojí jejich účty s místním id."""
         now = self.mono()
         cids, origins, extras = [local], [here] if here else [], {}
+        stats = {"given": 0, "ok": 0, "expired": 0, "unknown": 0, "accounts": 0, "from": []}
         for code in list(codes)[:12]:
+            stats["given"] += 1
             rec = self.codes.pop(str(code), None)
             if rec is None or rec["exp"] < now:
+                stats["unknown" if rec is None else "expired"] += 1
                 continue
+            stats["ok"] += 1
+            stats["accounts"] += 1 if rec["cid"] else 0
+            if rec["origin"]:
+                stats["from"].append(rec["origin"])
             if rec["origin"]:
                 origins.append(rec["origin"])
             if rec["cid"]:
@@ -446,7 +491,7 @@ class Identity:
         if winner:
             self.save()
         out = self.me(winner)
-        out.update(note=note, extras=extras, linked=list(self.linked.get(winner, [])))
+        out.update(note=note, extras=extras, linked=list(self.linked.get(winner, [])), stats=stats)
         return out
 
 
@@ -477,3 +522,46 @@ def wire(app: Any, port: int = 8765) -> Identity:
     ident.origins = OwnOrigins(port)  # type: ignore[attr-defined]
     app.identity = ident
     return ident
+
+
+def clean_report(raw: Any, own: Iterable[str]) -> dict | None:
+    """Hlášení stránky (co se dělo v prohlížeči) → jen ověřené hodnoty do logu.
+    Žádný volný text: druh z výčtu, adresy jen z vlastního seznamu, čísla v mezích."""
+    if not isinstance(raw, dict) or raw.get("event") not in PAGE_EVENTS:
+        return None
+    own = set(own)
+
+    def num(v: Any, top: int = 600_000) -> int:
+        return max(0, min(top, int(v))) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
+
+    def origins(v: Any) -> list[str]:
+        return [o for o in v if isinstance(o, str) and o in own][:12] if isinstance(v, list) else []
+
+    event = raw["event"]
+    out: dict[str, Any] = {"event": event}
+    if event == "probe":
+        res = raw.get("results")
+        out["answered"] = [r["o"] for r in res if isinstance(r, dict) and r.get("o") in own and r.get("ok") is True][:12] \
+            if isinstance(res, list) else []
+        out["silent"] = [r["o"] for r in res if isinstance(r, dict) and r.get("o") in own and r.get("ok") is not True][:12] \
+            if isinstance(res, list) else []
+        out["ms"] = num(raw.get("ms"))
+        out["known"] = raw.get("known") is True
+    elif event == "trip_start":
+        out["route"] = origins(raw.get("route"))
+        out["known"] = raw.get("known") is True
+    elif event == "hop":
+        nxt = raw.get("next")
+        out["next"] = nxt if nxt in own else "back"
+        out["skipped"] = origins(raw.get("skipped"))
+        out["account"] = raw.get("account") is True
+    elif event == "trip_done":
+        out["how"] = raw.get("how") if raw.get("how") in DONE_HOW else "failed"
+        out["ms"] = num(raw.get("ms"))
+        out["codes"] = num(raw.get("codes"), 20)
+    elif event == "trip_lost":
+        out["ms"] = num(raw.get("ms"), 86_400_000)
+    elif event == "skip":
+        out["why"] = raw.get("why") if raw.get("why") in SKIP_WHY else "storage"
+        out["n"] = num(raw.get("n"), 20)
+    return out

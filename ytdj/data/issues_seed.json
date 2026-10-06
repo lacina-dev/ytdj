@@ -226,6 +226,17 @@
       "body": "„Tímhle začneme, ale bude se to povolovat v prohlížeči a dít, jen když je to povolené, jinak na telce bude info jako teď. Povolit to může kdokoli.“\n\nKlip jen u skladeb, které samy jsou oficiálním klipem, bez zvuku a srovnaný s hudbou; písnička se za klip nezaměňuje. POZADAVKY #71.",
       "resolution": "Připraveno, čeká na nasazení a večerní zkoušku na jukeboxu. Na hlavní stránce přibude vypínač „Klipy na telce“ — přepne ho kdokoli, platí pro všechny a je vidět, kdo ho zapnul; výchozí stav je vypnuto. Když je zapnuto a hraje skladba, která sama je oficiální klip (asi osmina toho, co tu hraje), pustí se na telce její obraz bez zvuku, srovnaný s hudbou. U ostatních skladeb zůstává obrazovka „právě hraje“. Zvuk jde pořád stejnou cestou. Když je jukebox horký, dochází mu paměť nebo by začal lupat zvuk, klip se sám vypne a vypínač řekne proč. Nasazeno 6. 10. večer. Zkouší se v provozu.",
       "resolved": "2026-10-06"
+    },
+    {
+      "key": "pozadavek-72",
+      "kind": "napad",
+      "state": "resi_se",
+      "who": "vlastník",
+      "created": "2026-10-06",
+      "title": "Když chci video, ať DJ dodá video",
+      "body": "„Chci ověřit video, ale asi by to chtělo, aby agent reagoval na to, když chci video, a dodal video.“\n\nPOZADAVKY #72.",
+      "resolution": "Klipy na telce se pouštěly jen u skladeb, které samy jsou oficiální klip — a DJ skoro vždy vybere písničku z alba, takže obraz nebyl. Nově stačí říct si o obraz („pusť klip k…“, „zahraj videa od…“, „chci to vidět na telce“): DJ vybere oficiální klipy — ke skladbě, od interpreta i k náladě — a Klipy na telce sám zapne. Když oficiální klip není, zahraje písničku a řekne to. Bez takového přání hraje dál vždy písnička, ne klip. V kódu a otestováno, i se skutečným modelem; čeká na nasazení a zkoušku na telce.",
+      "resolved": "2026-10-06"
     }
   ]
 }

@@ -1166,6 +1166,7 @@
       if (res.status === 404) { if (!S.nick) openNick(false, load("ytdj.who") || ""); return; }
       if (!res.ok) throw new Error("HTTP " + res.status);
       var d = await res.json();
+      if (d.moved) { recheckMe(); return; }  // účet se mezitím spojil jinde: převzít ho a říct to
       if (d.tag) { S.tag = d.tag; store("ytdj.tag", d.tag); }
       if (d.nick) { if (d.nick !== S.nick) setNick(d.nick); else renderMe(); closeNickIfFirst(); return; }
       var want = S.nick || load("ytdj.who") || "";
@@ -1191,24 +1192,42 @@
   // Tentýž člověk na všech adresách jukeboxu (F-NICK-07…): /identity.js nejdřív srovná id
   // s cookie a s ostatními adresami; na přezdívku se ptáme, až když účet opravdu nikde není.
   var idReady = (window.ytdjIdentity && window.ytdjIdentity.ready) || Promise.resolve(null);
+  function applyIdentity(r) {
+    if (r && r.client && r.client !== S.client) {
+      S.client = r.client;
+      try { S.tokens = JSON.parse(load("ytdj.tokens") || "{}") || {}; } catch (e) {}
+    }
+    if (r && r.tag) S.tag = r.tag;
+    if (r && r.nick && r.nick !== S.nick) setNick(r.nick, r.tag);
+    var note = window.ytdjIdentity ? window.ytdjIdentity.note(r) : "";
+    if (note) {  // věta o účtu je delší než běžná hláška — nechat ji vidět déle
+      toast(note);
+      clearTimeout(V.toastT);
+      V.toastT = setTimeout(function () { vel.toast.classList.remove("show"); }, 12000);
+    }
+  }
   function startMe() {
     idReady.then(function (r) {
-      if (r && r.client && r.client !== S.client) {
-        S.client = r.client;
-        try { S.tokens = JSON.parse(load("ytdj.tokens") || "{}") || {}; } catch (e) {}
-      }
-      if (r && r.tag) S.tag = r.tag;
-      if (r && r.nick && r.nick !== S.nick) setNick(r.nick, r.tag);
+      applyIdentity(r);
       if (!S.nick) openNick(false, load("ytdj.who") || "");
-      var note = window.ytdjIdentity ? window.ytdjIdentity.note(r) : "";
-      if (note) {  // věta o účtu je delší než běžná hláška — nechat ji vidět déle
-        toast(note);
-        clearTimeout(V.toastT);
-        V.toastT = setTimeout(function () { vel.toast.classList.remove("show"); }, 12000);
-      }
       initMe();
     });
   }
+  // Stránka zůstala otevřená a účet se mezitím spojil jinde (jiná záložka nebo adresa):
+  // převzít ho bez načítání stránky a říct to (F-NICK-09). Ptá se při návratu na záložku,
+  // když jiná záložka změní úložiště, a jednou za 5 minut.
+  function recheckMe() {
+    if (!window.ytdjIdentity || !window.ytdjIdentity.check) return;
+    window.ytdjIdentity.check(S.client).then(function (r) {
+      if (!r) return;
+      applyIdentity(r);
+      S.sig.wishes = S.sig.queue = S.sig.mine = null;
+      if (S.status) applyStatus(S.status);
+    });
+  }
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) recheckMe(); });
+  window.addEventListener("storage", function (ev) { if (ev.key === "ytdj.client") recheckMe(); });
+  setInterval(recheckMe, 5 * 60 * 1000);
 
   /* ------------------------------------------------------------------ */
   /* connection: SSE, falling back to polling on trouble                 */

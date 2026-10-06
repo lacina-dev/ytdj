@@ -80,7 +80,7 @@ def account(rig, cid: str, nick: str, days_ago: float, *cast) -> None:
 
 
 def call(rig, method: str, path: str, body=None, host: str = "ytdj.local:8765", origin: str | None = "",
-         cookie: str = "", ctype: str = "application/json", extra: dict | None = None):
+         cookie: str = "", ctype: str = "application/json", extra: dict | None = None, query: str = ""):
     """Jeden požadavek celou aplikací; `origin=""` = jako stránka téže adresy, None = bez hlavičky."""
     headers = [(b"host", host.encode()), (b"user-agent", b"Mozilla/5.0 (X11; Linux) Chrome/130")]
     if origin == "":
@@ -95,7 +95,7 @@ def call(rig, method: str, path: str, body=None, host: str = "ytdj.local:8765", 
     for k, v in (extra or {}).items():
         headers.append((k.encode(), v.encode()))
     scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": method,
-             "scheme": "http", "path": path, "raw_path": path.encode(), "root_path": "", "query_string": b"",
+             "scheme": "http", "path": path, "raw_path": path.encode(), "root_path": "", "query_string": query.encode(),
              "headers": headers, "client": ("10.0.0.7", 40000), "server": ("test", 8765)}
     out = SimpleNamespace(status=0, headers={}, cookies=[], body=b"")
     sent = False
@@ -291,6 +291,107 @@ class ForeignPages(unittest.TestCase):
         self.assertNotIn("adminPin", src)  # PIN správce se mezi adresami nenosí
 
 
+class Events:
+    """Zachytí provozní události (telemetry.event) po dobu bloku."""
+
+    def __enter__(self):
+        from ytdj import telemetry
+        self.t, self.real, self.got = telemetry, telemetry.event, []
+        telemetry.event = lambda kind, **f: self.got.append({"kind": kind, **f})
+        return self
+
+    def __exit__(self, *exc):
+        self.t.event = self.real
+
+    def kinds(self):
+        return [e["kind"] for e in self.got if e["kind"].startswith("identity.")]
+
+    def of(self, kind):
+        return [e for e in self.got if e["kind"] == kind]
+
+
+class Logged(unittest.TestCase):
+    """F-NICK-11: každý krok je v provozním logu — bez id klienta, kódu i cookie."""
+
+    def test_every_step_is_logged_without_secrets(self):
+        from ytdj.nicks import tag_of
+        rig = make()
+        account(rig, OLD, "Robert", 20, (DAMA, 1))
+        account(rig, NEW, "Robert 2", 0.1, (DAMA, -1), (POHODA, 1))
+        codes = []
+        with Events() as ev:
+            call(rig, "POST", "/api/identity/sync", {"client": BLANK}, host="10.0.0.5:8765")           # nový
+            call(rig, "POST", "/api/identity/sync", {"client": BLANK}, host="10.0.0.5:8765")           # totéž: ticho
+            call(rig, "POST", "/api/identity/sync", {"client": OLD})                                    # známý
+            call(rig, "POST", "/api/identity/sync", {"client": "web-blank-000009"}, host="ytdj.local", cookie=OLD)
+            codes.append(call(rig, "POST", "/api/identity/offer", {"client": OLD}).json["code"])
+            codes.append(call(rig, "POST", "/api/identity/offer", {"client": ""}, host="10.0.0.5:8765",
+                              cookie="").json["code"])
+            call(rig, "POST", "/api/identity/redeem", {"client": NEW, "codes": [*codes, "x" * 24]}, host="jukebox.local")
+            call(rig, "POST", "/api/identity/sync", {"client": NEW}, host="jukebox.local")              # staré id
+            call(rig, "POST", "/api/identity/sync", {"client": OLD}, origin="http://evil.example")
+            call(rig, "POST", "/api/identity/offer", {"client": OLD}, host="evil.example:8765")
+        self.assertEqual(ev.kinds(), [
+            "identity.sync", "identity.sync", "identity.sync", "identity.offer", "identity.offer",
+            "identity.merge", "identity.redeem", "identity.stale", "identity.sync",
+            "identity.refused", "identity.refused"])
+        self.assertEqual([e["how"] for e in ev.of("identity.sync")], ["new", "same", "cookie", "moved"])
+        self.assertEqual([e["account"] for e in ev.of("identity.offer")], [True, False])
+        merge = ev.of("identity.merge")[0]
+        self.assertEqual((merge["older"], merge["younger"]), (tag_of(OLD), tag_of(NEW)))
+        self.assertEqual((merge["votes"], merge["conflicts"], merge["imports"], merge["wishes"]), (1, 1, 0, 0))
+        redeem = ev.of("identity.redeem")[0]
+        self.assertEqual((redeem["given"], redeem["ok"], redeem["unknown"], redeem["expired"], redeem["note"]),
+                         (3, 2, 1, 0, "merged"))
+        self.assertEqual(sorted(redeem["from"]), sorted([A, IP]))
+        self.assertEqual([e["why"] for e in ev.of("identity.refused")], ["origin", "unknown_address"])
+        text = json.dumps(ev.got, ensure_ascii=False)
+        for secret in (OLD, NEW, BLANK, "web-blank-000009", *codes, OLD[-6:], NEW[-6:]):
+            self.assertNotIn(secret, text)
+        self.assertIn(tag_of(OLD), text)
+        # vypršelý kód se pozná od neznámého
+        with Events() as ev:
+            code = call(rig, "POST", "/api/identity/offer", {"client": OLD}).json["code"]
+            rig.mono2.t += identity.CODE_TTL + 1
+            call(rig, "POST", "/api/identity/redeem", {"client": OLD, "codes": [code]}, host="jukebox.local")
+        self.assertEqual((ev.of("identity.redeem")[0]["expired"], ev.of("identity.redeem")[0]["ok"]), (1, 0))
+
+    def test_page_reports_are_validated_and_limited(self):
+        from ytdj.nicks import tag_of
+        rig = make()
+        account(rig, OLD, "Robert", 20, (DAMA, 1))
+        with Events() as ev:
+            ok = call(rig, "POST", "/api/identity/report", {
+                "client": OLD, "event": "probe", "ms": 180.7, "known": True, "note": "<script>volný text</script>",
+                "results": [{"o": B, "ok": True}, {"o": "http://evil.example", "ok": True}, {"o": IP, "ok": "ano"}, "x"]})
+            self.assertEqual(ok.status, 204)
+            call(rig, "POST", "/api/identity/report", {"client": OLD, "event": "trip_start",
+                                                       "route": [B, "javascript:alert(1)", 7]})
+            call(rig, "POST", "/api/identity/report", {"client": "", "event": "skip", "why": "cokoli", "n": 10**9})
+            call(rig, "POST", "/api/identity/report", {"client": OLD, "event": "trip_done", "how": "taken",
+                                                       "ms": -5, "codes": 3})
+            self.assertEqual(call(rig, "POST", "/api/identity/report", {"event": "rm -rf"}).status, 400)
+            self.assertEqual(call(rig, "POST", "/api/identity/report", {"event": "probe"},
+                                  origin="http://evil.example").status, 403)
+        pages = ev.of("identity.page")
+        self.assertEqual([p["event"] for p in pages], ["probe", "trip_start", "skip", "trip_done"])
+        self.assertEqual((pages[0]["answered"], pages[0]["silent"], pages[0]["ms"], pages[0]["tag"]),
+                         ([B], [IP], 180, tag_of(OLD)))
+        self.assertEqual(pages[1]["route"], [B])
+        self.assertEqual((pages[2]["why"], pages[2]["n"], pages[2]["tag"]), ("storage", 20, None))
+        self.assertEqual((pages[3]["how"], pages[3]["ms"], pages[3]["codes"]), ("taken", 0, 3))
+        text = json.dumps(pages, ensure_ascii=False)
+        for junk in ("script", "evil", "javascript", "cokoli", OLD):
+            self.assertNotIn(junk, text)
+        # brzda: z jedné adresy nejvýš 40 hlášení za minutu
+        with Events() as ev:
+            codes = [call(rig, "POST", "/api/identity/report", {"event": "moved"}).status for _ in range(45)]
+        self.assertEqual((codes.count(204), codes.count(429)), (identity.REPORT_MAX - 5, 10))
+        self.assertEqual(len(ev.of("identity.page")), identity.REPORT_MAX - 5)
+        rig.mono2.t += identity.REPORT_WINDOW + 1
+        self.assertEqual(call(rig, "POST", "/api/identity/report", {"event": "moved"}).status, 204)
+
+
 class TwoAccounts(unittest.TestCase):
     """F-NICK-09: dva účty jednoho prohlížeče → platí starší, nic se neztratí."""
 
@@ -362,6 +463,57 @@ class TwoAccounts(unittest.TestCase):
         r = call(rig, "POST", "/api/identity/sync", {"client": OLD}, host="jukebox.local", cookie=OLD)
         self.assertIsNone(r.json["note"])
 
+    def test_open_page_with_the_dropped_id_acts_as_the_kept_account(self):
+        """Stránka nechaná otevřená se starým id: server ji hned bere jako starší účet (ne druhého člověka)."""
+        rig = self.rig()
+        rig.idn.merge([OLD, NEW])
+        pohoda = rig.votes.song_key_for(POHODA)
+        me = call(rig, "GET", "/api/me", origin=None, query=f"client={NEW}")
+        self.assertEqual((me.json["client"], me.json["nick"], me.json["moved"]), (OLD, "Robert", True))
+        self.assertNotIn("moved", call(rig, "GET", "/api/me", origin=None, query=f"client={OLD}").json)
+        vote = call(rig, "POST", "/api/votes", {"target": "song", "vote": -1, "client": NEW, "key": pohoda})
+        self.assertEqual(vote.status, 200, vote.body)
+        self.assertEqual(self.mine(rig, OLD)[pohoda], -1)
+        self.assertEqual(self.mine(rig, NEW), {})
+        self.assertEqual(rig.votes.tally(SONG, pohoda).down, 1)
+        nick = call(rig, "POST", "/api/me", {"client": NEW, "nick": "Robert K."})
+        self.assertEqual((nick.json["client"], rig.app.wishes.nicks.get(OLD), rig.app.wishes.nicks.get(NEW)),
+                         (OLD, "Robert K.", ""))
+        made = call(rig, "POST", "/api/issues", {"client": NEW, "kind": "napad", "title": "Zkouška starého id"})
+        self.assertEqual(made.status, 201, made.body)
+        self.assertTrue(call(rig, "GET", f"/api/issues/{made.json['item']['id']}", origin=None,
+                             query=f"client={OLD}").json["item"]["mine"])
+
+    def test_shutdown_writes_what_is_pending(self):
+        """F-RESTART-10: spojené účty se při ukončení dopíšou — i zápis odložený kvůli čtení souboru."""
+        tmp = ti.tmpdir()
+        path = tmp / "identity.json"
+        path.write_text(json.dumps({"alias": {"web-ancient-00001": OLD}, "gone": {"web-ancient-00001": "Starý"}}),
+                        encoding="utf-8")
+        gate = threading.Event()
+        real_load = identity.Identity._load
+        identity.Identity._load = lambda self: (gate.wait(5), real_load(self))[1]
+        try:
+            rig = ti.make(tmp)
+            rig.votes = votes.wire(rig.app)
+            rig.votes.load([])
+            idn = identity.Identity(rig.app, path)
+            rig.app.identity = idn
+            account(rig, OLD, "Robert", 20, (DAMA, 1))
+            account(rig, NEW, "Robert 2", 1, (POHODA, 1))
+            idn.merge([NEW, OLD])          # soubor ještě není přečtený → zápis počká
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["alias"], {"web-ancient-00001": OLD})
+            threading.Timer(0.2, gate.set).start()
+            idn.flush()                    # ukončení služby
+        finally:
+            identity.Identity._load = real_load
+            gate.set()
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["alias"], {"web-ancient-00001": OLD, NEW: OLD})  # staré zůstalo, nové přibylo
+        main = (ROOT / "ytdj/__main__.py").read_text(encoding="utf-8")
+        at = main.index("self.wishes.nicks.flush()")
+        self.assertIn("ident.flush()", main[at: main.index("self.store.close()", at)])
+
     def test_kept_on_the_card_by_a_thread(self):
         tmp = ti.tmpdir()
         rig = make(tmp)
@@ -386,8 +538,14 @@ HARNESS = r"""
 const fs = require("fs"), vm = require("vm"), { webcrypto } = require("crypto");
 const src = fs.readFileSync(process.argv[2], "utf8"), sc = JSON.parse(process.argv[3]);
 const own = sc.own, accounts = sc.accounts || {}, alias = {}, linked = sc.linked || {}, cookies = sc.cookies || {};
-const store = sc.storage || {}, session = {}, codes = {}, calls = [], trace = [], results = [];
-let nCode = 0;
+const store = sc.storage || {}, session = sc.session || {}, codes = {}, calls = [], trace = [], results = [];
+const reports = [], navs = [], probes = [], checks = [];
+Object.assign(alias, sc.alias || {});
+let nCode = 0, offset = 0, reloads = 0;
+class FakeDate extends Date {
+  constructor(...a) { if (a.length) super(...a); else super(Date.now() + offset); }
+  static now() { return Date.now() + offset; }
+}
 const hostOf = (o) => o.replace(/^http:\/\//, "").replace(/:\d+$/, "");
 const resolve = (c) => { while (alias[c]) c = alias[c]; return c; };
 function merge(ids) {
@@ -412,6 +570,7 @@ function me(origin, cid, note, extra) {
     jukebox: "J1" }, extra || {});
 }
 function serve(origin, path, body) {
+  if (path === "/api/identity/report") { reports.push(Object.assign({ at: origin }, body)); return {}; }
   calls.push({ origin: origin, path: path, body: body });
   const host = hostOf(origin);
   if (path === "/api/identity/sync") {
@@ -449,16 +608,19 @@ async function load(url) {
   store[origin] = store[origin] || {}; session[origin] = session[origin] || {};
   let leave = null, left;
   const gone = new Promise((r) => { left = r; });
-  const listeners = [];
+  const listeners = {};
+  const go = (how) => (u) => { navs.push(how); leave = /^http:/.test(u) ? u : origin + u; left("left"); };
   const ctx = {
+    Date: FakeDate,
     location: { origin: origin, href: url, pathname: path, hash: hash,
-                replace: (u) => { leave = /^http:/.test(u) ? u : origin + u; left("left"); } },
+                replace: go("replace"), assign: go("assign"), reload: () => { reloads++; } },
     localStorage: storage(store[origin], broken), sessionStorage: storage(session[origin], broken),
     document: { getElementById: () => ({ textContent: "", hidden: true }), visibilityState: "visible" },
     crypto: webcrypto, setTimeout: setTimeout, clearTimeout: clearTimeout, AbortController: AbortController,
     fetch: (u, opts) => new Promise((ok, fail) => {
       const cross = /^http:/.test(u), target = cross ? /^(http:\/\/[^\/]+)/.exec(u)[1] : origin;
       const p = cross ? u.slice(target.length) : u;
+      if (cross) probes.push(target);
       if (cross && (sc.bridgeBlocked || !sc.reachable[target])) return fail(new TypeError("Failed to fetch"));
       if (cross && ((sc.deadFrom || {})[origin] || []).indexOf(target) >= 0) return fail(new TypeError("Failed to fetch"));
       if (sc.serverDown) return fail(new TypeError("Failed to fetch"));
@@ -468,22 +630,28 @@ async function load(url) {
       catch (e) { ok({ ok: false, status: 500, json: async () => ({}) }); }
     }),
   };
-  ctx.window = { addEventListener: (name, fn) => listeners.push(fn) };
+  ctx.window = { addEventListener: (name, fn) => (listeners[name] = listeners[name] || []).push(fn) };
   vm.runInNewContext(src, ctx);
-  if (sc.interact) listeners.forEach((fn) => fn({}));
+  const fire = (name, ev) => (listeners[name] || []).forEach((fn) => fn(ev || {}));
+  if (sc.interact) fire("pointerdown");
   const api = ctx.window.ytdjIdentity;
   const res = await Promise.race([api.ready || api.done, gone]);
   if (res !== "left") results.push({ url: origin + path, res: res, note: api.ready ? api.note(res) : undefined });
   await new Promise((r) => setTimeout(r, 30));  // doběhnout cestu na pozadí (účet tu je)
+  if (sc.check && api.check) checks.push(await api.check(sc.check));
+  if (leave && sc.backFromCache) { fire("pageshow", { persisted: true }); }  // Zpět na stránku, která odešla
   return leave;
 }
 (async () => {
   for (const start of sc.visits) {
+    if (start[0] === "+") { offset += parseInt(start.slice(1), 10); continue; }  // čas běží
     let url = start, hops = 0;
     while (url && hops++ < 25) url = await load(url);
     trace.push("--");
   }
-  console.log(JSON.stringify({ trace: trace, results: results, storage: store, calls: calls, cookies: cookies, linked: linked }));
+  await new Promise((r) => setTimeout(r, 20));
+  console.log(JSON.stringify({ trace: trace, results: results, storage: store, calls: calls, cookies: cookies, linked: linked,
+                               reports: reports, navs: navs, probes: probes, checks: checks, reloads: reloads }));
   process.exit(0);
 })().catch((e) => { console.error(e); process.exit(2); });
 """
@@ -551,9 +719,77 @@ class PageLogic(unittest.TestCase):
         self.assertEqual(out["trace"], [B + "/", "--", B + "/", "--"])
         res = out["results"][0]["res"]
         self.assertEqual((res["nick"], res["changed"]), ("", False))   # nový prohlížeč → stránka se zeptá
-        probes = [c["path"] for c in out["calls"] if c["path"].startswith("hello")]
-        self.assertEqual(probes, [])  # nedosažitelné adresy ani neodpověděly; podruhé se hned neptá znovu
+        self.assertEqual(sorted(out["probes"]), sorted([A, A80, IP]))  # zeptala se jednou; hned podruhé už ne
         self.assertEqual(sorted(json.loads(out["storage"][B]["ytdj.id.miss"])), sorted([A, A80, IP]))
+
+    def test_names_are_retried_soon_numbers_later(self):
+        """Jména v síti chvíli odpovídají a chvíli ne (F-NICK-10): zkusit je znovu za 2 minuty, čísla za hodinu."""
+        sc = dict(accounts=self.PETR, storage=self.petr_at(A),
+                  reachable={A: False, A80: False, B: True, IP: False})
+        out = self.run_js(**sc, visits=[B + "/", "+110000", B + "/"])
+        self.assertEqual(len(out["probes"]), 3)                      # do 2 minut nic znovu
+        out = self.run_js(**sc, visits=[B + "/", "+125000", B + "/"])
+        self.assertEqual(sorted(out["probes"][3:]), sorted([A, A80]))  # po 2 minutách jen jména
+        out = self.run_js(**sc, visits=[B + "/", "+3605000", B + "/"])
+        self.assertEqual(sorted(out["probes"][3:]), sorted([A, A80, IP]))  # po hodině i číselná adresa
+        # jméno, které se mezitím ozvalo, účet přinese
+        sc["reachable"] = {A: True, A80: False, B: True, IP: False}
+        sc["storage"] = {**self.petr_at(A), B: {"ytdj.id.miss": json.dumps({A: 1})}}
+        out = self.run_js(**sc, visits=[B + "/"])
+        self.assertEqual(out["storage"][B]["ytdj.client"], "web-petr-0000001")
+
+    def test_start_page_stays_one_step_back(self):
+        """Kdyby adresa po cestě přestala odpovídat, tlačítko Zpět vrátí na stránku, odkud cesta vyšla."""
+        out = self.run_js(accounts=self.PETR, storage=self.petr_at(A), visits=[B + "/"], backFromCache=True,
+                          reachable={A: True, B: True, IP: True, A80: False})
+        self.assertEqual(out["navs"][0], "assign")                  # začátek zůstává v historii
+        self.assertEqual(set(out["navs"][1:]), {"replace"})         # mezistránky se nahrazují
+        self.assertEqual(out["reloads"], 1)  # stránka vrácená z paměti ve stavu „odcházím“ se načte znovu
+        # cesta, která se nevrátila, se při dalším načtení ohlásí a nic po ní nezůstane
+        go = json.dumps({"n": "ab" * 16, "back": B + "/", "t": 1})
+        out = self.run_js(accounts=self.PETR, storage=self.petr_at(B), session={B: {"ytdj.id.go": go}},
+                          linked={"web-petr-0000001": list(OWN)}, visits=[B + "/"])
+        self.assertEqual([r["event"] for r in out["reports"]], ["trip_lost"])
+        self.assertEqual(out["trace"], [B + "/", "--"])
+
+    def test_page_reports_each_step(self):
+        out = self.run_js(accounts=self.PETR, storage=self.petr_at(A), visits=[B + "/"],
+                          reachable={A: True, B: True, IP: False, A80: False})
+        events = [(r["at"], r["event"]) for r in out["reports"]]
+        self.assertEqual(events, [(B, "probe"), (B, "trip_start"), (A, "hop"), (B, "trip_done")])
+        probe, start, hop, done = out["reports"]
+        self.assertEqual({r["o"]: r["ok"] for r in probe["results"]}, {A: True, A80: False, IP: False})
+        self.assertEqual((start["route"], hop["next"], hop["account"], done["how"]), ([A], "back", True, "taken"))
+        for why, extra in (("storage", {"brokenStorage": [B]}), ("interacting", {"interact": True}),
+                           ("recent", {"storage": {B: {**self.petr_at(B)[B], "ytdj.id.try": "99999999999999"}}})):
+            with self.subTest(why=why):
+                sc = {"accounts": self.PETR, "storage": self.petr_at(B), "visits": [B + "/"], **extra}
+                skips = [r["why"] for r in self.run_js(**sc)["reports"] if r["event"] == "skip"]
+                self.assertEqual(skips, [why])
+        # nic k hlášení, když je všechno srovnané (běžné načtení stránky)
+        out = self.run_js(accounts=self.PETR, storage=self.petr_at(B), visits=[B + "/"],
+                          linked={"web-petr-0000001": list(OWN)})
+        self.assertEqual(out["reports"], [])
+
+    def test_open_page_adopts_the_kept_account_without_reload(self):
+        accounts = {"web-old-0000001": {"nick": "Robert", "age": 1}}
+        out = self.run_js(accounts=accounts, alias={"web-new-0000002": "web-old-0000001"},
+                          storage={B: {"ytdj.client": "web-old-0000001", "ytdj.nick": "Robert"}},
+                          linked={"web-old-0000001": list(OWN)}, visits=[B + "/"], check="web-new-0000002")
+        got = out["checks"][0]  # stránka, která pořád drží staré id (jiná záložka už má nové)
+        self.assertEqual((got["client"], got["nick"], got["changed"]), ("web-old-0000001", "Robert", True))
+        self.assertTrue(got["note"])
+        self.assertEqual(out["trace"], [B + "/", "--"])  # bez načítání stránky
+        self.assertIn("moved", [r["event"] for r in out["reports"]])
+        same = self.run_js(accounts=accounts, storage={B: {"ytdj.client": "web-old-0000001"}},
+                           linked={"web-old-0000001": list(OWN)}, visits=[B + "/"], check="web-old-0000001")
+        self.assertEqual(same["checks"], [None])
+        idx = (STATIC / "index.html").read_text(encoding="utf-8")
+        re_me = idx[idx.index("function recheckMe()"): idx.index("/* connection: SSE")]
+        for needle in ("ytdjIdentity.check(S.client)", "applyIdentity(r)", '"visibilitychange"', '"storage"',
+                       "setInterval(recheckMe"):
+            self.assertIn(needle, re_me)
+        self.assertIn("if (d.moved) { recheckMe(); return; }", idx)
 
     def test_address_that_dies_mid_way_is_skipped(self):
         # IP odpoví stránce B, ale z mezistránky na A už ne → cesta ji vynechá a vrátí se
@@ -650,7 +886,8 @@ class Pages(unittest.TestCase):
         self.assertLess(idx.index('<script src="/identity.js"></script>'), idx.index('S.client = load("ytdj.client")'))
         start = idx[idx.index("function startMe()"): idx.index("/* connection: SSE")]
         self.assertIn("idReady.then", start)
-        self.assertLess(start.index("setNick(r.nick"), start.index("openNick(false"))  # nejdřív účet, pak dotaz
+        self.assertLess(start.index("applyIdentity(r)"), start.index("openNick(false"))  # nejdřív účet, pak dotaz
+        self.assertIn("setNick(r.nick", idx[idx.index("function applyIdentity(r)"): idx.index("function startMe()")])
         self.assertIn("|| Promise.resolve(null)", idx)  # bez skriptu jako dřív
         # dotaz na přezdívku při načtení už jen přes startMe (po srovnání účtu)
         self.assertEqual(idx.count('if (!S.nick) openNick(false, load("ytdj.who") || "");'), 2)

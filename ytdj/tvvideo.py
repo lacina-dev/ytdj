@@ -49,6 +49,14 @@ RESOLVE_TIMEOUT = 120.0  # s — yt-dlp na Pi studeně ~19 s; s nejnižší prio
 RESOLVE_FAIL_KEEP = 30 * 60.0  # s — nepovedené hledání obrazu se hned nezkouší znovu
 EXPIRE_MARGIN = 10 * 60.0  # s — adresa, které zbývá míň, se hledá znovu
 KIND_KEEP = 2000  # kolik druhů skladeb si pamatovat
+# Obraz z toho, co už má resolver hudby: jeho hotový výsledek pro tutéž skladbu
+# nese všechny formáty včetně videa (Pi 6. 10.: 11 z 11 položek mělo H.264 720p
+# s přímou adresou). Čte se jen jeho soubor v RAM — resolveru se nic neposílá.
+# Stejná pravidla důvěry jako u zvuku: stáří výsledku a platnost adresy s rezervou.
+CACHE_MAX_AGE = 90 * 60.0  # s — jako MAX_AGE resolveru
+# Vlastní yt-dlp jen jako záloha: až když skladba už chvíli hraje a v cache
+# resolveru obraz pořád není (první klip na Pi tak čekal 28 s zbytečně).
+FALLBACK_AFTER = 20.0  # s
 TICK = 2.0
 VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
@@ -91,6 +99,8 @@ def stream_from_info(info: Any) -> dict | None:
         return None
     if not codec.startswith("avc1") or not isinstance(height, int) or not 0 < height <= 720:
         return None
+    if "m3u8" in str(info.get("protocol") or ""):
+        return None
     headers = info.get("http_headers") if isinstance(info.get("http_headers"), dict) else {}
     return {"id": str(info.get("id") or ""), "url": url,
             "headers": {str(k): str(v) for k, v in headers.items()
@@ -99,10 +109,49 @@ def stream_from_info(info: Any) -> dict | None:
             "expire": expires_at(url), "resolved": time.time()}
 
 
+def stream_from_cache_line(video_id: str, line: str, now: float | None = None
+                           ) -> tuple[dict | None, str]:
+    """Obraz z řádku cache resolveru hudby (`id<TAB>čas<TAB>JSON`): (proud, proč ne).
+
+    Nejlepší přímý proud H.264 do 720p ze seznamu formátů téhož videa; výsledek
+    starší než CACHE_MAX_AGE nebo s adresou těsně před vypršením se nebere.
+    """
+    now = time.time() if now is None else now
+    parts = line.rstrip("\n").split("\t", 2)
+    if len(parts) != 3 or parts[0] != video_id:
+        return None, "missing"
+    try:
+        saved = float(parts[1])
+        info = json.loads(parts[2])
+    except ValueError:
+        return None, "bad"
+    if not -60 <= now - saved < CACHE_MAX_AGE:
+        return None, "old"
+    formats = info.get("formats") if isinstance(info, dict) else None
+    best: dict | None = None
+    for f in formats if isinstance(formats, list) else []:
+        s = stream_from_info(f)
+        if s is None or (s["expire"] and s["expire"] - now < EXPIRE_MARGIN):
+            continue
+        rank = (s["height"], float(f.get("tbr") or 0))
+        if best is None or rank > best["_rank"]:
+            best = {**s, "_rank": rank}
+    if best is None:
+        return None, "no_avc1_720"
+    best.pop("_rank")
+    best["id"] = video_id
+    return best, ""
+
+
 class TvVideo:
     def __init__(self, cfg: Any, catalog: Any, player: Any, state_file: Path, stream_dir: Path,
                  on_change: Callable[[], None] | None = None, tv_status: Path = TV_STATUS,
-                 yt_dlp_args: Callable[[Any], list[str]] | None = None) -> None:
+                 yt_dlp_args: Callable[[Any], list[str]] | None = None,
+                 resolver_cache: Path | None = None) -> None:
+        # hotové výsledky resolveru hudby (tmpfs) — odtud se bere obraz nejdřív
+        self.resolver_cache = resolver_cache
+        self._cur: tuple[str | None, float] = (None, 0.0)  # co hraje a odkdy
+        self._cache_miss: dict[str, str] = {}  # videoId → proč v cache obraz není
         self.cfg = cfg
         self.catalog = catalog
         self.player = player
@@ -270,9 +319,45 @@ class TvVideo:
             self._failed[video_id] = time.monotonic()
         # adresa proudu do logu nepatří — jen že se našla a jak dlouho to trvalo
         telemetry.event("tv.video_resolve", video_id=video_id, ok=stream is not None,
+                        source="ytdlp", cache=self._cache_miss.get(video_id),
                         error=err or None, took_ms=int((time.monotonic() - t0) * 1000),
                         height=stream.get("height") if stream else None,
                         format=stream.get("format") if stream else None)
+
+    def _cache_lookup(self, video_id: str) -> tuple[dict | None, str]:
+        """Ve vlákně: najde skladbu v souboru resolveru a vytáhne z ní obraz."""
+        if self.resolver_cache is None:
+            return None, "no_cache"
+        try:
+            with open(self.resolver_cache, encoding="utf-8") as fh:
+                for line in fh:
+                    if line.startswith(video_id + "\t"):
+                        return stream_from_cache_line(video_id, line)
+        except FileNotFoundError:
+            return None, "missing"  # resolver ještě nic neuložil
+        except (OSError, UnicodeDecodeError):
+            return None, "unreadable"
+        return None, "missing"
+
+    async def _from_cache(self, video_id: str) -> bool:
+        """Obraz z hotového výsledku resolveru hudby — bez dalšího yt-dlp."""
+        t0 = time.monotonic()
+        stream, why = await asyncio.to_thread(self._cache_lookup, video_id)
+        if stream is None:
+            self._cache_miss[video_id] = why
+            if len(self._cache_miss) > 200:
+                self._cache_miss.clear()
+            return False
+        try:
+            await asyncio.to_thread(_write, self.stream_file(video_id), stream)
+        except OSError:
+            return False
+        self._streams[video_id] = stream
+        self._cache_miss.pop(video_id, None)
+        telemetry.event("tv.video_resolve", video_id=video_id, ok=True, source="cache",
+                        took_ms=int((time.monotonic() - t0) * 1000), height=stream.get("height"),
+                        format=stream.get("format"))
+        return True
 
     async def _wanted(self) -> tuple[str | None, list[str]]:
         """(co hraje, [co hraje a co bude dál]) — jen platná id."""
@@ -296,6 +381,8 @@ class TvVideo:
                 self.on_change()
             return
         cur, ids = await self._wanted()
+        if cur != self._cur[0]:
+            self._cur = (cur, time.monotonic())
         video, pending = None, False
         for vid in ids:
             if await self.kind(vid) != OMV:
@@ -304,13 +391,22 @@ class TvVideo:
                 if vid == cur:
                     video = vid
                 continue
-            if vid == cur:
-                pending = True
+            if self.report.get("blocked"):
+                continue  # telka klipy zrovna nesmí (ochrana) — nic se nechystá
+            # nejdřív z toho, co už resolver hudby pro tuhle skladbu má
+            if await self._from_cache(vid):
+                if vid == cur:
+                    video = vid
+                continue
+            if vid != cur:
+                continue  # další skladbu nechystáme vlastním yt-dlp: resolver ji teprve řeší
+            pending = True
             failed = self._failed.get(vid)
             if failed is not None and time.monotonic() - failed < RESOLVE_FAIL_KEEP:
-                if vid == cur:
-                    pending = False  # nenašlo se — telka ukáže obrazovku
+                pending = False  # nenašlo se — telka ukáže obrazovku
                 continue
+            if time.monotonic() - self._cur[1] < FALLBACK_AFTER:
+                continue  # zvuk se možná ještě řeší; jeho výsledek přinese i obraz
             if self._resolving is None and not self.report.get("blocked"):
                 # na pozadí, jeden po druhém; hudba ani tenhle krok na to nečekají
                 self._resolving = vid

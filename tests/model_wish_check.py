@@ -39,7 +39,7 @@ from ytdj.agent.codex import DECISION_SCHEMA, CodexDJ, default_binary  # noqa: E
 from ytdj.agent.intent import build_intent, option_intent  # noqa: E402
 from ytdj.agent.prompts import ROLE, render_state  # noqa: E402
 from ytdj.config import Config  # noqa: E402
-from ytdj.music.catalog import Catalog  # noqa: E402
+from ytdj.music.catalog import OMV, Catalog  # noqa: E402
 from ytdj.music.radio import RadioPools  # noqa: E402
 from ytdj.player.base import PlayerStatus  # noqa: E402
 from ytdj.state import Store  # noqa: E402
@@ -75,6 +75,20 @@ CASES = [
     ("hity od Queen", {"kind": "artist", "artists": ["Queen"]}),
     # the named artist does not have it → the existing version, with an honest note
     ("Holky z naší školky od Olympicu", {"plays_first": "Holky z naší školky", "note": "ji nemám"}),
+    # asks for PICTURE (clips on the TV) — in any wording: official videos, not songs
+    ("pusť klip Uptown Funk od Marka Ronsona", {"video": True, "plays_first": "Uptown Funk"}),
+    ("zahraj mi videa od Rammstein", {"video": True, "kind": "artist"}),
+    ("dej tam nějaké klipy, ať se máme na co koukat", {"video": True}),
+    ("Enjoy the Silence i s videem", {"video": True, "plays_first": "Enjoy the Silence"}),
+    ("chci na telce vidět něco od Kabátu", {"video": True, "kind": "artist"}),
+    ("něco veselého, ale ať k tomu běží obraz", {"video": True, "kind": "mood"}),
+    # must NOT become video versions (exact wishes stay exact, even with clips switched on)
+    ("Sonne od Rammstein", {"video": False, "plays_first": "Sonne"}),
+    ("pusť Queen", {"video": False, "kind": "artist"}),
+    ("něco pomalého na odpoledne", {"video": False, "kind": "mood"}),
+    ("depeche mode album violator", {"video": False, "kind": "album"}),
+    ("něco fakt sprostýho česky", {"video": False, "explicit_ok": True}),
+    ("něco úplně jiného", {"video": False}),
     # genuinely ambiguous — the same words are a song and an album (or a band):
     # here, and only here, a question is the right answer
     ("Paranoid", {"ask": True}),
@@ -95,6 +109,15 @@ class NoPlayer:
     async def status(self) -> PlayerStatus:
         return PlayerStatus(playing=False, paused=False, current=None, position=0.0,
                             duration=0.0, queue=[], volume=50)
+
+
+class ClipsOn:
+    """The TV side as the model sees it: clips possible and switched on."""
+
+    enabled = True
+
+    def can(self) -> tuple[bool, str]:
+        return True, ""
 
 
 def old_role() -> str | None:
@@ -119,19 +142,23 @@ async def queued(dj: CodexDJ, pools: RadioPools, plan) -> tuple[list[str], dict]
         extra["album_tracks"] = len(plan.album_tracks)
         extra["then_background"] = [t.title for t in plan.album_tracks[4:7]]
         return [t.label() for t in plan.album_tracks[:4]], extra
+    def kind(t) -> str:
+        return (t.video_type or "song")[-3:].replace("ong", "song") + " " + t.label()
+
     if intent.kind == "artist":
         first = list(plan.requested) + [t for t in plan.artist_tracks if t not in plan.requested]
-        return [t.label() for t in first[:4]], extra
+        return [kind(t) for t in first[:4]], extra
     if intent.kind == "songs":
-        return [t.label() for t in plan.requested], extra
+        return [kind(t) for t in plan.requested], extra
     if intent.kind == "song":
-        return [t.label() for t in plan.requested], {"then_radio_from": [t.label() for t in plan.seeds[:3]]}
+        return [kind(t) for t in plan.requested], {"then_radio_from": [kind(t) for t in plan.seeds[:3]]}
     if intent.kind == "mood":
         extra["seeds"] = [t.label() for t in plan.seeds]
-        await pools.set_seeds(plan.seeds, mood=intent.mood, explicit_ok=intent.explicit_ok)
+        await pools.set_seeds(plan.seeds, mood=intent.mood, explicit_ok=intent.explicit_ok,
+                              video_only=bool(intent.want_video and plan.video))
         block = await pools.next_tracks(3)
         extra["explicit_in_block"] = sum(1 for t in block if t.explicit)
-        return [t.label() for t in block], extra
+        return [kind(t) for t in block], extra
     return [], extra
 
 
@@ -147,6 +174,13 @@ def verdict(want: dict, intent, plan, first: list[str], asked: bool = False) -> 
         ok &= len(intent.albums) == want["albums"] and bool(plan.album_tracks)
     if "explicit_ok" in want:
         ok &= bool(intent.explicit_ok) == want["explicit_ok"]
+    if "video" in want:
+        ok &= bool(intent.want_video) == want["video"]
+        shown = (plan.requested or plan.artist_tracks[:4] or plan.seeds)
+        if want["video"]:
+            ok &= bool(shown) and all(t.video_type == OMV for t in shown)
+        else:
+            ok &= not any(t.video_type == OMV for t in plan.requested + plan.artist_tracks[:4])
     if "artists" in want:
         ok &= [a.lower() for a in intent.artists] == [a.lower() for a in want["artists"]]
         ok &= bool(first) and all(want["artists"][0].lower() in f.lower() for f in first)
@@ -163,6 +197,7 @@ async def main() -> None:
     store = Store(Path(_TMP) / "state.db")
     pools = RadioPools(catalog, store, cfg)
     dj = CodexDJ(cfg, catalog, pools, NoPlayer(), store)
+    dj.tv = ClipsOn()  # the harder case for the controls: clips are switched on
     binary = native_codex(default_binary()) or default_binary()
     work = tempfile.mkdtemp(prefix="ytdj-wishcheck-codex-")
     app = AppServer(binary, work, model=cfg.codex_model, max_turns_per_thread=1,
@@ -202,7 +237,8 @@ async def main() -> None:
                     "requested": [f"{a} — {t}" for a, t in intent.tracks],
                     "focus_artists": intent.artists,
                     "albums": [f"{a} — {t}" for a, t in intent.albums],
-                    "explicit_ok": intent.explicit_ok, "mood": intent.mood,
+                    "explicit_ok": intent.explicit_ok, "want_video": intent.want_video,
+                    "mood": intent.mood,
                     "seeds": [f"{a} — {t}" for a, t in intent.seeds][:5],
                 }
                 rows.append({"text": text, "run": run + 1, "ok": ok, "asked": asked,

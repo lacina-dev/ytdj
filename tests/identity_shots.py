@@ -13,7 +13,11 @@ jméno, které neexistuje).
 Headless Chrome (řízený přes `websockets`, systémový python3) projde:
   1. nový prohlížeč → přezdívka na první adrese → ostatní adresy ho poznají bez ptaní;
   2. dva dřívější účty na dvou adresách → spojí se do staršího i s hlasy;
-  3. na adresu, která neodpovídá, se prohlížeč nikdy nevydá.
+  3. na adresu, která neodpovídá, se prohlížeč nikdy nevydá;
+  4. adresa, která odpoví na dotaz a pak umře (jméno v síti se ztratilo uprostřed
+     cesty): co člověk uvidí a že ho tlačítko Zpět vrátí na funkční stránku.
+Nakonec vypíše, co o tom všem stojí v provozním logu (identity.*), a ověří, že
+v něm není žádné id klienta.
 Vypíše, co zjistil, a skončí kódem 1, když něco nesedí. Server běží jako
 podproces venv Pythonu (`YTDJ_VENV_PY`, jinak .venv v repozitáři).
 """
@@ -71,7 +75,8 @@ def serve(port_file: str) -> None:
         rig.srv.host, rig.srv.port = "127.0.0.1", 0
         await rig.srv.start()
         inner = rig.srv.port
-        a, b, dead = free_port(), free_port(), free_port()
+        a, b, dead, flaky = free_port(), free_port(), free_port(), free_port()
+        switch = Path(port_file).with_name("flaky-on")
 
         async def pipe(reader, writer):
             try:
@@ -94,18 +99,42 @@ def serve(port_file: str) -> None:
                 return
             await asyncio.gather(pipe(reader, w2), pipe(r2, writer))
 
+        async def forward_flaky(reader, writer):
+            """Dokud není přepínač: nic (adresa neodpovídá). S přepínačem odpoví na dotaz
+            „jsi to ty?" a každou jinou stránku utne — jméno, které se ztratilo uprostřed cesty."""
+            if not switch.exists():
+                writer.close()
+                return
+            try:
+                head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5)
+            except (OSError, asyncio.IncompleteReadError, asyncio.LimitOverrunError, asyncio.TimeoutError):
+                writer.close()
+                return
+            if b"/api/identity/hello" not in head.split(b"\r\n", 1)[0]:
+                writer.close()
+                return
+            try:
+                r2, w2 = await asyncio.open_connection("127.0.0.1", inner)
+            except OSError:
+                writer.close()
+                return
+            w2.write(head)
+            await asyncio.gather(pipe(reader, w2), pipe(r2, writer))
+
         for port in (a, b):
             for host in ("127.0.0.1", "::1"):
                 try:
                     await asyncio.start_server(forward, host, port)
                 except OSError:
                     pass  # stroj bez IPv6
+        await asyncio.start_server(forward_flaky, "127.0.0.1", flaky)
         own = [f"http://{h}:{p}" for p in (a, b) for h in ("127.0.0.1", "localhost")]
+        own.append(f"http://127.0.0.1:{flaky}")
         idn = identity.Identity(rig.app)
         idn.origins = identity.OwnOrigins(inner, alias="", hostname="", own_ips=lambda: [],
                                           extra=[*own, f"http://127.0.0.1:{dead}", "http://nowhere.invalid:8765"])
         rig.app.identity = idn
-        Path(port_file).write_text(json.dumps({"a": a, "b": b, "dead": dead}))
+        Path(port_file).write_text(json.dumps({"a": a, "b": b, "dead": dead, "flaky": flaky, "switch": str(switch)}))
         await asyncio.Event().wait()
 
     asyncio.run(go())
@@ -354,13 +383,62 @@ async def run(out: Path, ports: dict, chrome_bin: str) -> int:
         check(w["client"] == OLD and not w["ask"] and w["origin"] == name_a, "na adrese staršího účtu se nic nezměnilo")
         never_unreachable(tab, "scénář 2")
 
-    for scenario in (first, second):  # každý scénář v čistém prohlížeči
+    async def third(tab: Browser) -> None:
+        print("4. adresa odpoví na dotaz a pak umře uprostřed cesty")
+        Path(ports["switch"]).write_text("on")
+        try:
+            await tab.goto(name_b + "/", settle=6.0)
+            where = await tab.js("location.href")
+            hops = [u for u in tab.visited if "/identity" in u]
+            print(f"       prošel {len(hops)} mezistránek, skončil na: {where!r}")
+            check(not where.startswith("http://localhost") and not where.startswith("http://127.0.0.1"),
+                  "prohlížeč zůstal na chybové stránce mrtvé adresy (jukebox s tím nic neudělá)")
+            await tab.shot(out / "4a-address-died-mid-trip.png")
+            await tab.js("history.back()")
+            await tab.idle(5.0)
+            w = await tab.who()
+            check(w["origin"] == name_b and w["path"] == "/", f"Zpět vrátí na stránku, odkud cesta vyšla ({w['origin']}{w['path']})")
+            check(w["ask"], "stránka žije: nový prohlížeč dostane otázku na přezdívku")
+            before = len(tab.visited)
+            await tab.goto(name_b + "/")
+            w = await tab.who()
+            check(w["origin"] == name_b and len(tab.visited) - before == 1, "další načtení už nikam neodbíhá (10 minut)")
+            await tab.shot(out / "4b-back-on-the-start-page.png")
+        finally:
+            Path(ports["switch"]).unlink(missing_ok=True)
+
+    scenarios = (first, second, third) if chrome_bin else (first, second)
+    for scenario in scenarios:  # každý scénář v čistém prohlížeči
         if chrome_bin:
             await with_browser(chrome_bin, scenario)
         else:
             await with_firefox(scenario)
     print("VÝSLEDEK:", "v pořádku" if not check.bad else f"{check.bad} věcí nesedí")
     return 1 if check.bad else 0
+
+
+def log_summary(events: Path) -> int:
+    """Co o tom všem stojí v provozním logu — a že v něm není id klienta."""
+    try:
+        text = events.read_text(encoding="utf-8")
+    except OSError:
+        print("provozní log: žádný")
+        return 1
+    rows = [json.loads(line) for line in text.splitlines() if '"identity.' in line]
+    counts: dict[str, int] = {}
+    for r in rows:
+        key = r.get("kind", "?") + ("/" + str(r.get("event") or r.get("how") or r.get("why"))
+                                    if r.get("event") or r.get("how") or r.get("why") else "")
+        counts[key] = counts.get(key, 0) + 1
+    print("provozní log (identity.*):")
+    for key in sorted(counts):
+        print(f"    {counts[key]:3d}× {key}")
+    for r in rows:
+        if r.get("kind") in ("identity.merge", "identity.redeem") or r.get("event") in ("trip_done", "trip_lost", "probe"):
+            print("   ", json.dumps({k: v for k, v in r.items() if k not in ("ts", "t", "sid", "ip", "ua")}, ensure_ascii=False)[:230])
+    leaked = [s for s in (OLD, NEW, "web-") if s in "\n".join(json.dumps(r) for r in rows)]
+    print("  ok   v logu není žádné id klienta" if not leaked else f"  FAIL v logu je id klienta: {leaked}")
+    return 1 if leaked or not rows else 0
 
 
 def main() -> None:
@@ -393,6 +471,8 @@ def main() -> None:
                 raise SystemExit("server se nespustil")
             time.sleep(0.1)
         code = asyncio.run(run(out, json.loads(port_file.read_text()), chrome_bin))
+        time.sleep(1.5)  # zapisovač provozního logu
+        code = max(code, log_summary(Path(env["YTDJ_EVENTS_FILE"])))
     finally:
         server.terminate()
         try:

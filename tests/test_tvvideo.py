@@ -70,8 +70,10 @@ class FakePlayer:
 class Rig:
     """TvVideo s falešným katalogem, přehrávačem, telkou a yt-dlp (skript)."""
 
-    def __init__(self, current=None, queue=(), tv=None, ytdlp_sleep=0.0):
+    def __init__(self, current=None, queue=(), tv=None, ytdlp_sleep=0.0, fallback_after=0.0):
         self.dir = Path(tempfile.mkdtemp(dir=_TMP))
+        self.cache = self.dir / "resolver-cache"
+        self._fallback = mock.patch.object(tvvideo, "FALLBACK_AFTER", fallback_after)
         self.catalog, self.player = FakeCatalog(), FakePlayer(current, queue)
         self.changes = 0
         self.calls = self.dir / "ytdlp-calls"
@@ -87,7 +89,8 @@ class Rig:
         self.tv = TvVideo(SimpleNamespace(child_env=lambda: dict(os.environ)), self.catalog,
                           self.player, self.dir / "state" / "tv-video.json", self.dir / "streams",
                           on_change=self._changed, tv_status=self.tv_status,
-                          yt_dlp_args=lambda cfg: [str(fake), "--cookies", "/tajne/cookies.txt"])
+                          yt_dlp_args=lambda cfg: [str(fake), "--cookies", "/tajne/cookies.txt"],
+                          resolver_cache=self.cache)
         self.events: list[tuple[str, dict]] = []
         self._tel = mock.patch.object(telemetry, "event",
                                       lambda kind, **f: self.events.append((kind, f)))
@@ -97,6 +100,28 @@ class Rig:
 
     def tv_says(self, report: dict) -> None:
         self.tv_status.write_text(json.dumps(report))
+
+    def resolver_has(self, vid: str, age: float = 60.0, formats: list | None = None) -> None:
+        """Resolver hudby má skladbu hotovou (řádek v jeho cache, všechny formáty)."""
+        if formats is None:
+            formats = [
+                {"format_id": "251", "vcodec": "none", "acodec": "opus", "url": URL.format(exp=1)},
+                {"format_id": "134", **{k: v for k, v in info(vid, height=360).items()
+                                        if k not in ("id", "format_id")}, "tbr": 400},
+                {"format_id": "136", **{k: v for k, v in info(vid).items()
+                                        if k not in ("id", "format_id")}, "tbr": 1000},
+                {"format_id": "137", **{k: v for k, v in info(vid, height=1080).items()
+                                        if k not in ("id", "format_id")}, "tbr": 3000},
+                {"format_id": "247", **{k: v for k, v in info(vid, vcodec="vp09.00.31.08").items()
+                                        if k not in ("id", "format_id")}, "tbr": 900},
+                {"format_id": "232", **{k: v for k, v in info(vid).items()
+                                        if k not in ("id", "format_id")}, "protocol": "m3u8_native"},
+            ]
+        line = f"{vid}\t{time.time() - age!r}\t" + json.dumps(
+            {"id": vid, "format_id": "251", "url": URL.format(exp=1), "formats": formats})
+        old = self.cache.read_text() if self.cache.exists() else \
+            'YTDJ-RESOLVER-CACHE 1 {"template": [], "saved": 0}\n'
+        self.cache.write_text(old + line + "\n")
 
     def has_picture(self, vid: str, **kw) -> None:
         Path(f"{self.out}.{vid}").write_text(json.dumps(info(vid, **kw)))
@@ -115,9 +140,11 @@ class Rig:
 
     def __enter__(self):
         self._tel.start()
+        self._fallback.start()
         return self
 
     def __exit__(self, *a):
+        self._fallback.stop()
         self._tel.stop()
 
 
@@ -323,23 +350,92 @@ class Picture(unittest.TestCase):
                 self.assertEqual((ev["ok"], ev["height"], ev["video_id"]), (True, 720, CLIP))
         run(go())
 
-    def test_next_clip_is_prepared_ahead_one_at_a_time(self):
+    def test_picture_comes_from_what_the_music_resolver_already_has(self):
+        """První klip na Pi čekal 28 s na druhé yt-dlp; adresa obrazu přitom
+        byla v hotovém výsledku resolveru hudby. Teď se bere odtud."""
+        async def go():
+            with Rig(current=CLIP, queue=(NEXT_CLIP,)) as rig:
+                rig.resolver_has(CLIP)
+                rig.resolver_has(NEXT_CLIP)
+                await rig.tv.set(True, "x")
+                t0 = time.monotonic()
+                await rig.tv.tick()
+                self.assertLess(time.monotonic() - t0, 0.5)
+                self.assertEqual(rig.tv.video, CLIP)  # hned, bez čekání
+                self.assertEqual(rig.ytdlp_calls(), [])  # žádné další yt-dlp
+                saved = json.loads(rig.tv.stream_file(CLIP).read_text())
+                # nejlepší přímý H.264 do 720p: ne 1080p, ne VP9, ne HLS, ne zvuk
+                self.assertEqual((saved["format"], saved["height"], saved["id"]), ("136", 720, CLIP))
+                self.assertTrue(rig.tv.stream_file(NEXT_CLIP).exists())  # i další skladba dopředu
+                evs = [f for k, f in rig.events if k == "tv.video_resolve"]
+                self.assertEqual({(e["source"], e["ok"]) for e in evs}, {("cache", True)})
+                self.assertNotIn("googlevideo", json.dumps(evs))
+                # resolveru se nic neposílá a jeho soubor se jen čte
+                src = (ROOT / "ytdj" / "tvvideo.py").read_text(encoding="utf-8")
+                self.assertNotIn("socket", src)
+                self.assertEqual(src.count("open(self.resolver_cache"), 1)
+                # čtení souboru i rozbor běží ve vlákně
+                self.assertIn("await asyncio.to_thread(self._cache_lookup, video_id)", src)
+        run(go())
+
+    def test_cache_trust_rules_and_fallback_only_after_a_while(self):
+        async def go():
+            line = lambda **kw: None  # noqa: E731
+            # pravidla důvěry jako u zvuku: stáří výsledku a platnost adresy
+            with Rig(current=CLIP) as rig:
+                rig.resolver_has(CLIP, age=91 * 60)  # starší než 90 min
+                self.assertEqual(rig.tv._cache_lookup(CLIP), (None, "old"))
+            with Rig(current=CLIP) as rig:
+                soon = [{"format_id": "136", **{k: v for k, v in info(
+                    CLIP, url=URL.format(exp=int(time.time()) + 300)).items()
+                    if k not in ("id", "format_id")}}]
+                rig.resolver_has(CLIP, formats=soon)  # adresa vyprší za 5 min
+                self.assertEqual(rig.tv._cache_lookup(CLIP), (None, "no_avc1_720"))
+                self.assertEqual(rig.tv._cache_lookup(NEXT_CLIP), (None, "missing"))
+                rig.cache.write_text("nesmysl\n" + CLIP + "\tabc\t{\n")
+                self.assertEqual(rig.tv._cache_lookup(CLIP), (None, "bad"))
+                rig.cache.unlink()
+                self.assertEqual(rig.tv._cache_lookup(CLIP), (None, "missing"))
+            # v cache není: vlastní yt-dlp až když skladba už chvíli hraje
+            with Rig(current=CLIP, fallback_after=0.6) as rig:
+                rig.has_picture(CLIP)
+                await rig.tv.set(True, "x")
+                for _ in range(3):
+                    await rig.tv.tick()
+                    await asyncio.sleep(0.05)
+                self.assertEqual(rig.ytdlp_calls(), [])  # zvuk se možná ještě řeší
+                self.assertTrue(rig.tv.public()["pending"])  # web: „obraz se chystá“
+                await asyncio.sleep(0.6)
+                await rig.settle(lambda: rig.tv.video == CLIP)
+                ev = [f for k, f in rig.events if k == "tv.video_resolve"][-1]
+                self.assertEqual((ev["source"], ev["cache"]), ("ytdlp", "missing"))
+            # resolver mezitím skladbu dořešil → obraz odtud, yt-dlp se nespustí
+            with Rig(current=CLIP, fallback_after=30.0) as rig:
+                await rig.tv.set(True, "x")
+                await rig.tv.tick()
+                self.assertIsNone(rig.tv.video)
+                rig.resolver_has(CLIP)
+                await rig.tv.tick()
+                self.assertEqual((rig.tv.video, rig.ytdlp_calls()), (CLIP, []))
+            self.assertGreaterEqual(tvvideo.FALLBACK_AFTER, 15)
+        run(go())
+
+    def test_next_clip_is_never_resolved_by_our_own_yt_dlp(self):
         async def go():
             with Rig(current=CLIP, queue=(NEXT_CLIP, SONG), ytdlp_sleep=0.2) as rig:
                 rig.has_picture(CLIP)
                 rig.has_picture(NEXT_CLIP)
                 await rig.tv.set(True, "x")
-                await rig.tv.tick()
-                await rig.tv.tick()
-                self.assertEqual(rig.tv._resolving, CLIP)  # jeden po druhém: nejdřív hrající
-                self.assertLessEqual(len(rig.ytdlp_calls()), 1)
-                await rig.settle(lambda: rig.tv.stream_file(NEXT_CLIP).exists())
-                self.assertEqual(rig.tv.video, CLIP)
-                self.assertEqual(len(rig.ytdlp_calls()), 2)
-                # další skladba začne: obraz je hned, nic se nehledá
+                await rig.settle(lambda: rig.tv.video == CLIP)
+                for _ in range(3):
+                    await rig.tv.tick()
+                self.assertEqual(len(rig.ytdlp_calls()), 1)  # jen hrající; další chystá resolver
+                self.assertNotIn(NEXT_CLIP, " ".join(rig.ytdlp_calls()))
+                # resolver ji mezitím připravil → obraz je hned, když začne
+                rig.resolver_has(NEXT_CLIP)
                 rig.player.current, rig.player.queue = NEXT_CLIP, [SONG]
                 await rig.tv.tick()
-                self.assertEqual((rig.tv.video, len(rig.ytdlp_calls())), (NEXT_CLIP, 2))
+                self.assertEqual((rig.tv.video, len(rig.ytdlp_calls())), (NEXT_CLIP, 1))
                 self.assertNotIn(SONG, " ".join(rig.ytdlp_calls()))
         run(go())
 

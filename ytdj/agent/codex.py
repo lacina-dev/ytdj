@@ -32,7 +32,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from ..config import DATA_DIR, Config
-from ..music.catalog import Catalog, Track
+from ..music.catalog import OMV, Catalog, Track
 from ..music.radio import RadioPools
 from ..player.base import Player, queue_transaction
 from ..state import Store
@@ -69,8 +69,8 @@ from .offline import (
 )
 from .fastpath import (SONG_BUDGET, FastResult, enforce_requested, find_artists, find_song,
                        other_version)
-from .intent import (Intent, ListenerIntent, Pair, build_intent, option_intent,
-                     track_avoided)
+from .intent import (Intent, ListenerIntent, Pair, artist_match, build_intent, norm,
+                     option_intent, track_avoided)
 from .prompts import ROLE, render_state
 
 log = logging.getLogger(__name__)
@@ -166,6 +166,9 @@ DECISION_SCHEMA = {
         # true = posluchač VÝSLOVNĚ chce vulgární / sprosté / nekorektní
         # texty; jen pro tohle přání se pak z rádia nevyřazují explicitní skladby
         "explicit_ok": {"type": "boolean"},
+        # true = posluchač chce hudbu i s obrazem (klip, video, na telce):
+        # hrají se oficiální klipy místo písniček — jen když si o obraz řekl
+        "want_video": {"type": "boolean"},
         # akce ask: krátká otázka a 2–3 hotové výklady přání (jinak "" / [])
         "question": {"type": "string"},
         "options": {
@@ -209,6 +212,7 @@ DECISION_SCHEMA = {
         "focus_artists",
         "albums",
         "explicit_ok",
+        "want_video",
         "question",
         "options",
         "after_current",
@@ -308,6 +312,9 @@ class Plan:
     album_tracks: list[Track] = field(default_factory=list)
     album_label: str = ""
     album_artists: list[str] = field(default_factory=list)
+    # přání "i s obrazem": kolik zařazených skladeb jsou oficiální klipy
+    # (0 = klip se nenašel, hraje se písnička a poznámka to říká)
+    video: int = 0
 
 
 def parse_output(raw: str) -> dict:
@@ -374,6 +381,9 @@ class CodexDJ:
         # smí se model u tohohle tahu zeptat? Nastavuje jen fronta přání (má
         # komu a jak otázku ukázat); jinak se bere nejpravděpodobnější výklad.
         self.may_ask = False
+        # klipy na telce (ytdj/tvvideo.py, zapojí App) — jen pro kontext modelu
+        # ("zapnuté / vypnuté / telka je neumí"); None = bez telky
+        self.tv = None
         # kdy naposledy přišlo přání posluchače (time.time()) — drží Codex teplý
         self._last_wish_at = 0.0
         # podklad z katalogu pro model (Catalog.probe): text přání a úloha,
@@ -427,6 +437,20 @@ class CodexDJ:
             self._probe = None
         return res.lines() if res else []
 
+    def _tv_line(self) -> str:
+        """Stav klipů na telce pro model (aby na otázku odpověděl pravdivě)."""
+        tv = self.tv
+        if tv is None:
+            return ""
+        try:
+            can, why = tv.can()
+        except Exception:
+            return ""
+        if not can:
+            return f"telka je teď neumí ({why or 'neběží'}) — s obrazem to teď nejde"
+        return ("zapnuté" if tv.enabled else
+                "vypnuté (zapnou se samy, když si někdo řekne o hudbu s obrazem)")
+
     async def _build_prompt(self, user_input: str, probe: list[str] | None = None) -> str:
         st = await self.player.status()
         # [loop] čtení ze state.db a taste.md mimo event loop (SD karta pod zátěží)
@@ -444,6 +468,7 @@ class CodexDJ:
             focus="" if getattr(self.pools, "album", "") else self.focus,
             album=getattr(self.pools, "album", ""),
             catalog=probe or [],
+            tv=self._tv_line(),
             # kdo píše (id klienta, nastaví fronta přání) — jeho vlastní oblíbené
             office=self.votes.describe(asker=self.asker) if self.votes is not None else "",
         )
@@ -625,7 +650,16 @@ class CodexDJ:
             if fav is not None:
                 return fav
         with telemetry.timer("dj.resolve", intent_kind=intent.kind) as ev:
-            plan = self._office_votes(await self._resolve(intent))
+            # přání s obrazem: klipy se hledají souběžně s písničkami (ne až po nich)
+            early = self._video_early(intent) if intent.want_video else {}
+            plan = await self._resolve(intent)
+            if intent.want_video and not plan.failed:
+                await self._with_video(plan, early)
+            for task in early.values():
+                if not task.done():
+                    task.cancel()
+                ev["video"] = plan.video or None
+            plan = self._office_votes(plan)
             ev.update(
                 asked_tracks=[f"{a} — {t}" for a, t in intent.tracks] or None,
                 resolved_tracks=[t.label() for t in plan.requested] or None,
@@ -752,6 +786,132 @@ class CodexDJ:
                 intent.mood = ", ".join(intent.artists)
             intent.reply = ""  # odpověď modelu mluvila o "interpretovi"
         return still
+
+    def _video_early(self, intent: Intent) -> dict[tuple, asyncio.Task]:
+        """Hledání klipů spuštěné hned (podle jmen z rozhodnutí modelu)."""
+        out: dict[tuple, asyncio.Task] = {}
+        find = getattr(self.catalog, "official_video", None)
+        by_artist = getattr(self.catalog, "artist_videos", None)
+
+        def start(key: tuple, coro) -> None:
+            if key not in out:
+                task = asyncio.get_running_loop().create_task(coro)
+                task.add_done_callback(lambda t: t.cancelled() or t.exception())
+                out[key] = task
+
+        if intent.kind == "artist" and by_artist is not None:
+            for a in intent.artists:
+                start(("artist", a), by_artist(a, limit=50))
+        if find is not None:
+            pairs = list(intent.tracks) + ([] if intent.kind == "artist" else list(intent.seeds[:5]))
+            for a, t in pairs:
+                if a and t:
+                    start(("song", norm(t)), find(a, t))
+        return out
+
+    async def _with_video(self, plan: Plan, early: dict | None = None) -> None:
+        """Přání "i s obrazem": písničky v plánu vymění za jejich oficiální klipy.
+
+        Posluchač si o obraz řekl (Intent.want_video, rozhodl model) — jen
+        tehdy se smí hrát klip místo písničky; klip je jiná nahrávka (jiná
+        délka, úvodní scény). Skladba → její oficiální klip; interpret → jeho
+        oficiální klipy, nejznámější první; nálada → klipy seedů (rádio
+        z klipu jsou zase klipy). Kde oficiální klip není, zůstává písnička a
+        odpověď to řekne. Hledání běží naráz (jedno kolo dotazů navíc).
+        """
+        intent = plan.intent
+        find = getattr(self.catalog, "official_video", None)
+        by_artist = getattr(self.catalog, "artist_videos", None)
+        if find is None:
+            return
+
+        early = early or {}
+
+        async def video_of(t: Track) -> Track | None:
+            if t.video_type == OMV:
+                return t
+            task = early.get(("song", norm(t.title)))
+            if task is not None:
+                with suppress(Exception):
+                    v = await task
+                    if v is not None and artist_match(v.artist, t.artist.split(",")[0].strip()):
+                        return v
+            try:
+                return await find(t.artist.split(",")[0].strip(), t.title)
+            except Exception as exc:
+                log.warning("klip k %s selhal: %s", t.label(), exc)
+                return None
+
+        async def videos_of(name: str) -> list[Track]:
+            if by_artist is None:
+                return []
+            task = early.get(("artist", name))
+            if task is not None:
+                with suppress(Exception):
+                    return await task
+            try:
+                return await by_artist(name, limit=50)
+            except Exception as exc:
+                log.warning("klipy interpreta %s selhaly: %s", name, exc)
+                return []
+
+        artists = list(intent.artists) if intent.kind == "artist" else []
+        seeds = [] if intent.kind == "artist" else list(plan.seeds[:5])
+        got = await asyncio.gather(
+            asyncio.gather(*(video_of(t) for t in plan.requested)),
+            asyncio.gather(*(videos_of(a) for a in artists)),
+            asyncio.gather(*(video_of(t) for t in seeds)),
+        )
+        req_v, art_v, seed_v = got
+        # vyžádané skladby
+        missing: list[str] = []
+        longer: list[str] = []
+        new_req: list[Track] = []
+        for t, v in zip(plan.requested, req_v):
+            if v is None:
+                missing.append(t.label())
+                new_req.append(t)
+                continue
+            if t.duration and v.duration and abs(v.duration - t.duration) >= 30 and v.id != t.id:
+                longer.append(v.title)
+            if all(x.id != v.id for x in new_req):
+                new_req.append(v)
+        n_video = sum(1 for t in new_req if t.video_type == OMV)
+        plan.requested = new_req
+        if missing:
+            plan.notes.append("Oficiální klip k " + "; ".join(missing)
+                              + " nemám — hraju písničku (na telce bez obrazu).")
+        if longer:
+            plan.notes.append("Klip je jiná nahrávka než písnička z alba (jiná délka).")
+        # interpret(i)
+        if artists:
+            lacking = [a for a, vs in zip(artists, art_v) if not vs]
+            have = [vs for vs in art_v if vs]
+            if have:
+                keep = [t for t in plan.artist_tracks if lacking and any(
+                    artist_match(t.artist, a) for a in lacking)]
+                plan.artist_tracks = interleave(have + ([keep] if keep else []))
+                n_video += sum(len(vs) for vs in have)
+            if lacking:
+                plan.notes.append("Oficiální klipy od " + ", ".join(lacking)
+                                  + " nemám — hraju písničky (na telce bez obrazu).")
+        # nálada / "a podobné": seedy jako klipy → rádio z nich jsou klipy
+        if seeds:
+            vids = [v for v in seed_v if v is not None]
+            uniq: list[Track] = []
+            for v in vids:
+                if all(x.id != v.id for x in uniq):
+                    uniq.append(v)
+            if uniq:
+                plan.seeds = uniq
+                n_video += len(uniq) if intent.kind == "mood" else 0
+            elif intent.kind == "mood":
+                plan.notes.append("K téhle náladě jsem oficiální klipy nenašel — hraju písničky "
+                                  "(na telce bez obrazu).")
+        plan.video = n_video
+        telemetry.event("dj.video", intent_kind=intent.kind, videos=n_video,
+                        missing=missing or None,
+                        artists_without=[a for a, vs in zip(artists, art_v) if not vs] or None)
 
     async def _resolve_albums(self, plan: Plan) -> Plan:
         """Přání alba: skladby jmenovaných alb v pořadí (nejvýš 3 alba)."""
@@ -938,9 +1098,10 @@ class CodexDJ:
             await self.pools.set_album(plan.album_label, plan.album_tracks,
                                        mood=f"album {plan.album_label}",
                                        artists=plan.album_artists)
-        elif intent.explicit_ok:
+        elif intent.explicit_ok or (intent.want_video and plan.video):
             await self.pools.set_seeds(
-                plan.seeds, mood=intent.mood, allow_long=bool(plan.requested), explicit_ok=True
+                plan.seeds, mood=intent.mood, allow_long=bool(plan.requested),
+                explicit_ok=intent.explicit_ok, video_only=bool(intent.want_video and plan.video),
             )
         else:
             await self.pools.set_seeds(
@@ -1419,6 +1580,7 @@ class CodexDJ:
             focus_artists=data.get("focus_artists") or None,
             albums=_labels(data.get("albums")),
             explicit_ok=bool(data.get("explicit_ok")) or None,
+            want_video=bool(data.get("want_video")) or None,
             question=str(data.get("question") or "")[:200] or None,
             options=[str(o.get("label") or "")[:80] for o in data.get("options") or []
                      if isinstance(o, dict)] or None,
@@ -1450,6 +1612,7 @@ class CodexDJ:
             control=intent.control or None, mood=intent.mood[:120],
             albums=[f"{a} — {t}" for a, t in intent.albums] or None,
             explicit_ok=intent.explicit_ok or None,
+            want_video=intent.want_video or None,
             repaired=intent.note or None,
         )
         return intent

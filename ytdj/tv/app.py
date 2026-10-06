@@ -212,7 +212,10 @@ class TvApp:
     def _tick(self) -> float:
         """Seconds until something on screen can change by itself."""
         if self.director is not None and (self.director.session is not None or self._wants_video()):
-            return 1.0  # the clip is steered once a second
+            s = self.director.session
+            # while the player starts, look often (when did it open, when is the
+            # first frame up); afterwards the clip is steered once a second
+            return 0.2 if s is not None and not getattr(s, "showing", True) else 1.0
         with self._lock:
             state, offline = self._state, self._offline
         now = time.time()

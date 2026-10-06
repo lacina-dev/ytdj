@@ -83,6 +83,8 @@ def routes(srv: "WebServer") -> list[Route]:
 
     def who_of(data: dict) -> tuple[str, str]:
         """(id klienta, jméno) — bez id prohlížeče se nepíše."""
+        from . import identity_api  # staré id spojeného účtu → platný účet (F-NICK-09)
+        identity_api.current(app, data, "/api/issues")
         cid = clean_cid(data.get("client"))
         if not cid:
             raise IssueError("Chybí id prohlížeče — obnov prosím stránku.", 400)

@@ -71,6 +71,7 @@ class TvView:
     note_who: str = ""
     detail: str = ""  # outage / offline reason
     clock: str = ""
+    clip: bool = False  # the playing track is a clip and its picture is on its way
     address: str = ""  # what to type into a browser; "" = not known (nothing is shown)
     address_ip: str = ""  # the same place as a bare address (no name lookup needed): the QR code
     art: bool = False  # the cover is ready
@@ -156,7 +157,11 @@ def view_from(state: dict | None, *, offline: str = "", now: float | None = None
     if dur > 0:
         pos = min(pos, dur)
     vid = _s(cur.get("id"), 16)
-    return TvView(state=kind, vid=vid, title=_s(cur.get("title"), 200) or "?",
+    tv = state.get("tv") if isinstance(state.get("tv"), dict) else {}
+    # klipy zapnuté a tahle skladba je klip: obraz se chystá (nebo právě nabíhá)
+    clip = tv.get("on") is True and not tv.get("blocked") and kind != "outage" \
+        and (tv.get("pending") is True or (bool(vid) and tv.get("video") == vid))
+    return TvView(state=kind, vid=vid, clip=clip, title=_s(cur.get("title"), 200) or "?",
                   artist=_s(cur.get("artist"), 120), duration=int(dur),
                   position=int(max(0.0, pos)) // PROGRESS_STEP * PROGRESS_STEP,
                   who=who, wish=wish, origin=origin, detail=detail,
@@ -250,7 +255,7 @@ class Renderer:
         web = (x1 - qr_w, foot_y, x1, foot_y + self.foot_h)
         old = {r.name: r.last for r in self.regions}
         self.regions = [
-            _Region("head", head, lambda v: (v.state, v.clock), self._draw_head),
+            _Region("head", head, lambda v: (v.state, v.clock, v.clip), self._draw_head),
             _Region("main", main, lambda v: (v.state, v.vid, v.title, v.artist, v.who, v.wish,
                                              v.origin, v.art, v.detail), self._draw_main),
             _Region("bar", bar, lambda v: (v.state, v.position, v.duration, bool(v.vid)),
@@ -327,6 +332,11 @@ class Renderer:
         d.ellipse((x, cy - r, x + 2 * r, cy + r), fill=color)
         d.text((x + 2 * r + round(12 * u), cy), label, font=self.font(26, True), fill=color,
                anchor="lm")
+        if v.clip:
+            # honest while waiting: the picture of this track is being prepared
+            x += 2 * r + round(12 * u) + d.textlength(label, font=self.font(26, True))
+            d.text((x + round(22 * u), cy), "·  klip se načítá…", font=self.font(24), fill=MUTED,
+                   anchor="lm")
         d.text((w, cy), v.clock, font=self.font(40, True), fill=MUTED, anchor="rm")
         d.line((0, h - 1, w, h - 1), fill=LINE, width=max(1, round(2 * u)))
 

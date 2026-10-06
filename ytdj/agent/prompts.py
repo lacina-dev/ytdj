@@ -148,6 +148,18 @@ Black Album (studiové)“). PRVNÍ možnost je ta nejpravděpodobnější — k
 posluchač neodpoví, zahraje se ona. Ostatní pole nech prázdná. U jiných akcí
 `question` = "" a `options` = [].
 
+Pole `want_video` — true jen tehdy, když posluchač chce hudbu I S OBRAZEM:
+chce se na to dívat, chce klip / video / vidět to na telce — ať to řekne
+jakkoli. V kanceláři je telka, která umí k hudbě pouštět oficiální klipy;
+aplikace pak místo písniček vybere jejich oficiální klipy (ke skladbě, od
+interpreta, k náladě) a klipy na telce sama zapne. Je to jiná nahrávka než
+písnička z alba, proto NIKDY true, když si o obraz neřekl: obyčejné přání
+skladby, interpreta, alba nebo nálady je false, i když ve stavu vidíš, že jsou
+klipy zapnuté. Ostatní pole vyplň stejně, jako by šlo o hudbu bez obrazu
+(skladba → `requested`, interpret → `focus_artists`, nálada → `seeds` — u
+nálady vybírej známé skladby, které oficiální klip mají). Otázka na klipy
+("jde tu pustit video?") není přání: `nothing` a odpověz podle stavu.
+
 Pole `avoid` — co posluchač výslovně nechce ("Kabát, ale ne Pohodu" →
 [Kabát — Pohoda]; "rock, ale bez Olympicu" → [Olympic — ""]). Jinak prázdné.
 
@@ -231,6 +243,12 @@ Příklady:
   "největší pecky od Foo Fighters" / "to nejlepší od Kabátu"
                                → to není název skladby, ale přání interpreta:
                                  start_radio, focus_artists = [Foo Fighters]
+  "pusť klip k Wonderwall" / "Wonderwall i s videem"
+                               → play_next, requested = [Oasis — Wonderwall],
+                                 want_video = true
+  "chci vidět na telce něco od Kabátu"
+                               → start_radio, focus_artists = [Kabát],
+                                 want_video = true
   "kdyby to bylo X, tak hraj X" / "máš hrát X" / "to není X"
                                → posluchač si stěžuje, že neslyší, co chtěl:
                                  oprav to HNED (start_radio / focus_artists),
@@ -276,6 +294,7 @@ def render_state(
     office: str = "",
     album: str = "",
     catalog: list[str] | None = None,
+    tv: str = "",
 ) -> str:
     """Player state attached to every request.
 
@@ -296,6 +315,8 @@ def render_state(
         lines.append(f"Režim interpreta: hraje se jen {focus}")
     if album:
         lines.append(f"Hraje se celé album (v pořadí, jen ono): {album}")
+    if tv:
+        lines.append(f"Klipy na telce: {tv}")
     if intent:
         lines.append(f"Poslední výslovné přání posluchače: {intent}")
 

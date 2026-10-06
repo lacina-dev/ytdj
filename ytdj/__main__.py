@@ -205,7 +205,12 @@ class App:
         from .tvvideo import TvVideo
 
         self.tvvideo = TvVideo(cfg, self.catalog, self.player, DATA_DIR / "tv-video.json",
-                               RUNTIME_DIR / "tv-video", on_change=self._poke_web)
+                               RUNTIME_DIR / "tv-video", on_change=self._poke_web,
+                               resolver_cache=RUNTIME_DIR / "resolver-cache")
+        # přání "i s obrazem" (POZADAVKY #72): DJ ví, jestli klipy jdou, a
+        # fronta přání je kvůli takovému přání zapne
+        self.dj.tv = self.tvvideo
+        self.wishes.tv = self.tvvideo
         self._start_task: asyncio.Task | None = None
 
     def _poke_web(self) -> None:
@@ -686,6 +691,11 @@ class App:
             # "naposledy viděn" se píše nejvýš jednou za 10 min — při konci uložit
             self.wishes.nicks.save()
             self.wishes.nicks.flush()
+        with contextlib.suppress(Exception):
+            # spojené účty (identity.json) dopsat stejně jako přezdívky (F-RESTART-10)
+            ident = getattr(self, "identity", None)
+            if ident is not None:
+                ident.flush()
         self.store.close()
 
 

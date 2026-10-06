@@ -40,6 +40,10 @@ class Track:
     # ytmusic "isExplicit" (odznak E). None = neví se / ne — do podkresu se
     # explicitní nepouštějí, vyžádané jménem ano (RadioPools._reject_reason)
     explicit: bool | None = field(default=None, compare=False)
+    # druh podle YouTube Music, když ho zdroj uvádí (hledání videí, rádio,
+    # playlist): MUSIC_VIDEO_TYPE_OMV = oficiální klip (má obraz pro telku),
+    # …_ATV = písnička s obalem, …_UGC = nahrál někdo. None = neuvedeno.
+    video_type: str | None = field(default=None, compare=False)
 
     def compact(self) -> dict:
         """What the LLM will see — without None fields."""
@@ -170,7 +174,11 @@ def to_track(item: dict) -> Track | None:
         album=album if isinstance(album, str) else None,
         duration=_duration(item),
         explicit=True if item.get("isExplicit") else None,
+        video_type=item.get("videoType") if isinstance(item.get("videoType"), str) else None,
     )
+
+
+OMV = "MUSIC_VIDEO_TYPE_OMV"  # oficiální klip
 
 
 def _explicit_badge(renderer: Any) -> bool:
@@ -692,7 +700,8 @@ class Catalog:
                 out.albums.append((f"{names} — {title}" if names else title)
                                   + (f" ({extra})" if extra else ""))
             elif kind == "video" and title and len(out.videos) < videos:
-                out.videos.append(f"{names} — {title}" if names else title)
+                out.videos.append((f"{names} — {title}" if names else title)
+                                  + (" [oficiální klip]" if item.get("videoType") == OMV else ""))
         out.took_ms = int((time.monotonic() - t0) * 1000)
         telemetry.event("catalog.probe", text=telemetry.clip(text, 120), songs=len(out.songs),
                         artists=len(out.artists), albums=len(out.albums), videos=len(out.videos),
@@ -705,6 +714,87 @@ class Catalog:
             self.yt.get_watch_playlist, videoId=video_id, radio=True, limit=limit
         )
         return [t for t in (to_track(i) for i in res.get("tracks", [])) if t]
+
+    # ---- oficiální klipy (přání "i s obrazem", POZADAVKY #72) ----
+
+    async def official_video(self, artist: str, title: str) -> Track | None:
+        """Oficiální klip ke skladbě (druh OMV od toho interpreta), nebo None.
+
+        Jedno hledání mezi videi. Bere se jen video, které YouTube Music vede
+        jako oficiální klip A které je připsané hledanému interpretovi — mezi
+        "oficiálními" bývají i cizí nahrávky (zpomalené verze, covery pod
+        cizím jménem). Název musí sedět jako u skladby; živák nebo jiná verze
+        jen když si o ni posluchač řekl (match.score). Nahrávky fanoušků,
+        videa s textem a spol. (UGC) se neberou nikdy.
+        """
+        artist, title = _clean(artist), _clean(title)
+        query = f"{artist} {title}".strip()
+        if not title:
+            return None
+        with telemetry.timer("catalog.official_video", artist=artist, title=title) as ev:
+            raw = await self._search(query, filter="videos", limit=20)
+            cands: list[match.Candidate] = []
+            by_id: dict[str, dict] = {}
+            for n, item in enumerate(raw):
+                if not isinstance(item, dict) or item.get("videoType") != OMV:
+                    continue
+                names = match.artist_names(item)
+                if artist and (not names or match.artist_score(tuple(names), artist)[0] < 0.75):
+                    continue  # "oficiální" klip pod cizím jménem
+                for c in match.from_video(item, n):
+                    cands.append(c)
+                    by_id[c.id] = item
+            ev["omv"] = len(by_id)
+            ranked = match.rank(cands, artist, title, artist_known=bool(artist))
+            if not ranked or ranked[0][0] < match.SCORE_FLOOR:
+                ev["found"] = None
+                return None
+            item = by_id[ranked[0][1].id]
+            track = to_track(item)
+            if track is not None:
+                track.video_type = OMV
+                ev.update(found=track.label(), video_id=track.id, score=round(ranked[0][0], 3))
+            return track
+
+    async def artist_videos(self, name: str, limit: int = 50) -> list[Track]:
+        """Oficiální klipy interpreta, nejznámější první (playlist "Videos"
+        z jeho profilu — jen položky druhu OMV). Prázdné = žádné nemá."""
+        name = _clean(name)
+        if not name:
+            return []
+        with telemetry.timer("catalog.artist_videos", artist=name) as ev:
+            artist = await self.find_artist(name)
+            if artist is None:
+                ev["found"] = None
+                return []
+            data = await self._call(self.yt.get_artist, artist.browse_id)
+            videos = data.get("videos") or {} if isinstance(data, dict) else {}
+            items: list[dict] = []
+            if videos.get("browseId"):
+                try:
+                    res = await self._call(self.yt.get_playlist, videos["browseId"], limit=limit)
+                    items = [t for t in res.get("tracks") or [] if isinstance(t, dict)]
+                except Exception as exc:
+                    log.warning("klipy interpreta %s selhaly: %s", name, exc)
+            # nejznámější první: profil jich pár vypisuje podle sledovanosti,
+            # celý playlist je řazený jinak (nové nahoře)
+            top = [str(v.get("videoId")) for v in videos.get("results") or []
+                   if isinstance(v, dict) and v.get("videoId")]
+            rank = {vid: n for n, vid in enumerate(top)}
+            items.sort(key=lambda it: rank.get(str(it.get("videoId")), len(rank)))
+            out: list[Track] = []
+            for item in items:
+                if item.get("videoType") != OMV or item.get("isAvailable") is False:
+                    continue
+                t = to_track(item)
+                if t is None or any(x.id == t.id for x in out):
+                    continue
+                if not t.artist:
+                    t.artist = artist.name
+                out.append(t)
+            ev.update(found=artist.name, raw=len(items), n=len(out),
+                      first=out[0].title if out else None)
+            return out[:limit]
 
     async def video_type(self, video_id: str) -> str | None:
         """Druh skladby podle YouTube Music: MUSIC_VIDEO_TYPE_OMV (oficiální

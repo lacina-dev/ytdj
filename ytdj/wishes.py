@@ -314,6 +314,9 @@ class Wish:
     # posluchač výslovně chtěl vulgární texty — filtr explicitních je zvednutý
     # jen pro tohle přání a jeho podkres (rozhodl model, Intent.explicit_ok)
     explicit_ok: bool = False
+    # posluchač chtěl hudbu i s obrazem (klipy na telce) a klipy se našly —
+    # podkres tohohle přání drží oficiální klipy (Intent.want_video)
+    want_video: bool = False
     # upřesnění: DJ se zeptal (`question`, `options` = hotové výklady, první
     # je nejpravděpodobnější) a čeká do `ask_until` (epoch s); `asked` = na
     # tohle přání už otázka padla (druhá nepadne nikdy)
@@ -441,6 +444,7 @@ class Wish:
             "album_heard": sorted(self.album_heard) or None,
             "asked": self.asked or None,
             "explicit_ok": self.explicit_ok or None,
+            "want_video": self.want_video or None,
             "replay": _track_json(self.replay) if self.replay is not None else None,
         }
 
@@ -472,6 +476,7 @@ class Wish:
         w.done_ids = {str(x) for x in d.get("done") or []}
         w.album_heard = {str(x) for x in d.get("album_heard") or []}
         w.explicit_ok = bool(d.get("explicit_ok"))
+        w.want_video = bool(d.get("want_video"))
         w.asked = bool(d.get("asked"))
         w.replay = _track_from(d.get("replay"))
         if isinstance(d.get("current"), str):
@@ -829,6 +834,9 @@ class WishQueue:
         self._last_skip: tuple | None = None
         self.last_heard: dict[str, float] = {}  # Wish.seat → kdy mu naposledy začala skladba
         self._bg_tasks: set[asyncio.Task] = set()
+        # klipy na telce (ytdj/tvvideo.py, zapojí App): přání "i s obrazem" je
+        # zapne; None = jukebox bez telky
+        self.tv: Any = None
         self._ask_tasks: dict[str, asyncio.Task] = {}  # časovače upřesnění (id přání → úloha)
         # klik do fronty: (videoId, kdo, id klienta) skladby podkresu "jako další"
         self._pin: tuple[str, str, str | None] | None = None
@@ -1553,6 +1561,7 @@ class WishQueue:
                 # ptát se nesmí (druhá otázka, vypnuto): nejpravděpodobnější výklad
                 from .agent.intent import option_intent
                 intent = option_intent(w.text, intent.options[0]) if intent.options else intent
+            self._video_gate(w, intent)
             steered = False
             if change:
                 before = intent
@@ -1578,6 +1587,40 @@ class WishQueue:
                                 took_ms=int((time.monotonic() - t0) * 1000))
                 return
             await self._apply(w, plan, t0)
+
+    # ---- přání "i s obrazem" (klipy na telce) ----
+
+    def _video_gate(self, w: Wish, intent: Any) -> None:
+        """Chce obraz, ale telka ho teď neumí (nebo tu není): klip se za
+        písničku nezamění — hraje se přesně to, co by hrálo jinak, a odpověď
+        řekne proč."""
+        if not getattr(intent, "want_video", False):
+            return
+        tv = self.tv
+        can, why = (False, "Telka tu není.") if tv is None else tv.can()
+        if can:
+            return
+        intent.want_video = False
+        w.note = (w.note + " " if w.note else "") + (
+            f"S obrazem to teď nejde ({(why or 'telka klipy neumí').rstrip('.')}) — "
+            "hraju to jako hudbu.")
+        telemetry.event("request.video", id=w.id, who=w.who, source=w.source, ok=False,
+                        why=telemetry.clip(why, 120) or None)
+
+    async def _video_on(self, w: Wish, plan: Any, notes: list[str]) -> None:
+        """Přání s obrazem se zařadilo a má klipy: zapnout Klipy na telce
+        (smí je zapnout kdokoli — tady to za posluchače udělá DJ a řekne to)."""
+        tv = self.tv
+        switched = False
+        if tv is not None and not tv.enabled:
+            try:
+                await tv.set(True, who=f"{w.who} (přáním)"[:40])
+                switched = True
+                notes.append("Zapnul jsem Klipy na telce.")
+            except Exception:
+                log.exception("klipy na telce se nepodařilo zapnout")
+        telemetry.event("request.video", id=w.id, who=w.who, source=w.source, ok=True,
+                        videos=getattr(plan, "video", 0), switched_on=switched or None)
 
     def _nudge_prefetch(self) -> None:
         nudge = getattr(self.player, "_schedule_prefetch", None)
@@ -1768,7 +1811,12 @@ class WishQueue:
             dj.avoid = list(intent.exclude)
         allowed = getattr(dj, "_allowed", lambda ts: ts)
         explicit_ok = bool(getattr(intent, "explicit_ok", False))
+        # s obrazem jen když si o něj řekl A nějaký oficiální klip se našel
+        video = bool(getattr(intent, "want_video", False) and getattr(plan, "video", 0))
         if intent.changes_music:
+            w.want_video = video
+            if getattr(self.pools, "video_only", False) and not video:
+                self.pools.video_only = False  # další přání: podkres zase bez ohledu na klipy
             # Filtr explicitních je zvednutý jen pro přání, které si o vulgární
             # texty výslovně řeklo; s každým dalším přáním zase platí (F-ZVUK-11).
             w.explicit_ok = explicit_ok
@@ -1844,13 +1892,14 @@ class WishQueue:
                                                alternate=w.fav_alternate)
             elif seeds and not others and not held:
                 await self._set_background(seeds=seeds, mood=intent.mood, who=w.who, wid=w.id,
-                                           allow_long=True, explicit_ok=explicit_ok)
+                                           allow_long=True, explicit_ok=explicit_ok,
+                                           video_only=video)
         elif intent.kind == "mood":
             w.summary = f"nálada: {intent.mood}" if intent.mood else "nálada"
             stash = self._album_stash() if held else None
             await self._set_background(seeds=plan.seeds, mood=intent.mood, who=w.who, wid=w.id,
                                        replace=False, explicit_ok=explicit_ok,
-                                       keep_album=stash is not None)
+                                       keep_album=stash is not None, video_only=video)
             # blok nálady patří autorovi — ať ji uslyší, i když čekají jiní
             w.tracks = await dj.next_tracks(self.amounts.block)
             if stash is not None:
@@ -1886,6 +1935,8 @@ class WishQueue:
             self.pools.session_seen.update(t.id for t in w.tracks)
         self._remember_wish(intent)
         replaced = await self._supersede(w, intent)
+        if video:
+            await self._video_on(w, plan, notes)
         w.state = "queued"
         if w.note:
             notes.append(w.note)
@@ -2136,7 +2187,8 @@ class WishQueue:
                               favourites: str = "", voter: str = "",
                               played: list[str] | None = None, alternate: bool = True,
                               album: bool = False, done: set[str] | None = None,
-                              explicit_ok: bool = False, keep_album: bool = False) -> None:
+                              explicit_ok: bool = False, keep_album: bool = False,
+                              video_only: bool = False) -> None:
         focus: list[str] = []
         playing = getattr(self.pools, "album", "")
         if playing and not keep_album and not (album and artist == playing):
@@ -2177,10 +2229,11 @@ class WishQueue:
             favourites = ""
             if not seeds:
                 return
-            if explicit_ok:
+            if explicit_ok or video_only:
                 await self.pools.set_seeds(seeds, mood=mood, allow_long=allow_long,
-                                           explicit_ok=True)
-                telemetry.event("radio.explicit_ok", on=True, by=wid or None)
+                                           explicit_ok=explicit_ok, video_only=video_only)
+                if explicit_ok:
+                    telemetry.event("radio.explicit_ok", on=True, by=wid or None)
             else:
                 await self.pools.set_seeds(seeds, mood=mood, allow_long=allow_long)
             focus = []
@@ -2305,13 +2358,15 @@ class WishQueue:
             if not seeds:
                 return
             await self._set_background(seeds=seeds, mood=x.summary.removeprefix("nálada: "),
-                                       who=x.who, wid=x.id, explicit_ok=x.explicit_ok)
+                                       who=x.who, wid=x.id, explicit_ok=x.explicit_ok,
+                                       video_only=x.want_video)
         else:
             seeds = _dedup(list(x.tracks))[:4]
             if not seeds:
                 return
             await self._set_background(seeds=seeds, mood=f"{seeds[0].artist} a podobné", who=x.who,
-                                       wid=x.id, allow_long=True, explicit_ok=x.explicit_ok)
+                                       wid=x.id, allow_long=True, explicit_ok=x.explicit_ok,
+                                       video_only=x.want_video)
         telemetry.event("request.background_follow", id=x.id, who=x.who, why=why,
                         intent_kind=x.kind)
 

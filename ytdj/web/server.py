@@ -1017,6 +1017,8 @@ class WebServer:
             raise BadValue("Tělo požadavku není platný JSON.") from None
         if not isinstance(data, dict):
             raise BadValue("Očekávám JSON objekt.")
+        # staré id účtu, který se mezitím spojil na jiné adrese → platný účet (F-NICK-09)
+        identity_api.current(self.app, data, request.url.path)
         return data
 
     async def _prompt(self, request: Request) -> Response:
@@ -1233,7 +1235,13 @@ class WebServer:
         if wq is None:
             return _json_error("Přezdívky tu nejsou.", 404)
         try:
-            return JSONResponse(wq.me(request.query_params.get("client")))
+            # účet se mezitím spojil na jiné adrese: "teď jsi tenhle" (client se liší, moved)
+            who = {"client": request.query_params.get("client")}
+            identity_api.current(self.app, who, request.url.path)
+            out = wq.me(who["client"])
+            if "_client_was" in who:
+                out["moved"] = True
+            return JSONResponse(out)
         except ValueError as exc:  # NickError
             return _json_error(str(exc), 400)
 

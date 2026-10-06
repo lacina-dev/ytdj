@@ -235,6 +235,44 @@ class Switch(unittest.TestCase):
         run(go())
 
 
+class PlayerNotReady(unittest.TestCase):
+    def test_player_that_is_not_up_is_a_normal_state_not_an_error(self):
+        """Po startu služby krok běží dřív než mpv: žádná chyba v logu, čeká se."""
+        async def go():
+            with Rig(current=CLIP) as rig:
+                rig.resolver_has(CLIP)
+                await rig.tv.set(True, "x")
+                real = rig.player.status
+
+                async def down():
+                    raise RuntimeError("mpv neběží")
+
+                rig.player.status = down
+                with self.assertNoLogs("ytdj.tvvideo", level="INFO"):  # ani varování, ani chyba
+                    for _ in range(3):
+                        await rig.tv.tick()
+                self.assertIsNone(rig.tv.public()["video"])
+                # smyčka běží dál a první krok po naběhnutí přehrávače funguje
+                with self.assertNoLogs("ytdj.tvvideo", level="WARNING"):
+                    with mock.patch.object(tvvideo, "TICK", 0.02):
+                        rig.tv.start()
+                        await asyncio.sleep(0.1)
+                        rig.player.status = real
+                        await asyncio.sleep(0.2)
+                self.assertEqual(rig.tv.video, CLIP)
+                # přehrávač spadne za běhu: klip se odvolá, zase bez chyby
+                rig.player.status = down
+                with self.assertNoLogs("ytdj.tvvideo", level="INFO"):
+                    await rig.tv.tick()
+                self.assertIsNone(rig.tv.video)
+                await rig.tv.stop()
+            # při ukončení se smyčka zastavuje dřív než přehrávač
+            main = (ROOT / "ytdj" / "__main__.py").read_text(encoding="utf-8")
+            self.assertLess(main.index("await self.tvvideo.stop()"),
+                            main.index("await self.player.stop()  # playback.json"))
+        run(go())
+
+
 class WhichTracks(unittest.TestCase):
     def test_only_a_track_that_is_itself_an_official_video(self):
         async def go():

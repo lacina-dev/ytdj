@@ -380,7 +380,22 @@ class TvVideo:
                 self.video, self.pending = None, False
                 self.on_change()
             return
-        cur, ids = await self._wanted()
+        try:
+            cur, ids = await self._wanted()
+            self._player_down = False
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Přehrávač ještě nenaběhl, restartuje se nebo se právě vypíná — pro
+            # tenhle krok běžný stav, ne chyba: potichu počkat (Pi 6. 10. 21:19:
+            # tři výpisy chyb hned po startu služby).
+            if not getattr(self, "_player_down", False):
+                self._player_down = True
+                log.debug("klipy na telce: přehrávač zatím neodpovídá (%s)", exc)
+            if self.video or self.pending:
+                self.video, self.pending = None, False
+                self.on_change()
+            return
         if cur != self._cur[0]:
             self._cur = (cur, time.monotonic())
         video, pending = None, False

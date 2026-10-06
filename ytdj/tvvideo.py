@@ -40,6 +40,17 @@ from . import telemetry
 log = logging.getLogger(__name__)
 
 OMV = "MUSIC_VIDEO_TYPE_OMV"  # oficiální klip; ATV = písnička s obalem, UGC = nahrál někdo
+ATV = "MUSIC_VIDEO_TYPE_ATV"
+# Proč zrovna není obraz, i když jsou klipy zapnuté: (pro web, krátce pro telku).
+# Vždycky se to řekne — „vybralo to video, ale klip nevidím" bez vysvětlení ne.
+REASONS = {
+    "loading": ("klip se načítá…", "klip se načítá…"),
+    "audio_only": ("tahle skladba je jen zvuk (není to klip)", "bez klipu — jen zvuk"),
+    "not_official": ("není to oficiální klip — obraz jen na výslovné přání (pošli odkaz na video "
+                     "nebo řekni DJovi o video)", "není oficiální klip"),
+    "unknown": ("nepodařilo se zjistit, jestli je tahle skladba klip", "klip nezjištěn"),
+    "no_format": ("pro tuhle skladbu není vhodný formát obrazu", "obraz nejde přehrát"),
+}
 # H.264 do 720p: jediné, co Pi 3 dekóduje hardwarem (720p25 ≈ 10 % jádra,
 # změřeno 6. 10.); přímý proud https, ne HLS
 FORMAT = "bestvideo[vcodec^=avc1][height<=720][protocol^=http]"
@@ -147,7 +158,13 @@ class TvVideo:
     def __init__(self, cfg: Any, catalog: Any, player: Any, state_file: Path, stream_dir: Path,
                  on_change: Callable[[], None] | None = None, tv_status: Path = TV_STATUS,
                  yt_dlp_args: Callable[[Any], list[str]] | None = None,
-                 resolver_cache: Path | None = None) -> None:
+                 resolver_cache: Path | None = None,
+                 explicit: Callable[[str], bool] | None = None) -> None:
+        # řekl si o obraz téhle skladby někdo výslovně? (odkaz na video, přání „i s obrazem“)
+        self._explicit = explicit
+        self.explicit = False  # platí to pro hrající skladbu
+        self.reason = ""  # proč hrající skladba nemá obraz (klíč z REASONS), "" = má / nehraje se
+        self._skipped: tuple | None = None  # (skladba, důvod) už zapsané do logu
         # hotové výsledky resolveru hudby (tmpfs) — odtud se bere obraz nejdřív
         self.resolver_cache = resolver_cache
         self._cur: tuple[str | None, float] = (None, 0.0)  # co hraje a odkdy
@@ -233,8 +250,37 @@ class TvVideo:
             "mode": str(r.get("mode") or "screen"), "blocked": str(r.get("blocked") or ""),
             "video": self.video if self.enabled and can else None,
             "pending": bool(self.pending and self.enabled and can),
+            # výslovně vyžádané video (odkaz, přání s obrazem): telka mu dá přednost
+            "explicit": bool(self.explicit and self.enabled and can),
+            # proč hrající skladba nemá obraz — vždy řečeno (web i telka)
+            **self._why_no_picture(can, why, r),
             "xruns": getattr(getattr(self.player, "sampler", None), "xruns", None),
         }
+
+    def _why_no_picture(self, can: bool, why: str, report: dict) -> dict:
+        """{"reason", "note", "note_tv"} pro hrající skladbu; prázdné, když obraz běží."""
+        if not self.enabled:
+            return {"reason": "", "note": "", "note_tv": ""}
+        if not can:
+            return {"reason": "tv_off", "note": why, "note_tv": ""}
+        blocked = str(report.get("blocked") or "")
+        if blocked and (self.video or self.pending or self.reason in ("", "loading")):
+            return {"reason": "blocked", "note": f"{blocked} — klip je vypnutý",
+                    "note_tv": f"klip vypnutý: {blocked}"}
+        if self.video and str(report.get("mode")) == "video":
+            return {"reason": "", "note": "", "note_tv": ""}
+        key = "loading" if (self.video or self.pending) else self.reason
+        text = REASONS.get(key)
+        return {"reason": key if text else "", "note": text[0] if text else "",
+                "note_tv": text[1] if text else ""}
+
+    def _is_explicit(self, video_id: str) -> bool:
+        if self._explicit is None:
+            return False
+        try:
+            return bool(self._explicit(video_id))
+        except Exception:
+            return False
 
     # ---- druh skladby a obraz ----
 
@@ -248,7 +294,7 @@ class TvVideo:
             kind = str(await self.catalog.video_type(video_id) or "")
         except Exception as exc:
             log.debug("druh skladby %s se nepodařilo zjistit: %s", video_id, exc)
-            return ""  # příště znovu
+            return "?"  # nezjištěno — příště znovu
         if len(self.kinds) >= KIND_KEEP:
             self.kinds.pop(next(iter(self.kinds)))
         self.kinds[video_id] = kind
@@ -392,16 +438,26 @@ class TvVideo:
             if not getattr(self, "_player_down", False):
                 self._player_down = True
                 log.debug("klipy na telce: přehrávač zatím neodpovídá (%s)", exc)
-            if self.video or self.pending:
-                self.video, self.pending = None, False
+            if self.video or self.pending or self.reason:
+                self.video, self.pending, self.reason, self.explicit = None, False, "", False
                 self.on_change()
             return
         if cur != self._cur[0]:
             self._cur = (cur, time.monotonic())
-        video, pending = None, False
+        video, pending, reason, explicit = None, False, "", False
         for vid in ids:
-            if await self.kind(vid) != OMV:
-                continue  # písnička (ATV) ani cizí nahrávka (UGC) se za obraz nemění
+            kind = await self.kind(vid)
+            wanted = self._is_explicit(vid)
+            if vid == cur:
+                explicit = wanted
+            # Co jukebox vybral sám: jen oficiální klip (písnička se za klip nemění,
+            # cizí nahrávky ne). Výslovně vyžádané video (odkaz, přání s obrazem)
+            # se ukáže, ať je jakéhokoli druhu — kromě písničky, která obraz nemá.
+            if not (kind == OMV or (wanted and kind != ATV)):
+                if vid == cur:
+                    reason = "audio_only" if kind == ATV else "unknown" if kind == "?" \
+                        else "not_official"
+                continue
             if self._ready(vid):
                 if vid == cur:
                     video = vid
@@ -419,6 +475,7 @@ class TvVideo:
             failed = self._failed.get(vid)
             if failed is not None and time.monotonic() - failed < RESOLVE_FAIL_KEEP:
                 pending = False  # nenašlo se — telka ukáže obrazovku
+                reason = "no_format"
                 continue
             if time.monotonic() - self._cur[1] < FALLBACK_AFTER:
                 continue  # zvuk se možná ještě řeší; jeho výsledek přinese i obraz
@@ -428,8 +485,14 @@ class TvVideo:
                 task = asyncio.create_task(self._resolve(vid), name="ytdj-tv-video-resolve")
                 task.add_done_callback(lambda _t: None)
                 self._resolve_task = task
-        if (video, pending) != (self.video, self.pending):
-            self.video, self.pending = video, pending
+        if reason and cur and (cur, reason) != self._skipped:
+            # jednou na skladbu: proč zůstala bez obrazu
+            self._skipped = (cur, reason)
+            telemetry.event("tv.video_skip", video_id=cur, reason=reason,
+                            video_kind=self.kinds.get(cur) or None, explicit=explicit or None)
+        if (video, pending, reason, explicit) != (self.video, self.pending, self.reason,
+                                                  self.explicit):
+            self.video, self.pending, self.reason, self.explicit = video, pending, reason, explicit
             self.on_change()
 
     async def _run(self) -> None:

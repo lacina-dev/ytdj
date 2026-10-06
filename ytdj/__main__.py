@@ -206,7 +206,8 @@ class App:
 
         self.tvvideo = TvVideo(cfg, self.catalog, self.player, DATA_DIR / "tv-video.json",
                                RUNTIME_DIR / "tv-video", on_change=self._poke_web,
-                               resolver_cache=RUNTIME_DIR / "resolver-cache")
+                               resolver_cache=RUNTIME_DIR / "resolver-cache",
+                               explicit=lambda vid: self.wishes.picture_wanted(vid))
         # přání "i s obrazem" (POZADAVKY #72): DJ ví, jestli klipy jdou, a
         # fronta přání je kvůli takovému přání zapne
         self.dj.tv = self.tvvideo

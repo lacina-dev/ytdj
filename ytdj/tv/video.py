@@ -106,10 +106,22 @@ class Limits:
 
     temp_stop: float = 78.0  # °C — the Pi throttles at 80–85; stop before that
     temp_ok: float = 72.0  # °C — and come back only when it has cooled
-    # free memory: the DJ's model is closed below 250 MB — the video must go
-    # first, so it stops a little above that
+    # Free memory (MemAvailable). Measured on the Pi on the evening of 6 Oct:
+    # a running clip costs ~120 MB of it (422 → ~300 MB, back to 411 after),
+    # with 0 audio dropouts; over the evening it was ≥ 380 MB 58 % of the time,
+    # ≥ 300 MB 88 %, with the DJ's model warm typically ~350 MB.
+    #
+    # A clip the jukebox shows on its own (an official video that happens to
+    # play) must never cost the DJ: his model is closed below 250 MB, so such a
+    # clip stops above that and starts only where it will stay above it.
     mem_stop: int = 260  # MB
-    mem_start: int = 420  # MB — the player takes ~157 MB; stay above mem_stop after
+    mem_start: int = 380  # MB — 260 + what a clip costs
+    # A video somebody asked for by name (a link, "pusť video…") may go lower:
+    # then the DJ's model may be closed meanwhile and the next wish is answered
+    # cold (some 10–25 s slower) — the clip was the wish. Sound still comes first:
+    # dropouts, heat and throttling stop it exactly as before.
+    mem_stop_wish: int = 180  # MB
+    mem_start_wish: int = 300  # MB
     drop_frames: int = 25  # dropped frames in one CHECK window (10 s) that count as stutter…
     drop_windows: int = 2  # …this many windows in a row
     cooldown: float = 300.0  # s off after a stop; doubles with every further stop
@@ -186,29 +198,31 @@ class Guard:
         """A video just started: dropouts and dropped frames count from here."""
         self._xruns0, self._dropped0, self._bad_windows = r.xruns, r.dropped, 0
 
-    def may_start(self, r: Readings) -> tuple[bool, str]:
+    def may_start(self, r: Readings, explicit: bool = False) -> tuple[bool, str]:
         lim = self.limits
+        mem_start = lim.mem_start_wish if explicit else lim.mem_start
         if self.clock() < self.blocked_until:
             return False, self.reason
         if r.throttled is not None and r.throttled & 0xF:
             return False, "procesor je přiškrcený nebo má málo napětí"
         if r.temp_c is not None and r.temp_c > (lim.temp_ok if self._hot else lim.temp_stop - 1):
             return False, "jukebox je horký"
-        if r.mem_avail_mb is not None and r.mem_avail_mb < lim.mem_start:
+        if r.mem_avail_mb is not None and r.mem_avail_mb < mem_start:
             return False, "málo volné paměti"
         self._hot = False
         self.reason = ""
         return True, ""
 
-    def while_running(self, r: Readings) -> str:
+    def while_running(self, r: Readings, explicit: bool = False) -> str:
         """"" = carry on; otherwise the reason — the video was stopped (trip)."""
         lim = self.limits
+        mem_stop = lim.mem_stop_wish if explicit else lim.mem_stop
         why = ""
         if r.temp_c is not None and r.temp_c >= lim.temp_stop:
             why, self._hot = "jukebox je horký", True
         elif r.throttled is not None and r.throttled & 0xF:
             why = "procesor je přiškrcený nebo má málo napětí"
-        elif r.mem_avail_mb is not None and r.mem_avail_mb < lim.mem_stop:
+        elif r.mem_avail_mb is not None and r.mem_avail_mb < mem_stop:
             why = "málo volné paměti"
         elif r.xruns is not None and self._xruns0 is not None and r.xruns > self._xruns0:
             why = "zvuk začal lupat"
@@ -442,6 +456,7 @@ class Want:
     paused: bool = False
     xruns: int | None = None
     on: bool = False  # the switch
+    explicit: bool = False  # somebody asked for this video by name (link, "pusť video")
 
 
 def want_from(state: dict | None, position: float) -> Want:
@@ -454,7 +469,7 @@ def want_from(state: dict | None, position: float) -> Want:
     xruns = tv.get("xruns") if isinstance(tv.get("xruns"), int) else None
     return Want(vid=vid if ok else "", position=max(0.0, position),
                 paused=bool(state.get("paused") or state.get("buffering")), xruns=xruns,
-                on=tv.get("on") is True)
+                on=tv.get("on") is True, explicit=bool(ok and tv.get("explicit") is True))
 
 
 @dataclass
@@ -545,6 +560,7 @@ class Director:
     def step(self, want: Want) -> str:
         """Advance one tick; returns the mode ("video" = the screen must not draw)."""
         now = self.clock()
+        waiting = ""
         can, why_not = self.capable()
         s = self.session
         # 1. stop what should not run any more
@@ -640,7 +656,7 @@ class Director:
                 self._check_at = now
                 r = self.readings()
                 r.xruns, r.dropped = want.xruns, s.dropped()
-                why = self.guard.while_running(r)
+                why = self.guard.while_running(r, want.explicit)
                 if why:
                     self.emit("tv.video_guard", video_id=s.vid, reason=why, temp_c=r.temp_c,
                               mem_avail_mb=r.mem_avail_mb, throttled=r.throttled, xruns=r.xruns,
@@ -649,7 +665,11 @@ class Director:
         # 3. start what should run
         elif want.vid and can and want.vid != self._refused:
             r = self.readings()
-            ok, why = self.guard.may_start(r)
+            ok, why = self.guard.may_start(r, want.explicit)
+            if not ok and self.clock() >= self.guard.blocked_until:
+                # not in a pause after a stop, just not enough room right now
+                # (memory, heat): say so instead of showing nothing without a word
+                waiting = why
             if ok:
                 stream = self._stream(want.vid)
                 if stream is None:
@@ -671,6 +691,10 @@ class Director:
         blocked = ""
         if can and want.on and self.session is None and self.clock() < self.guard.blocked_until:
             blocked = self.guard.reason
+        elif waiting and self.session is None:
+            blocked = waiting
+        elif can and want.vid and self.session is None and want.vid == self._refused:
+            blocked = "obraz téhle skladby se nepodařilo spustit"
         self.blocked = blocked
         self._report(can, why_not)
         return self.mode

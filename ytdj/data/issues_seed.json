@@ -237,6 +237,17 @@
       "body": "„Chci ověřit video, ale asi by to chtělo, aby agent reagoval na to, když chci video, a dodal video.“\n\nPOZADAVKY #72.",
       "resolution": "Klipy na telce se pouštěly jen u skladeb, které samy jsou oficiální klip — a DJ skoro vždy vybere písničku z alba, takže obraz nebyl. Nově stačí říct si o obraz („pusť klip k…“, „zahraj videa od…“, „chci to vidět na telce“): DJ vybere oficiální klipy — ke skladbě, od interpreta i k náladě — a Klipy na telce sám zapne. Když oficiální klip není, zahraje písničku a řekne to. Bez takového přání hraje dál vždy písnička, ne klip. V kódu a otestováno, i se skutečným modelem; čeká na nasazení a zkoušku na telce.",
       "resolved": "2026-10-06"
+    },
+    {
+      "key": "pozadavek-73",
+      "kind": "chyba",
+      "state": "resi_se",
+      "who": "vlastník",
+      "created": "2026-10-06",
+      "title": "Pustím klip, vybere to video, ale na telce není vidět",
+      "body": "„Pustím tam klip, vybralo to video, ale klip nevidím na telce.“\n\nPOZADAVKY #73.",
+      "resolution": "Šlo o záznam koncertu nahraný uživatelem. Telka do té doby pouštěla obraz jen u oficiálních klipů a nikde neřekla, proč obraz není. Oprava je hotová a čeká na nasazení: video, o které si někdo výslovně řekne (odkazem nebo „pusť video…“), se na telce ukáže, i když to oficiální klip není — jen písnička bez obrazu zůstane bez obrazu. A když obraz není, vypínač Klipy na telce i řádek na telce vždy napíšou proč (jen zvuk, klip se načítá, málo paměti, telka není připojená…).",
+      "resolved": "2026-10-06"
     }
   ]
 }

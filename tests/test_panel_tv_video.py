@@ -335,6 +335,14 @@ class StartUp(unittest.TestCase):
         for b in boxes:
             self.assertTrue(head[0] <= b[0] and head[1] <= b[1] and b[2] <= head[2] and b[3] <= head[3])
         self.assertIn("klip se načítá", (ROOT / "ytdj" / "tv" / "screen.py").read_text(encoding="utf-8"))
+        # a když obraz nebude, řekne krátce proč (z toho, co ví jukebox)
+        for note in ("bez klipu — jen zvuk", "klip vypnutý: málo volné paměti", "obraz nejde přehrát"):
+            v = view_from({**WISH, "tv": {"on": True, "video": None, "note_tv": note}}, now=NOW)
+            self.assertEqual((v.clip, v.clip_note), (False, note))
+            a = Renderer((1280, 720))
+            a.render(view_from({**WISH, "tv": {"on": True}}, now=NOW), full=True)
+            self.assertTrue(a.render(v))
+        self.assertEqual(view_from({**WISH, "tv": {"on": False, "note_tv": "x"}}, now=NOW).clip_note, "")
         # během rozjezdu se přehrávač hlídá často, pak jednou za vteřinu
         app = tvapp.TvApp(lambda: PngScreen(_TMP / "t.png", (720, 480)), "http://127.0.0.1:9",
                           "jukebox.local", director=rig_director_with(showing=False))
@@ -500,12 +508,78 @@ class Protection(unittest.TestCase):
         lim = Limits()
         # Codex (DJ) se zavírá pod 250 MB volné paměti — klip musí pryč dřív
         self.assertGreater(lim.mem_stop, 250)
-        self.assertGreaterEqual(lim.mem_start - 157, lim.mem_stop)  # přehrávač klipu ~157 MB
+        # běžící klip stojí ~120 MB volné paměti (změřeno 6. 10.: 422 → ~300 MB)
+        self.assertGreaterEqual(lim.mem_start - 120, lim.mem_stop)
+        # výslovně vyžádané video smí níž (DJ pak odpoví na další přání nastudeno),
+        # ale se stejným odstupem start/stop
+        self.assertLess(lim.mem_stop_wish, 250)
+        self.assertGreaterEqual(lim.mem_start_wish - 120, lim.mem_stop_wish)
+        self.assertGreaterEqual(lim.mem_stop_wish, 150)
         self.assertLess(lim.temp_stop, 80)  # Pi 3 se přiškrcuje od 80 °C
         self.assertLess(lim.temp_ok, lim.temp_stop - 3)  # hystereze
         self.assertGreaterEqual(lim.cooldown, 300)
         unit = (ROOT / "packaging" / "ytdj-tv.service").read_text(encoding="utf-8")
         self.assertIn("OOMScoreAdjust=900", unit)  # i jádro sáhne nejdřív po telce
+
+    def test_requested_video_may_run_with_less_memory_and_the_reason_is_always_said(self):
+        """Večer 6. 10. mělo Pi 188–370 MB volných: klip, o který si někdo řekl,
+        nesmí být potichu nemožný — a když nejde, řekne se proč."""
+        # co jukebox pouští sám: pod 380 MB nezačne (DJ má přednost) — a řekne to hned,
+        # bez „trestné“ pauzy
+        rig = Rig(readings=Readings(64.0, 320, 0))
+        rig.picture(CLIP)
+        for _ in range(3):
+            self.assertEqual(rig.step(), "screen")
+        self.assertEqual(FakeSession.made, [])
+        self.assertEqual(rig.report()["blocked"], "málo volné paměti")
+        self.assertEqual(rig.guard.trips, 0)
+        rig.readings = Readings(64.0, 400, 0)  # uvolnilo se → jde hned
+        rig.step()
+        self.assertEqual(len(FakeSession.made), 1)
+        # výslovně vyžádané video při 320 MB začne
+        rig = Rig(readings=Readings(64.0, 320, 0))
+        rig.picture(CLIP)
+        rig.clock.tick()
+        rig.d.step(Want(vid=CLIP, position=30.0, on=True, explicit=True, xruns=7))
+        self.assertEqual(len(FakeSession.made), 1)
+        s = rig.s
+        s.pos = s.start
+        rig.clock.tick()
+        self.assertEqual(rig.d.step(Want(vid=CLIP, position=30.0, on=True, explicit=True, xruns=7)),
+                         "video")
+        # běží dál i při 200 MB (obyčejný klip by pod 260 skončil) …
+        rig.readings = Readings(64.0, 200, 0)
+        rig.clock.tick(6)
+        self.assertEqual(rig.d.step(Want(vid=CLIP, position=40.0, on=True, explicit=True, xruns=7)),
+                         "video")
+        # … ale pod 180 MB končí taky, a zvuk má přednost vždy
+        rig.readings = Readings(64.0, 170, 0)
+        rig.clock.tick(6)
+        self.assertEqual(rig.d.step(Want(vid=CLIP, position=46.0, on=True, explicit=True, xruns=7)),
+                         "screen")
+        self.assertEqual(rig.report()["blocked"], "málo volné paměti")
+        rig = Rig(readings=Readings(64.0, 320, 0))
+        s = None
+        rig.picture(CLIP)
+        rig.clock.tick()
+        rig.d.step(Want(vid=CLIP, position=30.0, on=True, explicit=True, xruns=7))
+        s = rig.s
+        s.pos = s.start
+        rig.clock.tick()
+        rig.d.step(Want(vid=CLIP, position=30.0, on=True, explicit=True, xruns=7))
+        rig.clock.tick(6)
+        self.assertEqual(rig.d.step(Want(vid=CLIP, position=40.0, on=True, explicit=True, xruns=8)),
+                         "screen")  # lupnutí zvuku zastaví i vyžádané video
+        # obyčejný klip při 250 MB končí (DJ se zavírá pod 250)
+        rig = Rig()
+        rig.showing()
+        rig.readings = Readings(64.0, 250, 0)
+        self.assertEqual(rig.step(dt=6.0), "screen")
+        # telka ví, že jde o vyžádané video, jen ze stavu jukeboxu
+        st = {"current": {"id": CLIP}, "tv": {"on": True, "video": CLIP, "explicit": True}}
+        self.assertTrue(want_from(st, 1.0).explicit)
+        st["tv"]["explicit"] = False
+        self.assertFalse(want_from(st, 1.0).explicit)
 
     def test_each_trigger_stops_the_clip_and_says_why(self):
         cases = (
@@ -550,7 +624,7 @@ class Protection(unittest.TestCase):
         clock = Clock()
         g = Guard(Limits(), clock)
         self.assertEqual(g.may_start(COOL), (True, ""))
-        self.assertEqual(g.may_start(Readings(64, 400, 0)), (False, "málo volné paměti"))
+        self.assertEqual(g.may_start(Readings(64, 370, 0)), (False, "málo volné paměti"))
         self.assertEqual(g.may_start(Readings(64, 560, 0x2))[0], False)
         g.started(COOL)
         self.assertEqual(g.while_running(Readings(79.0, 560, 0)), "jukebox je horký")

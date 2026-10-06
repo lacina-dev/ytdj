@@ -235,6 +235,164 @@ class Switch(unittest.TestCase):
         run(go())
 
 
+class Requested(unittest.TestCase):
+    """Výslovně vyžádané video se ukáže, i když není oficiální klip (POZADAVKY #73)."""
+
+    def test_requested_video_is_shown_whatever_its_kind_but_a_song_never(self):
+        async def go():
+            for vid, asked, expect, reason in (
+                    (UGC, True, UGC, ""),  # koncert od cizího uživatele z odkazu → ukázat
+                    ("neznameid00", True, "neznameid00", ""),  # video mimo katalog → ukázat
+                    (SONG, True, None, "audio_only"),  # písnička obraz nemá, ani na přání
+                    (UGC, False, None, "not_official"),  # co jukebox vybral sám: jen oficiální
+                    (CLIP, False, CLIP, "")):
+                with Rig(current=vid) as rig:
+                    rig.tv._explicit = lambda v, asked=asked: asked
+                    rig.resolver_has(vid)
+                    await rig.tv.set(True, "x")
+                    await rig.tv.tick()
+                    p = rig.tv.public()
+                    self.assertEqual((p["video"], p["explicit"]), (expect, asked and bool(expect)
+                                                                   or (asked and vid == SONG)), vid)
+                    if expect:
+                        self.assertEqual(p["reason"], "loading")  # připravený, telka ho rozjíždí
+                        rig.tv_says({"can": True, "mode": "video", "blocked": ""})
+                        rig.tv._report_mono = -1e9
+                        await rig.tv.tick()
+                        p = rig.tv.public()
+                        self.assertEqual((p["reason"], p["note"]), ("", ""))
+                    else:
+                        self.assertEqual(p["reason"], reason, vid)
+                        self.assertTrue(p["note"] and p["note_tv"])
+        run(go())
+
+    def test_reason_is_always_given_and_logged_once_per_track(self):
+        async def go():
+            with Rig(current=SONG) as rig:
+                await rig.tv.set(True, "x")
+                for _ in range(4):
+                    await rig.tv.tick()
+                p = rig.tv.public()
+                self.assertEqual(p["note"], "tahle skladba je jen zvuk (není to klip)")
+                self.assertEqual(p["note_tv"], "bez klipu — jen zvuk")
+                skips = [f for k, f in rig.events if k == "tv.video_skip"]
+                self.assertEqual(len(skips), 1)  # jednou na skladbu
+                self.assertEqual((skips[0]["reason"], skips[0]["video_id"]), ("audio_only", SONG))
+                # cizí nahrávka, kterou vybral jukebox
+                rig.player.current = UGC
+                await rig.tv.tick()
+                self.assertIn("není to oficiální klip", rig.tv.public()["note"])
+                self.assertEqual([f["reason"] for k, f in rig.events if k == "tv.video_skip"],
+                                 ["audio_only", "not_official"])
+                # klip bez vhodného formátu
+                rig.player.current = CLIP
+                await rig.settle(lambda: rig.tv.public()["reason"] == "no_format")
+                self.assertEqual(rig.tv.public()["note"], "pro tuhle skladbu není vhodný formát obrazu")
+                # druh se nepodařilo zjistit
+                rig.catalog.fail = True
+                rig.player.current = NEXT_CLIP
+                await rig.tv.tick()
+                self.assertEqual(rig.tv.public()["reason"], "unknown")
+                # nic nehraje / vypnuto → žádná poznámka
+                rig.player.current = None
+                await rig.tv.tick()
+                self.assertEqual(rig.tv.public()["note"], "")
+                await rig.tv.set(False, "x")
+                self.assertEqual(rig.tv.public()["reason"], "")
+            # ochrana na telce (paměť, teplo) a nepřipojená telka: taky řečeno
+            with Rig(current=CLIP, tv={"can": True, "mode": "screen",
+                                       "blocked": "málo volné paměti"}) as rig:
+                rig.resolver_has(CLIP)
+                await rig.tv.set(True, "x")
+                await rig.tv.tick()
+                p = rig.tv.public()
+                self.assertEqual((p["reason"], p["note"], p["note_tv"]),
+                                 ("blocked", "málo volné paměti — klip je vypnutý",
+                                  "klip vypnutý: málo volné paměti"))
+            with Rig(current=CLIP, tv={"can": False, "why": "Telka není připojená (HDMI)."}) as rig:
+                await rig.tv.set(True, "x")
+                await rig.tv.tick()
+                p = rig.tv.public()
+                self.assertEqual((p["reason"], p["note"]), ("tv_off", "Telka není připojená (HDMI)."))
+            page = (ROOT / "ytdj" / "web" / "static" / "index.html").read_text(encoding="utf-8")
+            self.assertIn('else if (tv.note) note = "Teď bez obrazu: " + tv.note', page)
+        run(go())
+
+    def test_who_asked_comes_from_the_wish_and_lasts_as_long_as_it(self):
+        """Odkaz na video a přání „i s obrazem“ — z fronty přání, přežije restart."""
+        from test_wishes import W
+        from ytdj.wishes import Wish, WishQueue
+
+        wq = WishQueue.__new__(WishQueue)
+        wq.owner, wq.wishes = {}, []
+        wq.pools = SimpleNamespace(video_only=False)
+        wq.by_id = lambda wid: next((w for w in wq.wishes if w.id == wid), None)
+        link = W("Petr", 1, 1.0, kind="songs")
+        link.via = "link"  # odkaz na jedno video
+        playlist = W("Jana", 1, 2.0, kind="song")
+        playlist.via = "link"  # odkaz na playlist: skladby vybírá jukebox
+        video = W("Eva", 1, 3.0, kind="artist")
+        video.want_video = True  # „pusť video…“
+        plain = W("Karel", 1, 4.0, kind="songs")
+        # „pusť video – koncert…“, oficiální klip se nenašel a hraje nahrávka od uživatele
+        concert = W("Ota", 1, 5.0, kind="songs")
+        concert.asked_video = True
+        wq.wishes = [link, playlist, video, plain, concert]
+        wq.owner = {"vidlink0000": link.id, "vidplay0000": playlist.id, "vidvideo000": video.id,
+                    "vidplain000": plain.id, "vidconcert0": concert.id}
+        self.assertTrue(wq.picture_wanted("vidconcert0"))
+        self.assertTrue(Wish.from_json(concert.to_json()).asked_video)
+        src = (ROOT / "ytdj" / "wishes.py").read_text(encoding="utf-8")
+        self.assertIn('w.asked_video = bool(getattr(intent, "want_video", False))', src)
+        self.assertTrue(wq.picture_wanted("vidlink0000"))
+        self.assertTrue(wq.picture_wanted("vidvideo000"))
+        self.assertFalse(wq.picture_wanted("vidplay0000"))
+        self.assertFalse(wq.picture_wanted("vidplain000"))
+        self.assertFalse(wq.picture_wanted("podkres0000"))  # co vybral jukebox
+        self.assertFalse(wq.picture_wanted(None))
+        wq.pools.video_only = True  # podkres z klipů k přání s obrazem
+        self.assertTrue(wq.picture_wanted("podkres0000"))
+        # s přáním to přežije restart …
+        for w in (link, video):
+            back = Wish.from_json(w.to_json())
+            self.assertEqual((back.via, back.kind, back.want_video), (w.via, w.kind, w.want_video))
+        # … a skončí s ním
+        wq.wishes, wq.owner = [plain], {"vidplain000": plain.id}
+        wq.pools.video_only = False
+        self.assertFalse(wq.picture_wanted("vidlink0000"))
+        main = (ROOT / "ytdj" / "__main__.py").read_text(encoding="utf-8")
+        self.assertIn("explicit=lambda vid: self.wishes.picture_wanted(vid)", main)
+
+    def test_long_track_gets_a_fresh_address_before_the_old_one_runs_out(self):
+        """Dvouhodinové video: adresa obrazu platí ~6 h, ale ne věčně — než vyprší,
+        vezme se nová (z obnovené cache resolveru, jinak vlastním hledáním)."""
+        async def go():
+            with Rig(current=CLIP) as rig:
+                rig.resolver_has(CLIP)
+                await rig.tv.set(True, "x")
+                await rig.tv.tick()
+                self.assertEqual(rig.tv.video, CLIP)
+                first = json.loads(rig.tv.stream_file(CLIP).read_text())["url"]
+                # po hodinách hraní: adrese zbývá míň než rezerva
+                rig.tv._streams[CLIP]["expire"] = time.time() + 120
+                rig.cache.unlink()
+                fresh = [{"format_id": "136", **{k: v for k, v in info(
+                    CLIP, url=URL.format(exp=int(time.time()) + 5 * 3600) + "&novy=1").items()
+                    if k not in ("id", "format_id")}, "tbr": 1000}]
+                rig.resolver_has(CLIP, formats=fresh)  # resolver hudby ji mezitím obnovil
+                await rig.tv.tick()
+                self.assertEqual(rig.tv.video, CLIP)
+                second = json.loads(rig.tv.stream_file(CLIP).read_text())["url"]
+                self.assertNotEqual(first, second)
+                self.assertIn("novy=1", second)
+                self.assertEqual(rig.ytdlp_calls(), [])
+            # paměť přehrávače klipu nezávisí na délce: pevné stropy
+            from_src = (ROOT / "ytdj" / "tv" / "video.py").read_text(encoding="utf-8")
+            for opt in ("--demuxer-max-bytes=24MiB", "--demuxer-max-back-bytes=4MiB", "--cache-secs=6"):
+                self.assertIn(opt, from_src)
+        run(go())
+
+
 class PlayerNotReady(unittest.TestCase):
     def test_player_that_is_not_up_is_a_normal_state_not_an_error(self):
         """Po startu služby krok běží dřív než mpv: žádná chyba v logu, čeká se."""

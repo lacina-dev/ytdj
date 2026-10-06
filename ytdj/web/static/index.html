@@ -1791,10 +1791,11 @@
     var note = "";
     if (!tv.can) note = (tv.why || "Telka klipy neumí.") + (on ? " Zapnuto zůstává pro později." : "");
     else if (!on) note = "Obraz jen u skladeb, které jsou samy klip. Zvuk se nemění.";
+    else if (tv.note) note = "Teď bez obrazu: " + tv.note + ".";  // vždy řečeno proč (jukebox to ví)
     else if (tv.blocked) note = "Teď obrazovka „právě hraje“: " + tv.blocked + ".";
     else if (tv.mode === "video") note = "Na telce běží klip." + (tv.by ? " Zapnul(a) " + tv.by + "." : "");
     else if (tv.pending) note = "Tahle skladba je klip — obraz se chystá.";
-    else note = "Tahle skladba klip není — na telce je „právě hraje“." + (tv.by ? " Zapnul(a) " + tv.by + "." : "");
+    else note = "Na telce je „právě hraje“." + (tv.by ? " Klipy zapnul(a) " + tv.by + "." : "");
     el.tvNote.textContent = note;
   }
   el.tvBtn.addEventListener("click", async function () {

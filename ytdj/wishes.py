@@ -317,6 +317,9 @@ class Wish:
     # posluchač chtěl hudbu i s obrazem (klipy na telce) a klipy se našly —
     # podkres tohohle přání drží oficiální klipy (Intent.want_video)
     want_video: bool = False
+    # posluchač si řekl o obraz, ať se oficiální klip našel, nebo ne: skladby
+    # tohohle přání telka ukáže, i když to oficiální klip není (picture_wanted)
+    asked_video: bool = False
     # upřesnění: DJ se zeptal (`question`, `options` = hotové výklady, první
     # je nejpravděpodobnější) a čeká do `ask_until` (epoch s); `asked` = na
     # tohle přání už otázka padla (druhá nepadne nikdy)
@@ -445,6 +448,7 @@ class Wish:
             "asked": self.asked or None,
             "explicit_ok": self.explicit_ok or None,
             "want_video": self.want_video or None,
+            "asked_video": self.asked_video or None,
             "replay": _track_json(self.replay) if self.replay is not None else None,
         }
 
@@ -477,6 +481,7 @@ class Wish:
         w.album_heard = {str(x) for x in d.get("album_heard") or []}
         w.explicit_ok = bool(d.get("explicit_ok"))
         w.want_video = bool(d.get("want_video"))
+        w.asked_video = bool(d.get("asked_video"))
         w.asked = bool(d.get("asked"))
         w.replay = _track_from(d.get("replay"))
         if isinstance(d.get("current"), str):
@@ -920,6 +925,24 @@ class WishQueue:
             if key:
                 out["from_key"] = key
         return out
+
+    def picture_wanted(self, vid: str | None) -> bool:
+        """Řekl si o obraz téhle skladby někdo výslovně? (klipy na telce)
+
+        Ano u odkazu na video (přání je ta jedna skladba z odkazu) a u skladeb
+        přání „i s obrazem“ včetně jeho podkresu z klipů. Platí, dokud to
+        přání trvá (a s ním přežije restart) — co jukebox vybírá sám, sem
+        nepatří: tam telka ukáže jen oficiální klip.
+        """
+        if not vid:
+            return False
+        wid = self.owner.get(vid)
+        w = self.by_id(wid) if wid else None
+        if w is None:
+            w = next((x for x in self.wishes if x.current == vid), None)
+        if w is not None:
+            return bool(w.want_video or w.asked_video or (w.via == "link" and w.kind == "songs"))
+        return bool(getattr(self.pools, "video_only", False))
 
     def queue_tag(self, vid: str) -> dict | None:
         wid = self.owner.get(vid)
@@ -1815,6 +1838,7 @@ class WishQueue:
         video = bool(getattr(intent, "want_video", False) and getattr(plan, "video", 0))
         if intent.changes_music:
             w.want_video = video
+            w.asked_video = bool(getattr(intent, "want_video", False))
             if getattr(self.pools, "video_only", False) and not video:
                 self.pools.video_only = False  # další přání: podkres zase bez ohledu na klipy
             # Filtr explicitních je zvednutý jen pro přání, které si o vulgární

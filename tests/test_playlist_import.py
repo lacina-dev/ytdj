@@ -454,21 +454,43 @@ class Fairness(unittest.TestCase):
         # různé pořadí pokaždé
         self.assertGreater(len({tuple(t.id for t in b.favourite_tracks()[:8]) for _ in range(20)}), 10)
 
-    def test_most_liked_first_and_own_before_playlist(self):
+    def test_order_is_random_not_most_liked_first(self):
+        # Pi 6. 10. 2026: "pusť oblíbené" hrálo pokaždé stejně — první skladba stejná ve
+        # 30 z 30 spuštění, protože šly napřed ty s nejvíc 👍 a vlastní 👍 před playlistem
         b = self.office()
-        b.prng.seed(1)
         shared = Track("j0000000003", "jana 3", "jana band 3")
         b.cast(SONG, KAREL, 1, "Karel", track=shared)
         b.cast(SONG, EVA, 1, "Eva", track=shared)  # 3× 👍
-        mix = b.favourite_tracks()
-        self.assertEqual(mix[0].id, shared.id)  # kdo je v kole první, dá tu nejoblíbenější
-        # Petr: vlastní 👍 před písničkami z playlistu
         own = Track("p0000000001", "petrova", "Petrova kapela")
         b.cast(SONG, PETR, 1, "Petr", track=own)
-        for _ in range(10):
+        firsts, own_first, orders = Counter(), 0, set()
+        for seed in range(60):
+            b.prng.seed(seed)
             mix = b.favourite_tracks()
+            firsts[mix[0].id] += 1
+            orders.add(tuple(t.id for t in mix[:6]))
             petr = [t for t in mix if t.id[0] in "ap"]
-            self.assertEqual(petr[0].id, own.id)
+            own_first += petr[0].id == own.id
+            self.assertEqual(len({t.id for t in mix}), len(mix))  # nic dvakrát
+        self.assertGreater(len(firsts), 8, firsts)  # začíná pokaždé něčím jiným
+        self.assertLess(max(firsts.values()), 20, firsts)
+        self.assertLess(firsts[shared.id], 20)  # nejoblíbenější není pořád první
+        self.assertLess(own_first, 30)  # vlastní 👍 není vždy před playlistem
+        self.assertGreater(len(orders), 50)
+
+    def test_a_single_favourite_is_not_always_in_the_first_round(self):
+        # dva lidé s jedinou oblíbenou: při prostém střídání by zněla vždy mezi prvními
+        b = self.office()
+        solo = Track("s0000000001", "jediná", "Sólo kapela")
+        b.cast(SONG, "c-solo-00000001", 1, "Solo", track=solo)
+        b.cast(SONG, "c-solo-00000002", 1, "Solo2", track=solo)  # 2 👍 = oblíbená kanceláře
+        early = 0
+        for seed in range(80):
+            b.prng.seed(seed)
+            ids = [t.id for t in b.favourite_tracks()]
+            self.assertIn(solo.id, ids)  # ale zazní v každém kole
+            early += ids.index(solo.id) < 5
+        self.assertLess(early, 40)
 
     def test_dj_summary_is_fair_and_stable(self):
         b = self.office()

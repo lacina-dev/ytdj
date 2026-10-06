@@ -172,6 +172,17 @@
       "body": "„Teď jsem dal přání ‚Zahraj největší pecky od Foo Fighters‘ a zahrálo to Pecka od Divokej Bill. To není to, co jsem si přál. Špatně to vyhodnotil.“\n\nPOZADAVKY #66.",
       "resolution": "Přání se vůbec nedostalo k DJovi: zkratka pro „písnička od interpreta“ vzala „pecky“ jako název písně, u Foo Fighters ji nenašla a sama dosadila stejnojmennou píseň od někoho jiného. Nově zkratka zahraje jen písničku, kterou katalog opravdu má od jmenovaného interpreta; ve všech ostatních případech rozhoduje DJ, který vidí celé přání i to, co je v katalogu — „největší pecky od…“ tak znamená hrát toho interpreta. Když chceš písničku od někoho, kdo ji nenahrál, DJ dál zahraje existující verzi a řekne to. V kódu a otestováno; se skutečným modelem ověřeno 6. 10., čeká na nasazení.",
       "resolved": "2026-10-06"
+    },
+    {
+      "key": "pozadavek-67",
+      "kind": "chyba",
+      "state": "nasazeni",
+      "who": "vlastník",
+      "created": "2026-10-06",
+      "title": "Oblíbené kanceláře hrají pokaždé ve stejném pořadí",
+      "body": "„Když dám přehrát hudbu oblíbenou v kanceláři, tak by ji to chtělo asi náhodně promíchat, protože takhle ji to hraje pokaždé ve stejném pořadí.“\n\nPOZADAVKY #67.",
+      "resolution": "Pořadí šlo podle počtu 👍, takže začátek byl pokaždé stejný. Nově se oblíbené míchají náhodně: každý člověk dál přispívá stejným dílem a stejný interpret nehraje dvakrát po sobě, ale čím se začne a v jakém pořadí, je pokaždé jiné. Ověřeno na skutečných hlasech, čeká na nasazení.",
+      "resolved": "2026-10-06"
     }
   ]
 }

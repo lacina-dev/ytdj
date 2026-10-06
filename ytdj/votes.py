@@ -41,8 +41,9 @@ jen skladbám, nikdy celému interpretovi.
 
 Férovost oblíbených kanceláře (`fair_order`): "pusť oblíbené" i výběr pro DJ
 berou oblíbené po lidech na střídačku — každý, kdo dal 👍, přispěje zhruba
-stejným dílem, ať má 5 oblíbených, nebo playlist o 300 písničkách; u každého
-napřed nejvíc 👍 kanceláře a jeho vlastní 👍 před písničkami z playlistu.
+stejným dílem, ať má 5 oblíbených, nebo playlist o 300 písničkách. Při
+přehrávání v náhodném pořadí; přehled pro DJ pevně (napřed nejvíc 👍 kanceláře,
+vlastní 👍 před písničkami z playlistu).
 V poolech podkresu se písničky, které drží jen playlisty, posunou dopředu
 nejvýš IMPORT_LIFT za člověka na jedno doplnění.
 """
@@ -955,7 +956,8 @@ class VoteBook:
         """Oblíbené kanceláře, nebo (s `voter`) moje 👍 — bez vyřazených.
 
         Kancelář: po lidech na střídačku (`fair_order`), ať playlist o 300
-        písničkách nepřehluší kolegu s dvaceti 👍. Moje: náhodně."""
+        písničkách nepřehluší kolegu s dvaceti 👍; se `shuffle` v náhodném
+        pořadí. Moje: náhodně."""
         from .music.catalog import Track
 
         idx = self._idx()
@@ -976,7 +978,6 @@ class VoteBook:
                 t = self.tally(SONG, key)
                 for b in ballots.values():
                     if b.vote > 0:
-                        # u každého napřed nejvíc 👍 kanceláře, vlastní 👍 před playlistem
                         per.setdefault(b.voter, []).append(
                             (t.down - t.up, 1 if b.src else 0, b.ts, key))
             src = max((b for b in ballots.values() if b.video_id), key=lambda b: b.ts, default=None)
@@ -1150,19 +1151,32 @@ def fair_order(per: dict[str, list[tuple]], rng: random.Random | None,
     """Klíče skladeb po lidech na střídačku.
 
     `per` = člověk → [(pořadí podle 👍, 1 = z playlistu / 0 = vlastní, čas, klíč)].
-    V každém kole dá každý jednu skladbu: u sebe tu s nejvíc 👍 kanceláře,
-    vlastní 👍 před playlistem. V kole jde první ten, kdo nese oblíbenější
-    skladbu (nejoblíbenější tak hrají první); shody jsou s `rng` náhodné,
-    bez něj pevné (skladby podle času, lidé podle prvního hlasu). Skladbu,
-    kterou už přinesl někdo jiný, člověk přeskočí a dá další — o kolo
-    nepřijde. Každý tak přispěje stejně, ať má oblíbených 5, nebo 300."""
+    V každém kole dá každý jednu skladbu. Skladbu, kterou už přinesl někdo
+    jiný, člověk přeskočí a dá další — o kolo nepřijde. Každý tak přispěje
+    stejně, ať má oblíbených 5, nebo 300.
+
+    S `rng` (přehrávání) je pořadí náhodné: každý dává své skladby
+    zamíchané a kdo jde v kole první, se losuje — jinak hrály oblíbené
+    pokaždé stejně (Pi 6. 10. 2026: první skladba stejná ve 30 z 30
+    spuštění, protože šly napřed ty s nejvíc 👍). Bez `rng` (přehled pro
+    DJe) je pořadí pevné: u každého napřed nejvíc 👍 kanceláře, vlastní 👍
+    před playlistem, skladby podle času, lidé podle prvního hlasu."""
     queues: dict[str, deque] = {}
     first: dict[str, float] = {}
+    if rng is not None:
+        # Skladbu, kterou má rád víc lidí, by mohl přinést kterýkoli z nich — měla by
+        # víc losů a vycházela by skoro vždy na začátku. Přinese ji jeden, vylosovaný.
+        holders: dict[str, list[str]] = {}
+        for voter in sorted(per):
+            for row in per[voter]:
+                holders.setdefault(row[3], []).append(voter)
+        keeper = {key: rng.choice(vs) for key, vs in sorted(holders.items())}
+        per = {v: [r for r in rows if keeper[r[3]] == v] for v, rows in per.items()}
     for voter, rows in per.items():
         rows = list(rows)
         if rng is not None:
+            rows.sort()  # ať výsledek závisí jen na `rng`, ne na pořadí slovníku
             rng.shuffle(rows)
-            rows.sort(key=lambda r: (r[0], r[1]))  # stabilní: shody zůstanou zamíchané
         else:
             rows.sort()
         queues[voter] = deque(rows)
@@ -1176,13 +1190,29 @@ def fair_order(per: dict[str, list[tuple]], rng: random.Random | None,
             q.popleft()
         return q[0] if q else None
 
+    # Kdo má oblíbených jen pár, dal by je při prostém střídání vždycky hned
+    # v prvním kole (Pi 6. 10. 2026: dva lidé s jedinou oblíbenou — ta byla
+    # v první osmičce ve 20 a víc z 30 spuštění). Nastoupí proto v náhodném
+    # z prvních SPARSE_ROUNDS kol; ostatní se střídají od začátku jako dřív.
+    start: dict[str, int] = {}
+    if rng is not None:
+        rounds = max((len(q) for q in queues.values()), default=0)
+        for v in sorted(queues):
+            m = len(queues[v])
+            late = min(SPARSE_ROUNDS, rounds - m)
+            start[v] = rng.randrange(late + 1) if 0 < m <= SPARSE_MAX and late > 0 else 0
+    rnd = -1
     voters = [v for v in queues if queues[v]]
     while voters and (n is None or len(out) < n):
+        rnd += 1
         noms = {v: head(v) for v in voters}
         voters = [v for v in voters if noms[v] is not None]
-        tie = {v: rng.random() for v in voters} if rng is not None else {}
-        # jen podle 👍 kanceláře: kdo má jen playlist, nesmí být v kole vždycky poslední
-        order = sorted(voters, key=lambda v: (noms[v][0], tie.get(v, 0.0), first[v], v))
+        if rng is not None:
+            order = sorted(v for v in voters if rnd >= start[v])
+            rng.shuffle(order)
+        else:
+            # jen podle 👍 kanceláře: kdo má jen playlist, nesmí být v kole vždycky poslední
+            order = sorted(voters, key=lambda v: (noms[v][0], first[v], v))
         for v in order:
             row = head(v)
             if row is None:
@@ -1196,6 +1226,8 @@ def fair_order(per: dict[str, list[tuple]], rng: random.Random | None,
     return out
 
 
+SPARSE_MAX = 3  # tolik oblíbených je "jen pár" …
+SPARSE_ROUNDS = 7  # … a jejich majitel nastoupí v náhodném z prvních tolika kol (+1)
 SPREAD_GAP = 4  # "napřeskáčku": interpret se nevrátí dřív než po tolika jiných
 SPREAD_LOOK = 60  # jak daleko dopředu se hledá jiný interpret (Pi: tisíce oblíbených)
 
@@ -1203,7 +1235,7 @@ SPREAD_LOOK = 60  # jak daleko dopředu se hledá jiný interpret (Pi: tisíce o
 def spread_artists(tracks: list, gap: int = SPREAD_GAP, look: int = SPREAD_LOOK) -> list:
     """Pořadí "napřeskáčku": nikdy dvakrát za sebou týž interpret, a když to
     jde, ani v posledních `gap` skladbách. Jinak drží původní pořadí (férovost
-    po lidech, nejoblíbenější první) — bere se první vhodná z nejbližších
+    po lidech, zamíchané) — bere se první vhodná z nejbližších
     `look` skladeb. Interpret = kterýkoli uvedený ("A feat. B")."""
     rest = []
     left: dict[str, int] = {}  # kolik skladeb interpreta ještě zbývá (hlavní klíč)

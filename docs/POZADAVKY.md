@@ -89,6 +89,17 @@ Stav k 27. 9. 2026 (na Pi běží 1710010).
 | 45 | „Co hraje dál a nemá to u sebe moje jméno?" | ✅ | „Rádio podle přání X · nálada" na webu i displeji |
 | 50 | „Nechci, aby se učil konkrétní fráze a podle nich pak něco dělal. Chci, aby chápal, co mu user napíše, a choval se podle toho.“ | ✅ pravidlo (27. 9.) | `docs/PLAN.md` Vize 5; oblíbené vykládá model (F-HLASY-19), bez modelu jen jednoznačné povely a jména |
 | 51 | „A jak to vidíš s tou bezpečností" → „Oprav všechny body, které můžeš" (27. 9.) — web, Wi-Fi, sudo, sandbox | ✅ nasazeno 27. 9. 04:45 | nebezpečné klíče (mpv_extra_args, cookies, web_host…) jen v config.toml; nastavení a restart s PINem správce (displej: Síť), brzda 5 špatných / 5 min — F-BEZP-08 až F-BEZP-11, `tests/test_admin.py`; heslo Wi-Fi přes stdin (F-BEZP-06); ytdj s NoNewPrivileges — sudo z ytdj/Codexu na Pi ověřeně nejde, mpv dál nice −11; bubblewrap na Pi, sandbox Codexu ověřen (zápis → Read-only file system), přání přes model 9,0 s (F-BEZP-07); z LAN ověřeno: bez PINu 401, špatný 403, web_host i s PINem 400 |
+| 52 | „Udělat tam issues, aby kolegové mohli ty věci reportovat a navrhovat, aniž bych to musel přepisovat… všechno tam dej a pak k tomu piš, jak to bylo vyřešeno" (vlastník) | 📋 | 6. 10. zapsáno |
+| 53 | Kolegovi to nenašlo píseň „Nerdící v neklidu" od kapely Poledníci — „to je problém" | 📋 | 6. 10. zapsáno, prověřit na datech z Pi |
+| 54 | Možnost posouvat se v písničce, tam a zpět | 📋 | 6. 10. zapsáno |
+| 55 | Mít možnost nechat zahrát to, co bylo přehráno | 📋 | 6. 10. zapsáno |
+| 56 | Možnost kliknutím přehrát z playlistu i písničku, co teprve bude | 📋 | 6. 10. zapsáno |
+| 57 | Když uživatel zadá, že chce hrát jen jedno album, DJ se toho nedrží a hraje i jiná alba | 📋 | 6. 10. zapsáno, prověřit na datech z Pi |
+| 58 | Přehrávat i videa z YT Music na telce připojené přes HDMI; jinak by tam ukazovalo písničku, co hraje | 📋 | 6. 10. zapsáno |
+| 59 | Pamatovat si aktuální stav, aby to i po vypnutí a opětovném startu pokračovalo tam, kde to bylo | 📋 | 6. 10. zapsáno (část už je: playback.json — ověřit, co chybí) |
+| 60 | PRIORITA vlastníka: „potřebuju, aby to srovnávalo hlasitost písniček na stejnou úroveň" — každá písnička je vytvořená s jinou hlasitostí | 📋 | 6. 10. zapsáno |
+| 61 | Ruční přepínání vizuálu v módu den/noc | 📋 | 6. 10. zapsáno |
+| 62 | Kolega chtěl „nejvulgárnější a nejsprostší prasárnu, co DJ zná" a pustilo mu to Mötley Crüe — čekal spíš Záviše a píseň s vulgárními texty; „prověř to" | 📋 | 6. 10. zapsáno, prověřit na datech z Pi |
 
 ## Na konec: bezpečnost a přihlášení (připomenout)
 

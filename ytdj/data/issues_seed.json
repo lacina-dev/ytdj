@@ -77,23 +77,23 @@
     {
       "key": "pozadavek-58",
       "kind": "napad",
-      "state": "resi_se",
+      "state": "vyreseno",
       "who": "kolega",
       "created": "2026-10-06",
       "title": "Videa z YouTube Music na televizi přes HDMI",
       "body": "Přehrávat i videa z YT Music na telce připojené přes HDMI; jinak by tam ukazovalo písničku, co hraje.\n\nPOZADAVKY #58.",
-      "resolution": "Obrazovka „právě hraje“ (obal, název, kdo si přál, co bude dál, QR kód) je na telce vidět — po restartu jukeboxu se zapnutou telkou. Telka má být zapnutá, když se jukebox zapíná, jinak obraz pošle na jiný výstup. Přes obraz se zatím pletl přihlašovací terminál; ten je teď ručně vypnutý a oprava, která ho schová natrvalo, čeká na nasazení. Video (klipy) zatím ne.",
+      "resolution": "Na telce přes HDMI běží obrazovka „právě hraje“ (obal, název, kdo si přál, co bude dál, QR kód a adresa), bez přihlašovacího řádku. Klipy řeší samostatné hlášení o klipech na telce. Nasazeno 6. 10. večer.",
       "resolved": "2026-10-06"
     },
     {
       "key": "pozadavek-59",
       "kind": "napad",
-      "state": "resi_se",
+      "state": "vyreseno",
       "who": "kolega",
       "created": "2026-10-06",
       "title": "Po vypnutí a zapnutí pokračovat tam, kde se skončilo",
       "body": "Pamatovat si aktuální stav, aby to i po vypnutí a opětovném startu pokračovalo tam, kde to bylo.\n\nČást už funguje (po restartu služby skladba naváže) — ověřit, co chybí. POZADAVKY #59.",
-      "resolution": "Dřív se po vypnutí nebo výpadku proudu zahodilo všechno (1. 10. tak po třech minutách bez proudu zmizelo přání i režim interpreta). Nově si jukebox pamatuje čekající přání, podkres i místo ve skladbě (na ~15–25 vteřin přesně) a po zapnutí je vrátí. Hudba se ale sama nerozehraje — čeká v pauze, stačí zmáčknout ▶ a pokračuje se tam, kde se přestalo. Platí to týž den; druhý den ráno začíná jukebox načisto. Nasazeno 6. 10. večer a vyzkoušeno i s restartem celého jukeboxu: vrátil skladbu, místo v ní i podkres, mlčel do ▶ a pak hrál do dvou vteřin. Při zkoušce se ukázala chyba — obnovená skladba byla ve frontě dvakrát a po dohrání začala znovu. Oprava je hotová a čeká na nasazení.",
+      "resolution": "Po vypnutí nebo výpadku proudu jukebox obnoví přání, frontu, režim podkresu i místo ve skladbě a čeká na ▶ — sám hrát nezačne. Platí pro stav z téhož dne; další den začíná načisto. Vyzkoušeno restartem celého jukeboxu; chyba, kdy se obnovená skladba zahrála dvakrát, je opravená. Nasazeno 6. 10. večer.",
       "resolved": "2026-10-06"
     },
     {
@@ -154,12 +154,12 @@
     {
       "key": "pozadavek-65",
       "kind": "napad",
-      "state": "resi_se",
+      "state": "vyreseno",
       "who": "vlastník",
       "created": "2026-10-06",
       "title": "Jukebox v síti i pod jménem jukebox.local",
       "body": "„ytdj.local je ok, ale bylo by fajn, kdyby bylo i jukebox.local.“\n\nPOZADAVKY #65.",
-      "resolution": "První pokus se po nasazení nepovedl — služba se k síťové službě jukeboxu vůbec nepřipojila (běžela pod uživatelem, kterého systém nezná) a jméno nevyhlásila, proto je vypnutá. Ve stejnou chvíli se z jednoho počítače přestalo překládat i ytdj.local; že to způsobila ona, se nepotvrdilo. Oprava je hotová (jiný uživatel služby, žádné zkoušení dokola) a čeká na večerní zkoušku. Do té doby platí ytdj.local.",
+      "resolution": "Jukebox se v síti hlásí i pod jménem jukebox.local (vedle ytdj.local); při změně adresy se jméno vyhlásí znovu. První pokus selhal kvůli oprávnění služby, opraveno. Nasazeno 6. 10. večer.",
       "resolved": "2026-10-06"
     },
     {
@@ -187,12 +187,12 @@
     {
       "key": "pozadavek-68",
       "kind": "napad",
-      "state": "resi_se",
+      "state": "vyreseno",
       "who": "vlastník",
       "created": "2026-10-06",
       "title": "Web jukeboxu na běžném portu a adresa na telce, která funguje",
       "body": "„Na obrazovce v telce je jukebox.local a ten nefunguje. K tomu připojování mám ještě připomínku… chci, aby to běželo i na standardních http/s portech.“\n\nPOZADAVKY #68.",
-      "resolution": "Web teď jede i bez čísla portu — stačí http://jukebox.local (stará adresa s :8765 funguje dál). Zatím je to zapnuté jen dočasně a po restartu jukeboxu by to zmizelo; trvalá verze je připravená a čeká na nasazení. Spolu s ní začnou telka i displej ukazovat jen adresu, o které si jukebox ověřil, že opravdu odpovídá (jukebox.local, jinak jméno stroje, jinak číselná adresa). Šifrované spojení (https) zatím ne — pro jméno v místní síti k němu není certifikát.",
+      "resolution": "Jukebox běží i na běžném portu: stačí http://jukebox.local (nebo http://ytdj.local) bez „:8765“; stará adresa s portem funguje dál. Telka a displej ukazují jen adresu, o které si jukebox ověřil, že odpovídá. HTTPS zatím ne. Nasazeno 6. 10. večer.",
       "resolved": "2026-10-06"
     },
     {
@@ -203,17 +203,17 @@
       "created": "2026-10-06",
       "title": "Pod jinou adresou jukeboxu chce web založit nový účet",
       "body": "„Když se připojím na jinou adresu/port, tak si musím udělat nový účet, přestože už účet na kompu mám. To je potřeba vyřešit.“\n\nPOZADAVKY #69.",
-      "resolution": "Prohlížeč si účet pamatuje zvlášť pro každou adresu (jméno i číslo portu), proto byl pod jinou adresou „nový člověk“. Oprava je hotová a čeká na nasazení: na stejném jméně s jiným portem tě jukebox pozná hned, na jiné jméno si prohlížeč při první návštěvě na okamžik odskočí přes ostatní adresy jukeboxu, které mu odpovídají, a účet si přinese — na přezdívku se neptá. Kdo už má na dvou adresách dva účty, tomu se spojí do staršího i s hlasy a playlisty a web to jednou větou řekne. Nepřenáší se PIN správce (na nové adrese se zadá znovu) a vlastní hlášení v Chybách a nápadech založená z mladšího účtu zůstanou pod jeho jménem. Na telefonu, který jméno jukeboxu v síti nenajde, se nic neděje — tam se dál pozná jen podle adresy, kterou používá."
+      "resolution": "Prohlížeč si účet pamatuje zvlášť pro každou adresu (jméno i číslo portu), proto byl pod jinou adresou „nový člověk“. Oprava je hotová a čeká na nasazení: na stejném jméně s jiným portem tě jukebox pozná hned, na jiné jméno si prohlížeč při první návštěvě na okamžik odskočí přes ostatní adresy jukeboxu, které mu odpovídají, a účet si přinese — na přezdívku se neptá. Kdo už má na dvou adresách dva účty, tomu se spojí do staršího i s hlasy a playlisty a web to jednou větou řekne. Nepřenáší se PIN správce (na nové adrese se zadá znovu) a vlastní hlášení v Chybách a nápadech založená z mladšího účtu zůstanou pod jeho jménem. Na telefonu, který jméno jukeboxu v síti nenajde, se nic neděje — tam se dál pozná jen podle adresy, kterou používá. Nasazeno 6. 10. večer. Zkouší se v provozu."
     },
     {
       "key": "pozadavek-70",
       "kind": "napad",
-      "state": "nasazeni",
+      "state": "resi_se",
       "who": "vlastník",
       "created": "2026-10-06",
       "title": "Ztlumit zvuk jedním kliknutím",
       "body": "„Ještě chci přidat do web UI možnost ztlumit zvuk jedním kliknutím.“\n\nPOZADAVKY #70.",
-      "resolution": "Reproduktor u posuvníku hlasitosti je teď tlačítko: jedno ťuknutí zvuk ztlumí, další ho vrátí přesně na předchozí hlasitost. Hudba mezitím běží dál (fronta, přání i hlasy pokračují) a že je ztlumeno, vidí všichni na webu i na displeji. Kdo pohne hlasitostí, zvuk tím zase zapne; po restartu jukeboxu je zvuk vždy zapnutý.",
+      "resolution": "Reproduktor u posuvníku hlasitosti je teď tlačítko: jedno ťuknutí zvuk ztlumí, další ho vrátí přesně na předchozí hlasitost. Hudba mezitím běží dál (fronta, přání i hlasy pokračují) a že je ztlumeno, vidí všichni na webu i na displeji. Kdo pohne hlasitostí, zvuk tím zase zapne; po restartu jukeboxu je zvuk vždy zapnutý. Nasazeno 6. 10. večer. Zkouší se v provozu.",
       "resolved": "2026-10-06"
     },
     {
@@ -224,7 +224,7 @@
       "created": "2026-10-06",
       "title": "Klipy na telce — jen když jsou v prohlížeči povolené",
       "body": "„Tímhle začneme, ale bude se to povolovat v prohlížeči a dít, jen když je to povolené, jinak na telce bude info jako teď. Povolit to může kdokoli.“\n\nKlip jen u skladeb, které samy jsou oficiálním klipem, bez zvuku a srovnaný s hudbou; písnička se za klip nezaměňuje. POZADAVKY #71.",
-      "resolution": "Připraveno, čeká na nasazení a večerní zkoušku na jukeboxu. Na hlavní stránce přibude vypínač „Klipy na telce“ — přepne ho kdokoli, platí pro všechny a je vidět, kdo ho zapnul; výchozí stav je vypnuto. Když je zapnuto a hraje skladba, která sama je oficiální klip (asi osmina toho, co tu hraje), pustí se na telce její obraz bez zvuku, srovnaný s hudbou. U ostatních skladeb zůstává obrazovka „právě hraje“. Zvuk jde pořád stejnou cestou. Když je jukebox horký, dochází mu paměť nebo by začal lupat zvuk, klip se sám vypne a vypínač řekne proč.",
+      "resolution": "Připraveno, čeká na nasazení a večerní zkoušku na jukeboxu. Na hlavní stránce přibude vypínač „Klipy na telce“ — přepne ho kdokoli, platí pro všechny a je vidět, kdo ho zapnul; výchozí stav je vypnuto. Když je zapnuto a hraje skladba, která sama je oficiální klip (asi osmina toho, co tu hraje), pustí se na telce její obraz bez zvuku, srovnaný s hudbou. U ostatních skladeb zůstává obrazovka „právě hraje“. Zvuk jde pořád stejnou cestou. Když je jukebox horký, dochází mu paměť nebo by začal lupat zvuk, klip se sám vypne a vypínač řekne proč. Nasazeno 6. 10. večer. Zkouší se v provozu.",
       "resolved": "2026-10-06"
     }
   ]

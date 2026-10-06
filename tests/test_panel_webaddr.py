@@ -207,7 +207,90 @@ class _Backend:
         raise AssertionError("nepřipojovat")
 
 
+class OfficeName(unittest.TestCase):
+    """Jméno z DNS kanceláře (web_name v config.toml): ověřené má přednost."""
+
+    def test_configured_name_is_validated_verified_and_preferred(self):
+        clean = webaddr.clean_name
+        self.assertEqual(clean("Jukebox.Example.ORG."), "jukebox.example.org")
+        self.assertEqual(clean("jukebox"), "jukebox")
+        for bad in ("", None, 5, "http://jukebox.example.org", "jukebox.example.org/x",
+                    "jukebox example", "juke_box.cz", "-jukebox.cz", "jukebox..cz", "a" * 64 + ".cz",
+                    "x" * 254, "192.168.0.24", "jukebox.cz:8080", "jukebox.cz;rm -rf", "<b>x</b>"):
+            self.assertEqual(clean(bad), "", bad)
+        name = "jukebox.example.org"
+        a, r, o, asked = world(True, (name, "jukebox.local", "ytdj.local"))
+        reach = probe(8765, "ytdj", name=name, answers=a, resolves=r, own_ip=o)
+        self.assertEqual(reach.names[0], name)
+        self.assertEqual((reach.address(), reach.ip_address()), (name, IP))
+        # nepřekládá se nebo pod ním neodpovídá jukebox → nepoužije se, zůstane to ostatní
+        a, r, o, _ = world(True, ("jukebox.local",))
+        reach = probe(8765, "ytdj", name=name, answers=a, resolves=r, own_ip=o)
+        self.assertEqual(reach.names, ("jukebox.local",))
+        # hlídač ho předává dál a nesmysl z konfigurace zahodí
+        seen = []
+        w = Watch(8765, threading.Event(), hostname="ytdj", name="Jukebox.Example.org",
+                  look=lambda port, host, **kw: seen.append(kw) or Reach(port, True, (), IP))
+        w.once()
+        self.assertEqual(seen, [{"name": name}])
+        self.assertEqual(Watch(8765, threading.Event(), hostname="x", name="a b").web_name, "")
+
+    def test_name_comes_from_the_file_only(self):
+        """Web nastavení `web_name` neukáže ani nezmění: v aplikaci ten klíč vůbec není."""
+        config = (ROOT / "ytdj" / "config.py").read_text(encoding="utf-8")
+        server = (ROOT / "ytdj" / "web" / "server.py").read_text(encoding="utf-8")
+        self.assertNotIn("web_name", config)
+        self.assertNotIn("web_name", server)
+        for main in ("ytdj/tv/__main__.py", "ytdj/panel/__main__.py"):
+            self.assertIn('cfg.get("web_name")', (ROOT / main).read_text(encoding="utf-8"), main)
+        notes = (ROOT / "packaging" / "rpi" / "NOTES.md").read_text(encoding="utf-8")
+        for word in ("DHCP reservation", "DNS record", 'web_name = "jukebox.example.org"'):
+            self.assertIn(word, notes, word)
+
+
 class TvAddress(unittest.TestCase):
+    def test_tv_shows_name_and_address_and_the_qr_never_depends_on_a_name(self):
+        state = {"current": None, "queue": [], "dj": {}}
+        for size in ((720, 480), (1280, 720), (1920, 1080)):
+            r = Renderer(size)
+            r.render(view_from(state, address="jukebox.local", address_ip=IP, now=0.0), full=True)
+            # QR kód vede na číselnou adresu, ne na jméno .local
+            self.assertEqual(r._qr, (IP, qr_encode(f"http://{IP}")))
+            both = r.frame.copy()
+            web = next(x.box for x in r.regions if x.name == "web")
+            # obě adresy jsou na obrazovce: jiné vykreslení než jen se jménem
+            only = Renderer(size)
+            only.render(view_from(state, address="jukebox.local", now=0.0), full=True)
+            self.assertNotEqual(both.crop(web).tobytes(), only.frame.crop(web).tobytes())
+            self.assertEqual(only._qr[0], "jukebox.local")  # bez sítě není co jiného nabídnout
+            # změna adresy stroje překreslí jen ten roh
+            boxes = r.render(view_from(state, address="jukebox.local", address_ip="10.0.0.9", now=0.0))
+            self.assertTrue(boxes)
+            for b in boxes:
+                self.assertTrue(web[0] <= b[0] and web[1] <= b[1] and b[2] <= web[2] and b[3] <= web[3])
+            self.assertEqual(r._qr[0], "10.0.0.9")
+            # bez jména (jen adresa): jednou, ne dvakrát pod sebou
+            r.render(view_from(state, address=f"{IP}:8765", address_ip=f"{IP}:8765", now=0.0))
+            self.assertEqual(r._qr[0], f"{IP}:8765")
+        # proces telky: jméno i adresa z téhož ověření, obojí bez portu jen s portem 80
+        reach = [Reach(8765, True, ("jukebox.local",), IP)]
+
+        class W:
+            @property
+            def reach(self):
+                return reach[0]
+
+        app = tvapp.TvApp(lambda: PngScreen(_TMP / "n.png", (720, 480)), "http://127.0.0.1:9",
+                          watch=W())
+        v = app.view()
+        self.assertEqual((v.address, v.address_ip), ("jukebox.local", IP))
+        reach[0] = Reach(8765, False, ("jukebox.local",), IP)
+        v = app.view()
+        self.assertEqual((v.address, v.address_ip), ("jukebox.local:8765", f"{IP}:8765"))
+        # displej: QR taky na číselnou adresu (první v seznamu)
+        c = PanelUrls().ctrl(Reach(8765, True, ("jukebox.local",), IP))
+        self.assertEqual(c.urls()[0], f"http://{IP}")
+
     def test_tv_shows_the_verified_address_and_its_qr_follows_it(self):
         state = {"current": None, "queue": [], "dj": {}}
         r = Renderer((1280, 720))

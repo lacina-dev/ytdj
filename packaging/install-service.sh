@@ -124,6 +124,19 @@ if [ "${YTDJ_MDNS_ALIAS:-1}" != 0 ] && [[ "$model" == Raspberry\ Pi* ]] \
     sudo systemctl daemon-reload
     sudo systemctl enable --now ytdj-mdns-alias.service
     echo "unit:    /etc/systemd/system/ytdj-mdns-alias.service (jukebox.local)"
+    # Volitelně: opakované ohlašování jmen pro Wi-Fi, která ztrácí multicast
+    # (jména .local pak „chvíli fungují a přestanou“). Jen na výslovné přání:
+    #   YTDJ_MDNS_ANNOUNCE=1 ./packaging/install-service.sh
+    # Zrušení: sudo systemctl disable --now ytdj-mdns-announce
+    if [ "${YTDJ_MDNS_ANNOUNCE:-0}" = 1 ]; then
+        sudo install -D -m 755 "$repo/packaging/rpi/mdns-announce.py" /usr/local/lib/ytdj/mdns-announce.py
+        sed -e "s|@USER@|$USER|g" "$repo/packaging/ytdj-mdns-announce.service" |
+            sudo tee /etc/systemd/system/ytdj-mdns-announce.service > /dev/null
+        sudo systemctl daemon-reload
+        sudo systemctl enable ytdj-mdns-announce.service
+        sudo systemctl restart ytdj-mdns-announce.service
+        echo "unit:    /etc/systemd/system/ytdj-mdns-announce.service (opakované ohlašování jmen)"
+    fi
 fi
 
 if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || echo no)" != "yes" ]; then

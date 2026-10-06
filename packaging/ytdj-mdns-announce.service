@@ -1,0 +1,35 @@
+[Unit]
+Description=ytdj — opakované ohlašování jmen v síti (pro Wi-Fi, která ztrácí multicast)
+Documentation=https://github.com/lacina-dev/ytdj
+# Volitelné (instalace jen s YTDJ_MDNS_ANNOUNCE=1). Avahi se nedotýká: jen
+# opakuje jeho odpověď pro jména, která tu avahi samo zná.
+Wants=avahi-daemon.service network-online.target
+After=avahi-daemon.service network-online.target ytdj-mdns-alias.service
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/lib/ytdj/mdns-announce.py jukebox.local %H.local
+Restart=on-failure
+RestartSec=30
+# běžný uživatel bez práv navíc; do sítě jen UDP (IPv4) a dotaz avahi na jméno
+User=@USER@
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+Nice=10
+SyslogIdentifier=ytdj-mdns-announce
+
+[Install]
+WantedBy=multi-user.target

@@ -36,7 +36,8 @@ SEEK_JUMP = 4.0  # s — a position this far from where we thought it was is a s
 class TvApp:
     def __init__(self, open_screen: Callable[[], object], url: str, address: str = "",
                  art_url: str = ART_URL, agent: str = "ytdj-tv",
-                 watch: Watch | None = None, director: Director | None = None) -> None:
+                 watch: Watch | None = None, director: Director | None = None,
+                 web_name: str = "") -> None:
         self.open_screen = open_screen
         # klip místo obrazovky (video.Director) — jen na skutečné telce; bez
         # něj se nic nemění a kreslí se pořád
@@ -51,7 +52,8 @@ class TvApp:
         self.address = address
         self.watch = watch
         if not address and watch is None:
-            self.watch = Watch(self.api.port, self.stop, on_change=lambda _r: self.wake.set())
+            self.watch = Watch(self.api.port, self.stop, on_change=lambda _r: self.wake.set(),
+                               name=web_name)
         self.feed = StatusFeed(self.api, self._on_state, self._on_offline, self.stop)
         self.art_url = art_url
         self.art: ArtCache | None = None
@@ -119,8 +121,13 @@ class TvApp:
         with self._lock:
             state, offline, got_at, idle = self._state, self._offline, self._got_at, self._idle_since
         art = self.art
-        address = self.address or (self.watch.reach.address() if self.watch else "")
+        reach = self.watch.reach if self.watch else None
+        address = self.address or (reach.address() if reach else "")
+        # vedle jména i holá adresa (a ta jde do QR kódu): jména .local stojí
+        # na multicastu, který kancelářská Wi-Fi umí ztrácet
+        address_ip = reach.ip_address() if reach and not self.address else ""
         return view_from(state, offline=offline, got_at=got_at, address=address,
+                         address_ip=address_ip,
                          idle_since=idle,
                          art_ready=(lambda vid: art.get(vid) is not None) if art else None)
 

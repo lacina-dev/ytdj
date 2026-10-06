@@ -72,6 +72,7 @@ class TvView:
     detail: str = ""  # outage / offline reason
     clock: str = ""
     address: str = ""  # what to type into a browser; "" = not known (nothing is shown)
+    address_ip: str = ""  # the same place as a bare address (no name lookup needed): the QR code
     art: bool = False  # the cover is ready
     dim: bool = False
     shift: int = 0
@@ -83,6 +84,7 @@ def _s(value: object, limit: int = 300) -> str:
 
 def view_from(state: dict | None, *, offline: str = "", now: float | None = None,
               mono: float | None = None, got_at: float | None = None, address: str = "",
+              address_ip: str = "",
               idle_since: float | None = None, art_ready: Callable[[str], bool] | None = None,
               clock: str | None = None) -> TvView:
     """The server's status (or the lack of one) as a TvView.
@@ -94,7 +96,7 @@ def view_from(state: dict | None, *, offline: str = "", now: float | None = None
     """
     now = time.time() if now is None else now
     mono = time.monotonic() if mono is None else mono
-    base = dict(address=address,
+    base = dict(address=address, address_ip=address_ip,
                 clock=time.strftime("%H:%M", time.localtime(now)) if clock is None else clock,
                 shift=int(now // SHIFT_EVERY) % len(SHIFTS),
                 dim=idle_since is not None and mono - idle_since >= DIM_AFTER)
@@ -256,7 +258,7 @@ class Renderer:
             _Region("note", note, lambda v: (v.note, v.note_who), self._draw_note),
             _Region("next", nxt, lambda v: (v.next, v.more, v.state == "offline"),
                     self._draw_next),
-            _Region("web", web, lambda v: (v.address,), self._draw_web),
+            _Region("web", web, lambda v: (v.address, v.address_ip), self._draw_web),
         ]
         for r in self.regions:
             r.last = old.get(r.name)
@@ -509,19 +511,32 @@ class Renderer:
             return
         pad = round(16 * u)
         side = h - 2 * pad
-        if self._qr[0] != v.address:
+        # The QR code carries the bare address when there is one: it needs no
+        # name lookup, so it works on every phone and on a network that loses
+        # multicast (.local). The name is for typing — with the address under it.
+        target = v.address_ip or v.address
+        if self._qr[0] != target:
             try:
-                self._qr = (v.address, qr_encode(f"http://{v.address}"))
+                self._qr = (target, qr_encode(f"http://{target}"))
             except ValueError:
-                self._qr = (v.address, None)
+                self._qr = (target, None)
         used = 0
         if self._qr[1] is not None:
             used = draw_qr(d, w - side, pad, side, self._qr[1])
         tw = w - (used or 0) - round(20 * u) if used else w
-        d.text((tw, h * 0.34), "Pusť si svoje", font=self.font(26, True), fill=TEXT, anchor="rm")
+        second = v.address_ip if v.address_ip and v.address_ip != v.address else ""
         f = self.font(24, True)
         addr = v.address
-        if d.textlength(addr, font=f) > tw and ":" in addr:
+        split = d.textlength(addr, font=f) > tw and ":" in addr
+        if second and not split:
+            d.text((tw, h * 0.24), "Pusť si svoje", font=self.font(26, True), fill=TEXT, anchor="rm")
+            d.text((tw, h * 0.50), ellipsize(addr, f, tw), font=f, fill=ACCENT, anchor="rm")
+            f2 = self.font(22)
+            d.text((tw, h * 0.74), ellipsize(f"nebo {second}", f2, tw), font=f2, fill=MUTED,
+                   anchor="rm")
+            return
+        d.text((tw, h * 0.34), "Pusť si svoje", font=self.font(26, True), fill=TEXT, anchor="rm")
+        if split:
             # too long for one line: the port goes under the name
             host, port = addr.rsplit(":", 1)
             d.text((tw, h * 0.56), ellipsize(host, f, tw), font=f, fill=ACCENT, anchor="rm")

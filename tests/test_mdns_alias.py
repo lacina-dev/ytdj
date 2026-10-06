@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import configparser
+import importlib.util
 import os
 import signal
+import socket
 import stat
+import struct
 import subprocess
 import tempfile
 import time
@@ -95,6 +98,114 @@ class MdnsAlias(unittest.TestCase):
         self.ipfile.write_text("10.0.0.9")
         self.assertTrue(_wait(lambda: self._calls()[-1:] == ["-a -R jukebox.local 10.0.0.9"],
                               timeout=3), self._calls())
+
+
+def _announcer():
+    spec = importlib.util.spec_from_file_location("mdns_announce", ROOT / "packaging/rpi/mdns-announce.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _records(data: bytes) -> tuple[int, list[tuple]]:
+    """(příznaky, [(jméno, typ, třída, platnost, adresa)]) z odpovědi mDNS bez komprese."""
+    _id, flags, qd, an, _ns, _ar = struct.unpack("!HHHHHH", data[:12])
+    assert qd == 0
+    off, out = 12, []
+    for _ in range(an):
+        parts = []
+        while data[off]:
+            n = data[off]
+            parts.append(data[off + 1:off + 1 + n].decode())
+            off += 1 + n
+        off += 1
+        rtype, rclass, ttl, rdlen = struct.unpack("!HHIH", data[off:off + 10])
+        off += 10
+        out.append((".".join(parts), rtype, rclass, ttl, socket.inet_ntoa(data[off:off + rdlen])))
+        off += rdlen
+    assert off == len(data)
+    return flags, out
+
+
+class Announce(unittest.TestCase):
+    """Opakované ohlašování jmen pro sítě, které ztrácejí multicast (volitelné)."""
+
+    def rig(self, ours=("jukebox.local", "ytdj.local"), ip="10.0.0.7"):
+        mod = _announcer()
+        sent: list[tuple[bytes, str]] = []
+        state = {"ip": ip, "ours": set(ours), "t": 0.0}
+        ann = mod.Announcer(["jukebox.local", "ytdj.local"], send=lambda p, i: sent.append((p, i)),
+                            own_ip=lambda: state["ip"],
+                            is_ours=lambda name, addr: name in state["ours"],
+                            clock=lambda: state["t"], ttl=240)
+        return mod, ann, sent, state
+
+    def test_packet_is_a_plain_answer_for_our_names(self):
+        mod, ann, sent, _ = self.rig()
+        self.assertEqual(ann.step(), ["jukebox.local", "ytdj.local"])
+        flags, recs = _records(sent[0][0])
+        self.assertEqual(flags, 0x8400)  # odpověď, autoritativní; žádná otázka
+        self.assertEqual(recs, [("jukebox.local", 1, 0x8001, 240, "10.0.0.7"),
+                                ("ytdj.local", 1, 0x8001, 240, "10.0.0.7")])  # jen A (IPv4)
+        self.assertEqual((mod.GROUP, mod.PORT), ("224.0.0.251", 5353))
+        self.assertGreaterEqual(mod.TTL // int(mod.EVERY), 20)  # dost pokusů na jednu platnost
+        with self.assertRaises(ValueError):
+            mod.Announcer(["a" * 70 + ".local"])
+
+    def test_only_names_that_resolve_here_to_our_address(self):
+        mod, ann, sent, state = self.rig(ours=("ytdj.local",))  # služba druhého jména neběží
+        self.assertEqual(ann.step(), ["ytdj.local"])
+        self.assertEqual([r[0] for r in _records(sent[-1][0])[1]], ["ytdj.local"])
+        state["ours"] = set()  # ani jedno jméno tu neplatí → ven nejde nic
+        state["t"] += mod.RECHECK + 1
+        n = len(sent)
+        self.assertEqual(ann.step(), [])
+        self.assertEqual(len(sent), n)
+        # bez sítě taky nic
+        mod, ann, sent, state = self.rig(ip="")
+        self.assertEqual((ann.step(), sent), ([], []))
+        # skutečná kontrola: cizí jméno se na naši adresu nepřeloží
+        self.assertFalse(mod.is_ours("tohle-jmeno-neexistuje.invalid", "10.0.0.7"))
+
+    def test_goodbye_only_for_an_old_address_never_on_exit(self):
+        mod, ann, sent, state = self.rig()
+        ann.step()
+        ann.step()
+        self.assertTrue(all(r[3] == 240 for p, _ in sent for r in _records(p)[1]))  # žádné „sbohem“
+        state["ip"] = "10.0.0.9"  # DHCP dal jinou adresu
+        ann.step()
+        bye = _records(sent[-2][0])[1]
+        self.assertEqual({(r[3], r[4]) for r in bye}, {(0, "10.0.0.7")})  # stará adresa neplatí
+        new = _records(sent[-1][0])[1]
+        self.assertEqual({(r[3], r[4]) for r in new}, {(240, "10.0.0.9")})
+        src = (ROOT / "packaging/rpi/mdns-announce.py").read_text(encoding="utf-8")
+        self.assertIn("signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))", src)
+        self.assertEqual(src.count("response(self.ours, self.ip, 0)"), 1)  # jediné místo se „sbohem“
+
+    def test_unit_is_optional_harmless_and_keeps_away_from_avahi(self):
+        raw = (ROOT / "packaging" / "ytdj-mdns-announce.service").read_text()
+        unit = configparser.ConfigParser(strict=False, interpolation=None)
+        unit.read_string(raw)
+        s = unit["Service"]
+        self.assertEqual(s["ExecStart"],
+                         "/usr/bin/python3 /usr/local/lib/ytdj/mdns-announce.py jukebox.local %H.local")
+        self.assertEqual((s["User"], s["NoNewPrivileges"], s["CapabilityBoundingSet"]),
+                         ("@USER@", "yes", ""))
+        self.assertEqual(s["RestrictAddressFamilies"], "AF_INET AF_UNIX")
+        src = (ROOT / "packaging/rpi/mdns-announce.py").read_text(encoding="utf-8")
+        code = "\n".join(ln for ln in src.split('"""', 2)[2].splitlines()
+                         if not ln.lstrip().startswith("#"))
+        for banned in ("import dbus", "avahi-", "subprocess", "/etc/", "AF_INET6",
+                       "IP_MULTICAST_LOOP, 1"):
+            self.assertNotIn(banned, code, banned)
+        self.assertIn("IP_MULTICAST_LOOP, 0", code)
+        text = (ROOT / "packaging" / "install-service.sh").read_text()
+        self.assertIn('if [ "${YTDJ_MDNS_ANNOUNCE:-0}" = 1 ]; then', text)  # jen na výslovné přání
+        self.assertIn("systemctl disable --now ytdj-mdns-announce", text)
+        # skript se sám nespouští znovu a znovu (avahi-publish se kvůli ohlašování nerestartuje)
+        alias = SCRIPT.read_text()
+        self.assertNotIn("mdns-announce", alias)
+        self.assertTrue(os.access(ROOT / "packaging/rpi/mdns-announce.py", os.X_OK))
 
 
 class Packaging(unittest.TestCase):

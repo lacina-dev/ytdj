@@ -92,7 +92,53 @@ brake and the per-client limits depend on it). Port 8765 keeps working.
 
 The TV screen and the touch panel show an address only after checking that it answers
 (`ytdj/panel/webaddr.py`, every few minutes): `jukebox.local`, else `<hostname>.local`, else
-the IP — without a port only while port 80 is really served.
+the IP — without a port only while port 80 is really served. The check runs on the Pi, so it
+cannot see what a phone can resolve: the TV therefore always shows the IP next to the name,
+and every QR code (TV and panel) carries the IP form.
+
+### `.local` names that work for a while and then stop
+
+Measured on 6 Oct from a laptop on the office Wi-Fi (the Pi is on the cable, same subnet):
+asked for a direct reply, the Pi answered for `jukebox.local` and `ytdj.local` every time;
+of the replies sent to everybody (multicast, the normal way) only 1–3 in 10 arrived. A name
+then works while a device remembers it (120 s) and stops when the refresh is lost. That is
+the network dropping multicast towards Wi-Fi, for both names — not the alias, not avahi.
+
+- **The reliable fix is on the network side** (for whoever runs it): a DHCP reservation for
+  the Pi's MAC address, and a DNS record in the office DNS pointing at that address, e.g.
+  `jukebox.<office domain>` (or plain `jukebox` with the office search domain). Ordinary DNS
+  does not depend on multicast. Then tell the jukebox to show that name — in
+  `~/.config/ytdj/config.toml` (file only; the web's settings neither show nor change it):
+
+      web_name = "jukebox.example.org"
+
+  and `sudo systemctl restart ytdj-tv ytdj-panel`. The name is checked like the others (it
+  must resolve on the Pi and the jukebox's web must answer under it) and is preferred when it
+  works; anything that is not a plain host name is ignored.
+- **A workaround on the Pi (optional, off by default):** `ytdj-mdns-announce.service` repeats
+  avahi's own answer for `jukebox.local` and `<hostname>.local` to everybody every 10 s with
+  a 240 s lifetime, so one lost refresh no longer matters (at 20 % delivery the chance that
+  all 24 are lost is 0.5 %). It registers nothing and does not talk to avahi; it only
+  announces names that resolve to the Pi's own address on the Pi, IPv4 only, and sends no
+  goodbye when stopped. Install: `YTDJ_MDNS_ANNOUNCE=1 ./packaging/install-service.sh`;
+  remove: `sudo systemctl disable --now ytdj-mdns-announce`.
+  Restarting `avahi-publish` periodically instead is NOT done: withdrawing a record sends a
+  goodbye (lifetime 0), and on a network where the following announcement may be lost that
+  would make the name disappear sooner.
+- `avahi-publish -a` has no lifetime option (avahi uses 120 s for addresses).
+- **IPv6:** avahi also publishes an AAAA record for `<hostname>.local` — the link-local
+  `fe80::…` address — while the web listens on IPv4 only (`0.0.0.0`); `jukebox.local` has
+  only the IPv4 record. A device that tries the IPv6 address first gets a refusal and falls
+  back. To make `<hostname>.local` IPv4-only too (optional, by hand; avahi restarts and the
+  names are away for ~15 s while the alias re-registers):
+
+      sudo cp /etc/avahi/avahi-daemon.conf /etc/avahi/avahi-daemon.conf.ytdj-backup
+      sudo sed -i -e 's/^use-ipv6=yes/use-ipv6=no/' /etc/avahi/avahi-daemon.conf
+      sudo systemctl restart avahi-daemon
+
+  Back: `sudo cp /etc/avahi/avahi-daemon.conf.ytdj-backup /etc/avahi/avahi-daemon.conf &&
+  sudo systemctl restart avahi-daemon`. Nothing else in `avahi-daemon.conf` helps against
+  lost multicast (the rate limits and cache sizes concern what avahi itself receives).
 
 ## TV over HDMI („právě hraje“, `ytdj-tv.service`)
 

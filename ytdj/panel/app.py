@@ -97,6 +97,7 @@ class PanelApp:
         lang: str = "cs",
         vol_max: int = 100,
         check_address: bool = False,
+        web_name: str = "",
         media_keys: bool = False,
         net_backend=None,
     ) -> None:
@@ -123,7 +124,7 @@ class PanelApp:
         # vlákno jednou za pár minut, obrazovky jen čtou výsledek
         # (jen na skutečném displeji — `check_address`; jinak adresy jako dřív)
         self.webaddr = Watch(self.api.port, self.stop,
-                             on_change=lambda _r: self.events.put(("webaddr",))) \
+                             on_change=lambda _r: self.events.put(("webaddr",)), name=web_name) \
             if check_address else None
         self.net = NetController(net_backend, self.events.put, lang, self.api.port, count=self.stats.count,
                                  reach=(lambda: self.webaddr.reach) if self.webaddr else None)

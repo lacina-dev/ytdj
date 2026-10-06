@@ -114,7 +114,8 @@ def view(spec: dict, renderer: Renderer, position: float | None = None):
     renderer.art = art
     return view_from(state, offline=spec.get("offline", ""), now=NOW, mono=100.0, got_at=100.0,
                      idle_since=100.0 - 3600 if spec.get("dim") else None,
-                     address="jukebox.local", art_ready=lambda vid: art(vid) is not None)
+                     address="jukebox.local", address_ip="192.168.0.24",
+                     art_ready=lambda vid: art(vid) is not None)
 
 
 def main() -> int:

@@ -24,6 +24,7 @@ from __future__ import annotations
 import http.client
 import json
 import logging
+import re
 import socket
 import threading
 from dataclasses import dataclass
@@ -32,6 +33,18 @@ from typing import Callable
 log = logging.getLogger(__name__)
 
 ALIAS = "jukebox.local"
+# a name from the office's own DNS (config.toml: web_name = "jukebox.firma.cz") —
+# a plain host name, nothing else gets on a screen or into a QR code
+_HOST = re.compile(r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?"
+                   r"(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$")
+
+
+def clean_name(value: object) -> str:
+    """`web_name` from config.toml as a host name, or "" when it isn't one."""
+    if not isinstance(value, str):
+        return ""
+    name = value.strip().lower().rstrip(".")
+    return name if _HOST.match(name) and not name.replace(".", "").isdigit() else ""
 TIMEOUT = 3.0
 # after a start things are still coming up (avahi, the redirect, ytdj itself):
 # look again soon, then settle to once in a few minutes
@@ -59,6 +72,12 @@ class Reach:
         """As shown on a screen, e.g. "jukebox.local" or "192.168.0.24:8765" ("" = unknown)."""
         host = self.host()
         return host + self._suffix() if host else ""
+
+    def ip_address(self) -> str:
+        """The form that needs no name lookup at all, e.g. "192.168.0.24" ("" = no network).
+        This is what QR codes carry: `.local` names depend on multicast, which an
+        office Wi-Fi may drop (measured 6 Oct: 1–3 answers in 10 reached a laptop)."""
+        return self.ip + self._suffix() if self.ip else ""
 
     def url(self, host: str | None = None) -> str:
         """http://… for `host` (default: the best one) with the port only if needed."""
@@ -103,7 +122,7 @@ def answers(host: str, port: int, timeout: float = TIMEOUT) -> bool:
         conn.close()
 
 
-def probe(port: int, hostname: str = "", alias: str = ALIAS,
+def probe(port: int, hostname: str = "", alias: str = ALIAS, name: str = "",
           answers: Callable[[str, int], bool] = answers,
           resolves: Callable[[str], bool] = resolves,
           own_ip: Callable[[], str] = own_ip) -> Reach | None:
@@ -118,9 +137,10 @@ def probe(port: int, hostname: str = "", alias: str = ALIAS,
         # the web itself is not up: nothing can be confirmed right now
         return None
     names = []
-    for name in (alias, f"{hostname}.local" if hostname else ""):
-        if name and name not in names and resolves(name) and answers(name, use):
-            names.append(name)
+    # the office's own DNS name first (when one is configured), then ours
+    for cand in (name, alias, f"{hostname}.local" if hostname else ""):
+        if cand and cand not in names and resolves(cand) and answers(cand, use):
+            names.append(cand)
     return Reach(port=port, port80=port80, names=tuple(names), ip=ip)
 
 
@@ -130,13 +150,14 @@ class Watch(threading.Thread):
     def __init__(self, port: int, stop: threading.Event,
                  on_change: Callable[[Reach], None] | None = None, hostname: str | None = None,
                  look: Callable[..., Reach | None] = probe, schedule: tuple[float, ...] = SCHEDULE,
-                 every: float = EVERY) -> None:
+                 every: float = EVERY, name: str = "") -> None:
         super().__init__(name="web-address", daemon=True)
         self.port = port
         self.stop = stop
         self.on_change = on_change
         self.hostname = socket.gethostname() if hostname is None else hostname
         self.look = look
+        self.web_name = clean_name(name)  # web_name from config.toml ("" = none)
         self.schedule = schedule
         self.every = every
         # until the first look: the bare address with the port always works
@@ -145,7 +166,8 @@ class Watch(threading.Thread):
 
     def once(self) -> Reach:
         try:
-            new = self.look(self.port, self.hostname)
+            new = self.look(self.port, self.hostname, name=self.web_name) if self.web_name \
+                else self.look(self.port, self.hostname)
         except Exception:  # never let the thread die
             log.debug("zjišťování adresy webu selhalo", exc_info=True)
             return self.reach

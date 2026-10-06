@@ -87,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
 
     app = PanelApp(screen, touch, args.url, lang=args.lang, vol_max=args.vol_max,
                    media_keys=args.driver == "kedei" and not args.no_media_keys,
-                   check_address=args.driver == "kedei")
+                   check_address=args.driver == "kedei", web_name=str(cfg.get("web_name") or ""))
     signal.signal(signal.SIGTERM, lambda *_: app.shutdown())
     signal.signal(signal.SIGINT, lambda *_: app.shutdown())
     log.info("panel běží (%s), ytdj na %s", args.driver, args.url)

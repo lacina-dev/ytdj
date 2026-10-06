@@ -85,7 +85,9 @@ def main(argv: list[str] | None = None) -> int:
 
         director = Director(Path(uid_dir), os.path.join(run_dir, "video.sock"), fb_size, emit=emit,
                             status_file=Path(run_dir) / "status.json")
-    app = TvApp(open_screen, args.url, args.address, director=director)
+    # web_name v config.toml: jméno z DNS kanceláře (jen ze souboru; ověří se jako ostatní)
+    app = TvApp(open_screen, args.url, args.address, director=director,
+                web_name=str(cfg.get("web_name") or ""))
     signal.signal(signal.SIGTERM, lambda *_: app.shutdown())
     signal.signal(signal.SIGINT, lambda *_: app.shutdown())
     log.info("obrazovka „právě hraje“ běží (%s), ytdj na %s",

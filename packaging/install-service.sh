@@ -79,6 +79,11 @@ if [ "$tv" = yes ]; then
         "$repo/packaging/ytdj-tv.service" |
         sudo tee /etc/systemd/system/ytdj-tv.service > /dev/null
     echo "unit:    /etc/systemd/system/ytdj-tv.service"
+    # Na telce jen jukebox, žádný přihlašovací terminál: výzva na tty1 kreslí
+    # do stejné obrazovky. SSH a sériová konzole zůstávají. Zpátky:
+    #   sudo systemctl disable --now ytdj-tv && sudo systemctl enable --now getty@tty1
+    sudo systemctl disable --now getty@tty1.service 2>/dev/null || true
+    echo "pozn.:   přihlašovací výzva na obrazovce (getty@tty1) je vypnutá — na telce je jen jukebox"
 fi
 
 # Sandbox Codexu: na Linuxu izoluje příkazy přes bubblewrap, bez něj read-only
@@ -89,11 +94,15 @@ if ! command -v bwrap > /dev/null && command -v apt-get > /dev/null; then
 fi
 
 # Druhé jméno v síti: vedle <hostname>.local i jukebox.local (jen na jukeboxu
-# s avahi). Skript jde mimo domovský adresář — služba běží pod DynamicUser.
-if [[ "$model" == Raspberry\ Pi* ]] && systemctl is-active -q avahi-daemon 2>/dev/null; then
+# s avahi). Skript jde mimo domovský adresář — služba do něj nevidí. Běží pod
+# běžným uživatelem (ne DynamicUser: toho si D-Bus na Pi nedohledá a avahi ho
+# nepustí). YTDJ_MDNS_ALIAS=0 druhé jméno vynechá.
+if [ "${YTDJ_MDNS_ALIAS:-1}" != 0 ] && [[ "$model" == Raspberry\ Pi* ]] \
+        && systemctl is-active -q avahi-daemon 2>/dev/null; then
     command -v avahi-publish > /dev/null || sudo apt-get install -y avahi-utils
     sudo install -D -m 755 "$repo/packaging/rpi/mdns-alias.sh" /usr/local/lib/ytdj/mdns-alias.sh
-    sudo install -m 644 "$repo/packaging/ytdj-mdns-alias.service" /etc/systemd/system/ytdj-mdns-alias.service
+    sed -e "s|@USER@|$USER|g" "$repo/packaging/ytdj-mdns-alias.service" |
+        sudo tee /etc/systemd/system/ytdj-mdns-alias.service > /dev/null
     sudo systemctl daemon-reload
     sudo systemctl enable --now ytdj-mdns-alias.service
     echo "unit:    /etc/systemd/system/ytdj-mdns-alias.service (jukebox.local)"

@@ -901,6 +901,14 @@ class MpvPlayer(Player):
             return []
         return [vid for _, vid in self._playlist[i + 1 :] if vid]
 
+    def loaded_ids(self) -> set[str]:
+        """Co už v mpv je: hrající (i teprve načítaná nebo pozastavená) skladba
+        a všechno za ní. Podkres podle toho nenabídne nic podruhé."""
+        i = self._cur_index()
+        if i < 0:
+            return set(self.upcoming_ids())
+        return {vid for _, vid in self._playlist[i:] if vid}
+
     def _note_entry(self, res: Any, vid: str) -> int | None:
         # the response carries playlist_entry_id — the only reliable way
         # to later tell which track an event refers to

@@ -82,18 +82,18 @@
       "created": "2026-10-06",
       "title": "Videa z YouTube Music na televizi přes HDMI",
       "body": "Přehrávat i videa z YT Music na telce připojené přes HDMI; jinak by tam ukazovalo písničku, co hraje.\n\nPOZADAVKY #58.",
-      "resolution": "Obrazovka „právě hraje“ (obal, název, kdo si přál, co bude dál, QR kód) je nasazená a kreslí, ale na telce zatím není vidět: jukebox při svém startu telku neviděl a obraz posílá na jiný výstup. Je potřeba ho restartovat se zapnutou telkou, případně HDMI vynutit v nastavení. Video (klipy) zatím ne.",
+      "resolution": "Obrazovka „právě hraje“ (obal, název, kdo si přál, co bude dál, QR kód) je na telce vidět — po restartu jukeboxu se zapnutou telkou. Telka má být zapnutá, když se jukebox zapíná, jinak obraz pošle na jiný výstup. Přes obraz se zatím pletl přihlašovací terminál; ten je teď ručně vypnutý a oprava, která ho schová natrvalo, čeká na nasazení. Video (klipy) zatím ne.",
       "resolved": "2026-10-06"
     },
     {
       "key": "pozadavek-59",
       "kind": "napad",
-      "state": "vyreseno",
+      "state": "resi_se",
       "who": "kolega",
       "created": "2026-10-06",
       "title": "Po vypnutí a zapnutí pokračovat tam, kde se skončilo",
       "body": "Pamatovat si aktuální stav, aby to i po vypnutí a opětovném startu pokračovalo tam, kde to bylo.\n\nČást už funguje (po restartu služby skladba naváže) — ověřit, co chybí. POZADAVKY #59.",
-      "resolution": "Dřív se po vypnutí nebo výpadku proudu zahodilo všechno (1. 10. tak po třech minutách bez proudu zmizelo přání i režim interpreta). Nově si jukebox pamatuje čekající přání, podkres i místo ve skladbě (na ~15–25 vteřin přesně) a po zapnutí je vrátí. Hudba se ale sama nerozehraje — čeká v pauze, stačí zmáčknout ▶ a pokračuje se tam, kde se přestalo. Platí to týž den; druhý den ráno začíná jukebox načisto. Nasazeno 6. 10. večer. Restart služby už navázal na stejnou skladbu a pozici; zkouška s vypnutím celého jukeboxu teprve proběhne.",
+      "resolution": "Dřív se po vypnutí nebo výpadku proudu zahodilo všechno (1. 10. tak po třech minutách bez proudu zmizelo přání i režim interpreta). Nově si jukebox pamatuje čekající přání, podkres i místo ve skladbě (na ~15–25 vteřin přesně) a po zapnutí je vrátí. Hudba se ale sama nerozehraje — čeká v pauze, stačí zmáčknout ▶ a pokračuje se tam, kde se přestalo. Platí to týž den; druhý den ráno začíná jukebox načisto. Nasazeno 6. 10. večer a vyzkoušeno i s restartem celého jukeboxu: vrátil skladbu, místo v ní i podkres, mlčel do ▶ a pak hrál do dvou vteřin. Při zkoušce se ukázala chyba — obnovená skladba byla ve frontě dvakrát a po dohrání začala znovu. Oprava je hotová a čeká na nasazení.",
       "resolved": "2026-10-06"
     },
     {
@@ -159,7 +159,7 @@
       "created": "2026-10-06",
       "title": "Jukebox v síti i pod jménem jukebox.local",
       "body": "„ytdj.local je ok, ale bylo by fajn, kdyby bylo i jukebox.local.“\n\nPOZADAVKY #65.",
-      "resolution": "První pokus se po nasazení nepovedl — služba jméno nevyhlásila a rušila i ytdj.local, proto je vypnutá. Zatím platí jen ytdj.local; jukebox.local udělám jinak.",
+      "resolution": "První pokus se po nasazení nepovedl — služba se k síťové službě jukeboxu vůbec nepřipojila (běžela pod uživatelem, kterého systém nezná) a jméno nevyhlásila, proto je vypnutá. Ve stejnou chvíli se z jednoho počítače přestalo překládat i ytdj.local; že to způsobila ona, se nepotvrdilo. Oprava je hotová (jiný uživatel služby, žádné zkoušení dokola) a čeká na večerní zkoušku. Do té doby platí ytdj.local.",
       "resolved": "2026-10-06"
     },
     {

@@ -3273,6 +3273,11 @@ class WishQueue:
                         w.current = None
                         w.state = "queued"
                 return None
+            # Podkres ji nesmí nabídnout znovu: po restartu si pooly nepamatují,
+            # co v tomhle běhu zaznělo, a oblíbenou skladbu nezastaví ani
+            # pravidlo neopakování (Pi 6. 10.: „Jump" hrál po obnově dvakrát).
+            self.pools.remember_tracks([track])
+            self.pools.session_seen.add(track.id)
         except Exception:
             log.exception("přerušenou skladbu se po restartu nepodařilo navázat")
             return None

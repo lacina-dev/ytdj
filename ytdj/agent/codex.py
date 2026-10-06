@@ -815,10 +815,28 @@ class CodexDJ:
         out: list[Track] = []
         for _ in range(4):  # vyřazené nahradit, ale nezacyklit se
             batch = self._allowed(await self.pools.next_tracks(count - len(out)))
+            # Co už v přehrávači je (hraje, stojí v pauze, čeká ve frontě), se
+            # nezařadí podruhé — ani když si to pool nepamatuje (po restartu
+            # je jeho paměť prázdná; Pi 6. 10.: navázaná skladba byla ve
+            # frontě hned znovu) nebo když začíná kolo interpreta od začátku.
+            loaded = self._loaded_ids() | {t.id for t in out}
+            twice = [t for t in batch if t.id in loaded]
+            if twice:
+                telemetry.event("radio.duplicate_dropped", ids=[t.id for t in twice][:10])
+                self.pools.session_seen.update(t.id for t in twice)
+                batch = [t for t in batch if t.id not in loaded]
             out += batch
-            if len(out) >= count or not self.avoid:
+            if len(out) >= count or not (self.avoid or twice):
                 break
         return out
+
+    def _loaded_ids(self) -> set[str]:
+        loaded = getattr(self.player, "loaded_ids", None)
+        try:
+            return set(loaded()) if loaded is not None else set()
+        except Exception:
+            log.debug("fronta přehrávače nejde přečíst", exc_info=True)
+            return set()
 
     def note_started(self, video_id: str) -> None:
         """Přehrávač začal skladbu — vyžádaná už nečeká."""

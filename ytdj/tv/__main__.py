@@ -81,12 +81,28 @@ def main(argv: list[str] | None = None) -> int:
     emit("tv.startup", fb=None if args.sim_out or args.sim_fb else args.fb,
          sim=bool(args.sim_out or args.sim_fb) or None,
          url=args.url, address=args.address, pid=os.getpid())
+    # Na telce má být jen jukebox: textová konzole (login, kurzor, hlášky jádra)
+    # kreslí do téhož framebufferu, tak ji po dobu běhu přepneme do grafického
+    # režimu. Jde to jen s terminálem od systemd (TTYPath v unitě), jinak nic.
+    grabbed = False
+    if not (args.sim_out or args.sim_fb):
+        from . import console
+
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)  # zavěšení terminálu nás neukončí
+        grabbed, why = console.grab()
+        if grabbed:
+            log.info("textová konzole je po dobu běhu skrytá")
+        else:
+            log.info("textovou konzoli neskrývám (%s) — může být vidět na telce", why)
+        emit("tv.console", hidden=grabbed, reason=why or None)
     started = time.monotonic()
     try:
         app.run()
     finally:
         emit("tv.stop", uptime_s=int(time.monotonic() - started), reconnects=app.reconnects)
         app._drop_screen()
+        if grabbed:
+            console.release()
     return 0
 
 

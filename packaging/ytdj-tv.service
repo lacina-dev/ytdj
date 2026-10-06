@@ -4,7 +4,11 @@ Documentation=https://github.com/lacina-dev/ytdj
 # Samostatný malý proces: s ytdj mluví jen přes lokální HTTP API a kreslí do
 # framebufferu. Přehrávače ani zvuku se nedotkne; když ytdj neběží nebo není
 # telka, jen čeká. Závislost na ytdj.service (běží pod uživatelem) tu není.
-After=network.target
+After=network.target getty@tty1.service
+# Na telce má být jen jukebox, žádný login: služba si bere konzoli tty1
+# (níž TTYPath) a přihlašovací výzva na ní s ní běžet nemůže. Instalace
+# getty@tty1 vypíná natrvalo; kdyby ji někdo zapnul, tahle služba se zastaví.
+Conflicts=getty@tty1.service
 StartLimitIntervalSec=0
 
 [Service]
@@ -16,6 +20,16 @@ SupplementaryGroups=video
 WorkingDirectory=@INSTALL_DIR@
 # Stejný venv jako ytdj (na Pi se --system-site-packages, Pillow je z aptu).
 ExecStart=@INSTALL_DIR@/.venv/bin/python -u -m ytdj.tv
+# Textová konzole kreslí do téhož framebufferu (login, kurzor, hlášky jádra).
+# systemd dá procesu tty1 jako řídicí terminál (a jeho vlastnictví uživateli
+# služby), proces ho přepne do grafického režimu — pak konzole nekreslí nic.
+# Bez roota i bez zvláštních oprávnění; po zastavení se terminál vrátí do textu.
+TTYPath=/dev/tty1
+StandardInput=tty-force
+StandardOutput=journal
+StandardError=journal
+TTYReset=yes
+TTYVTDisallocate=yes
 # Konfigurace (port webu) je ta uživatelova.
 Environment=XDG_CONFIG_HOME=@HOME@/.config
 Environment=YTDJ_LOG=info
@@ -35,13 +49,14 @@ SyslogIdentifier=ytdj-tv
 Nice=10
 OOMScoreAdjust=900
 
-# Co nejmíň práv: žádný root, žádné nové, ze zařízení jen framebuffer,
+# Co nejmíň práv: žádný root, žádné nové, ze zařízení jen framebuffer a tty1,
 # systém i domovský adresář jen ke čtení a tajemství jukeboxu vůbec.
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
 DevicePolicy=closed
 DeviceAllow=/dev/fb0 rw
+DeviceAllow=/dev/tty1 rw
 ProtectSystem=strict
 ProtectHome=read-only
 InaccessiblePaths=-@HOME@/.config/ytdj/cookies.txt -@HOME@/.config/ytdj/env -@HOME@/.config/ytdj/admin-pin -@HOME@/.codex -@HOME@/.ssh

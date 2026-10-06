@@ -3,19 +3,37 @@ Description=ytdj — druhé jméno v síti (jukebox.local)
 Documentation=https://github.com/lacina-dev/ytdj
 Wants=avahi-daemon.service network-online.target
 After=avahi-daemon.service network-online.target
+# skript si pauzy mezi pokusy hlídá sám; kdyby padal on, zkoušet nejvýš 5× za 10 minut
+StartLimitIntervalSec=600
+StartLimitBurst=5
 
 [Service]
 Type=simple
-# skript se při instalaci kopíruje mimo domovský adresář (DynamicUser do něj nevidí)
+# skript se při instalaci kopíruje mimo domovský adresář (služba do něj nevidí)
 ExecStart=/usr/local/lib/ytdj/mdns-alias.sh jukebox.local
-Restart=always
-RestartSec=10
-# jen vyhlašuje jméno přes avahi (D-Bus) — žádná práva navíc
-DynamicUser=yes
+Restart=on-failure
+RestartSec=30
+# Jen vyhlašuje jméno přes avahi (D-Bus) — žádná práva navíc. Běží pod běžným
+# uživatelem, NE pod DynamicUser: systémová sběrnice D-Bus si uživatele volajícího
+# musí umět dohledat (pravidla avahi jsou i podle skupin) a dynamického uživatele
+# na Raspberry Pi OS nenajde (nsswitch.conf bez „systemd“) — spojení pak odmítne.
+# Pi 6. 10.: „Failed to create client object: An unexpected D-Bus error occurred“.
+User=@USER@
 NoNewPrivileges=yes
+CapabilityBoundingSet=
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+# D-Bus (unix) a dotaz na směrování kvůli vlastní adrese (netlink); do sítě sám nemluví
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+Nice=10
 SyslogIdentifier=ytdj-mdns
 
 [Install]

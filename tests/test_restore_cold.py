@@ -293,6 +293,122 @@ class ColdRestore(unittest.TestCase):
         run(go())
 
 
+async def top_up(rig, n: int = 8) -> list[str]:
+    """Plnič podkresu, jak běží v aplikaci: doplní frontu z poolů. Vrací, co je v mpv."""
+    await rig.player.enqueue(await rig.dj.next_tracks(n))
+    await rig.settle(0.2)
+    return rig.fake.ids()
+
+
+async def playing_background(rig, pos: float = 152.0) -> tuple[dict, str, Path]:
+    """Hraje jen podkres (rádio ze seedu), žádné přání — jako na Pi 6. 10."""
+    await rig.background()
+    playing = rig.fake.current_vid()
+    pb = rig.dir / "playback-disk.json"
+    rig.player.playback_disk = rig.player.playback_file = pb
+    rig.player._time_pos = pos
+    rig.player._save_playback()
+    rig.player._write_disk(*rig.player._disk_job(force=True))
+    await rig.wq.refresh_playing()
+    rig.wq.save()
+    return rig.wq.load_state(), playing, pb
+
+
+class NoDuplicates(unittest.TestCase):
+    """Navázaná skladba nesmí být ve frontě podruhé (Pi 6. 10. 18:48: po
+    zapnutí byl v mpv „Jump" jako hrající i jako další a zahrál dvakrát)."""
+
+    def test_cold_restore_of_background_does_not_queue_the_resumed_track_again(self):
+        async def go():
+            async with Rig() as rig:
+                saved, playing, pb = await playing_background(rig)
+            self.assertEqual(saved["bg"]["mode"], "seeds")
+            async with Rig() as rig2:  # nová historie i paměť poolů, jako po zapnutí
+                rig2.player.playback_disk = pb
+                self.assertEqual(await rig2.wq.resume(cold(saved), now=DAY, synced=True),
+                                 "same_day")
+                await rig2.settle(0.2)
+                self.assertEqual(rig2.fake.started[0], playing)
+                ids = await top_up(rig2)
+                self.assertGreater(len(ids), 4)
+                self.assertEqual(ids.count(playing), 1, ids)
+                self.assertEqual(len(ids), len(set(ids)), ids)
+                # dohraje a jde se dál — ne znovu od začátku
+                rig2.fake.finish_current()
+                await rig2.settle(0.3)
+                self.assertNotEqual(rig2.fake.current_vid(), playing)
+
+        run(go())
+
+    def test_no_video_id_twice_in_the_player_after_any_restore(self):
+        """Studený i teplý start, hrálo se i stála pauza, s přáním i bez něj —
+        a i kdyby si pooly nepamatovaly vůbec nic."""
+        async def go():
+            for with_wish in (False, True):
+                for paused in (False, True):
+                    async with Rig() as rig:
+                        if with_wish:
+                            saved, playing, pb = await playing_wish(rig)
+                            rig.player.playback_file = pb
+                        else:
+                            saved, playing, pb = await playing_background(rig)
+                        if paused:
+                            await rig.player.toggle_pause(True)
+                            rig.player._save_playback()
+                            rig.player._write_disk(*rig.player._disk_job(force=True))
+                            await rig.wq.refresh_playing()
+                            rig.wq.save()
+                            saved = rig.wq.load_state()
+                    for is_cold in (False, True):
+                        case = (with_wish, paused, is_cold)
+                        async with Rig() as rig2:
+                            rig2.player.playback_disk = rig2.player.playback_file = pb
+                            state = cold(saved) if is_cold else saved
+                            await rig2.wq.resume(state, now=DAY, synced=True)
+                            await rig2.settle(0.3)
+                            self.assertEqual(rig2.fake.started[0], playing, case)
+                            ids = await top_up(rig2)
+                            self.assertEqual(len(ids), len(set(ids)), (case, ids))
+                            # pojistka v doplňování: ani se zapomnětlivými pooly
+                            rig2.pools.session_seen.clear()
+                            ids = await top_up(rig2, 12)
+                            self.assertEqual(len(ids), len(set(ids)), (case, ids))
+                            self.assertEqual(ids.count(playing), 1, case)
+
+        run(go())
+
+    def test_restored_wish_block_keeps_its_exact_order(self):
+        async def go():
+            async with Rig() as rig:
+                await rig.background()
+                p = rig.wq.submit("pusť Kabát", "Petr")
+                await rig.until(lambda: p.state == "playing")
+                playing = rig.fake.current_vid()
+                before = [v for v in rig.upcoming() if rig.wq.owner.get(v) == p.id]
+                self.assertGreaterEqual(len(before), 2)
+                pb = rig.dir / "playback-disk.json"
+                rig.player.playback_disk = pb
+                rig.player._time_pos = 30.0
+                rig.player._write_disk(*rig.player._disk_job(force=True))
+                await rig.wq.refresh_playing()
+                rig.wq.save()
+                saved = rig.wq.load_state()
+            async with Rig() as rig2:
+                rig2.player.playback_disk = pb
+                await rig2.wq.resume(cold(saved), now=DAY, synced=True)
+                await rig2.settle(0.3)
+                w = rig2.wq.by_id(p.id)
+                self.assertEqual(rig2.fake.started[0], playing)
+                after = [v for v in rig2.upcoming() if rig2.wq.owner.get(v) == w.id]
+                self.assertEqual(after, before)
+                ids = await top_up(rig2)
+                self.assertEqual(len(ids), len(set(ids)), ids)
+                # přání dál hraje před podkresem, ve stejném pořadí
+                self.assertEqual(rig2.upcoming()[:len(before)], before)
+
+        run(go())
+
+
 class PowerCut(unittest.TestCase):
     """Výpadek proudu uprostřed zápisu: půlka souboru, nuly, nesmyslný obsah."""
 

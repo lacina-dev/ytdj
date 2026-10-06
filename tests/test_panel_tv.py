@@ -29,6 +29,7 @@ from fake_ytdj import make_server  # noqa: E402
 from PIL import Image  # noqa: E402
 
 from ytdj.tv import app as tvapp  # noqa: E402
+from ytdj.tv import console as tvconsole  # noqa: E402
 from ytdj.tv import screen as tvscreen  # noqa: E402
 from ytdj.tv.__main__ import default_address  # noqa: E402
 from ytdj.tv.fb import FbError, FbInfo, Framebuffer, PngScreen, pack  # noqa: E402
@@ -423,6 +424,58 @@ class OnlyWatches(unittest.TestCase):
         self.assertEqual(default_address({"web_port": "x"}), "jukebox.local:8765")
 
 
+class OnlyTheJukebox(unittest.TestCase):
+    """Na telce je jen obrazovka jukeboxu: žádný login, kurzor ani hlášky konzole."""
+
+    def test_console_is_switched_to_graphics_mode_and_back(self):
+        calls: list[tuple] = []
+        with mock.patch.object(tvconsole.os, "isatty", return_value=True), \
+                mock.patch.object(tvconsole.fcntl, "ioctl", lambda *a: calls.append(a)):
+            self.assertEqual(tvconsole.grab(7), (True, ""))
+            tvconsole.release(7)
+        self.assertEqual(calls, [(7, 0x4B3A, 1), (7, 0x4B3A, 0)])  # KDSETMODE: grafika, text
+
+    def test_without_its_own_terminal_nothing_happens_and_nothing_breaks(self):
+        with open(os.devnull) as fh:  # spuštěno ručně / v testu: není to terminál
+            done, why = tvconsole.grab(fh.fileno())
+        self.assertFalse(done)
+        self.assertTrue(why)
+
+        def refuse(*_a):
+            raise OSError(25, "Inappropriate ioctl for device")  # ssh: pseudoterminál
+
+        with mock.patch.object(tvconsole.os, "isatty", return_value=True), \
+                mock.patch.object(tvconsole.fcntl, "ioctl", refuse):
+            self.assertEqual(tvconsole.grab(0), (False, "Inappropriate ioctl for device"))
+            tvconsole.release(0)  # nevyhodí
+
+    def test_simulated_screen_never_touches_a_terminal(self):
+        src = (ROOT / "ytdj" / "tv" / "__main__.py").read_text(encoding="utf-8")
+        self.assertIn("if not (args.sim_out or args.sim_fb):", src)
+        self.assertIn("console.release()", src)
+
+    def test_unit_takes_tty1_without_root_and_login_prompt_is_off(self):
+        raw = (ROOT / "packaging" / "ytdj-tv.service").read_text(encoding="utf-8")
+        unit = configparser.ConfigParser(strict=False, interpolation=None)
+        unit.read_string(raw)
+        s = unit["Service"]
+        self.assertEqual((s["TTYPath"], s["StandardInput"]), ("/dev/tty1", "tty-force"))
+        # výstup do logu, ne na telku
+        self.assertEqual((s["StandardOutput"], s["StandardError"]), ("journal", "journal"))
+        self.assertEqual(s["TTYReset"], "yes")
+        self.assertEqual(unit["Unit"]["Conflicts"], "getty@tty1.service")
+        self.assertNotIn("ExecStartPre=+", raw)  # žádný krok pod rootem
+        self.assertNotIn("User=root", raw)
+        text = (ROOT / "packaging" / "install-service.sh").read_text(encoding="utf-8")
+        block = text[text.index("tv=no"):text.index("# Sandbox Codexu")]
+        self.assertIn("systemctl disable --now getty@tty1.service", block)
+        self.assertIn("systemctl enable --now getty@tty1", block)  # jak ji vrátit
+        self.assertNotIn("cmdline.txt", block)  # start jádra se sám nemění
+        notes = (ROOT / "packaging" / "rpi" / "NOTES.md").read_text(encoding="utf-8")
+        for word in ("console=tty1", "vt.global_cursor_default=0", "getty@tty1"):
+            self.assertIn(word, notes)
+
+
 class Packaging(unittest.TestCase):
     def test_unit_is_least_privilege_and_goes_first_under_memory_pressure(self):
         unit = configparser.ConfigParser(strict=False, interpolation=None)
@@ -432,7 +485,10 @@ class Packaging(unittest.TestCase):
         self.assertEqual(s["SupplementaryGroups"], "video")
         self.assertEqual(s["NoNewPrivileges"], "yes")
         self.assertEqual(s["CapabilityBoundingSet"], "")
-        self.assertEqual((s["DevicePolicy"], s["DeviceAllow"]), ("closed", "/dev/fb0 rw"))
+        self.assertEqual(s["DevicePolicy"], "closed")
+        raw = (ROOT / "packaging" / "ytdj-tv.service").read_text(encoding="utf-8")
+        allowed = [ln.split("=", 1)[1] for ln in raw.splitlines() if ln.startswith("DeviceAllow=")]
+        self.assertEqual(allowed, ["/dev/fb0 rw", "/dev/tty1 rw"])  # nic dalšího
         self.assertEqual((s["ProtectSystem"], s["ProtectHome"]), ("strict", "read-only"))
         self.assertIn("cookies.txt", s["InaccessiblePaths"])
         self.assertIn("admin-pin", s["InaccessiblePaths"])

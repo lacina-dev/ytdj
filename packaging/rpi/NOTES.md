@@ -87,10 +87,22 @@ driver and no extra GPU memory: `gpu_mem=16` and the commented-out `vc4-kms-v3d`
       hdmi_group=1          # CEA (TVs)
       hdmi_mode=4           # 1280x720 60 Hz; 16 = 1920x1080 60 Hz
 
-- The text console (`console=tty1`, `getty@tty1`) shares the framebuffer: a login prompt or a
-  kernel message can scribble over the picture until the next full redraw (every ten minutes at
-  the latest, or on the next track). If that shows, `sudo systemctl disable --now getty@tty1`
-  and remove `console=tty1` from `/boot/firmware/cmdline.txt` (again by hand).
+- Only the jukebox on the TV, no terminal. The text console draws into the same framebuffer
+  (login prompt, cursor, kernel messages), so:
+  - `install-service.sh` disables the login prompt on the screen (`getty@tty1`). ssh and the
+    serial console are not affected. To get it back:
+    `sudo systemctl disable --now ytdj-tv && sudo systemctl enable --now getty@tty1`
+    (the two conflict: starting the prompt stops the TV screen).
+  - while `ytdj-tv` runs, tty1 is in graphics mode (KD_GRAPHICS, like under a display server):
+    the kernel console draws nothing — no cursor, no messages over the picture. systemd gives
+    the service tty1 as its controlling terminal (`TTYPath=`, `StandardInput=tty-force`), so
+    this needs neither root nor a capability. `tv.console hidden:true` in the events confirms
+    it; `hidden:false` carries the reason. When the service stops, tty1 is text again.
+  - what still shows: the boot text (rainbow, kernel and systemd messages, a cursor) from
+    power-on until the service starts, about 30 s. To quiet that too, the owner can edit
+    `/boot/firmware/cmdline.txt` by hand (one line; reboot; nothing in the code touches it):
+    either remove `console=tty1` (boot messages only on the serial console), or keep it and
+    add `quiet logo.nologo vt.global_cursor_default=0` (short boot text, no logo, no cursor).
 - Sound stays on the USB soundbar: HDMI has the lowest WirePlumber priority (see above).
 - Logs: `journalctl -u ytdj-tv`, events in `/var/log/ytdj-tv/events.jsonl` (`tv.screen` says the
   size and pixel format it found, `tv.no_screen` why it idles, `tv.paint` what drawing costs).

@@ -54,6 +54,10 @@ SEEK_EVERY = 5.0  # s — at most one re-seek in this time (no seek storms)
 SYNC_EVERY = 2.0  # s between looks at the drift
 CHECK_EVERY = 5.0  # s between looks at temperature, memory, dropped frames
 STARTUP_MAX = 25.0  # s without a first frame = the player is stuck → give up
+# A paused clip is a frozen, bright frame — exactly what a TV panel should not
+# show for long. After this the dim screen takes over; the clip comes back
+# (in step) when the music goes on.
+PAUSE_MAX = 60.0  # s
 
 
 def sync_action(drift: float) -> tuple[str, float]:
@@ -512,6 +516,8 @@ class Director:
     _drift_n: int = 0
     _seeks: int = 0
     _drift_at: float = float("-inf")
+    _paused_since: float | None = None
+    extra: dict = field(default_factory=dict)  # more for the status file (the TV's power state)
 
     def capable(self) -> tuple[bool, str]:
         now = self.clock()
@@ -563,6 +569,15 @@ class Director:
         waiting = ""
         can, why_not = self.capable()
         s = self.session
+        if want.paused:
+            if self._paused_since is None:
+                self._paused_since = now
+        else:
+            self._paused_since = None
+        if s is not None and s.alive() and want.vid == s.vid and self._paused_since is not None \
+                and now - self._paused_since >= PAUSE_MAX:
+            self._stop("paused")  # no frozen frame on the panel; back when the music goes on
+            s = None
         # 1. stop what should not run any more
         if s is not None:
             if not s.alive():
@@ -663,7 +678,7 @@ class Director:
                               dropped=r.dropped, cooldown_s=int(self.guard.blocked_until - now))
                     self._stop("guard")
         # 3. start what should run
-        elif want.vid and can and want.vid != self._refused:
+        elif want.vid and can and want.vid != self._refused and not want.paused:
             r = self.readings()
             ok, why = self.guard.may_start(r, want.explicit)
             if not ok and self.clock() >= self.guard.blocked_until:
@@ -703,14 +718,14 @@ class Director:
         if self.status_file is None:
             return
         now = self.clock()
-        sig = (can, why, self.mode, self.blocked)
+        sig = (can, why, self.mode, self.blocked, tuple(sorted(self.extra.items())))
         if sig == self._status_sig and now - self._status_at < 15.0:
             return
         self._status_sig, self._status_at = sig, now
         try:
             tmp = self.status_file.with_suffix(".tmp")
             tmp.write_text(json.dumps({"can": can, "why": why, "mode": self.mode,
-                                       "blocked": self.blocked, "at": time.time()},
+                                       "blocked": self.blocked, "at": time.time(), **self.extra},
                                       ensure_ascii=False), encoding="utf-8")
             os.replace(tmp, self.status_file)
         except OSError:

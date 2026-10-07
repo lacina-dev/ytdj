@@ -95,6 +95,9 @@ class Api:
 
     def control(self, action: str, value: int | None = None) -> None:
         body: dict[str, Any] = {"action": action}
+        if action == "next_key":
+            # Další z tlačítka na repráku: server podle toho řekne ostatním, odkud přišlo
+            body = {"action": "next", "source": "key"}
         if value is not None:
             body["value"] = value
         self._request("POST", "/api/control", body, CONTROL_TIMEOUT)

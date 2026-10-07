@@ -210,9 +210,11 @@ class Drawing(unittest.TestCase):
             r = Renderer((w, h))
             safe = (round(w * 0.03), round(h * 0.025), w - round(w * 0.03), h - round(h * 0.025))
             for name in (STATES if w < 3000 else ("long-titles",)):
-                for shift in (0, 2, 6):  # uprostřed a oba krajní rohy
+                # uprostřed a krajní polohy posunu (vlevo/vpravo, nahoře/dole), i s bloky
+                # na druhé straně
+                for shift, swap in ((0, False), (6, False), (17, True), (4, True), (13, False)):
                     v = view(name)
-                    v = TvView(**{**v.__dict__, "shift": shift})
+                    v = TvView(**{**v.__dict__, "shift": shift, "swap": swap, "saver": False})
                     r.render(v, full=True)
                     self.assertTrue(self._outside(r.frame, safe), (w, h, name, shift))
                     self.assertGreater(len(set(r.frame.resize((64, 36)).getdata())), 3,
@@ -229,11 +231,7 @@ class Drawing(unittest.TestCase):
                 inside = [n for n, g in regions.items()
                           if g[0] <= b[0] and g[1] <= b[1] and b[2] <= g[2] and b[3] <= g[3]]
                 self.assertEqual(len(inside), 1, (w, h, b))
-            # hlavička se nezměnila (stejný stav hodin) — dlouhý název do ní nepřetekl
-            head = regions["head"]
-            self.assertEqual(r.frame.crop((head[0], head[1], head[2] - 300, head[3] - 4)).tobytes()
-                             != base.crop((head[0], head[1], head[2] - 300, head[3] - 4)).tobytes(),
-                             True)  # jen štítek stavu (TICHO → HRAJE)
+            self.assertNotEqual(base.tobytes(), r.frame.tobytes())
             # tři řádky názvu nejvýš a zkrácení výpustkou
             lines, _f = r._fit_title(view("long-titles").title, 500 * r.u, 150 * r.u)
             self.assertLessEqual(len(lines), 3)
@@ -261,24 +259,25 @@ class Drawing(unittest.TestCase):
 
     def test_burn_in_care_shifts_the_picture_and_dims_when_idle(self):
         r = Renderer((1280, 720))
-        v = TvView(**{**view("playing-wish").__dict__, "shift": 0})
+        v = TvView(**{**view("playing-wish").__dict__, "shift": 0, "swap": False})
         r.render(v, full=True)
         a = r.frame.copy()
         moved = TvView(**{**v.__dict__, "shift": 2})
         self.assertEqual(r.render(moved), [(0, 0, 1280, 720)])  # posun = celý snímek
         self.assertNotEqual(a.tobytes(), r.frame.tobytes())
-        # posun je malý: o pár bodů, ne o kus obrazovky
-        self.assertLessEqual(r.step, 8)
+        # celý obraz se posunul o stejný kus (nic se nerozsypalo)
+        dx, dy = tvscreen.drift(2, (1280, 720))
+        self.assertTrue(dx and dy)
         self.assertEqual(a.crop((200, 200, 400, 300)).tobytes(),
-                         r.frame.crop((200 + r.step, 200 + r.step, 400 + r.step, 300 + r.step)).tobytes())
+                         r.frame.crop((200 + dx, 200 + dy, 400 + dx, 300 + dy)).tobytes())
         # během dne se poloha střídá
         shifts = {view_from(None, now=NOW + n * tvscreen.SHIFT_EVERY).shift for n in range(20)}
         self.assertGreaterEqual(len(shifts), 5)
-        # ztlumení v klidu
+        # ztlumení v klidu (pár minut bez hudby; pak spořič — tests/test_panel_tv_care.py)
         bright = Renderer((1280, 720))
         bright.render(view("nothing-playing"), full=True)
         dim = Renderer((1280, 720))
-        dim.render(view("nothing-playing", idle_since=-1e6), full=True)
+        dim.render(view("nothing-playing", idle_since=100.0 - tvscreen.DIM_AFTER - 5), full=True)
         lum = lambda im: sum(im.convert("L").resize((64, 36)).getdata())  # noqa: E731
         self.assertLess(lum(dim.frame), lum(bright.frame) * 0.7)
 
@@ -491,7 +490,7 @@ class Packaging(unittest.TestCase):
         allowed = [ln.split("=", 1)[1] for ln in raw.splitlines() if ln.startswith("DeviceAllow=")]
         # obrazovka a konzole; pro klipy navíc jen grafika, dekodér a dotaz firmwaru
         self.assertEqual(allowed, ["/dev/fb0 rw", "/dev/tty1 rw", "char-drm rw",
-                                   "char-video4linux rw", "/dev/vchiq rw"])
+                                   "char-video4linux rw", "/dev/vchiq rw", "/dev/cec0 rw"])
         self.assertEqual((s["ProtectSystem"], s["ProtectHome"]), ("strict", "read-only"))
         self.assertIn("cookies.txt", s["InaccessiblePaths"])
         self.assertIn("admin-pin", s["InaccessiblePaths"])

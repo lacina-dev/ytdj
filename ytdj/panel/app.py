@@ -150,6 +150,9 @@ class PanelApp:
         # a new wish from anyone: (request id, until) — the banner over the status strip
         self.toast: tuple[str, float] | None = None
         self._seen_reqs: set[str] | None = None
+        # somebody skipped the track (the state's "notices"): (who, what, how many, until)
+        self.skip_toast: tuple[str, str, int, float] | None = None
+        self._seen_notice: int | None = None
 
         # server state
         self.state: dict | None = None
@@ -356,7 +359,7 @@ class PanelApp:
                 self.note = _Hold(self.s["failed"], time.monotonic() + NOTE_TIME)
                 if action in ("play", "pause"):
                     self.hold_running = None
-                elif action == "next":
+                elif action in ("next", "next_key"):
                     self.hold_skip = None
                 elif action == "volume" and not self._vol_gesture():
                     self.hold_volume = None
@@ -496,6 +499,7 @@ class PanelApp:
             # the DJ decided about a wish from this panel: show it, like the web does
             self.wish.show_answer(time.monotonic())
         self._notice_new_wishes(state)
+        self._notice_skips(state)
         cur_ = state.get("current")
         queue_ = state.get("queue")
         if isinstance(cur_, dict):
@@ -560,8 +564,33 @@ class PanelApp:
             self._wake(now)  # somebody wants something: no dimmed screen now
             emit("panel.toast", id=str(newest.get("id")), who=str(newest.get("who") or "")[:24])
 
+    def _notice_skips(self, state: dict) -> None:
+        """Somebody skipped the playing track (from the web, mostly): the banner
+        says who and what. A skip made here — the display or the speaker's
+        key — is not announced to the person standing at it."""
+        items = [n for n in state.get("notices") or []
+                 if isinstance(n, dict) and n.get("kind") == "skip" and isinstance(n.get("id"), int)]
+        newest = max((n["id"] for n in items), default=0)
+        first = self._seen_notice is None
+        new = [] if first else [n for n in items if n["id"] > self._seen_notice]
+        self._seen_notice = max(newest, self._seen_notice or 0)
+        new = [n for n in new if n.get("src") not in ("panel", "key")]
+        if new:
+            n = max(new, key=lambda x: x["id"])
+            what = str(n.get("title") or "")
+            if n.get("artist"):
+                what = f"{what} ({n['artist']})"
+            now = time.monotonic()
+            count = n.get("n") if isinstance(n.get("n"), int) else 1
+            self.skip_toast = (str(n.get("who") or "?")[:24], what, count, now + TOAST_TIME)
+            emit("panel.toast", id=f"skip-{n['id']}", who=str(n.get("who") or "")[:24])
+
     def _toast_view(self, now: float) -> tuple:
         if self.toast is None or now >= self.toast[1]:
+            st = self.skip_toast
+            if st is not None and now < st[3]:
+                says = self.s["toast_skipped"] if st[2] <= 1 else self.s["toast_skipped_n"].format(n=st[2])
+                return (st[0], st[1], "", says)
             return ()
         r = next((x for x in self.wish.requests if str(x.get("id")) == self.toast[0]), None)
         if r is None:
@@ -792,6 +821,8 @@ class PanelApp:
             deadlines.append(self._active_at + self.rest_after + 0.01)
         if self.toast is not None:
             deadlines.append(self.toast[1])
+        if self.skip_toast is not None:
+            deadlines.append(self.skip_toast[3])
         if self.qr_open:
             deadlines.append(self.qr_at + QR_CLOSE)
         if now - self.key_vol_at < NOTE_TIME:
@@ -823,6 +854,8 @@ class PanelApp:
         self._repeat(now)
         if self.toast is not None and now >= self.toast[1]:
             self.toast = None
+        if self.skip_toast is not None and now >= self.skip_toast[3]:
+            self.skip_toast = None
         if self.qr_open and now - self.qr_at >= QR_CLOSE:
             self.qr_open = False
         if self.vol_pending is not None and now - self.vol_sent_at >= VOL_INTERVAL:
@@ -1105,7 +1138,7 @@ class PanelApp:
             self.hold_skip = _Hold(self.track_key, now + SKIP_HOLD)
             self._log_action("next", source, now, did="next")
             log.info("povel: další")
-            self.commander.send("next")
+            self.commander.send("next_key" if source == "mediakey" else "next")
         elif name in VOL_BUTTONS:
             before = view.volume
             new = self._vol_step(name, now + HOLD)

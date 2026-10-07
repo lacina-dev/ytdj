@@ -78,10 +78,18 @@ DEFAULTS: dict = {
     # mnohem hlasitěji —, nastaví strop: při změně výstupu (volbou, výpadkem
     # karty, návratem) se hlasitost stáhne nejvýš na tolik.
     "audio_switch_volume": 0,
+    # Péče o telku (ytdj/tv/cec.py): když se tolik minut nehraje, jukebox telku
+    # přes HDMI-CEC vypne a s hudbou ji zase zapne. Jen když telka ukazuje
+    # jukebox; kdo si ji přepne nebo vypne sám, toho jukebox nechá.
+    "tv_standby": False,
+    "tv_standby_minutes": 10,
     # Displej a web v kanceláři: sprostá slova ve jménech a textech přání se
     # nezobrazí (DJ je dostane beze změny). Seznam = kořeny slov navíc.
     "display_filter": True,
     "display_blocklist": [],
+    # Kdo přeskočil hrající skladbu, se krátce ukáže všem (web, displej) a
+    # zůstane u skladby v Odehráno. Vypnuto = žádné hlášky, žádná jména.
+    "skip_notices": True,
     # Hlasování kanceláře (ytdj/votes.py): kolik různých lidí musí dát 👎,
     # než se skladba (a zároveň víc 👎 než 👍) / interpret vyřadí z nabídky.
     "ban_song_votes": 2,
@@ -213,6 +221,7 @@ class Config:
     mpv_extra_args: list[str] = field(default_factory=list)
     display_filter: bool = True
     display_blocklist: list[str] = field(default_factory=list)
+    skip_notices: bool = True
     ban_song_votes: int = 2
     ban_artist_votes: int = 3
     favourite_artist_votes: int = 2
@@ -229,6 +238,8 @@ class Config:
     loudness_target: int = -14
     audio_output: str = ""
     audio_switch_volume: int = 0
+    tv_standby: bool = False
+    tv_standby_minutes: int = 10
 
     yt_dlp_path: str = ""
     node_bin: str | None = None

@@ -115,6 +115,12 @@ oficiální klip, pustí se na telce její obraz, bez zvuku a srovnaný s hudbou
 (zvuk jde dál stejnou cestou). U ostatních skladeb zůstává obrazovka „právě
 hraje“. Když je jukebox horký nebo mu dochází paměť, klip se sám vypne.
 
+Telka má stálý obraz celý den, a to LCD panelu nesvědčí. Proto se obraz
+pořád pomalu posouvá, stálé části si mění strany, a když se nehraje, obrazovka
+se ztlumí a po pár minutách zbude jen tmavý spořič s hodinami. Správce může
+zapnout i vypínání telky: když se nehraje, jukebox ji vypne a s hudbou zase
+zapne — jen když ukazuje jukebox, takže nikomu nevypne to, na co se dívá.
+
 ## Web
 
 Web vidí všichni stejně a živě — co hraje, co bude dál a čí přání čekají.
@@ -193,7 +199,9 @@ jukeboxu a restart chtějí PIN správce, který je na displeji na obrazovce Sí
 - **F-RESTART-03** Po restartu služby skladba pokračuje od místa, kde byla
 - **F-RESTART-02** Přání přežijí restart služby
 - **F-RESTART-11** Po vypnutí nebo výpadku proudu se týž den vrátí fronta i místo ve skladbě — a čeká na ▶
-- **F-TV-05** Obrazovka na telce se proti vypálení občas o kousek posune a v tichu ztlumí
+- **F-TV-13** Obrazovka na telce se pořád pomalu posouvá a stálé části si mění strany — šetří to panel
+- **F-TV-14** Když se nehraje, telka se ztlumí a pak ukáže jen tmavý spořič s hodinami
+- **F-TV-15** Jukebox umí telku vypnout, když se nehraje, a s hudbou ji zapnout — jen když ukazuje jukebox
 - **F-TV-09** Klip na telce se pustí jen u skladby, která sama je oficiální klip — písnička se za klip nezaměňuje
 - **F-TV-11** Klip se sám vypne, když je jukebox horký, dochází paměť nebo by lupal zvuk
 - **F-HLAS-05** Hlasitost si jukebox pamatuje i přes restart
@@ -203,6 +211,7 @@ jukeboxu a restart chtějí PIN správce, který je na displeji na obrazovce Sí
 - **F-FRONTA-14** Interpret v podkresu po přání jen omezeně dlouho
 - **F-FRONTA-10** Tatáž skladba ve dvou přáních zazní jen jednou
 - **F-PRESKOK-04** Když tvé přání přeskakují ostatní, skončí dřív
+- **F-PRESKOK-10** Kdo přeskočí hrající skladbu, ukáže se všem jménem
 - **F-HLASY-06** Vyřazená skladba hned zmizí z podkresu
 - **F-HLASY-17** Oblíbené kanceláře se hrají po lidech na střídačku
 - **F-FRONTA-20** Oblíbené hrají dál napřeskáčku, dokud si někdo nepřeje něco jiného

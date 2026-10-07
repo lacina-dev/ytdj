@@ -80,6 +80,9 @@ class FakeYtdj:
         self.paused = False
         self.volume = 65
         self.muted = False  # sound off; the level stays
+        # "who skipped" notices as the real server sends them (state "notices"); tests set them
+        self.notices: list[dict] = []
+        self.skipped_by: dict[str, str] = {}
         self.pos = 12.0
         self.pos_at = time.monotonic()
         self.mood = "klidný večer, český rock"
@@ -176,6 +179,7 @@ class FakeYtdj:
             busy = self.busy or self.starting or any(r["state"] == "thinking" for r in self.requests)
             base = {"requests": self._requests(), "starting": self.starting,
                     "dj_offline": self.dj_offline, "outage": self.outage,
+                    "notices": [dict(n) for n in self.notices],
                     "build": self.build, "version": self.build,
                     "people": sorted({r["who"] for r in self.requests if r["who"] != "displej"})}
             if self.idle:
@@ -204,7 +208,8 @@ class FakeYtdj:
                     q["votes"] = b
             history = [
                 {"id": "lucieAmerik", "artist": "Lucie", "title": "Amerika", "outcome": "finished"},
-                {"id": "kabatPohoda", "artist": "Kabát", "title": "Pohoda", "outcome": "skipped"},
+                {"id": "kabatPohoda", "artist": "Kabát", "title": "Pohoda", "outcome": "skipped",
+                 **({"skipped_by": self.skipped_by["kabatPohoda"]} if "kabatPohoda" in self.skipped_by else {})},
             ]
             for h in history:
                 b = self.brief(h)
@@ -675,6 +680,7 @@ class FakeYtdj:
         action, value = data.get("action"), data.get("value")
         with self.lock:
             self.controls.append((action, value))
+            self.control_bodies = getattr(self, "control_bodies", []) + [dict(data)]
             if action == "play" and self.idle:
                 # nothing to un-pause: the DJ starts by the time of day
                 self.starting = True

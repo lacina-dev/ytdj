@@ -13,6 +13,7 @@ from __future__ import annotations
 import resource
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -83,6 +84,11 @@ STATES = {
     "outage": dict(state={**WISH, "outage": {"reason": "YouTube neodpovídá", "since": NOW - 40}}),
     "long-titles": dict(state=LONG),
     "no-cover": dict(state={**BACKGROUND, "current": {**BACKGROUND["current"], "id": "nocover0000"}}),
+    # péče o panel telky: bloky na druhé straně, krajní polohy posunu, spořič
+    "care-swapped": dict(state=WISH, swap=True, shift=6),
+    "care-drift-far": dict(state=WISH, shift=17),
+    "care-saver-idle": dict(state={"current": None, "queue": [], "dj": {}}, saver=True, shift=3),
+    "care-saver-paused": dict(state={**WISH, "paused": True, "playing": False}, saver=True, shift=11),
 }
 
 
@@ -112,10 +118,17 @@ def view(spec: dict, renderer: Renderer, position: float | None = None):
         return tiles[vid]
 
     renderer.art = art
-    return view_from(state, offline=spec.get("offline", ""), now=NOW, mono=100.0, got_at=100.0,
-                     idle_since=100.0 - 3600 if spec.get("dim") else None,
-                     address="jukebox.local", address_ip="192.168.0.24",
-                     art_ready=lambda vid: art(vid) is not None)
+    v = view_from(state, offline=spec.get("offline", ""), now=NOW, mono=100.0, got_at=100.0,
+                  idle_since=100.0 - 150 if spec.get("dim") else None,
+                  **_view_kw(art))
+    return replace(v, shift=spec.get("shift", 0), swap=bool(spec.get("swap")),
+                   saver=bool(spec.get("saver")))
+
+
+def _view_kw(art):
+    return dict(
+address="jukebox.local", address_ip="192.168.0.24",
+                art_ready=lambda vid: art(vid) is not None)
 
 
 def main() -> int:

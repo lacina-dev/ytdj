@@ -60,6 +60,8 @@ STRINGS = {
         "artist_voted_out": "interpret vyřazen hlasováním",
         "next_voted_out": "vyřazená ",
         "toast_says": " si přeje: ",
+        "toast_skipped": " · přeskočeno: ",
+        "toast_skipped_n": " · přeskočeno {n}×: ",
         "toast_thinking": "DJ vybírá…",
         "toast_playing": "hraje",
         "qr_title": "Přání z mobilu",
@@ -109,6 +111,8 @@ STRINGS = {
         "artist_voted_out": "artist voted out",
         "next_voted_out": "voted out ",
         "toast_says": " wishes: ",
+        "toast_skipped": " · skipped: ",
+        "toast_skipped_n": " · skipped {n}×: ",
         "toast_thinking": "DJ is picking…",
         "toast_playing": "playing",
         "qr_title": "Wishes from a phone",
@@ -719,14 +723,15 @@ class Renderer:
     def _draw_toast(self, d: ImageDraw.ImageDraw, size: tuple[int, int], v: View) -> None:
         """"[Petr] si přeje: Kabát · DJ vybírá…" — a few seconds, in accent, over the strip."""
         w, h = size
-        who, text, tail = v.toast
+        who, text, tail = v.toast[:3]
         d.rectangle((0, 0, w, h), fill=ACCENT)
         f, fb = self.fonts.status, self.fonts.status_b
         cy = h // 2
         icon_bubble(d, 22, cy, 22, ON_ACCENT)
         x = 42.0
         x += name_chip(d, x, cy, who, self.fonts.chip, max_w=120) + 6
-        says = self.s["toast_says"]
+        # a 4th item replaces "si přeje:" — "Karel · přeskočeno: …" (somebody skipped)
+        says = v.toast[3] if len(v.toast) > 3 else self.s["toast_says"]
         d.text((x, cy), says, font=f, fill=ON_ACCENT, anchor="lm")
         x += f.getlength(says)
         tail_w = f.getlength(tail) if tail else 0

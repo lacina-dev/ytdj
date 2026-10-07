@@ -66,6 +66,8 @@ DeviceAllow=/dev/tty1 rw
 DeviceAllow=char-drm rw
 DeviceAllow=char-video4linux rw
 DeviceAllow=/dev/vchiq rw
+# vypínání telky, když se nehraje (HDMI-CEC; skupina video)
+DeviceAllow=/dev/cec0 rw
 ProtectSystem=strict
 ProtectHome=read-only
 InaccessiblePaths=-@HOME@/.config/ytdj/cookies.txt -@HOME@/.config/ytdj/env -@HOME@/.config/ytdj/admin-pin -@HOME@/.codex -@HOME@/.ssh

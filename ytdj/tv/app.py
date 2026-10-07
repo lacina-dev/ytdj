@@ -21,6 +21,7 @@ from ..panel.client import Api, StatusFeed
 from ..panel.stats import emit
 from ..panel.webaddr import Watch
 from .screen import PROGRESS_STEP, Renderer, TvView, cover_tile, view_from
+from .cec import TvPower, wish_from
 from .video import Director, want_from
 
 log = logging.getLogger(__name__)
@@ -37,7 +38,10 @@ class TvApp:
     def __init__(self, open_screen: Callable[[], object], url: str, address: str = "",
                  art_url: str = ART_URL, agent: str = "ytdj-tv",
                  watch: Watch | None = None, director: Director | None = None,
-                 web_name: str = "") -> None:
+                 web_name: str = "", power: TvPower | None = None) -> None:
+        # vypínání telky přes HDMI-CEC, když se nehraje (cec.TvPower) — jen na
+        # skutečné telce; bez něj se telky nikdo nedotkne
+        self.power = power
         self.open_screen = open_screen
         # klip místo obrazovky (video.Director) — jen na skutečné telce; bez
         # něj se nic nemění a kreslí se pořád
@@ -194,6 +198,23 @@ class TvApp:
             pos += max(0.0, time.monotonic() - got_at)
         return state, pos
 
+    def power_step(self) -> None:
+        """Lets the TV go to sleep when nothing plays, and wakes it for music —
+        politely (cec.TvPower); what it did or why not goes to the status."""
+        if self.power is None:
+            return
+        with self._lock:
+            state, offline, idle = self._state, self._offline, self._idle_since
+        idle_s = time.monotonic() - idle if idle is not None else 0.0
+        try:
+            note = self.power.step(wish_from(None if offline else state, idle_s))
+        except Exception as exc:  # the TV's power is a nicety; the screen is not
+            log.warning("vypínání telky: %s", exc, exc_info=log.isEnabledFor(logging.DEBUG))
+            emit("tv.cec_error", error=f"{type(exc).__name__}: {exc}"[:160])
+            return
+        if self.director is not None:
+            self.director.extra = {"power": self.power.state, "power_note": note}
+
     def video_step(self) -> bool:
         """Lets the director start, steer or stop the clip; True while it shows
         (then the screen must not draw — the display is the player's)."""
@@ -241,6 +262,7 @@ class TvApp:
             if not self._ensure_screen():
                 self.stop.wait(RETRY_SCREEN)
                 continue
+            self.power_step()
             if self.video_step():
                 # the clip owns the display: nothing is drawn underneath it
                 self._video = True

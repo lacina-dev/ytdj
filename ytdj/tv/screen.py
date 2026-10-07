@@ -15,6 +15,7 @@ every ten minutes, and when nothing has played for a while it dims.
 from __future__ import annotations
 
 import io
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Callable
@@ -23,7 +24,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 from ..panel.hw import Box
 from ..panel.qr import encode as qr_encode
-from ..panel.ui import FONT_DIR, draw_qr, ellipsize, fmt_time, who_color, wrap
+from ..panel.ui import FONT_DIR, ellipsize, fmt_time, who_color, wrap
 
 BG = (10, 11, 14)
 PANEL = (22, 24, 29)
@@ -39,10 +40,38 @@ BAD = (232, 92, 80)
 NEXT_ITEMS = 3
 NOTE_MAX_AGE = 15 * 60  # s — the DJ's last reply stays on screen this long
 PROGRESS_STEP = 5  # s — how often the progress bar and the elapsed time move
-SHIFT_EVERY = 600  # s — burn-in care: the picture moves a little this often
-SHIFTS = ((0, 0), (1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1))
-DIM_AFTER = 5 * 60  # s without music before the screen dims
+# ---- care for the TV's panel (a 50" LED-LCD left on all day) ----
+# A static picture is what such a panel does not like (its maker's manual:
+# "Avoid displaying still images… Constant displaying of still picture can
+# cause uneven wear…", and: reduce brightness and contrast). So nothing here
+# stays in one place or stays bright:
+#   * the whole layout drifts — tens of pixels over minutes, never still for
+#     more than a minute,
+#   * the static blocks swap sides every half hour (address + QR ↔ what is
+#     next; the name ↔ the clock),
+#   * static elements are kept dim; no large white area (the QR code is dark
+#     on mid-grey),
+#   * without music the screen first dims, then becomes an almost black
+#     screen saver with a small clock that wanders — and then the TV itself is
+#     switched off (cec.py), when that is allowed.
+SHIFT_EVERY = 60  # s — the picture moves this often
+DRIFT_X, DRIFT_Y = 0.018, 0.015  # how far it wanders, as a part of width / height
+PERIOD_X, PERIOD_Y = 23, 17  # steps per full swing; together the path repeats after 391 min
+SWAP_EVERY = 30 * 60  # s — the static blocks change sides
+DIM_AFTER = 2 * 60  # s without music before the screen dims
 DIM = 0.45
+SAVER_AFTER = 5 * 60  # s without music before the screen saver
+SAVER_TEXT = (96, 98, 104)  # the screen saver's only light: a dim grey
+QR_LIGHT = (150, 150, 146)  # mid-grey instead of white — still scans (tested)
+QR_DARK = (10, 11, 14)
+ACCENT_DIM = (178, 88, 24)  # the static name: the orange, but not shining all day
+
+
+def drift(shift: int, size: tuple[int, int]) -> tuple[int, int]:
+    """Where the whole layout sits at step `shift` (pixels off centre)."""
+    w, h = size
+    return (round(w * DRIFT_X * math.sin(2 * math.pi * shift / PERIOD_X)),
+            round(h * DRIFT_Y * math.sin(2 * math.pi * shift / PERIOD_Y)))
 
 
 @dataclass(frozen=True)
@@ -77,7 +106,9 @@ class TvView:
     address_ip: str = ""  # the same place as a bare address (no name lookup needed): the QR code
     art: bool = False  # the cover is ready
     dim: bool = False
-    shift: int = 0
+    shift: int = 0  # which step of the drift (changes every SHIFT_EVERY)
+    swap: bool = False  # the static blocks on the other side (every SWAP_EVERY)
+    saver: bool = False  # nothing has played for a while: the dark screen saver
 
 
 def _s(value: object, limit: int = 300) -> str:
@@ -100,8 +131,10 @@ def view_from(state: dict | None, *, offline: str = "", now: float | None = None
     mono = time.monotonic() if mono is None else mono
     base = dict(address=address, address_ip=address_ip,
                 clock=time.strftime("%H:%M", time.localtime(now)) if clock is None else clock,
-                shift=int(now // SHIFT_EVERY) % len(SHIFTS),
-                dim=idle_since is not None and mono - idle_since >= DIM_AFTER)
+                shift=int(now // SHIFT_EVERY) % (PERIOD_X * PERIOD_Y),
+                swap=bool(int(now // SWAP_EVERY) % 2),
+                dim=idle_since is not None and mono - idle_since >= DIM_AFTER,
+                saver=idle_since is not None and mono - idle_since >= SAVER_AFTER)
     if not isinstance(state, dict) or offline:
         return TvView(state="offline", detail=_s(offline, 80), **base)
     cur = state.get("current") if isinstance(state.get("current"), dict) else None
@@ -227,7 +260,8 @@ class Renderer:
         self._dim: bool | None = None
         # margins: TVs cut the edges off (overscan), and the picture shifts a little
         self.mx, self.my = round(w * 0.05), round(h * 0.048)
-        self.step = max(2, round(4 * u))  # one burn-in step in pixels
+        self._swap = False
+        self._saver_box: Box | None = None
         self.head_h = round(58 * u)
         self.foot_h = round(184 * u)
         self.bar_h = round(54 * u)
@@ -244,7 +278,7 @@ class Renderer:
             - round(40 * self.u)
         return max(64, min(main_h, round(w * 0.3)))
 
-    def _layout(self, dx: int, dy: int) -> None:
+    def _layout(self, dx: int, dy: int, swap: bool = False) -> None:
         w, h = self.size
         u = self.u
         x0, x1 = self.mx + dx, w - self.mx + dx
@@ -258,6 +292,9 @@ class Renderer:
         qr_w = round(460 * u)
         nxt = (x0, foot_y, x1 - qr_w - gap, foot_y + self.foot_h)
         web = (x1 - qr_w, foot_y, x1, foot_y + self.foot_h)
+        if swap:  # the address and its code on the left, what is next on the right
+            web = (x0, foot_y, x0 + qr_w, foot_y + self.foot_h)
+            nxt = (x0 + qr_w + gap, foot_y, x1, foot_y + self.foot_h)
         old = {r.name: r.last for r in self.regions}
         self.regions = [
             _Region("head", head, lambda v: (v.state, v.clock, v.clip_note), self._draw_head),
@@ -293,11 +330,16 @@ class Renderer:
 
     def render(self, v: TvView, full: bool = False) -> list[Box]:
         """Redraws what changed; returns the boxes to push to the screen."""
-        if v.shift != self._shift or v.dim != self._dim:
-            # the picture moved (burn-in) or dimmed: everything is redrawn
-            dx, dy = SHIFTS[v.shift % len(SHIFTS)]
-            self._layout(dx * self.step, dy * self.step)
-            self._shift, self._dim = v.shift, v.dim
+        if v.saver:
+            return self._render_saver(v, full)
+        if self._saver_box is not None:
+            self._saver_box = None
+            full = True  # back from the screen saver
+        if v.shift != self._shift or v.dim != self._dim or v.swap != self._swap:
+            # the picture moved (care for the panel), swapped sides or dimmed:
+            # everything is redrawn
+            self._layout(*drift(v.shift, self.size), v.swap)
+            self._shift, self._dim, self._swap = v.shift, v.dim, v.swap
             full = True
         if full:
             self.frame.paste(BG, (0, 0, *self.size))
@@ -324,27 +366,94 @@ class Renderer:
             boxes.append((x0 + diff[0], y0 + diff[1], x0 + diff[2], y0 + diff[3]))
         return [(0, 0, *self.size)] if full else boxes
 
+    def _render_saver(self, v: TvView, full: bool) -> list[Box]:
+        """Nothing plays: an almost black screen with a small dim clock (and what
+        is paused) that sits somewhere else every minute."""
+        w, h = self.size
+        u = self.u
+        sig = (v.shift, v.clock, v.state, v.title, v.artist)
+        if self._saver_box is not None and not full and sig == getattr(self, "_saver_sig", None):
+            return []
+        f_clock, f_text = self.font(64, True), self.font(26)
+        lines = [v.clock]
+        if v.state == "paused" and v.title:
+            lines.append(ellipsize(f"pauza · {v.title}", f_text, w * 0.5))
+        elif v.state == "offline":
+            lines.append("jukebox neodpovídá")
+        probe = ImageDraw.Draw(self.frame)
+        tw = int(max(probe.textlength(lines[0], font=f_clock),
+                     *(probe.textlength(t, font=f_text) for t in lines[1:]), 1)) + 4
+        th = round(f_clock.size * 1.2) + (round(f_text.size * 1.5) if len(lines) > 1 else 0)
+        # wander over the whole safe area, a different place each minute
+        span_x, span_y = w - 2 * self.mx - tw, h - 2 * self.my - th
+        x = self.mx + round(span_x * (0.5 + 0.5 * math.sin(2 * math.pi * v.shift / PERIOD_X)))
+        y = self.my + round(span_y * (0.5 + 0.5 * math.sin(2 * math.pi * v.shift / PERIOD_Y)))
+        box = (x, y, x + tw, y + th)
+        first = self._saver_box is None or full
+        old = self._saver_box
+        if first:
+            self.frame.paste((0, 0, 0), (0, 0, w, h))
+        elif old is not None:
+            self.frame.paste((0, 0, 0), old)
+        d = ImageDraw.Draw(self.frame)
+        d.text((x, y), lines[0], font=f_clock, fill=SAVER_TEXT, anchor="la")
+        for t in lines[1:]:
+            d.text((x, y + round(f_clock.size * 1.2)), t, font=f_text, fill=SAVER_TEXT, anchor="la")
+        self._saver_box, self._saver_sig = box, sig
+        self._shift = -1  # the normal screen is laid out afresh afterwards
+        for r in self.regions:
+            r.last = None
+        if first:
+            return [(0, 0, w, h)]
+        return [b for b in (old, box) if b is not None]
+
+    def _qr_block(self, d: ImageDraw.ImageDraw, x0: int, y0: int, max_side: int,
+                  m: list[list[bool]]) -> int:
+        """The QR code, dark on mid-grey (no white block on the panel all day); its side."""
+        n, quiet = len(m), 4
+        scale = max(1, max_side // (n + 2 * quiet))
+        side = scale * (n + 2 * quiet)
+        off = (max_side - side) // 2
+        x0, y0 = x0 + off, y0 + off
+        d.rectangle((x0, y0, x0 + side - 1, y0 + side - 1), fill=QR_LIGHT)
+        ox, oy = x0 + quiet * scale, y0 + quiet * scale
+        for y, row in enumerate(m):
+            for x, dark in enumerate(row):
+                if dark:
+                    d.rectangle((ox + x * scale, oy + y * scale, ox + (x + 1) * scale - 1,
+                                 oy + (y + 1) * scale - 1), fill=QR_DARK)
+        return side + off
+
     # ---- regions (each draws into its own tile, origin 0,0) ----
 
     def _draw_head(self, d: ImageDraw.ImageDraw, tile: Image.Image, v: TvView) -> None:
         w, h = tile.size
         u = self.u
         cy = h // 2
-        d.text((0, cy), "JUKEBOX", font=self.font(26, True), fill=ACCENT, anchor="lm")
-        x = d.textlength("JUKEBOX", font=self.font(26, True)) + round(26 * u)
+        fb = self.font(26, True)
         label, color = STATE_LABEL.get(v.state, ("", FAINT))
         r = round(9 * u)
-        d.ellipse((x, cy - r, x + 2 * r, cy + r), fill=color)
-        d.text((x + 2 * r + round(12 * u), cy), label, font=self.font(26, True), fill=color,
-               anchor="lm")
+        clock_w = d.textlength(v.clock, font=self.font(40, True))
+        name_w = d.textlength("JUKEBOX", font=fb)
+        block_w = name_w + round(26 * u) + 2 * r + round(12 * u) + d.textlength(label, font=fb)
+        note = ""
         if v.clip_note:
             # clips are on: say honestly why this track shows no picture (yet)
-            x += 2 * r + round(12 * u) + d.textlength(label, font=self.font(26, True))
-            room = w - x - round(22 * u) - d.textlength(v.clock, font=self.font(40, True)) \
-                - round(30 * u)
-            d.text((x + round(22 * u), cy), ellipsize(f"·  {v.clip_note}", self.font(24), room),
-                   font=self.font(24), fill=MUTED if v.clip else FAINT, anchor="lm")
-        d.text((w, cy), v.clock, font=self.font(40, True), fill=MUTED, anchor="rm")
+            room = w - block_w - clock_w - round(52 * u)
+            note = ellipsize(f"·  {v.clip_note}", self.font(24), max(0.0, room))
+        note_w = d.textlength(note, font=self.font(24)) + round(22 * u) if note else 0
+        # the static name and the clock change sides with the other blocks
+        x = w - block_w - note_w if v.swap else 0
+        d.text((x, cy), "JUKEBOX", font=fb, fill=ACCENT_DIM, anchor="lm")
+        x += name_w + round(26 * u)
+        d.ellipse((x, cy - r, x + 2 * r, cy + r), fill=color)
+        x += 2 * r + round(12 * u)
+        d.text((x, cy), label, font=fb, fill=color, anchor="lm")
+        if note:
+            x += d.textlength(label, font=fb) + round(22 * u)
+            d.text((x, cy), note, font=self.font(24), fill=MUTED if v.clip else FAINT, anchor="lm")
+        d.text((0 if v.swap else w, cy), v.clock, font=self.font(40, True), fill=MUTED,
+               anchor="lm" if v.swap else "rm")
         d.line((0, h - 1, w, h - 1), fill=LINE, width=max(1, round(2 * u)))
 
     def _fit_title(self, text: str, max_w: float, max_h: float
@@ -539,7 +648,7 @@ class Renderer:
                 self._qr = (target, None)
         used = 0
         if self._qr[1] is not None:
-            used = draw_qr(d, w - side, pad, side, self._qr[1])
+            used = self._qr_block(d, w - side, pad, side, self._qr[1])
         tw = w - (used or 0) - round(20 * u) if used else w
         second = v.address_ip if v.address_ip and v.address_ip != v.address else ""
         f = self.font(24, True)

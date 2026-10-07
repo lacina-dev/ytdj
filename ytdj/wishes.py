@@ -86,6 +86,13 @@ PANEL_BUDGET = 3
 PANEL_SEAT = "panel"
 SKIPS_TO_END = 2  # cizí přeskočení skladeb přání, po kterých přání končí
 SKIP_REPEAT = 1.5  # s — Další od téhož člověka na tutéž skladbu = jedno přeskočení
+# Kdo přeskočil — hláška pro všechny (F-PRESKOK-10): jak dlouho ji stav nese,
+# do kdy se další přeskočení téhož člověka sloučí do jedné, kolik jich držet.
+NOTICE_TTL = 20.0
+NOTICE_MERGE = 20.0
+NOTICE_KEEP = 5
+SKIP_LABEL_KEEP = 40  # u kolika naposledy přeskočených skladeb se pamatuje kdo (Odehráno)
+SKIP_KEY_LABEL = "tlačítko na repráku"
 STARVED = 10 * 60  # s — kdo tak dlouho nic svého neslyšel, na stížnost dostane přednost
 # podkres po přání v režimu interpreta: nejvýš tolik skladeb / minut, pak
 # "<interpret> a podobné" (Pi 26. 9.: Parni Valjak v podkresu i po restartu)
@@ -229,6 +236,11 @@ def _anon(who: str) -> str:
 def minutes(seconds: float) -> str:
     m = max(1, round(seconds / 60))
     return f"~{m} min"
+
+
+def _skipped_count(n: int) -> str:
+    """ "2 skladby" / "5 skladeb" — kolik jich někdo přeskočil po sobě."""
+    return f"{n} skladby" if 2 <= n <= 4 else f"{n} skladeb"
 
 
 def plural_tracks(n: int) -> str:
@@ -845,6 +857,13 @@ class WishQueue:
         self._ask_tasks: dict[str, asyncio.Task] = {}  # časovače upřesnění (id přání → úloha)
         # klik do fronty: (videoId, kdo, id klienta) skladby podkresu "jako další"
         self._pin: tuple[str, str, str | None] | None = None
+        # kdo přeskočil — hlášky pro všechny (stav "notices"), kdo zrovna
+        # přeskakuje (videoId, jméno, id klienta, odkud, kdy) a jméno u
+        # přeskočených skladeb v Odehráno; jen v paměti
+        self.notices: list[dict] = []
+        self._notice_seq = 0
+        self._skip_who: tuple[str, str, str | None, str, float] | None = None
+        self.skipped_by: dict[str, str] = {}
         self._boot = boot_id()
         # obnova po zapnutí Pi čeká na seřízení hodin; Hrát ji nenechá čekat
         self.restoring = False
@@ -1725,7 +1744,7 @@ class WishQueue:
         telemetry.event("dj.apply", via="local_command", action=action, value=value or None)
         p = self.player
         if action == "skip":
-            await self.skip_current(by, client)
+            await self.skip_current(by, client, source="text")
             return "Přeskakuju."
         if action == "pause":
             self.note_pause(True)
@@ -1857,7 +1876,7 @@ class WishQueue:
         held = self._album_held_from(w) and not change
 
         if intent.kind == "control":
-            await self._control(intent)
+            await self._control(intent, w)
             w.summary = f"povel: {intent.control}"
             w.reply = (intent.reply or "Hotovo.").strip()
             self._finish(w, "done", t0)
@@ -2120,12 +2139,16 @@ class WishQueue:
         except Exception:
             log.debug("poslední přání se neuložilo", exc_info=True)
 
-    async def _control(self, intent: Any) -> None:
+    async def _control(self, intent: Any, asker: Wish | None = None) -> None:
         p = self.player
         if intent.control == "skip":
             # přeskočení, o kterém rozhodl DJ (model): "DJ", do cizích
             # přeskočení se nepočítá (kolo ani přání tím nekončí)
             self._skip_note = (self.current_vid, "DJ", None, time.monotonic(), True)
+            if asker is not None and self.current_vid:
+                # požádal o to člověk přáním ("přeskoč to") — hláška nese jeho jméno
+                self._skip_who = (self.current_vid, asker.who, asker.cid or None, "wish",
+                                  time.monotonic())
             await p.skip()
         elif intent.control in ("pause", "stop"):
             # "stop" z přání = pauza; cizí přání se kvůli tomu nemažou
@@ -2821,6 +2844,13 @@ class WishQueue:
                         via=x.via or None, play_next=x.play_next or None,
                     )
         elif kind in ("finished", "skipped", "replaced", "error") and vid:
+            who = getattr(self, "_skip_who", None)
+            if who is not None and who[0] == vid:
+                # skladbu utnul člověk (Další, povel, klik do fronty) — ne konec
+                # skladby, chyba ani výměna DJem: jen tohle se hlásí všem
+                self._skip_who = None
+                if kind in ("skipped", "replaced") and time.monotonic() - who[4] < 30:
+                    self._skip_notice(ev.track, who)
             changed = False
             by, by_key, handled = "", None, False
             if kind == "skipped":
@@ -2908,7 +2938,7 @@ class WishQueue:
                             total_s=int(time.time() - w.created))
             self.note_last(w)
 
-    async def skip_current(self, by: str = "", client: Any = None) -> None:
+    async def skip_current(self, by: str = "", client: Any = None, source: str = "") -> None:
         """Tlačítko Další (web, displej): zapsat kdo, a když přeskakuje cizí
         přání, přeplánovat DŘÍV, než mpv skočí na další položku — jinak by
         naskočila další skladba téhož přání.
@@ -2936,6 +2966,9 @@ class WishQueue:
             self._skip_note = self._skip_note[:4] + (True,) if self._skip_note else None
             with contextlib.suppress(Exception):
                 await self.replan()
+        if vid and not outage:
+            # kdo to byl — pro hlášku všem (až přehrávač přeskočení ohlásí)
+            self._skip_who = (vid, by or "někdo", key, source or "web", now)
         await self.player.skip()
 
     # ---- posun ve skladbě, klik do fronty, „Zahrát znovu" ----
@@ -3036,7 +3069,12 @@ class WishQueue:
             ready_fn = getattr(self.player, "ready_now", None)
             ready = bool(ready_fn(vid)) if ready_fn is not None else True
             cut = blocker is None and ready
+            if cut:
+                # klik utne hrající skladbu: i to je přeskočení, o kterém se dozví všichni
+                self._skip_who = (st.current.id, by or "někdo", key, "jump", time.monotonic())
             mode = await jump(vid, cut)
+            if mode != "now" and self._skip_who is not None and self._skip_who[3] == "jump":
+                self._skip_who = None
             if mode is None:
                 return refuse("Tahle skladba už ve frontě není.", "gone")
             if target is not None:
@@ -3076,6 +3114,52 @@ class WishQueue:
         if mode == "next":
             self.kick()  # odhady "na řadě za…" podle nového pořadí
         return True, text, {"mode": mode, "video_id": vid}
+
+    # ---- kdo přeskočil: hláška pro všechny ----
+
+    def _skip_notice(self, track: Any, who: tuple) -> None:
+        """Skladbu přeskočil člověk: krátká hláška všem (stav "notices") a jméno
+        k ní v Odehráno. Víc přeskočení téhož člověka krátce po sobě je jedna
+        hláška ("… 5 skladeb, naposledy …"). Ven jde přezdívka a veřejná
+        značka, nikdy id klienta. Vypínač: nastavení `skip_notices`."""
+        if not getattr(self.cfg, "skip_notices", True) or track is None:
+            return
+        _vid, by, key, src, _t = who
+        if src == "key":
+            label = SKIP_KEY_LABEL
+        elif by == "někdo":
+            label = "někdo bez přezdívky"
+        else:
+            label = self.censor.clean(by)
+        tag = tag_of(key) if key else ""
+        now = time.time()
+        song = _label(track)
+        self.skipped_by[track.id] = label
+        while len(self.skipped_by) > SKIP_LABEL_KEEP:
+            self.skipped_by.pop(next(iter(self.skipped_by)))
+        last = self.notices[-1] if self.notices else None
+        if last is not None and (last["who"], last["who_key"], last["src"] == "key") == \
+                (label, tag, src == "key") and now - last["at"] < NOTICE_MERGE:
+            n = last["n"] + 1
+            self.notices.pop()
+        else:
+            n = 1
+        self._notice_seq += 1
+        head = label[:1].upper() + label[1:]
+        text = f"{head} · přeskočeno: {song}" if n == 1 else \
+            f"{head} · přeskočeno {_skipped_count(n)}, naposledy {song}"
+        self.notices.append({"id": self._notice_seq, "kind": "skip", "at": round(now, 1),
+                             "who": label, "who_key": tag, "src": src, "n": n,
+                             "title": track.title, "artist": track.artist, "text": text})
+        del self.notices[:-NOTICE_KEEP]
+        telemetry.event("skip.notice", id=self._notice_seq, who=label, src=src, n=n,
+                        video_id=track.id, cid=(key or "")[-6:] or None)
+        self._changed()
+
+    def notices_public(self) -> list[dict]:
+        """Hlášky mladší než NOTICE_TTL (nejnovější poslední) — do stavu pro všechny."""
+        now = time.time()
+        return [dict(n) for n in getattr(self, "notices", []) if now - n["at"] < NOTICE_TTL]
 
     def _pinned(self, upcoming: list[Track], order: list[tuple[Wish, Track]]) -> list[Track]:
         """Skladba podkresu, kterou si někdo klikem dal jako další (hrající

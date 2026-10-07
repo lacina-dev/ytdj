@@ -235,16 +235,43 @@ class StartUp(unittest.TestCase):
         self.assertEqual(rig.slept, [0.8])
         self.assertFalse(s.paused)
         self.assertEqual(s.seeks, [])  # žádný skok — začal ve správném místě
-        # hudba mezitím v pauze: obraz drží, i když už je vidět
+        # hudba v pauze: klip se vůbec nespouští (žádný zamrzlý snímek na telce) …
         rig2 = Rig()
         rig2.picture(CLIP)
-        rig2.step(pos=10.0, paused=True)
-        s2 = rig2.s
-        s2.pos = s2.start
         for _ in range(4):
-            rig2.step(pos=10.0, paused=True)
-        self.assertTrue(s2.paused)
-        self.assertEqual(rig2.slept, [])
+            self.assertEqual(rig2.step(pos=10.0, paused=True), "screen")
+        self.assertIsNone(rig2.s)
+        # … a rozjede se, až hudba pokračuje
+        rig2.step(pos=10.0)
+        self.assertEqual(rig2.s.start, 10.0 + rig2.d.lead)
+        # pauza přišla, když už první snímek drží: nepustí se, dokud se nehraje
+        rig3 = Rig()
+        rig3.picture(CLIP)
+        rig3.step(pos=10.0)
+        s3 = rig3.s
+        s3.pos = s3.start
+        for _ in range(4):
+            rig3.step(pos=10.0, paused=True)
+        self.assertTrue(s3.paused)
+        self.assertEqual(rig3.slept, [])
+
+    def test_paused_clip_gives_way_to_the_dim_screen_and_returns_with_the_music(self):
+        """Zamrzlý jasný snímek na telce nezůstane: po minutě pauzy obrazovka."""
+        rig = Rig()
+        s = rig.showing()
+        self.assertEqual(rig.step(paused=True, dt=30.0), "video")  # krátká pauza: klip drží
+        self.assertTrue(s.paused)
+        self.assertEqual(rig.step(paused=True, dt=video.PAUSE_MAX), "screen")
+        self.assertTrue(s.stopped)
+        self.assertEqual(rig.events[-1][1]["reason"], "paused")
+        for _ in range(5):
+            self.assertEqual(rig.step(paused=True, dt=10.0), "screen")  # v pauze se nespouští
+        self.assertEqual(len(FakeSession.made), 1)
+        self.assertEqual(rig.guard.trips, 0)  # není to porucha — žádná trestná pauza
+        rig.step(pos=95.0)  # hudba pokračuje → klip zpátky, srovnaný
+        self.assertEqual(len(FakeSession.made), 2)
+        self.assertEqual(rig.s.start, 95.0 + rig.d.lead)
+        self.assertLessEqual(video.PAUSE_MAX, 120)
 
     def test_late_start_is_let_go_at_once_and_chased_not_restarted(self):
         rig = Rig()
@@ -843,7 +870,7 @@ class Packaging(unittest.TestCase):
         s = unit["Service"]
         allowed = [ln.split("=", 1)[1] for ln in raw.splitlines() if ln.startswith("DeviceAllow=")]
         self.assertEqual(allowed, ["/dev/fb0 rw", "/dev/tty1 rw", "char-drm rw",
-                                   "char-video4linux rw", "/dev/vchiq rw"])
+                                   "char-video4linux rw", "/dev/vchiq rw", "/dev/cec0 rw"])
         self.assertEqual(s["SupplementaryGroups"], "video render")
         self.assertEqual((s["RuntimeDirectory"], s["RuntimeDirectoryMode"]), ("ytdj-tv", "0755"))
         self.assertEqual(s["User"], "@USER@")

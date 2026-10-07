@@ -1481,6 +1481,25 @@
     renderQueue(s.queue || [], reqs);
     renderHistory(s.history || []);
     renderNowVotes(cur);
+    showNotices(s.notices);
+  }
+
+  // Kdo přeskočil (F-PRESKOK-10): krátká hláška ze stavu, každá jednou. Vlastní
+  // přeskočení se tomu, kdo ho udělal, neukazuje — ví o něm, skladba se mu změnila.
+  function nextNotice(list, seen, tag) {
+    var out = null;
+    (list || []).forEach(function (n) {
+      if (!n || n.kind !== "skip" || seen[n.id]) return;
+      seen[n.id] = 1;
+      if (tag && n.who_key === tag) return;
+      out = n;  // the newest unseen one; an older one in the same state is already stale
+    });
+    return out;
+  }
+  function showNotices(list) {
+    S.noticeSeen = S.noticeSeen || {};
+    var n = nextNotice(list, S.noticeSeen, S.tag);
+    if (n && n.text) toast(n.text);
   }
 
   function renderArt(cur) {
@@ -1748,6 +1767,7 @@
              '<span class="mark ' + o[2] + '" role="img" title="' + esc(o[0]) + '" aria-label="' + esc(o[0]) + '">' + o[1] + "</span>" +
              '<span class="meta"><span class="t">' + esc(t.title || "Neznámá skladba") + "</span>" +
              (t.artist ? '<span class="a">' + esc(t.artist) + "</span>" : "") +
+             (t.skipped_by ? '<span class="a skby">přeskočeno · ' + esc(t.skipped_by) + "</span>" : "") +
              (marks ? '<span class="vss">' + marks + "</span>" : "") + "</span>" +
              (canReplay(t) ? '<button class="rv rp" type="button" data-replay="' + i + '" aria-label="Zahrát znovu: ' +
                              esc((t.artist ? t.artist + " — " : "") + (t.title || "")) + '" title="Zahrát znovu">' + ICO_AGAIN + "</button>" : "") +
@@ -1800,6 +1820,7 @@
     else if (tv.mode === "video") note = "Na telce běží klip." + (tv.by ? " Zapnul(a) " + tv.by + "." : "");
     else if (tv.pending) note = "Tahle skladba je klip — obraz se chystá.";
     else note = "Na telce je „právě hraje“." + (tv.by ? " Klipy zapnul(a) " + tv.by + "." : "");
+    if (tv.power_note) note = tv.power_note + (on || !tv.can ? " " + note : "");  // telka vypnutá / proč ne
     el.tvNote.textContent = note;
   }
   el.tvBtn.addEventListener("click", async function () {

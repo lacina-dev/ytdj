@@ -255,6 +255,12 @@ class TvVideo:
             # proč hrající skladba nemá obraz — vždy řečeno (web i telka)
             **self._why_no_picture(can, why, r),
             "xruns": getattr(getattr(self.player, "sampler", None), "xruns", None),
+            # péče o telku: má ji jukebox vypínat, když se nehraje (nastavení),
+            # a co s ní zrovna je (hlásí proces na telce)
+            "standby": {"on": bool(getattr(self.cfg, "tv_standby", False)),
+                        "minutes": int(getattr(self.cfg, "tv_standby_minutes", 10) or 10)},
+            "power": str(self.report.get("power") or ""),
+            "power_note": str(self.report.get("power_note") or "")[:200],
         }
 
     def _why_no_picture(self, can: bool, why: str, report: dict) -> dict:

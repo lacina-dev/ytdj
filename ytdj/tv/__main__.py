@@ -86,8 +86,17 @@ def main(argv: list[str] | None = None) -> int:
         director = Director(Path(uid_dir), os.path.join(run_dir, "video.sock"), fb_size, emit=emit,
                             status_file=Path(run_dir) / "status.json")
     # web_name v config.toml: jméno z DNS kanceláře (jen ze souboru; ověří se jako ostatní)
+    power = None
+    if director is not None:
+        # Vypínání telky, když se nehraje (HDMI-CEC) — řídí se nastavením jukeboxu,
+        # které sem chodí ve stavu; samo od sebe nic neposílá.
+        from .cec import Cec, TvPower
+
+        logs = os.environ.get("LOGS_DIRECTORY", "").split(":")[0]
+        power = TvPower(Cec(), emit=emit,
+                        state_file=os.path.join(logs, "cec-state.json") if logs else None)
     app = TvApp(open_screen, args.url, args.address, director=director,
-                web_name=str(cfg.get("web_name") or ""))
+                web_name=str(cfg.get("web_name") or ""), power=power)
     signal.signal(signal.SIGTERM, lambda *_: app.shutdown())
     signal.signal(signal.SIGINT, lambda *_: app.shutdown())
     log.info("obrazovka „právě hraje“ běží (%s), ytdj na %s",

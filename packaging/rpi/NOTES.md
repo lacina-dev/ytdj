@@ -188,6 +188,50 @@ driver and no extra GPU memory: `gpu_mem=16` and the commented-out `vc4-kms-v3d`
     add `quiet logo.nologo vt.global_cursor_default=0` (short boot text, no logo, no cursor).
 - Sound stays on the USB soundbar: HDMI has the lowest WirePlumber priority (see above).
 
+### Care for the TV's panel (static picture all day)
+
+The office TV is a 50" Samsung LED-LCD from 2016 (EDID: SAM, product 0x0d42, week 1/2016,
+native 3840×2160; we drive 1920×1080). LCD panels do not burn in the way OLED or plasma do,
+but a static, bright picture for many hours a day can leave image retention, and the maker
+warns about it. Verified wording from a Samsung LED TV manual of that generation (hospitality
+model HG43ED690, © 2015 — not this exact TV's manual, whose model is not known from the EDID):
+"Avoid displaying still images … Constant displaying of still picture can cause uneven wear of
+screen phosphor, which will affect image quality." It recommends reducing brightness and
+contrast and using the features that reduce image retention. Whether burned-in images are
+excluded from the warranty of this TV was not verified.
+
+What the jukebox does about it (`ytdj/tv/screen.py`, `ytdj/tv/cec.py`):
+
+- the whole layout drifts by tens of pixels, a little every minute; the static blocks (name ↔
+  clock, address + QR ↔ what is next) swap sides every 30 minutes; static elements are dim and
+  the QR code is dark on mid-grey instead of white (it still scans — tested);
+- after 2 minutes without music the screen dims, after 5 it becomes a black screen saver with
+  a small dim clock that sits somewhere else every minute; a paused clip gives way to it after
+  a minute;
+- **optionally the TV is switched off** when nothing has played for N minutes and on again
+  with the music — over HDMI-CEC. Off by default; the administrator turns it on in the web
+  settings („Telku vypínat, když se nehraje“, minutes) — `tv_standby`, `tv_standby_minutes`.
+
+CEC needs to be enabled on the TV: on a Samsung it is **Anynet+ (HDMI-CEC)** in Settings →
+General → External Device Manager (older menus: System → Anynet+). The Pi uses `/dev/cec0`
+through `cec-ctl` (package `v4l-utils`); `ytdj-tv` has access through the group `video`.
+
+The rules are deliberately polite (the TV belongs to people):
+
+- standby is sent only when the TV says it is on AND its active source is the jukebox; the
+  jukebox becomes the active source by saying so once when music starts and no other device is
+  being shown (`cec-ctl --active-source`);
+- the TV is woken (`--image-view-on` + active source) only if the jukebox put it to sleep; a TV
+  switched off by its remote stays off, a TV somebody switched on is left as they set it;
+- one attempt and one retry per action, at least a minute between actions, ten minutes of
+  silence after a failure; a TV that does not answer is asked again after 30 minutes and the
+  status says so („Telka na HDMI-CEC neodpovídá…“).
+
+Look: `grep -a '"tv.cec' /var/log/ytdj-tv/events.jsonl | tail`,
+`cec-ctl -d /dev/cec0 -s --to 0 --give-device-power-status`.
+Off: untick the setting on the web (a TV the jukebox put to sleep is still woken once). If the
+TV sleeps and should not: `cec-ctl -d /dev/cec0 -s --to 0 --image-view-on`.
+
 ### Clips on the TV (optional, switched on in the browser)
 
 With „Klipy na telce“ on, a playing track that is itself an official video shows its picture

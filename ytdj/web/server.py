@@ -173,6 +173,7 @@ LIVE_KEYS = (
     "artist_window",
     "display_filter",
     "display_blocklist",
+    "skip_notices",
     "ban_song_votes",
     "ban_artist_votes",
     "favourite_artist_votes",
@@ -188,6 +189,8 @@ LIVE_KEYS = (
     "loudness_target",
     "audio_output",
     "audio_switch_volume",
+    "tv_standby",
+    "tv_standby_minutes",
 )
 
 CODEX_MODELS = [
@@ -271,6 +274,19 @@ FIELD_META: dict[str, tuple[str, str, tuple[int, int] | None]] = {
         "výš — jiný zesilovač může hrát mnohem hlasitěji.",
         (0, 100),
     ),
+    "tv_standby": (
+        "Telku vypínat, když se nehraje",
+        "Šetří panel telky: když se nehraje, jukebox telku po chvíli vypne (přes HDMI) a "
+        "s hudbou ji zase zapne. Jen když telka ukazuje jukebox — kdo ji přepne na něco "
+        "jiného nebo vypne ovladačem, toho nechá. Na telce musí být zapnuté ovládání přes "
+        "HDMI (u Samsungu Anynet+).",
+        None,
+    ),
+    "tv_standby_minutes": (
+        "Telku vypnout po (minut bez hudby)",
+        "Za jak dlouho po poslední hudbě se telka vypne.",
+        (2, 240),
+    ),
     "queue_target": (
         "Cílová hloubka fronty",
         "Kolik skladeb držet nachystaných za tou právě hrající.",
@@ -352,6 +368,12 @@ FIELD_META: dict[str, tuple[str, str, tuple[int, int] | None]] = {
     "display_filter": (
         "Skrývat sprostá slova",
         "Jména a texty přání na displeji a webu bez sprostých slov (DJ je dostane beze změny).",
+        None,
+    ),
+    "skip_notices": (
+        "Hlásit všem, kdo přeskočil",
+        "Když někdo přeskočí hrající skladbu, web a displej to krátce ukážou všem i se jménem "
+        "a v Odehráno je u skladby, kdo ji přeskočil. Vypnuto = nikomu nic.",
         None,
     ),
     "display_blocklist": (
@@ -839,6 +861,19 @@ class WebServer:
                 "starting": wq.starting,
                 "people": wq.people(),
             }
+            # kdo právě přeskočil (F-PRESKOK-10): krátké hlášky pro všechny
+            # obrazovky — web, displej, telka; samy po chvíli zmizí
+            notices = getattr(wq, "notices_public", None)
+            extra["notices"] = notices() if notices is not None else []
+            # …a totéž trvaleji u přeskočené skladby v Odehráno (nejnovější záznam)
+            who_skipped = getattr(wq, "skipped_by", None) or {}
+            seen: set[str] = set()
+            for h in history:
+                if h["id"] in who_skipped and h["id"] not in seen \
+                        and h["outcome"] in ("skipped", "replaced"):
+                    h["skipped_by"] = who_skipped[h["id"]]
+                if h["id"]:
+                    seen.add(h["id"])
         last = self._dj_last
         wq_last = getattr(wq, "last", None) if wq is not None else None
         if wq_last and (last is None or (wq_last.get("at") or 0) >= (last.get("at") or 0)):
@@ -1336,8 +1371,11 @@ class WebServer:
                     by = wq.name_for(data.get("client"),
                                      " ".join(str(data.get("who") or "").split())[:24])
                     # přeskočení cizího přání ukončí jeho kolo ještě před skokem
-                    await wq.skip_current(by or ("displej" if rec.get("ua") == "panel" else "někdo"),
-                                          data.get("client"))
+                    panel = rec.get("ua") == "panel"
+                    # odkud: tlačítko na repráku pošle displej jako source "key"
+                    source = ("key" if data.get("source") == "key" else "panel") if panel else "web"
+                    await wq.skip_current(by or ("displej" if panel else "někdo"),
+                                          data.get("client"), source=source)
                 else:
                     await player.skip()
             elif action == "stop":

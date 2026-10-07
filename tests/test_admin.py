@@ -209,6 +209,8 @@ class ConfigNeedsPin(Base):
         guarded = {key for key, ep in self.routes.items() if getattr(ep, "admin_only", False)}
         self.assertEqual(guarded, {("/api/config", "GET"), ("/api/config", "HEAD"), ("/api/config", "POST"),
                                    ("/api/restart", "POST"),
+                                   # živý seznam zvukových výstupů v nastavení (F-ZVUK-28)
+                                   ("/api/audio/outputs", "GET"), ("/api/audio/outputs", "HEAD"),
                                    # Chyby a nápady: stav, řešení a mazání (F-HLASENI-05); psát smí každý
                                    ("/api/issues/{iid}/resolve", "POST"), ("/api/issues/{iid}", "DELETE"),
                                    ("/api/issues/{iid}/comments/{cid}", "DELETE")})

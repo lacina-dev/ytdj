@@ -610,6 +610,10 @@
     background-image: linear-gradient(45deg, transparent 50%, var(--text-faint) 50%), linear-gradient(135deg, var(--text-faint) 50%, transparent 50%);
     background-position: calc(100% - 16px) 19px, calc(100% - 11px) 19px; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; }
   .field input:focus, .field select:focus { outline: none; border-color: var(--accent); }
+  .field .notes { margin: 8px 0 0; padding: 0; list-style: none; font-size: .82rem; line-height: 1.45; color: var(--text-dim); }
+  .field .notes li { margin: 0 0 4px; }
+  .field .notes li.warn { color: var(--warn); }
+  .field select:disabled { opacity: .6; }
   .check { display: flex; align-items: center; gap: 10px; cursor: pointer; min-height: 36px; }
   .check input { width: 20px; height: 20px; accent-color: var(--accent); flex: none; }
   .tag { font-size: .64rem; letter-spacing: .07em; text-transform: uppercase; padding: 2px 7px; border-radius: 5px;
@@ -2108,6 +2112,7 @@
     setTimeout(function () { el.closeSettings.focus(); }, 50);
   }
   function closeSettings() {
+    stopLive();
     el.settings.classList.remove("show");
     el.settings.setAttribute("aria-hidden", "true");
     el.backdrop.classList.remove("show");
@@ -2142,6 +2147,7 @@
       html += aboutRow("klient", yt.client || "—");
       html += aboutRow("PO token", yt.pot === "běží" ? "provider běží" : "provider neběží", yt.pot === "běží" ? "good" : "bad");
       if (yt.quality) html += aboutRow("teď hraje", yt.quality, yt.quality.indexOf("Premium") >= 0 ? "good" : null);
+      if (d.audio) html += aboutRow("zvukový výstup", d.audio);
       html += "</div><h3>Mozek</h3><div class=grp>";
       html += aboutRow("backend", be.engine || "—");
       html += aboutRow("model", be.model || "—");
@@ -2213,7 +2219,8 @@
           var sel = String(cv) === String(val == null ? "" : val) ? " selected" : "";
           return '<option value="' + esc(cv) + '"' + sel + ">" + esc(cl === "" || cl == null ? "(výchozí)" : cl) + "</option>";
         }).join("");
-        out += head + '<select id="' + id + '">' + opts + "</select>";
+        out += head + '<select id="' + id + '"' + (f.disabled ? " disabled" : "") + ">" + opts + "</select>";
+        if (f.notes) out += '<ul class="notes" aria-live="polite">' + notesHtml(f.notes) + "</ul>";
       } else if (f.type === "int") {
         out += head + '<input type="number" step="1" id="' + id + '" value="' + esc(val == null ? "" : val) + '">';
       } else {
@@ -2228,6 +2235,59 @@
         if (span) span.textContent = cb.checked ? "zapnuto" : "vypnuto";
       });
     });
+    startLive();
+  }
+
+  /* Zvukový výstup: věty pod výběrem (co hraje, náhradní výstup, stažená hlasitost) */
+  function notesHtml(notes) {
+    return (notes || []).map(function (n, i) {
+      var warn = i > 0 || /není|ztlumen|stažen|nulov/.test(n);
+      return '<li' + (warn && !/^Teď hraje/.test(n) ? ' class="warn"' : "") + ">" + esc(n) + "</li>";
+    }).join("");
+  }
+
+  /* Živý seznam (F-ZVUK-28): dokud je nastavení otevřené, výběr výstupů se
+     obnovuje — nově připojená zvukovka se objeví sama. Rozdělaná volba
+     (ještě neuložená) se nepřepíše. */
+  var liveTimer = null;
+  function stopLive() { if (liveTimer) { clearInterval(liveTimer); liveTimer = null; } }
+  function startLive() {
+    stopLive();
+    if (!cfg.fields.some(function (f) { return f.live; })) return;
+    liveTimer = setInterval(refreshLive, 3000);
+  }
+  async function refreshLive() {
+    if (!el.settings.classList.contains("show") || document.hidden) return;
+    var fields = cfg.fields.filter(function (f) { return f.live; });
+    for (var i = 0; i < fields.length; i++) {
+      var f = fields[i];
+      try {
+        var res = await adminFetch(f.live);
+        if (!res.ok) continue;
+        applyLive(f, await res.json());
+      } catch (e) { /* příště */ }
+    }
+  }
+  function applyLive(f, snap) {
+    var div = el.settingsBody.querySelector('.field[data-key="' + f.key + '"]');
+    var select = div && div.querySelector("select");
+    if (!select || !snap || !snap.choices) return;
+    var saved = String(cfg.values[f.key] == null ? "" : cfg.values[f.key]);
+    var picked = select.value, dirty = picked !== saved;
+    var sig = JSON.stringify(snap.choices) + "|" + (snap.available ? 1 : 0);
+    if (select.getAttribute("data-sig") !== sig) {
+      select.innerHTML = snap.choices.map(function (c) {
+        return '<option value="' + esc(c.value) + '">' + esc(c.label) + "</option>";
+      }).join("");
+      select.setAttribute("data-sig", sig);
+      var want = dirty ? picked : saved;
+      var has = snap.choices.some(function (c) { return String(c.value) === want; });
+      select.value = has ? want : saved;
+      select.disabled = !snap.available;
+    }
+    var notes = div.querySelector(".notes");
+    if (notes) notes.innerHTML = notesHtml(snap.notes);
+    f.choices = snap.choices; f.notes = snap.notes;
   }
 
   function collectChanges() {
@@ -2280,6 +2340,13 @@
       } else {
         setMsg("Uloženo — " + keys.length + " " + plural(keys.length, "změna", "změny", "změn") + ".");
       }
+      // zvukový výstup: co se stalo (kde hraje, stažená hlasitost) rovnou do zprávy
+      var notes = (data && data.notes) || [];
+      if (notes.length) {
+        el.settingsMsg.textContent += " " + notes.join(" ");
+        if (/stažena|není připojen|nepodařilo/.test(notes.join(" "))) el.settingsMsg.className = "msg warn";
+      }
+      refreshLive();
     } catch (e) {
       setMsg("Uložení se nepovedlo: " + e.message, "err");
     } finally {

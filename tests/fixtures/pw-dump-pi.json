@@ -1,0 +1,412 @@
+[
+ {
+  "id": 38,
+  "type": "PipeWire:Interface:Metadata",
+  "props": {
+   "metadata.name": "default"
+  },
+  "metadata": [
+   {
+    "subject": 0,
+    "key": "default.audio.sink",
+    "type": "Spa:String:JSON",
+    "value": {
+     "name": "alsa_output.usb-GeneralPlus_USB_Audio_Device-00.analog-stereo"
+    }
+   },
+   {
+    "subject": 0,
+    "key": "default.configured.audio.sink",
+    "type": "Spa:String:JSON",
+    "value": {
+     "name": "alsa_output.usb-GeneralPlus_USB_Audio_Device-00.analog-stereo"
+    }
+   }
+  ]
+ },
+ {
+  "id": 42,
+  "type": "PipeWire:Interface:Device",
+  "info": {
+   "props": {
+    "device.name": "alsa_card.platform-3f00b840.mailbox",
+    "device.description": "Built-in Audio",
+    "device.nick": "bcm2835 Headphones",
+    "alsa.card_name": "bcm2835 Headphones",
+    "device.api": "alsa"
+   },
+   "params": {
+    "Route": [
+     {
+      "name": "analog-output",
+      "direction": "Output",
+      "device": 1,
+      "available": "unknown",
+      "props": {
+       "mute": false,
+       "channelVolumes": [
+        1.0,
+        1.0
+       ]
+      }
+     }
+    ]
+   }
+  }
+ },
+ {
+  "id": 43,
+  "type": "PipeWire:Interface:Device",
+  "info": {
+   "props": {
+    "device.name": "alsa_card.platform-3f902000.hdmi",
+    "device.description": "Built-in Audio",
+    "device.nick": "vc4-hdmi",
+    "alsa.card_name": "vc4-hdmi",
+    "device.api": "alsa"
+   },
+   "params": {
+    "Route": [
+     {
+      "name": "hdmi-output-0",
+      "direction": "Output",
+      "device": 1,
+      "available": "yes",
+      "props": {
+       "mute": false,
+       "channelVolumes": [
+        1.0,
+        1.0
+       ]
+      }
+     }
+    ]
+   }
+  }
+ },
+ {
+  "id": 44,
+  "type": "PipeWire:Interface:Device",
+  "info": {
+   "props": {
+    "device.name": "alsa_card.usb-Dell_Dell_AC511_USB_SoundBar-00",
+    "device.description": "AC511 Sound Bar",
+    "device.nick": "Dell AC511 USB SoundBar",
+    "alsa.card_name": "Dell AC511 USB SoundBar",
+    "device.api": "alsa"
+   },
+   "params": {
+    "Route": [
+     {
+      "name": "analog-input-linein",
+      "direction": "Input",
+      "device": 0,
+      "available": "unknown",
+      "props": {
+       "mute": false,
+       "channelVolumes": [
+        1.0,
+        1.0
+       ]
+      }
+     },
+     {
+      "name": "analog-output",
+      "direction": "Output",
+      "device": 4,
+      "available": "unknown",
+      "props": {
+       "mute": false,
+       "channelVolumes": [
+        1.0,
+        1.0
+       ]
+      }
+     }
+    ]
+   }
+  }
+ },
+ {
+  "id": 61,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "state": "suspended",
+   "props": {
+    "node.name": "alsa_output.platform-3f00b840.mailbox.stereo-fallback",
+    "node.description": "Built-in Audio Stereo",
+    "node.nick": "bcm2835 Headphones",
+    "media.class": "Audio/Sink",
+    "device.id": 42,
+    "alsa.card_name": "bcm2835 Headphones",
+    "priority.session": 1000,
+    "client.id": 41,
+    "card.profile.device": 1,
+    "object.serial": 61
+   },
+   "params": {
+    "Props": [
+     {
+      "volume": 1.0,
+      "mute": false,
+      "channelVolumes": [
+       1.0,
+       1.0
+      ]
+     }
+    ]
+   }
+  }
+ },
+ {
+  "id": 62,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "state": "suspended",
+   "props": {
+    "node.name": "alsa_output.platform-3f902000.hdmi.hdmi-stereo",
+    "node.description": "Built-in Audio Digital Stereo (HDMI)",
+    "node.nick": "MAI PCM i2s-hifi-0",
+    "media.class": "Audio/Sink",
+    "device.id": 43,
+    "alsa.card_name": "vc4-hdmi",
+    "priority.session": 50,
+    "client.id": 41,
+    "card.profile.device": 1,
+    "object.serial": 62
+   },
+   "params": {
+    "Props": [
+     {
+      "volume": 1.0,
+      "mute": false,
+      "channelVolumes": [
+       1.0,
+       1.0
+      ]
+     }
+    ]
+   }
+  }
+ },
+ {
+  "id": 63,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "state": "idle",
+   "props": {
+    "node.name": "alsa_output.usb-Dell_Dell_AC511_USB_SoundBar-00.analog-stereo",
+    "node.description": "AC511 Sound Bar Analog Stereo",
+    "node.nick": "Dell AC511 USB SoundBar",
+    "media.class": "Audio/Sink",
+    "device.id": 44,
+    "alsa.card_name": "Dell AC511 USB SoundBar",
+    "priority.session": 2000,
+    "client.id": 41,
+    "card.profile.device": 4,
+    "object.serial": 63
+   },
+   "params": {
+    "Props": [
+     {
+      "volume": 1.0,
+      "mute": false,
+      "channelVolumes": [
+       1.0,
+       1.0
+      ]
+     }
+    ]
+   }
+  }
+ },
+ {
+  "id": 64,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "state": "suspended",
+   "props": {
+    "node.name": "alsa_input.usb-Dell_Dell_AC511_USB_SoundBar-00.analog-stereo",
+    "node.description": "AC511 Sound Bar Analog Stereo",
+    "node.nick": "Dell AC511 USB SoundBar",
+    "media.class": "Audio/Source",
+    "device.id": 44,
+    "alsa.card_name": "Dell AC511 USB SoundBar",
+    "priority.session": 2009,
+    "client.id": 41,
+    "card.profile.device": 0,
+    "object.serial": 64
+   },
+   "params": {
+    "Props": [
+     {
+      "volume": 1.0,
+      "mute": false,
+      "channelVolumes": [
+       1.0,
+       1.0
+      ]
+     }
+    ]
+   }
+  }
+ },
+ {
+  "id": 90,
+  "type": "PipeWire:Interface:Client",
+  "info": {
+   "props": {
+    "application.name": "mpv",
+    "application.process.id": 4242
+   }
+  }
+ },
+ {
+  "id": 93,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "state": "running",
+   "props": {
+    "node.name": "mpv",
+    "node.description": "mpv",
+    "media.class": "Stream/Output/Audio",
+    "application.name": "mpv",
+    "client.id": 90,
+    "object.serial": 110
+   },
+   "params": {
+    "Props": [
+     {
+      "volume": 1.0,
+      "mute": false,
+      "channelVolumes": [
+       1.0,
+       1.0
+      ]
+     }
+    ]
+   }
+  }
+ },
+ {
+  "id": 94,
+  "type": "PipeWire:Interface:Device",
+  "info": {
+   "props": {
+    "device.name": "alsa_card.usb-GeneralPlus_USB_Audio_Device-00",
+    "device.description": "USB Audio Device",
+    "device.nick": "USB Audio Device",
+    "alsa.card_name": "USB Audio Device",
+    "device.api": "alsa"
+   },
+   "params": {
+    "Route": [
+     {
+      "name": "analog-input-mic",
+      "direction": "Input",
+      "device": 2,
+      "available": "unknown",
+      "props": {
+       "mute": false,
+       "channelVolumes": [
+        1.0
+       ]
+      }
+     },
+     {
+      "name": "analog-output-speaker",
+      "direction": "Output",
+      "device": 3,
+      "available": "unknown",
+      "props": {
+       "mute": false,
+       "channelVolumes": [
+        1.0,
+        1.0
+       ]
+      }
+     }
+    ]
+   }
+  }
+ },
+ {
+  "id": 95,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "state": "running",
+   "props": {
+    "node.name": "alsa_output.usb-GeneralPlus_USB_Audio_Device-00.analog-stereo",
+    "node.description": "USB Audio Device Analog Stereo",
+    "node.nick": "USB Audio Device",
+    "media.class": "Audio/Sink",
+    "device.id": 94,
+    "alsa.card_name": "USB Audio Device",
+    "priority.session": 2000,
+    "client.id": 41,
+    "card.profile.device": 3,
+    "object.serial": 116
+   },
+   "params": {
+    "Props": [
+     {
+      "volume": 1.0,
+      "mute": false,
+      "channelVolumes": [
+       1.0,
+       1.0
+      ]
+     }
+    ]
+   }
+  }
+ },
+ {
+  "id": 96,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "state": "suspended",
+   "props": {
+    "node.name": "alsa_input.usb-GeneralPlus_USB_Audio_Device-00.mono-fallback",
+    "node.description": "USB Audio Device Mono",
+    "node.nick": "USB Audio Device",
+    "media.class": "Audio/Source",
+    "device.id": 94,
+    "alsa.card_name": "USB Audio Device",
+    "priority.session": 2000,
+    "client.id": 41,
+    "card.profile.device": 2,
+    "object.serial": 117
+   },
+   "params": {
+    "Props": [
+     {
+      "volume": 1.0,
+      "mute": false,
+      "channelVolumes": [
+       1.0
+      ]
+     }
+    ]
+   }
+  }
+ },
+ {
+  "id": 89,
+  "type": "PipeWire:Interface:Link",
+  "info": {
+   "output-node-id": 93,
+   "input-node-id": 95,
+   "state": "active"
+  }
+ },
+ {
+  "id": 92,
+  "type": "PipeWire:Interface:Link",
+  "info": {
+   "output-node-id": 93,
+   "input-node-id": 95,
+   "state": "active"
+  }
+ }
+]

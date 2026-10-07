@@ -69,6 +69,14 @@ DEFAULTS: dict = {
     # má YouTube. Hlasitost (volume) je jiný stupeň a tímhle se nemění.
     "loudness_normalize": True,
     "loudness_target": -14,
+    # Zvukový výstup (ytdj/audio_outputs.py): název uzlu PipeWire, na který má
+    # jukebox hrát; "" = automaticky podle priorit WirePlumberu. Vybírá se
+    # v nastavení na webu ze seznamu připojených výstupů.
+    "audio_output": "",
+    # Když se výstup změní (volbou, výpadkem karty, návratem), hlasitost se
+    # stáhne nejvýš na tolik — jiný zesilovač může hrát mnohem hlasitěji.
+    # 0 = hlasitost při změně výstupu nechat být.
+    "audio_switch_volume": 20,
     # Displej a web v kanceláři: sprostá slova ve jménech a textech přání se
     # nezobrazí (DJ je dostane beze změny). Seznam = kořeny slov navíc.
     "display_filter": True,
@@ -218,6 +226,8 @@ class Config:
     prefetch_max: int = 10
     loudness_normalize: bool = True
     loudness_target: int = -14
+    audio_output: str = ""
+    audio_switch_volume: int = 20
 
     yt_dlp_path: str = ""
     node_bin: str | None = None

@@ -365,6 +365,9 @@ class MpvPlayer(Player):
         self._tail_cut = asyncio.Event()
         self._resolver: asyncio.subprocess.Process | None = None
         self._resolver_task: asyncio.Task | None = None
+        # ytdj nastaví (ytdj/audio_outputs.py): název zvukového výstupu, na
+        # kterém se hraje — do audio.xrun (ne do každého sys.sample)
+        self.output_name: Callable[[], str | None] | None = None
         # ytdj nastaví: když běží Codex, dopředu se nic neřeší (paměť)
         self.busy_check: Callable[[], bool] | None = None
         # ytdj nastaví (fronta přání): je tahle skladba něčí přání? Chytré
@@ -559,6 +562,7 @@ class MpvPlayer(Player):
         await self._observe()
 
         self.sampler = SystemSampler(self._telemetry_context, self._telemetry_pids)
+        self.sampler.xrun_context = self._xrun_context
         self.sampler.start()
         if self.playback_file is not None or self.playback_disk is not None:
             self._playback_task = asyncio.create_task(self._playback_loop())
@@ -1312,6 +1316,11 @@ class MpvPlayer(Player):
             ctx["pos_s"] = round(self._time_pos, 1)
         return ctx
 
+    def _xrun_context(self) -> dict[str, Any]:
+        """K audio.xrun: na kterém zvukovém výstupu se zrovna hrálo."""
+        out = self.output_name() if self.output_name is not None else None
+        return {"output": out} if out else {}
+
     def _telemetry_pids(self) -> dict[str, int]:
         pids = {}
         if self.proc and self.proc.returncode is None:
@@ -1786,6 +1795,19 @@ class MpvPlayer(Player):
         if self._muted:
             # kdo sahá na hlasitost (web, displej, kolečko, povel), chce slyšet
             await self.set_mute(False)
+
+    async def lower_volume(self, limit: int) -> tuple[int, int] | None:
+        """Stáhne hlasitost na `limit`, jen když je výš (pojistka při změně
+        zvukového výstupu, F-HLAS-10). Vrací (původní, nová), nebo None, když
+        nebylo co stahovat. Ztlumení nechává, jak je — nic se samo nezapne."""
+        limit = _clamp_volume(limit)
+        old = self._volume
+        if old <= limit:
+            return None
+        await self._command("set_property", "volume", limit, wait=False)
+        self._volume = limit
+        self._remember_volume(limit)
+        return old, limit
 
     async def set_mute(self, muted: bool | None = None) -> bool:
         """Ztlumit / zapnout zvuk (None = přepnout). Vrací nový stav.

@@ -51,12 +51,21 @@ nice -n 19 ionice -c3 .venv/bin/python -m compileall -q ytdj
 # USB sound card > 3.5 mm jack > HDMI
 conf_dir="$HOME/.config/wireplumber/wireplumber.conf.d"
 mkdir -p "$conf_dir"
+# Which output plays is the jukebox's own setting (config audio_output, chosen
+# in the web settings; ytdj/audio_outputs.py re-applies it at every start), so
+# WirePlumber's stored default is left alone here — deleting it used to drop a
+# deliberate choice silently. WirePlumber is restarted only when the rules
+# themselves change, not for a comment (a restart re-links the playing stream).
+conf_rules() { sed -e 's/^[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' "$1" 2>/dev/null || true; }
 if ! cmp -s packaging/rpi/51-ytdj-audio-priority.conf "$conf_dir/51-ytdj-audio-priority.conf"; then
+    old_rules="$(conf_rules "$conf_dir/51-ytdj-audio-priority.conf")"
     install -m 644 packaging/rpi/51-ytdj-audio-priority.conf "$conf_dir/"
-    # a hand-pinned default sink would override the priorities
-    rm -f "$HOME/.local/state/wireplumber/default-nodes"
-    systemctl --user restart wireplumber.service || true
-    echo "wireplumber: priorities installed, restarted"
+    if [ "$old_rules" != "$(conf_rules "$conf_dir/51-ytdj-audio-priority.conf")" ]; then
+        systemctl --user restart wireplumber.service || true
+        echo "wireplumber: priorities installed, restarted"
+    else
+        echo "wireplumber: priorities file refreshed (comments only, no restart)"
+    fi
 fi
 
 # ytdj a PO token server mimo jádro 0 (viz cpu-affinity.conf)

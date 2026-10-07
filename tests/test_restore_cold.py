@@ -228,7 +228,7 @@ class ColdRestore(unittest.TestCase):
                 async with Rig() as rig2:
                     rig2.player.playback_disk = pb
                     app = WebApp(rig2)
-                    task = asyncio.create_task(rig2.wq.resume(cold(saved)))
+                    task = asyncio.create_task(rig2.wq.resume(cold(saved), now=DAY))
                     await asyncio.sleep(0.05)
                     t0 = time.monotonic()
                     self.assertEqual(await app.play_or_start("panel"), "play")
@@ -252,7 +252,7 @@ class ColdRestore(unittest.TestCase):
                     mock.patch.object(wishes, "CLOCK_WAIT", 5.0):
                 async with Rig() as rig2:
                     rig2.player.playback_disk = pb
-                    task = asyncio.create_task(rig2.wq.resume(cold(saved)))
+                    task = asyncio.create_task(rig2.wq.resume(cold(saved), now=DAY))
                     await asyncio.sleep(0.05)
                     w = rig2.wq.submit("pusť Kabát", "Petr")
                     await rig2.until(lambda: w.state == "playing")

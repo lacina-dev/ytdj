@@ -65,8 +65,19 @@ dependencies on the Pi. `canvas` downloads a linux-arm64 prebuild there:
   `/etc/systemd/journald.conf.d/50-ytdj-persistent.conf` sets `Storage=persistent` and
   `SystemMaxUse=64M`.
 - Audio output: `51-ytdj-audio-priority.conf` goes to `~/.config/wireplumber/wireplumber.conf.d/`
-  (deploy.sh installs it). Priorities are USB 2000 > 3.5 mm jack 1000 > HDMI 50. Do not use
-  `wpctl set-default`: a pinned default overrides the priorities.
+  (deploy.sh installs it). Priorities are USB 2000 > 3.5 mm jack 1000 > HDMI 50.
+- Which output plays is the jukebox's own setting: web → Nastavení jukeboxu → „Zvukový výstup"
+  (config key `audio_output`, a PipeWire node name; empty = automatic by the priorities above).
+  `ytdj/audio_outputs.py` watches the graph with one long-running `pw-dump -m`, pins the chosen
+  sink in WirePlumber (`pw-metadata -n default 0 default.configured.audio.sink '{"name":…}'
+  Spa:String:JSON` — without the type WirePlumber ignores the value) and re-applies it at every
+  start and whenever the pin is lost, so it does not depend on `~/.local/state/wireplumber/default-nodes`
+  and deploy.sh no longer deletes that file. A pin made by hand with `wpctl set-default` is
+  replaced by the saved choice — change the output in the settings instead. On the first start
+  with this feature a hand-made pin is adopted as the saved choice (`audio.output_adopt`).
+  Remembered output names and the last output played on live in `~/.local/share/ytdj/audio-outputs.json`.
+  The card mixer and the sink volume are never changed by ytdj; when the output changes, the
+  jukebox volume is capped to `audio_switch_volume` (20; 0 = off).
 - Swap is already zram (`/dev/zram0`, about 900 MB) on this image.
 
 ## Web on port 80 (`ytdj-port80.service`)

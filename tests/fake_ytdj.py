@@ -806,11 +806,15 @@ def make_server(port: int = 0, fake: FakeYtdj | None = None, sse: bool = True) -
                     self._json(401, {"error": "Nastavení chce PIN správce.", "pin": "required"})
                 elif pin != getattr(fake, "admin_pin", "123456"):
                     self._json(403, {"error": "Špatný PIN.", "pin": "wrong"})
+                elif getattr(fake, "config_payload", None):
+                    self._json(200, fake.config_payload)  # tests/audio_shots.py: skutečná pole
                 else:
                     self._json(200, {"values": {"queue_target": 5}, "fields": [
                         {"key": "queue_target", "label": "Cílová hloubka fronty",
                          "help": "Kolik skladeb držet nachystaných za tou právě hrající.",
                          "type": "int", "restart": False}]})
+            elif self.path == "/api/audio/outputs":
+                self._json(200, getattr(fake, "audio_snapshot", None) or {"available": False, "choices": [], "notes": []})
             elif self.path.startswith("/api/votes"):
                 u = urlparse(self.path)
                 q = {k: v[0] for k, v in parse_qs(u.query).items()}

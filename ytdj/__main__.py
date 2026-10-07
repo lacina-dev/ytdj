@@ -199,6 +199,14 @@ class App:
         from .issues import wire as wire_issues
 
         self.issues = wire_issues(self)
+        # ---- zvukový výstup (POZADAVKY #75, ytdj/audio_outputs.py) ----
+        # Sleduje výstupy PipeWire a drží volbu z nastavení; přehrávače (mpv)
+        # se nedotkne, jen mu při změně výstupu stáhne hlasitost.
+        from .audio_outputs import AudioOutputs
+
+        self.audio = AudioOutputs(cfg, self.player)
+        if hasattr(self.player, "output_name"):
+            self.player.output_name = self.audio.output_name
         # ---- klipy na telce (POZADAVKY #71, ytdj/tvvideo.py) ----
         # Jen vypínač, druh skladby a adresa obrazu; přehrávače se nedotkne.
         from .config import RUNTIME_DIR
@@ -574,6 +582,8 @@ class App:
         else:
             await self.player.start()
         self._mark("player")
+        with contextlib.suppress(Exception):
+            await self.audio.start()  # jen spustí sledování; hudbu nezdrží
         self.wishes.start()
         # hlídač zaseknutého event loopu (sys.loop_lag se zásobníkem)
         self.loopwatch = LoopWatch()
@@ -676,6 +686,8 @@ class App:
         await self.wishes.stop()
         with contextlib.suppress(Exception):
             await self.tvvideo.stop()
+        with contextlib.suppress(Exception):
+            await self.audio.stop()
         if self.loopwatch is not None:
             await self.loopwatch.stop()
         # the web must go down before the store — SSE would otherwise touch

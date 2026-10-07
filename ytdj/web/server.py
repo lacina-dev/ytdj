@@ -153,6 +153,7 @@ WEB_LOCKED_KEYS = frozenset(
 LOCKED_MESSAGE = "{label}: mění se jen v config.toml na Pi, ne z webu."
 # Texty, které jdou jako argument dál (codex -m, yt-dlp extractor-args):
 # jen obyčejná jména, žádné oddělovače ani volby navíc.
+AUDIO_NAME_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:+-]{0,199}$")  # = audio_outputs.NAME_OK
 PLAIN_KEYS = {
     "codex_model": re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9._:-]{0,63})?$"),
     "player_client": re.compile(r"^[A-Za-z0-9_,-]{0,80}$"),
@@ -185,6 +186,8 @@ LIVE_KEYS = (
     "prefetch_max",
     "loudness_normalize",
     "loudness_target",
+    "audio_output",
+    "audio_switch_volume",
 )
 
 CODEX_MODELS = [
@@ -254,6 +257,19 @@ FIELD_META: dict[str, tuple[str, str, tuple[int, int] | None]] = {
         "(−18) = všechno tišší, ale ani tiché nahrávky není třeba zesilovat. "
         "Platí od další skladby.",
         (-24, -8),
+    ),
+    "audio_output": (
+        "Zvukový výstup",
+        "Kam jukebox hraje. Přepne se hned, hudba běží dál; volba platí i po restartu. "
+        "Nově připojená zvukovka se v seznamu objeví sama.",
+        None,
+    ),
+    "audio_switch_volume": (
+        "Hlasitost po změně výstupu (nejvýš)",
+        "Když se změní zvukový výstup (volbou, odpojením karty, návratem), hlasitost se stáhne "
+        "na tuhle hodnotu, pokud je výš — jiný zesilovač může hrát mnohem hlasitěji. "
+        "0 = hlasitost při změně výstupu neměnit.",
+        (0, 100),
     ),
     "queue_target": (
         "Cílová hloubka fronty",
@@ -417,7 +433,7 @@ def _cookie_choices(current: str) -> list[str]:
 
 
 def _field_type(key: str) -> str:
-    if key in ("cookies_browser", "codex_model"):
+    if key in ("cookies_browser", "codex_model", "audio_output"):
         return "choice"
     default = cfgmod.DEFAULTS[key]
     if isinstance(default, bool):
@@ -497,6 +513,9 @@ def coerce_value(key: str, raw: Any) -> Any:
         raise BadValue(f"{label}: očekávám text, přišlo {raw!r}")
     if key in PLAIN_KEYS and not PLAIN_KEYS[key].match(raw):
         raise BadValue(f"{label}: jen písmena, číslice a - _ (bez mezer), přišlo {raw!r}")
+    if key == "audio_output" and raw and not AUDIO_NAME_OK.match(raw):
+        # název uzlu PipeWire ze seznamu od serveru — nikdy volný text
+        raise BadValue(f"{label}: vyber výstup ze seznamu")
     return raw
 
 
@@ -652,6 +671,7 @@ class WebServer:
             # nastavení a restart jen s PINem správce (F-BEZP-09, F-BEZP-10)
             Route("/api/config", _safe(self._admin_only(self._config_get)), methods=["GET"]),
             Route("/api/config", _safe(self._admin_only(self._config_post)), methods=["POST"]),
+            Route("/api/audio/outputs", _safe(self._admin_only(self._audio_outputs)), methods=["GET"]),
             Route("/api/about", _safe(self._about), methods=["GET"]),
             Route("/api/restart", _safe(self._admin_only(self._restart)), methods=["POST"]),
             # Nápověda a Jak to funguje (docs/FUNKCE.md živě) — F-WEB-07, F-WEB-08
@@ -1492,6 +1512,8 @@ class WebServer:
                     "pot": await _pot_status(),
                     "quality": quality,
                 },
+                # kam jukebox právě hraje (jen jméno výstupu; volba je v nastavení)
+                "audio": self._audio_snapshot().get("playing_label") or "",
                 "backend": {
                     "engine": "codex CLI",
                     "model": cfg.codex_model or "výchozí",
@@ -1586,9 +1608,28 @@ class WebServer:
                 if values[key] and values[key] not in choices:
                     choices.append(str(values[key]))
                 field["choices"] = choices
+            elif key == "audio_output":
+                # seznam výstupů je živý: stránka si ho při otevřeném nastavení obnovuje
+                snap = self._audio_snapshot()
+                field["choices"], field["notes"] = snap["choices"], snap["notes"]
+                field["live"] = "/api/audio/outputs"
+                field["disabled"] = not snap["available"]
             fields.append(field)
 
         return JSONResponse({"values": values, "fields": fields})
+
+    def _audio_snapshot(self) -> dict[str, Any]:
+        """Zvukové výstupy pro nastavení (ytdj/audio_outputs.py); jen čte paměť."""
+        audio = getattr(self.app, "audio", None)
+        if audio is None:
+            value = str(getattr(self.app.cfg, "audio_output", "") or "")
+            return {"available": False, "chosen": value, "playing": None, "fallback": False,
+                    "choices": [{"value": value, "label": "Není k dispozici"}],
+                    "notes": ["Výběr zvukového výstupu není k dispozici."]}
+        return audio.snapshot()
+
+    async def _audio_outputs(self, request: Request) -> Response:
+        return JSONResponse(self._audio_snapshot())
 
     async def _config_post(self, request: Request) -> Response:
         try:
@@ -1601,8 +1642,16 @@ class WebServer:
         try:
             changes = {key: coerce_value(key, raw) for key, raw in data.items()}
             check_together(changes, self.app.cfg)
+            audio = getattr(self.app, "audio", None)
+            if "audio_output" in changes:
+                # jen to, co server sám nabídl: připojený nebo zapamatovaný výstup
+                if audio is None or not audio.available:
+                    raise BadValue("Zvukový výstup: výběr teď není k dispozici.")
+                if changes["audio_output"] not in audio.known_names() | {""}:
+                    raise BadValue("Zvukový výstup: tenhle výstup jukebox nezná — vyber ze seznamu.")
         except BadValue as exc:
             return _json_error(str(exc), 400)
+        audio_before = getattr(self.app.cfg, "audio_output", "")
 
         try:
             await asyncio.to_thread(cfgmod.save_values, changes)
@@ -1623,6 +1672,16 @@ class WebServer:
                 await notify()
             except Exception:
                 log.exception("přehrávač nepřevzal změnu nastavení")
+        # zvukový výstup: přepnout hned a říct, co se stalo (i stažení hlasitosti)
+        notes: list[str] = []
+        if audio is not None and {"audio_output", "audio_switch_volume"} & set(changes):
+            try:
+                notes = await audio.config_changed(
+                    previous=audio_before if "audio_output" in changes else None,
+                    who=_client(request))
+            except Exception:
+                log.exception("zvukový výstup nepřevzal změnu nastavení")
+                notes = ["Zvukový výstup se nepodařilo přepnout — zkus to prosím znovu."]
         # jen klíče a čísla/přepínače — cesty a texty (cookies…) se nepíšou
         telemetry.event(
             "web.config", keys=sorted(changes), restart=restart,
@@ -1630,7 +1689,7 @@ class WebServer:
             **_client(request),
         )
 
-        return JSONResponse({"ok": True, "restart_required": restart})
+        return JSONResponse({"ok": True, "restart_required": restart, "notes": notes})
 
     # ---- lifecycle ----
 

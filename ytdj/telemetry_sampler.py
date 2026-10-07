@@ -180,6 +180,8 @@ class SystemSampler:
         self._vcgencmd = shutil.which("vcgencmd")
         self.last: dict[str, Any] = {}  # poslední vzorek — kontext pro audio.xrun
         self.xruns = 0
+        # navíc ke kontextu jen u audio.xrun (nastaví přehrávač)
+        self.xrun_context: Callable[[], dict[str, Any]] | None = None
 
     # ---- životní cyklus ----
 
@@ -380,6 +382,9 @@ class SystemSampler:
         ctx: dict[str, Any] = {}
         with contextlib.suppress(Exception):
             ctx.update(self.context())
+        if self.xrun_context is not None:
+            with contextlib.suppress(Exception):
+                ctx.update(self.xrun_context())  # např. zvukový výstup, na kterém se hrálo
         last = self.last
         for k in ("cpu", "iowait", "load1", "mem_avail_mb", "swap_used_mb", "temp_c",
                   "cpu_mpv", "cpu_resolver"):

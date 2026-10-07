@@ -73,10 +73,11 @@ DEFAULTS: dict = {
     # jukebox hrát; "" = automaticky podle priorit WirePlumberu. Vybírá se
     # v nastavení na webu ze seznamu připojených výstupů.
     "audio_output": "",
-    # Když se výstup změní (volbou, výpadkem karty, návratem), hlasitost se
-    # stáhne nejvýš na tolik — jiný zesilovač může hrát mnohem hlasitěji.
-    # 0 = hlasitost při změně výstupu nechat být.
-    "audio_switch_volume": 20,
+    # Hlasitost se při změně výstupu nemění (0; rozhodnutí vlastníka 7. 10.
+    # 2026: „hlasitost nech"). Kdo chce pojistku — jiný zesilovač může hrát
+    # mnohem hlasitěji —, nastaví strop: při změně výstupu (volbou, výpadkem
+    # karty, návratem) se hlasitost stáhne nejvýš na tolik.
+    "audio_switch_volume": 0,
     # Displej a web v kanceláři: sprostá slova ve jménech a textech přání se
     # nezobrazí (DJ je dostane beze změny). Seznam = kořeny slov navíc.
     "display_filter": True,
@@ -227,7 +228,7 @@ class Config:
     loudness_normalize: bool = True
     loudness_target: int = -14
     audio_output: str = ""
-    audio_switch_volume: int = 20
+    audio_switch_volume: int = 0
 
     yt_dlp_path: str = ""
     node_bin: str | None = None

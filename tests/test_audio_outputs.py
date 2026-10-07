@@ -239,7 +239,7 @@ class Case(unittest.TestCase):
             self.addCleanup(p.stop)
 
     def make(self, chosen: str = "", volume: int = 55, pin: str | None = USB, stream: bool = True,
-             adopted: bool = True, last: str | None = USB, cap: int = 20, objects=None):
+             adopted: bool = True, last: str | None = USB, cap: int = 0, objects=None):
         cfg = Config(**{**DEFAULTS, "audio_output": chosen, "audio_switch_volume": cap})
         player = FakePlayer(volume)
         m = ao.AudioOutputs(cfg, player, state_file=self.dir / "audio-outputs.json")
@@ -377,9 +377,9 @@ class Switching(Case):
         self.assertEqual(wp.writes(), [SOUNDBAR])
         self.assertEqual(m.snapshot()["playing"], SOUNDBAR)
         self.assertEqual(notes, ["Hraje: AC511 Sound Bar."])
-        # přehrávač: jen dotaz na stažení hlasitosti (a ta už byla níž) — žádné
-        # audio-device, restart, pauza ani seek (FakePlayer by jinak spadl)
-        self.assertEqual(set(player.calls), {("lower_volume", 20)})
+        # přehrávač: vůbec nic — žádné audio-device, restart, pauza, seek ani
+        # hlasitost (FakePlayer by jinak spadl)
+        self.assertEqual(player.calls, [])
         self.assertEqual(player.volume, 10)
         choice = self.kinds("audio.output_choice")
         self.assertEqual(choice, [{"was": USB, "now": SOUNDBAR, "label": "AC511 Sound Bar",
@@ -508,14 +508,16 @@ class FallbackAndReturn(Case):
                       snap["choices"])
         self.assertEqual(snap["chosen"], USB)  # volba zůstává
         self.assertEqual(writes, [None])  # nepřipojený výstup se nepřipíná: návrat řídí jukebox
-        self.assertEqual(volume, 20)  # jiný zesilovač → pojistka
+        self.assertEqual(volume, 55)  # hlasitost se nemění (F-HLAS-10, výchozí)
+        self.assertFalse([n for n in snap["notes"] if "Hlasitost stažena" in n], snap["notes"])
         self.assertEqual([f["chosen"] for f in self.kinds("audio.output_fallback")], [USB])  # jednou
         self.assertEqual(early, ([None], SOUNDBAR))
         self.assertEqual(wp.writes(), [None, USB])
         self.assertEqual(back["playing"], USB)
         self.assertFalse(back["fallback"])
-        # při návratu nejdřív hlasitost dolů, teprve pak přepnout
-        self.assertEqual(player.log, ["volume 40->20", f"pin {USB}"])
+        self.assertEqual(player.log, [f"pin {USB}"])  # jen přepnutí, hlasitost zůstala
+        self.assertEqual((player.volume, player.calls), (40, []))
+        self.assertEqual(self.kinds("audio.volume_cap"), [])
         ret = self.kinds("audio.output_return")
         self.assertEqual(len(ret), 1)
         self.assertGreater(ret[0]["away_s"], 0)
@@ -568,7 +570,7 @@ class FallbackAndReturn(Case):
         self.events.clear()
         early, fallback, volume, writes, playing = run(go(appears=False))
         self.assertEqual(early, (False, 55, []))
-        self.assertEqual((fallback, volume, playing), (True, 20, SOUNDBAR))  # opravdu chybí
+        self.assertEqual((fallback, volume, playing), (True, 55, SOUNDBAR))  # opravdu chybí
         self.assertEqual(len(self.kinds("audio.output_fallback")), 1)
 
     def test_choosing_an_output_that_is_not_connected_waits_for_it(self) -> None:
@@ -594,13 +596,70 @@ class FallbackAndReturn(Case):
 
 
 class VolumeSafety(Case):
-    """F-HLAS-10: změna výstupu stáhne hlasitost na bezpečnou úroveň."""
+    """F-HLAS-10: výchozí — hlasitost se při změně výstupu nemění (vlastník
+    7. 10. 2026: „hlasitost nech"); strop je volitelné nastavení."""
 
-    def test_switch_caps_the_volume_before_the_sound_moves_and_says_so(self) -> None:
-        self.assertEqual((DEFAULTS["audio_switch_volume"], ao.SWITCH_VOLUME), (20, 20))
+    def test_by_default_the_volume_is_never_changed(self) -> None:
+        self.assertEqual((DEFAULTS["audio_switch_volume"], ao.SWITCH_VOLUME), (0, 0))
+        self.assertEqual(Config(**DEFAULTS).audio_switch_volume, 0)
 
         async def go():
-            m, wp, player, cfg = self.make(chosen=USB, volume=55)
+            cfg0 = Config(**{**DEFAULTS, "audio_output": USB})  # výchozí nastavení, ne parametr testu
+            player = FakePlayer(70)
+            m = ao.AudioOutputs(cfg0, player, state_file=self.dir / "default.json")
+            m.state.update(adopted=True, last=USB)
+            wp = FakeWirePlumber(m, pin=USB)
+            wp.boot()
+            await self.settle()
+            cfg0.audio_output = SOUNDBAR  # volba v nastavení
+            notes = list(await m.config_changed(previous=USB, who={}))
+            wp.unplug(SOUNDBAR)  # odpojení → náhradní výstup
+            await self.settle()
+            notes += m.snapshot()["notes"]
+            wp.plug(SOUNDBAR)  # návrat
+            await self.settle(0.5)
+            notes += m.snapshot()["notes"]
+            cfg0.audio_output = ""  # Automaticky + přepnutí odjinud (silnější karta)
+            notes += await m.config_changed(previous=SOUNDBAR, who={})
+            wp.add_sink("alsa_output.usb-Silny_Zesilovac-00.analog-stereo", "Silný Zesilovač Analog Stereo",
+                        priority=3000)
+            await self.settle()
+            notes += m.snapshot()["notes"]
+            return player, notes, m.snapshot()["playing_label"]
+
+        player, notes, playing = run(go())
+        self.assertEqual(playing, "Silný Zesilovač")
+        reasons = [c["reason"] for c in self.kinds("audio.output_change")]
+        self.assertEqual(reasons[:3], ["choice", "fallback", "return"])
+        self.assertEqual(reasons[-1], "system")
+        self.assertEqual((player.volume, player.calls, player.log.count("volume")), (70, [], 0))
+        self.assertFalse([e for e in player.log if e.startswith("volume")], player.log)
+        self.assertFalse([n for n in notes if "Hlasitost" in n or "stažen" in n], notes)
+        self.assertEqual(self.kinds("audio.volume_cap"), [])
+
+    def test_fallback_and_return_are_capped_when_a_cap_is_set(self) -> None:
+        async def go():
+            m, wp, player, _ = self.make(chosen=USB, volume=55, cap=20)
+            wp.boot()
+            await self.settle()
+            wp.unplug(USB)
+            await self.settle()
+            away = player.volume
+            player.volume = 40  # mezitím si někdo přidal
+            player.log.clear()
+            wp.plug(USB)
+            await self.settle(0.5)
+            return away, player
+
+        away, player = run(go())
+        self.assertEqual(away, 20)
+        # při návratu nejdřív hlasitost dolů, teprve pak přepnout
+        self.assertEqual(player.log, ["volume 40->20", f"pin {USB}"])
+        self.assertEqual([c["reason"] for c in self.kinds("audio.volume_cap")], ["fallback", "return"])
+
+    def test_switch_caps_the_volume_before_the_sound_moves_and_says_so(self) -> None:
+        async def go():
+            m, wp, player, cfg = self.make(chosen=USB, volume=55, cap=20)
             wp.boot()
             await self.settle()
             cfg.audio_output = SOUNDBAR
@@ -636,7 +695,7 @@ class VolumeSafety(Case):
 
     def test_change_made_elsewhere_is_capped_as_soon_as_it_is_seen(self) -> None:
         async def go():
-            m, wp, player, _ = self.make(chosen="", pin=None, last=SOUNDBAR, volume=70)
+            m, wp, player, _ = self.make(chosen="", pin=None, last=SOUNDBAR, volume=70, cap=20)
             wp.boot()
             await self.settle()
             start = player.volume
@@ -913,8 +972,7 @@ class WebSetting(Case):
         self.assertEqual(r.status_code, 200, r.body)
         body = json.loads(r.body)
         self.assertEqual(body["restart_required"], [])  # bez restartu hudby
-        self.assertEqual(body["notes"][0], "Hraje: AC511 Sound Bar.")
-        self.assertIn("Hlasitost stažena na 20 (bylo 55)", body["notes"][1])
+        self.assertEqual(body["notes"], ["Hraje: AC511 Sound Bar."])  # hlasitost zůstala
         self.assertEqual(saved[0].args[0], {"audio_output": SOUNDBAR})  # config.toml přes zapisovač
         self.assertEqual((cfg.audio_output, wp.pin), (SOUNDBAR, SOUNDBAR))
         self.assertEqual(nopin, 401)

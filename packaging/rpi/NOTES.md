@@ -76,8 +76,9 @@ dependencies on the Pi. `canvas` downloads a linux-arm64 prebuild there:
   replaced by the saved choice — change the output in the settings instead. On the first start
   with this feature a hand-made pin is adopted as the saved choice (`audio.output_adopt`).
   Remembered output names and the last output played on live in `~/.local/share/ytdj/audio-outputs.json`.
-  The card mixer and the sink volume are never changed by ytdj; when the output changes, the
-  jukebox volume is capped to `audio_switch_volume` (20; 0 = off).
+  The card mixer and the sink volume are never changed by ytdj, and by default neither is the
+  jukebox volume when the output changes (`audio_switch_volume = 0`, the owner's decision);
+  a value above 0 caps the volume to it on every output change.
 - Swap is already zram (`/dev/zram0`, about 900 MB) on this image.
 
 ## Web on port 80 (`ytdj-port80.service`)

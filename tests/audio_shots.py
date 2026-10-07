@@ -5,7 +5,7 @@
 Stránka běží proti falešnému backendu (tests/fake_ytdj.py), ale obsah pole
 „Zvukový výstup" je skutečný: dělá ho ytdj/audio_outputs.py nad grafem
 PipeWire z Pi (tests/fixtures/pw-dump-pi.json) — jednou s připojenou
-vybranou kartou, jednou s odpojenou (hraje náhradní, hlasitost stažena).
+vybranou kartou, jednou s odpojenou (hraje náhradní; hlasitost se nemění).
 Jen na koukání, žádný test.
 """
 

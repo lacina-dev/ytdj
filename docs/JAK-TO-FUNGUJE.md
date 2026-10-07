@@ -218,7 +218,6 @@ jukeboxu a restart chtějí PIN správce, který je na displeji na obrazovce Sí
 - **F-ZVUK-15** Automatika nikdy sama nepřeskočí skladbu bez důvodu
 - **F-ZVUK-24** Všechny skladby hrají stejně hlasitě, tichá i hlasitá nahrávka
 - **F-ZVUK-30** Když se odpojí vybraná zvukovka, hraje se dál náhradní a pak se vrátí
-- **F-HLAS-10** Při změně zvukového výstupu se hlasitost sama stáhne
 - **F-SLUSNOST-01** Sprostá slova se na displeji a webu nezobrazí
 - **F-VYPADEK-01** Při výpadku YouTube nebo sítě se čeká, nic se nemaže
 - **F-VYPADEK-04** Když nejede DJ, jednoduchá přání jedou dál

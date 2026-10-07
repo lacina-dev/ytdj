@@ -257,7 +257,7 @@
       "created": "2026-10-07",
       "title": "Výběr zvukového výstupu v nastavení",
       "body": "„Jo, dej někam do nastavení možnost výběru zvukového výstupu, tak aby si to pak vybraný výstup pamatovalo i po rebootu. A aby to vidělo nový výstup, i když se připojí.“\n\nPOZADAVKY #75.",
-      "resolution": "V Nastavení jukeboxu (s PINem správce) je nově „Zvukový výstup“: seznam všeho, co je k jukeboxu připojené, a „Automaticky“. Přepne se hned a hudba hraje dál. Volbu si jukebox pamatuje i po restartu a nově připojená zvukovka se v seznamu objeví sama. Když se vybraná zvukovka odpojí, hraje se dál náhradním výstupem a po připojení se jukebox sám vrátí. Při změně výstupu se hlasitost pro jistotu stáhne na 20. V kódu a otestováno; čeká na nasazení.",
+      "resolution": "V Nastavení jukeboxu (s PINem správce) je nově „Zvukový výstup“: seznam všeho, co je k jukeboxu připojené, a „Automaticky“. Přepne se hned a hudba hraje dál. Volbu si jukebox pamatuje i po restartu a nově připojená zvukovka se v seznamu objeví sama. Když se vybraná zvukovka odpojí, hraje se dál náhradním výstupem a po připojení se jukebox sám vrátí. Hlasitost se při přepnutí nemění — jiné repro může hrát hlasitěji, uprav si ji podle potřeby. V kódu a otestováno; čeká na nasazení.",
       "resolved": "2026-10-07"
     }
   ]

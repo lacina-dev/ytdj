@@ -26,9 +26,11 @@ se porovná, co má WirePlumber připnuté, a co chce jukebox, a rozdíl se opra
 Vybraný výstup, který není připojený, se nepřipíná (hraje náhradní podle
 priorit); připne se, až je zpátky a vydrží RETURN_DEBOUNCE.
 
-Pojistka hlasitosti (F-HLAS-10): jiný výstup = jiný zesilovač. Když se změní
-výstup, na kterém jukebox hraje, hlasitost se stáhne na `audio_switch_volume`
-(pokud je výš) — u plánovaného přepnutí ještě před ním.
+Hlasitost (F-HLAS-10): při změně výstupu se nemění — rozhodnutí vlastníka
+7. 10. 2026 („hlasitost nech"). Volitelně jde nastavit strop
+(`audio_switch_volume` > 0): pak se při změně výstupu, na kterém jukebox
+hraje, hlasitost stáhne na něj (pokud je výš) — u plánovaného přepnutí ještě
+před ním.
 
 Směšovač karty ani hlasitost výstupu v PipeWire se tu nikdy nemění, jen čtou.
 """
@@ -58,7 +60,7 @@ NAME_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:+-]{0,199}$")
 METADATA = "default"
 KEY_PIN = "default.configured.audio.sink"  # připnutý výstup (wpctl set-default)
 KEY_DEFAULT = "default.audio.sink"  # kam WirePlumber doopravdy posílá
-SWITCH_VOLUME = 20  # výchozí strop hlasitosti po změně výstupu (config audio_switch_volume)
+SWITCH_VOLUME = 0  # výchozí: hlasitost při změně výstupu neměnit (config audio_switch_volume)
 RETURN_DEBOUNCE = 5.0  # s — tak dlouho musí být vrácený výstup připojený, než se na něj přepne
 STARTUP_GRACE = 20.0  # s — po startu se čeká, než se USB karty ohlásí (bez "náhradního výstupu")
 COMMAND_TIMEOUT = 3.0  # s — pw-metadata
@@ -725,7 +727,8 @@ class AudioOutputs:
         self.kick()
 
     async def _cap(self, to: str | None, sinks: list[dict], reason: str) -> None:
-        """Pojistka hlasitosti při změně výstupu (F-HLAS-10)."""
+        """Volitelný strop hlasitosti při změně výstupu (F-HLAS-10); výchozí
+        nastavení (0) hlasitost nemění."""
         try:
             limit = int(getattr(self.cfg, "audio_switch_volume", SWITCH_VOLUME))
         except (TypeError, ValueError):

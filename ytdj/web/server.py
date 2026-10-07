@@ -265,10 +265,10 @@ FIELD_META: dict[str, tuple[str, str, tuple[int, int] | None]] = {
         None,
     ),
     "audio_switch_volume": (
-        "Hlasitost po změně výstupu (nejvýš)",
-        "Když se změní zvukový výstup (volbou, odpojením karty, návratem), hlasitost se stáhne "
-        "na tuhle hodnotu, pokud je výš — jiný zesilovač může hrát mnohem hlasitěji. "
-        "0 = hlasitost při změně výstupu neměnit.",
+        "Strop hlasitosti po změně výstupu",
+        "0 = hlasitost se při změně zvukového výstupu nemění (výchozí). Jiná hodnota: když se "
+        "výstup změní (volbou, odpojením karty, návratem), hlasitost se stáhne na ni, pokud je "
+        "výš — jiný zesilovač může hrát mnohem hlasitěji.",
         (0, 100),
     ),
     "queue_target": (

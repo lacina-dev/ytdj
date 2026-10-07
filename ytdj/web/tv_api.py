@@ -1,10 +1,15 @@
-"""Web: vypínač „Klipy na telce“ (POZADAVKY #71).
+"""Web: vypínač „Klipy na telce“ (POZADAVKY #71) a telka sama (#78).
 
     POST /api/tv {"video": true|false, "who": "…", "client": "…"}
         200 {"ok": true, "tv": {on, can, why, mode, …}} | 400 | 404 | 429
+    POST /api/tv {"power": "on"|"off", "who": "…", "client": "…"}
+        200 {"ok": true, "tv": {…, power_ctl: {state: "sending", …}}}
+        409 obrazovka na telce neběží | 429 jiný povel běží / moc brzy po minulém
 
 Přepnout smí kdokoli (jako hlasitost, bez PINu); stav je jeden pro celý
 jukebox a chodí všem ve stavu (`tv` ve /api/status a v proudu událostí).
+Povel telce jen zapíše přání do stavu — vypne / zapne ji proces obrazovky
+(HDMI-CEC) a ten taky řekne, jak to dopadlo.
 """
 
 from __future__ import annotations
@@ -48,7 +53,10 @@ def routes(srv: "WebServer") -> list[Route]:
             data = await srv._body(request)
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
-        if not isinstance(data.get("video"), bool):
+        power = data.get("power")
+        if power is not None and power not in ("on", "off"):
+            return JSONResponse({"error": "Chybí power: on/off."}, status_code=400)
+        if power is None and not isinstance(data.get("video"), bool):
             return JSONResponse({"error": "Chybí video: true/false."}, status_code=400)
         who_info = _client(request)
         now = time.monotonic()
@@ -66,6 +74,14 @@ def routes(srv: "WebServer") -> list[Route]:
                 who = wq.name_for(data.get("client"), raw) or raw
             except Exception:
                 who = raw
+        if power is not None:
+            ok, why = tv.power_ask(power, who, who_info)
+            if not ok:
+                busy = "neběží" not in why
+                return JSONResponse({"error": why, "tv": tv.public()},
+                                    status_code=429 if busy else 409)
+            srv.poke()
+            return JSONResponse({"ok": True, "tv": tv.public()})
         state = await tv.set(data["video"], who, who_info)
         srv.poke()
         return JSONResponse({"ok": True, "tv": state})

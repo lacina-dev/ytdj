@@ -121,6 +121,10 @@ se ztlumí a po pár minutách zbude jen tmavý spořič s hodinami. Správce m�
 zapnout i vypínání telky: když se nehraje, jukebox ji vypne a s hudbou zase
 zapne — jen když ukazuje jukebox, takže nikomu nevypne to, na co se dívá.
 
+Telku jde vypnout a zapnout i ručně z webu, pod vypínačem Klipy na telce:
+řádek říká, jestli je telka zapnutá, a tlačítko ji vypne nebo zapne. Smí to
+kdokoli. Co vypne člověk (tlačítkem nebo ovladačem), to hudba sama nezapne.
+
 ## Web
 
 Web vidí všichni stejně a živě — co hraje, co bude dál a čí přání čekají.
@@ -202,6 +206,7 @@ jukeboxu a restart chtějí PIN správce, který je na displeji na obrazovce Sí
 - **F-TV-13** Obrazovka na telce se pořád pomalu posouvá a stálé části si mění strany — šetří to panel
 - **F-TV-14** Když se nehraje, telka se ztlumí a pak ukáže jen tmavý spořič s hodinami
 - **F-TV-15** Jukebox umí telku vypnout, když se nehraje, a s hudbou ji zapnout — jen když ukazuje jukebox
+- **F-TV-17** Telku vypnutou z webu nebo ovladačem hudba sama nezapne — jen tlačítko nebo ovladač
 - **F-TV-09** Klip na telce se pustí jen u skladby, která sama je oficiální klip — písnička se za klip nezaměňuje
 - **F-TV-11** Klip se sám vypne, když je jukebox horký, dochází paměť nebo by lupal zvuk
 - **F-HLAS-05** Hlasitost si jukebox pamatuje i přes restart

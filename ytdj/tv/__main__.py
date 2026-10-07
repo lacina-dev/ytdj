@@ -90,11 +90,14 @@ def main(argv: list[str] | None = None) -> int:
     if director is not None:
         # Vypínání telky, když se nehraje (HDMI-CEC) — řídí se nastavením jukeboxu,
         # které sem chodí ve stavu; samo od sebe nic neposílá.
-        from .cec import Cec, TvPower
+        from .cec import Cec, Listener, TvPower
 
         logs = os.environ.get("LOGS_DIRECTORY", "").split(":")[0]
-        power = TvPower(Cec(), emit=emit,
-                        state_file=os.path.join(logs, "cec-state.json") if logs else None)
+        cec = Cec()
+        # co telka ukazuje, se pozná poslechem sběrnice (dotaz nefunguje, viz cec.py)
+        power = TvPower(cec, emit=emit,
+                        state_file=os.path.join(logs, "cec-state.json") if logs else None,
+                        listener=Listener(cec.listen_command, answer=cec.answer))
     app = TvApp(open_screen, args.url, args.address, director=director,
                 web_name=str(cfg.get("web_name") or ""), power=power)
     signal.signal(signal.SIGTERM, lambda *_: app.shutdown())

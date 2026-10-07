@@ -738,5 +738,150 @@ class Web(unittest.TestCase):
         self.assertIn('DATA_DIR / "tv-video.json"', main)
 
 
+class TvPowerWeb(unittest.TestCase):
+    """Telka z webu (POZADAVKY #78): stav telky a tlačítka Vypnout / Zapnout."""
+
+    ON = {"can": True, "why": "", "mode": "screen", "blocked": "", "power": "on",
+          "power_tv": "on", "power_by": "", "power_route": "ours"}
+    srv, req = Web.srv, Web.req
+
+    async def ask(self, route, action, ip="10.0.0.7"):
+        resp = await route.endpoint(self.req({"power": action, "who": "x", "client": "c1"}, ip=ip))
+        return resp.status_code, json.loads(resp.body)
+
+    async def read(self, rig):
+        rig.tv._report_mono = -1e9
+        await rig.tv.tick()
+
+    def test_anyone_asks_without_a_pin_and_the_tv_process_gets_the_request(self):
+        async def go():
+            with Rig(tv=self.ON) as rig:
+                await self.read(rig)
+                p = rig.tv.public()
+                self.assertEqual((p["power_tv"], p["power_runs"], p["power_request"], p["power_ctl"]),
+                                 ("on", True, None, None))
+                srv, poked = self.srv(rig, SimpleNamespace(name_for=lambda cid, raw: "Kolega"))
+                route = tv_api.routes(srv)[0]
+                code, data = await self.ask(route, "off")
+                self.assertEqual(code, 200)
+                self.assertTrue(poked)  # stav jde hned všem — i procesu na telce
+                tv = data["tv"]
+                self.assertEqual(tv["power_request"]["action"], "off")
+                self.assertIsInstance(tv["power_request"]["id"], int)
+                self.assertEqual(tv["power_ctl"], {"state": "sending", "action": "off",
+                                                   "who": "Kolega", "note": ""})
+                ev = [f for k, f in rig.events if k == "tv.power_ask"]
+                self.assertEqual(len(ev), 1)
+                self.assertEqual((ev[0]["action"], ev[0]["who"], ev[0]["tv"], ev[0]["ip"]),
+                                 ("off", "Kolega", "on", "10.0.0.7"))
+                # nesmysl místo on/off
+                self.assertEqual((await self.ask(route, "reboot"))[0], 400)
+                # jukebox telku neovládá sám — jen předá přání (viz test péče o telku)
+                text = (ROOT / "ytdj" / "tvvideo.py").read_text(encoding="utf-8")
+                self.assertNotIn("cec-ctl", text)
+            # obrazovka na telce neběží (nebo dlouho mlčí): řekne to a nic neslibuje
+            for rig_kw, stale in (({"tv": False}, False), ({"tv": self.ON}, True)):
+                with Rig(**rig_kw) as rig:
+                    await self.read(rig)
+                    if stale:
+                        rig.tv._report_at -= tvvideo.TV_STATUS_FRESH + 10
+                    srv, _ = self.srv(rig)
+                    code, data = await self.ask(tv_api.routes(srv)[0], "on")
+                    self.assertEqual(code, 409)
+                    self.assertIn("neběží", data["error"])
+                    p = rig.tv.public()
+                    self.assertEqual((p["power_tv"], p["power_runs"], p["power_request"]),
+                                     ("", False, None))
+        run(go())
+
+    def test_one_at_a_time_ten_seconds_apart_and_the_result_comes_from_the_tv(self):
+        async def go():
+            with Rig(tv=self.ON) as rig:
+                await self.read(rig)
+                srv, _ = self.srv(rig)
+                route = tv_api.routes(srv)[0]
+                code, data = await self.ask(route, "off")
+                rid = data["tv"]["power_request"]["id"]
+                # dokud telka nepotvrdí, další povel nejde — ani od někoho jiného
+                code, data = await self.ask(route, "on", ip="10.0.0.99")
+                self.assertEqual(code, 429)
+                self.assertIn("už jeden povel", data["error"])
+                await self.read(rig)
+                self.assertEqual(rig.tv.public()["power_ctl"]["state"], "sending")  # nic nepředstírá
+                # proces na telce: vypnuto a potvrzeno stavem telky
+                rig.tv_says({**self.ON, "power_tv": "standby", "power_by": "people",
+                             "power_done_id": rid, "power_done_action": "off",
+                             "power_done_ok": True, "power_done_note": "Telka je vypnutá."})
+                changes = rig.changes
+                await self.read(rig)
+                p = rig.tv.public()
+                self.assertGreater(rig.changes, changes)  # web se to dozví hned
+                self.assertEqual((p["power_tv"], p["power_by"], p["power_request"]),
+                                 ("standby", "people", None))
+                self.assertEqual(p["power_ctl"], {"state": "ok", "action": "off", "who": "x",
+                                                  "note": "Telka je vypnutá."})
+                ev = [f for k, f in rig.events if k == "tv.power_result"]
+                self.assertEqual([(e["action"], e["ok"], e["who"]) for e in ev], [("off", True, "x")])
+                # hned další povel: ještě ne (10 s mezi povely pro celý jukebox)
+                code, data = await self.ask(route, "on", ip="10.0.0.99")
+                self.assertEqual(code, 429)
+                self.assertIn("počkej", data["error"])
+                rig.tv._power["at"] -= tvvideo.POWER_GAP + 1
+                code, data = await self.ask(route, "on", ip="10.0.0.99")
+                self.assertEqual(code, 200)
+                self.assertGreater(data["tv"]["power_request"]["id"], rid)  # čísla jen rostou
+                # starý výsledek jiného povelu se za tenhle nevydává
+                await self.read(rig)
+                self.assertEqual(rig.tv.public()["power_ctl"]["state"], "sending")
+                self.assertGreaterEqual(tvvideo.POWER_GAP, 10)
+        run(go())
+
+    def test_no_confirmation_is_said_honestly_and_the_result_fades(self):
+        async def go():
+            with Rig(tv=self.ON) as rig:
+                await self.read(rig)
+                srv, _ = self.srv(rig)
+                route = tv_api.routes(srv)[0]
+                code, data = await self.ask(route, "off")
+                rid = data["tv"]["power_request"]["id"]
+                # telka povel přijala, ale nevypnula se: řekne to proces na telce
+                rig.tv_says({**self.ON, "power_done_id": rid, "power_done_action": "off",
+                             "power_done_ok": False, "power_done_note": "Telka povel nepotvrdila."})
+                await self.read(rig)
+                p = rig.tv.public()
+                self.assertEqual((p["power_ctl"]["state"], p["power_ctl"]["note"], p["power_tv"]),
+                                 ("failed", "Telka povel nepotvrdila.", "on"))
+                rig.tv._power["end"] -= tvvideo.POWER_SHOW + 1  # po chvíli hláška zmizí
+                await self.read(rig)
+                self.assertIsNone(rig.tv.public()["power_ctl"])
+                # proces na telce se neozval vůbec: po minutě to web řekne sám
+                code, data = await self.ask(route, "on")
+                self.assertEqual(code, 200)
+                await self.read(rig)
+                self.assertEqual(rig.tv.public()["power_ctl"]["state"], "sending")
+                rig.tv._power["at"] -= tvvideo.POWER_WAIT + 1
+                await self.read(rig)
+                p = rig.tv.public()
+                self.assertEqual(p["power_ctl"]["state"], "failed")
+                self.assertIn("nepotvrdila", p["power_ctl"]["note"])
+                self.assertIsNone(p["power_request"])  # a povel už na telku nečeká
+                ev = [f for k, f in rig.events if k == "tv.power_result"]
+                self.assertEqual([e["ok"] for e in ev], [False, False])
+        run(go())
+
+    def test_page_has_the_tv_row_with_state_and_buttons(self):
+        page = (ROOT / "ytdj" / "web" / "static" / "index.html").read_text(encoding="utf-8")
+        for piece in ('id="tvPowRow"', 'id="tvPowBtn"', "Vypnout telku", "Zapnout telku",
+                      "Telka je zapnutá", "Telka je vypnutá", "Telka neodpovídá na HDMI-CEC",
+                      "Zapni na ní Anynet+", 'postJSON("/api/tv", { power: act',
+                      "el.tvPowBtn.disabled = sending", "Posílám povel",
+                      "Hudba ji sama nezapne"):
+            self.assertIn(piece, page, piece)
+        # PIN správce na tom není (smí kdokoli)
+        self.assertNotIn("_admin_only", (ROOT / "ytdj" / "web" / "tv_api.py").read_text())
+        helppage = (ROOT / "ytdj" / "web" / "static" / "napoveda.html").read_text(encoding="utf-8")
+        self.assertIn("Vypnout telku", helppage)
+
+
 if __name__ == "__main__":
     unittest.main()

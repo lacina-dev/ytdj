@@ -218,16 +218,47 @@ through `cec-ctl` (package `v4l-utils`); `ytdj-tv` has access through the group 
 
 The rules are deliberately polite (the TV belongs to people):
 
-- standby is sent only when the TV says it is on AND its active source is the jukebox; the
-  jukebox becomes the active source by saying so once when music starts and no other device is
-  being shown (`cec-ctl --active-source`);
+- standby is sent only when the TV says it is on AND the jukebox knows the TV shows it; the
+  jukebox becomes the active source by saying so once when music starts and no other device
+  claims to be shown (`cec-ctl --active-source`);
 - the TV is woken (`--image-view-on` + active source) only if the jukebox put it to sleep; a TV
-  switched off by its remote stays off, a TV somebody switched on is left as they set it;
+  switched off by its remote or from the web stays off, a TV somebody switched on is left as
+  they set it;
 - one attempt and one retry per action, at least a minute between actions, ten minutes of
   silence after a failure; a TV that does not answer is asked again after 30 minutes and the
-  status says so („Telka na HDMI-CEC neodpovídá…“).
+  status says so („Telka na HDMI-CEC neodpovídá…“). The power state is asked for at most every
+  two minutes (the web's TV row shows it).
 
-Look: `grep -a '"tv.cec' /var/log/ytdj-tv/events.jsonl | tail`,
+**How it knows what the TV shows.** Asking does not work: once the jukebox has announced
+itself, it IS the active source, and `--request-active-source` is answered by the active
+source only — nobody answers (first real test, 7 Oct 20:49: standby was refused for ever as
+"not our picture"; standby and wake sent by hand at 20:52 worked). So `ytdj-tv` listens:
+one long-running child, `stdbuf -oL cec-ctl -d /dev/cec0 -s --wait-for-msgs --monitor-time …`
+(works as the ordinary user; `--monitor` would need root), and what the TV broadcasts moves
+the belief `route`: `SET_STREAM_PATH`, `ROUTING_CHANGE` (its new address) and `ACTIVE_SOURCE`
+with our address (3.0.0.0) → ours, with any other → other; the TV's `STANDBY` that we did
+not cause → switched off by people. Our own successful announcement or wake → ours. A dead
+listener (restarted after 5 s, doubling up to 5 min), an unplugged cable or a restart of the
+service → unknown, and with an unknown route nothing is sent (the status says „nevím, co
+zrovna ukazuje“; one announcement when music starts settles it). Seen on this TV on 7 Oct:
+`STANDBY` broadcast when it went off, `SET_STREAM_PATH 3.0.0.0` when it came on; the lines
+for switching to another input were not captured yet.
+
+With a listener attached the kernel no longer refuses requests sent straight to us, so the
+listener answers them itself: `GIVE_DEVICE_POWER_STATUS` → "on", requests we do not serve
+(`GIVE_DECK_STATUS`, …) → Feature Abort, as the kernel did before.
+
+**From the web (anybody, no PIN).** The main page has a TV row: the TV's real power state and
+„Vypnout telku“ / „Zapnout telku“. The jukebox only puts the request into its status
+(`tv.power_request`); `ytdj-tv` reads it, sends standby or image-view-on + active source, asks
+the TV every 4 s whether it did it (up to 40 s) and reports the result through
+`/run/ytdj-tv/status.json`. Off from the web counts as a person's decision (music will not
+wake it; remembered in `/var/log/ytdj-tv/cec-state.json` as `people_off`); on from the web
+makes the TV the jukebox's to manage again.
+
+Look: `grep -a '"tv.cec' /var/log/ytdj-tv/events.jsonl | tail` (`tv.cec` = what was sent or
+why not, `tv.cec_route` = what it believes the TV shows and why, `tv.cec_state`),
+`grep -a '"tv.power_' ~/.local/share/ytdj/events.jsonl | tail` (who pressed what on the web),
 `cec-ctl -d /dev/cec0 -s --to 0 --give-device-power-status`.
 Off: untick the setting on the web (a TV the jukebox put to sleep is still woken once). If the
 TV sleeps and should not: `cec-ctl -d /dev/cec0 -s --to 0 --image-view-on`.

@@ -281,6 +281,17 @@
       "body": "„Kolegové se bojí o naši LCD telku. Koukni, co je na tom HDMI připojené, a zjisti, jestli je to na tomhle typu panelu problém; pokud ano, aplikuj nějaké doporučené opatření, které se v těchto případech používá.“\n\nPOZADAVKY #77.",
       "resolution": "Na HDMI je padesátipalcová telka Samsung z roku 2016 s LCD panelem a LED podsvícením. Takový panel se „nevypálí“ jako OLED nebo plazma, ale stálý jasný obraz mnoho hodin denně na něm může nechat otisk (obvykle dočasný, při dlouhodobém zatížení i trvalejší) a výrobce před stálým obrazem v návodech varuje — obava je tedy na místě, i když riziko je menší než u OLED. Jukebox proto nově: obraz každou minutu o kousek posune a během dne obejde desítky bodů, stálé části (název, hodiny, adresa s QR kódem) si po půlhodině mění strany, stálé prvky jsou tlumené a QR kód je šedý místo bílého, po pár minutách bez hudby se obrazovka ztlumí a pak ji vystřídá skoro černý spořič s malými hodinami, a pozastavený klip na obraze nezůstane. Navíc umí telku úplně vypnout, když se nehraje, a s hudbou ji zase zapnout — to je nejúčinnější a šetří i podsvícení; zapíná se v nastavení jukeboxu a jukebox přitom nikomu telku nebere (když se díváte na něco jiného, nechá ji být). Čeká na nasazení a večerní zkoušku vypínání.",
       "resolved": "2026-10-07"
+    },
+    {
+      "key": "pozadavek-78",
+      "kind": "napad",
+      "state": "nasazeni",
+      "who": "vlastník",
+      "created": "2026-10-07",
+      "title": "Vypnout a zapnout telku z webu",
+      "body": "„Udělej to ovládání telky i do web UI.“\n\nPOZADAVKY #78.",
+      "resolution": "Na hlavní stránce je pod vypínačem Klipy na telce nový řádek: píše, jestli je telka zapnutá, vypnutá, nebo jestli jukeboxu neodpovídá (pak je na ní potřeba zapnout Anynet+), a má tlačítko Vypnout telku / Zapnout telku. Zmáčknout ho smí kdokoli. Telka odpoví za pár vteřin a web napíše, jak to dopadlo — když se to nepovede, řekne to. Zapnutím se telka přepne na jukebox. Telku, kterou někdo vypnul tlačítkem nebo ovladačem, hudba sama nezapne; zapne ji zase tlačítko nebo ovladač. V kódu a otestováno; čeká na nasazení.",
+      "resolved": "2026-10-07"
     }
   ]
 }

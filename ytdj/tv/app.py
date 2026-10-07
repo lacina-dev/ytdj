@@ -213,7 +213,9 @@ class TvApp:
             emit("tv.cec_error", error=f"{type(exc).__name__}: {exc}"[:160])
             return
         if self.director is not None:
-            self.director.extra = {"power": self.power.state, "power_note": note}
+            report = getattr(self.power, "report", None)
+            self.director.extra = report() if report else {"power": self.power.state,
+                                                           "power_note": note}
 
     def video_step(self) -> bool:
         """Lets the director start, steer or stop the clip; True while it shows
@@ -244,6 +246,8 @@ class TvApp:
         playing = (not offline and isinstance(state, dict) and isinstance(state.get("current"), dict)
                    and not state.get("paused"))
         wait = min(to_minute, float(PROGRESS_STEP)) if playing else to_minute
+        if self.power is not None and getattr(self.power, "pending", False):
+            return 2.0  # a button on the web waits for the TV's answer
         # with the director the status file for the web's switch is kept fresh
         return min(wait, 30.0) if self.director is not None else wait
 
@@ -303,5 +307,8 @@ class TvApp:
             self.wake.clear()
 
     def shutdown(self) -> None:
+        listener = getattr(self.power, "listener", None)
+        if listener is not None:
+            listener.shutdown()
         self.stop.set()
         self.wake.set()

@@ -56,6 +56,10 @@ REASONS = {
 FORMAT = "bestvideo[vcodec^=avc1][height<=720][protocol^=http]"
 TV_STATUS = Path(os.environ.get("YTDJ_TV_STATUS", "/run/ytdj-tv/status.json"))
 TV_STATUS_FRESH = 150.0  # s — starší hlášení = proces na telce neběží (píše nejdéle po 30 s)
+# Telka z webu (POZADAVKY #78): povel si proces obrazovky přečte ve stavu a provede ho
+POWER_GAP = 10.0  # s mezi dvěma povely — pro celý jukebox, ne pro jednoho člověka
+POWER_WAIT = 60.0  # s — déle na potvrzení od telky nečekáme
+POWER_SHOW = 45.0  # s — jak dlouho je výsledek vidět na webu
 RESOLVE_TIMEOUT = 120.0  # s — yt-dlp na Pi studeně ~19 s; s nejnižší prioritou déle
 RESOLVE_FAIL_KEEP = 30 * 60.0  # s — nepovedené hledání obrazu se hned nezkouší znovu
 EXPIRE_MARGIN = 10 * 60.0  # s — adresa, které zbývá míň, se hledá znovu
@@ -182,6 +186,7 @@ class TvVideo:
         self.at = 0.0
         self.loaded = False
         self.report: dict = {}  # co o sobě řekl proces na telce
+        self._power: dict | None = None  # poslední povel telce z webu (vypnout / zapnout)
         self._report_at = 0.0
         self.kinds: dict[str, str] = {}  # videoId → druh (OMV / ATV / UGC / "")
         self._streams: dict[str, dict] = {}  # videoId → připravený proud
@@ -233,6 +238,73 @@ class TvVideo:
             return False, str(r.get("why") or "Telka klipy neumí.")[:160]
         return True, ""
 
+    # ---- telka z webu: vypnout / zapnout ----
+
+    def _tv_runs(self) -> bool:
+        return bool(self.report) and time.time() - self._report_at <= TV_STATUS_FRESH
+
+    def power_ask(self, action: str, who: str = "", client: dict | None = None
+                  ) -> tuple[bool, str]:
+        """Někdo na webu chce telku vypnout / zapnout. Smí kdokoli; naráz jeden
+        povel a mezi dvěma aspoň POWER_GAP. Vrací (přijato, proč ne)."""
+        now = time.time()
+        if action not in ("on", "off"):
+            return False, "Neznámý povel."
+        if not self._tv_runs():
+            return False, "Obrazovka na telce neběží — telku odsud ovládat nejde."
+        p = self._power
+        if p and p["state"] == "sending":
+            return False, "Telce už jeden povel posílám — chvilku počkej."
+        if p and now - p["at"] < POWER_GAP:
+            return False, "Chvilku počkej — mezi dvěma povely telce musí být pár vteřin."
+        self._power = {"id": int(now * 1000), "action": action, "who": (who or "")[:40],
+                       "at": now, "end": now, "state": "sending", "note": ""}
+        telemetry.event("tv.power_ask", action=action, who=self._power["who"] or None,
+                        tv=self.report.get("power_tv") or None,
+                        route=self.report.get("power_route") or None, **(client or {}))
+        self.on_change()
+        return True, ""
+
+    def _power_tick(self) -> None:
+        """Jak povel dopadl (řekne proces na telce), nebo že se nedočkal."""
+        p = self._power
+        if not p:
+            return
+        now = time.time()
+        if p["state"] != "sending":
+            if now - p["end"] > POWER_SHOW:
+                self._power = None
+                self.on_change()
+            return
+        r = self.report
+        if r.get("power_done_id") == p["id"]:
+            p.update(state="ok" if r.get("power_done_ok") is True else "failed",
+                     note=str(r.get("power_done_note") or "")[:200], end=now)
+        elif now - p["at"] > POWER_WAIT:
+            p.update(state="failed", end=now,
+                     note="Telka povel nepotvrdila — obrazovka na telce se neozvala.")
+        else:
+            return
+        telemetry.event("tv.power_result", action=p["action"], who=p["who"] or None,
+                        ok=p["state"] == "ok", note=p["note"][:120] or None,
+                        took_s=round(now - p["at"], 1))
+        self.on_change()
+
+    def _power_public(self) -> dict:
+        runs = self._tv_runs()
+        r = self.report if runs else {}
+        p = self._power
+        return {
+            # skutečný stav telky: "on" | "standby" | "none" (neodpovídá na CEC) | "" (neví se)
+            "power_tv": str(r.get("power_tv") or ""), "power_by": str(r.get("power_by") or ""),
+            "power_runs": runs,
+            # povel pro proces na telce (jen dokud se čeká) a jeho stav pro web
+            "power_request": {"id": p["id"], "action": p["action"]}
+            if p and p["state"] == "sending" else None,
+            "power_ctl": {"state": p["state"], "action": p["action"], "who": p["who"],
+                          "note": p["note"]} if p else None,
+        }
+
     def _read_report(self) -> tuple[dict, float]:
         try:
             at = self.tv_status.stat().st_mtime
@@ -261,6 +333,7 @@ class TvVideo:
                         "minutes": int(getattr(self.cfg, "tv_standby_minutes", 10) or 10)},
             "power": str(self.report.get("power") or ""),
             "power_note": str(self.report.get("power_note") or "")[:200],
+            **self._power_public(),
         }
 
     def _why_no_picture(self, can: bool, why: str, report: dict) -> dict:
@@ -421,12 +494,15 @@ class TvVideo:
 
     async def tick(self) -> None:
         """Jeden krok: stav telky, druh hrající a další skladby, obraz dopředu."""
-        if time.monotonic() - getattr(self, "_report_mono", -1e9) >= 5.0:
+        # když se čeká na potvrzení povelu z webu, čte se hlášení telky častěji
+        waiting = self._power is not None and self._power["state"] == "sending"
+        if time.monotonic() - getattr(self, "_report_mono", -1e9) >= (1.0 if waiting else 5.0):
             self._report_mono = time.monotonic()
             report, at = await asyncio.to_thread(self._read_report)
             if (report, at) != (self.report, self._report_at):
                 self.report, self._report_at = report, at
                 self.on_change()
+        self._power_tick()
         if not self.enabled or not self.can()[0]:
             if self.video or self.pending:
                 self.video, self.pending = None, False

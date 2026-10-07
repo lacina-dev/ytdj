@@ -284,6 +284,13 @@
   .tvbtn[aria-pressed="true"] { border-color: var(--accent); color: var(--accent-text); }
   .tvbtn:disabled { opacity: .55; cursor: default; }
   .tvnote { color: var(--text-dim); flex: 1 1 12em; }
+  /* telka sama: skutečný stav a Vypnout / Zapnout (POZADAVKY #78) */
+  .tvpow { border-top: 0; margin-top: 8px; padding-top: 0; }
+  .tvstate { font-weight: 600; flex: 0 1 auto; min-width: 0; }
+  .tvstate::before { content: ""; display: inline-block; width: .6em; height: .6em; border-radius: 50%;
+                     margin-right: .5em; background: var(--text-dim); opacity: .6; }
+  .tvstate[data-st="on"]::before { background: var(--accent); opacity: 1; }
+  .tvstate[data-st="none"]::before { background: var(--warn); opacity: 1; }
 
   input[type=range] { -webkit-appearance: none; appearance: none; flex: 1; min-width: 0; height: 30px;
                       background: transparent; margin: 0; }
@@ -732,6 +739,12 @@
                   title="Když hraje skladba, která je sama oficiální klip, pustí se na telce její obraz (bez zvuku). Platí pro všechny.">Klipy na telce: vypnuto</button>
           <span class="tvnote" id="tvNote" aria-live="polite"></span>
         </div>
+        <div class="tvrow tvpow" id="tvPowRow" hidden>
+          <span class="tvstate" id="tvPowState"></span>
+          <button class="tvbtn" id="tvPowBtn" type="button"
+                  title="Vypne nebo zapne telku u jukeboxu (přes HDMI). Smí kdokoli.">Vypnout telku</button>
+          <span class="tvnote" id="tvPowNote" aria-live="polite"></span>
+        </div>
       </section>
 
       <section class="ask card" aria-labelledby="askH">
@@ -1023,6 +1036,7 @@
     btnPlay: $("#btnPlay"), icoPlay: $("#icoPlay"), icoPause: $("#icoPause"), btnNext: $("#btnNext"),
     vol: $("#vol"), volOut: $("#volOut"),
     tvRow: $("#tvRow"), tvBtn: $("#tvBtn"), tvNote: $("#tvNote"),
+    tvPowRow: $("#tvPowRow"), tvPowState: $("#tvPowState"), tvPowBtn: $("#tvPowBtn"), tvPowNote: $("#tvPowNote"),
     volBox: $("#volBox"), btnMute: $("#btnMute"), icoVol: $("#icoVol"), icoMute: $("#icoMute"),
     prompt: $("#prompt"), btnSend: $("#btnSend"), playNext: $("#playNext"),
     chips: $("#chips"), reply: $("#reply"),
@@ -1806,6 +1820,7 @@
   // Když telka klipy neumí (není připojená, chybí dekodér), řekne to a nejde zapnout.
   function showTv(tv) {
     setHidden(el.tvRow, !tv);
+    showTvPower(tv);
     if (!tv) return;
     if (nowMs() < (S.tvHold || 0)) return;  // právě jsem přepnul — starý stav to nevrátí
     var on = !!tv.on;
@@ -1820,9 +1835,56 @@
     else if (tv.mode === "video") note = "Na telce běží klip." + (tv.by ? " Zapnul(a) " + tv.by + "." : "");
     else if (tv.pending) note = "Tahle skladba je klip — obraz se chystá.";
     else note = "Na telce je „právě hraje“." + (tv.by ? " Klipy zapnul(a) " + tv.by + "." : "");
-    if (tv.power_note) note = tv.power_note + (on || !tv.can ? " " + note : "");  // telka vypnutá / proč ne
     el.tvNote.textContent = note;
   }
+
+  // Telka sama: co o sobě říká přes HDMI-CEC (zapnutá / vypnutá / neodpovídá) a tlačítko
+  // Vypnout / Zapnout. Smí kdokoli; naráz jeden povel, výsledek potvrdí až telka.
+  function showTvPower(tv) {
+    var known = !!tv && tv.power_tv !== undefined;
+    setHidden(el.tvPowRow, !known);
+    if (!known) return;
+    var st = tv.power_runs ? (tv.power_tv || "") : "down";
+    var ctl = tv.power_ctl, sending = !!ctl && ctl.state === "sending";
+    var text = "Telka: zjišťuji stav…", act = "";
+    if (st === "down") text = "Telka: obrazovka jukeboxu na ní neběží";
+    else if (st === "on") { text = "Telka je zapnutá"; act = "off"; }
+    else if (st === "standby") { text = "Telka je vypnutá"; act = "on"; }
+    else if (st === "none") { text = "Telka neodpovídá na HDMI-CEC"; act = "on"; }
+    el.tvPowState.textContent = text;
+    el.tvPowState.dataset.st = st;
+    setHidden(el.tvPowBtn, !act);
+    el.tvPowBtn.dataset.act = act;
+    el.tvPowBtn.textContent = act === "off" ? "Vypnout telku" : "Zapnout telku";
+    el.tvPowBtn.disabled = sending || nowMs() < (S.tvPowHold || 0);
+    var note = "";
+    if (sending) note = "Posílám povel (" + (ctl.action === "off" ? "vypnout" : "zapnout") +
+                        (ctl.who ? ", " + ctl.who : "") + ") — telka odpoví za pár vteřin…";
+    else if (ctl) note = (ctl.state === "ok" ? "" : "Nepovedlo se. ") + (ctl.note || "") +
+                         (ctl.who ? " (" + ctl.who + ")" : "");
+    else if (st === "none") note = "Zapni na ní Anynet+ (HDMI-CEC), jinak ji odsud ovládat nejde.";
+    else if (st === "standby") note = tv.power_by === "jukebox"
+      ? "Vypnul ji jukebox, s hudbou se zapne sama."
+      : "Hudba ji sama nezapne — jen tohle tlačítko nebo ovladač.";
+    else if (st === "on") note = tv.power_note ||
+      (tv.standby && tv.standby.on ? "Když se " + tv.standby.minutes + " min nehraje, vypne se sama." : "");
+    el.tvPowNote.textContent = note;
+  }
+  el.tvPowBtn.addEventListener("click", async function () {
+    var act = el.tvPowBtn.dataset.act;
+    if (!act) return;
+    S.tvPowHold = nowMs() + 3000;
+    el.tvPowBtn.disabled = true;
+    el.tvPowNote.textContent = "Posílám povel…";
+    try {
+      var r = await postJSON("/api/tv", { power: act, who: S.nick, client: S.client });
+      if (r && r.tv) showTvPower(r.tv);
+    } catch (e) {
+      S.tvPowHold = 0;
+      if (S.status) showTvPower(S.status.tv);
+      el.tvPowNote.textContent = e.message || "Povel se nepodařilo poslat.";
+    }
+  });
   el.tvBtn.addEventListener("click", async function () {
     var on = el.tvBtn.getAttribute("aria-pressed") !== "true";
     S.tvHold = nowMs() + 1500;

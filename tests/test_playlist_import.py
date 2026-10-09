@@ -1,4 +1,4 @@
-"""Import playlistu do oblíbených kanceláře (POZADAVKY #48, FUNKCE F-HLASY-12…17).
+"""Import playlistu do oblíbených kanceláře (POZADAVKY #48, FUNKCE F-HLASY-12…18, 21…24).
 
 Falešná odpověď ytmusicapi (`get_playlist`), opravdová VoteBook, Store
 (SQLite v dočasném adresáři) a obslužné funkce webu bez sítě.
@@ -591,6 +591,434 @@ class LoopNotBlocked(unittest.TestCase):
         store.close()
 
 
+# --------------------------------------------------------------------------
+# úpravy importu: písničky, vyřadit / vrátit, vlastní název (jukebox #31)
+# --------------------------------------------------------------------------
+
+PL2 = "PLdruhy0000000000000000000000000000"
+
+# schéma importů, jak je má state.db nasazená před 9. 10. 2026 (bez `label`,
+# bez tabulky `import_removed`)
+OLD_SCHEMA = """
+CREATE TABLE votes (
+    target TEXT NOT NULL, key TEXT NOT NULL, voter TEXT NOT NULL, vote INTEGER NOT NULL,
+    who TEXT, video_id TEXT, artist TEXT, title TEXT, ts REAL NOT NULL,
+    PRIMARY KEY (target, key, voter)
+);
+CREATE TABLE imports (
+    id          TEXT PRIMARY KEY,
+    client      TEXT NOT NULL,
+    who         TEXT,
+    playlist_id TEXT NOT NULL,
+    title       TEXT,
+    created     REAL NOT NULL,
+    fetched     REAL NOT NULL,
+    total       INTEGER,
+    skipped     INTEGER,
+    cut         INTEGER
+);
+CREATE TABLE import_items (
+    import_id TEXT NOT NULL,
+    key       TEXT NOT NULL,
+    video_id  TEXT,
+    artist    TEXT,
+    title     TEXT,
+    added     REAL NOT NULL,
+    pos       INTEGER,
+    PRIMARY KEY (import_id, key)
+);
+"""
+
+
+def key_of(prefix: str, i: int) -> str:
+    return V.song_key(f"{prefix} band {i}", f"{prefix} song {i}")
+
+
+def up_of(b: VoteBook, who: str) -> set[str]:
+    """Klíče písniček, kterým ten člověk právě dává 👍."""
+    return {k for (t, k), bs in b.items.items()
+            if t == SONG and who in bs and bs[who].vote > 0}
+
+
+class EditImport(unittest.TestCase):
+    def _one(self, n: int = 5, store=None, **cfg):
+        b = VoteBook(store, Config(**{**DEFAULTS, **cfg}), censor=Censor())
+        yt = FakeYT({PL: playlist("Petrův", songs("a", n))})
+        imp = importer(b, yt, store)
+        run(imp.add(PETR, "Petr", PL))
+        return b, yt, imp, next(iter(b.imports))
+
+    def test_songs_of_an_import_with_state(self):
+        b, yt, imp, iid = self._one()
+        b.cast(SONG, PETR, 1, "Petr", key=key_of("a", 0))  # vlastní 👍
+        b.cast(SONG, PETR, -1, "Petr", key=key_of("a", 1))  # vlastní 👎 platí
+        b.cast(SONG, JANA, -1, "Jana", key=key_of("a", 2))
+        b.cast(SONG, KAREL, -1, "Karel", key=key_of("a", 2))  # 2× 👎 > 1× 👍: vyřazená
+        b.cast(SONG, PETR, 0, "Petr", key=key_of("a", 3))  # stažení novější než import
+        imp.set_song(PETR, iid, key_of("a", 4), True)
+        # tutéž písničku a0 má Petr i v druhém, mladším playlistu
+        yt.lists[PL2] = playlist("Druhý", songs("a", 1) + songs("z", 1))
+        run(imp.add(PETR, "Petr", PL2))
+        out = imp.songs(iid, JANA)  # otevřít smí každý
+        self.assertEqual((out["import"]["mine"], out["import"]["songs"], out["import"]["removed"]),
+                         (False, 4, 1))
+        rows = out["songs"]
+        self.assertEqual([(r["artist"], r["title"]) for r in rows],
+                         [(f"a band {i}", f"a song {i}") for i in range(5)])  # vyřazená poslední
+        self.assertEqual([r["mine"] for r in rows],
+                         ["up", "down", "playlist", "withdrawn", "removed"])
+        self.assertEqual([r["removed"] for r in rows], [False] * 4 + [True])
+        self.assertEqual((rows[2]["status"], rows[2]["up"], rows[2]["down"]), (BANNED, 1, 2))
+        self.assertEqual((rows[0]["status"], rows[1]["status"]), (FAVOURITE, V.DOWN))
+        self.assertEqual(imp.songs(iid, PETR)["import"]["mine"], True)
+        # druhý playlist: a0 nese Petrův vlastní 👍, z0 playlist sám
+        second = next(i.id for i in b.imports.values() if i.playlist_id == PL2)
+        self.assertEqual([r["mine"] for r in imp.songs(second)["songs"]], ["up", "playlist"])
+        # nic z toho neprozradí id prohlížeče
+        self.assertNotIn(PETR, json.dumps(out))
+        with self.assertRaises(ImportRefused) as cm:
+            imp.songs("neni")
+        self.assertEqual(cm.exception.status, 404)
+
+    def test_song_held_by_an_older_playlist_says_which(self):
+        b, yt, imp, iid = self._one(3)
+        yt.lists[PL2] = playlist("Druhý", songs("a", 2) + songs("z", 1))
+        run(imp.add(PETR, "Petr", PL2))
+        second = next(i.id for i in b.imports.values() if i.playlist_id == PL2)
+        rows = imp.songs(second)["songs"]
+        self.assertEqual([(r["mine"], r.get("via")) for r in rows],
+                         [("other", "Petrův"), ("other", "Petrův"), ("playlist", None)])
+
+    def test_remove_one_song_and_put_it_back(self):
+        b, yt, imp, iid = self._one()
+        k1 = key_of("a", 1)
+        self.assertEqual(len(up_of(b, PETR)), 5)
+        with self.assertRaises(ImportRefused) as cm:
+            imp.set_song(JANA, iid, k1, True)  # cizí playlist ne
+        self.assertEqual((cm.exception.status, str(cm.exception)),
+                         (403, "Upravovat jde jen vlastní playlist."))
+        with self.assertRaises(ImportRefused) as cm:
+            imp.set_song(PETR, iid, "nikdo|nic", True)
+        self.assertEqual(cm.exception.status, 404)
+        rep = imp.set_song(PETR, iid, k1, True)
+        self.assertEqual((rep["changed"], rep["song"]["mine"], rep["import"]["songs"],
+                          rep["import"]["removed"], rep["import"]["active"]),
+                         (True, "removed", 4, 1, 4))
+        self.assertIn("‚a band 1 — a song 1‘ už z playlistu ‚Petrův‘ tvůj 👍 nemá", rep["message"])
+        self.assertNotIn((SONG, k1), b.items)  # 👍 je pryč, nezbyl ani prázdný hlas
+        self.assertEqual(up_of(b, PETR), {key_of("a", i) for i in (0, 2, 3, 4)})
+        self.assertNotIn(k1, {b.song_key_for(t) for t in b.favourite_tracks(PETR)})
+        self.assertEqual(imp.listing(PETR)["mine_songs"], 4)
+        # podruhé totéž nic nezmění
+        self.assertEqual(imp.set_song(PETR, iid, k1, True)["changed"], False)
+        # vrátit
+        with self.assertRaises(ImportRefused) as cm:
+            imp.set_song(JANA, iid, k1, False)
+        self.assertEqual(cm.exception.status, 403)
+        rep = imp.set_song(PETR, iid, k1, False)
+        self.assertEqual((rep["changed"], rep["song"]["mine"], rep["import"]["songs"],
+                          rep["import"]["removed"]), (True, "playlist", 5, 0))
+        self.assertIn("je zpátky v playlistu ‚Petrův‘ a má tvůj 👍", rep["message"])
+        self.assertEqual(b.items[(SONG, k1)][PETR].src, iid)
+        # zpátky na svém místě v pořadí playlistu
+        self.assertEqual([r["title"] for r in imp.songs(iid)["songs"]],
+                         [f"a song {i}" for i in range(5)])
+        self.assertEqual(imp.set_song(PETR, iid, k1, False)["changed"], False)
+
+    def test_removal_keeps_own_vote_other_playlist_and_other_people(self):
+        b, yt, imp, iid = self._one()
+        k0, k1, k2, k3 = (key_of("a", i) for i in range(4))
+        b.cast(SONG, PETR, 1, "Petr", key=k0)  # vlastní 👍
+        b.cast(SONG, PETR, -1, "Petr", key=k3)  # vlastní 👎
+        b.cast(SONG, JANA, 1, "Jana", key=k2)  # 👍 kolegyně
+        yt.lists[PL2] = playlist("Druhý", songs("a", 2))  # a0, a1 i v druhém playlistu
+        run(imp.add(PETR, "Petr", PL2))
+        second = next(i.id for i in b.imports.values() if i.playlist_id == PL2)
+        yt.lists["PLjana00000000000000000000000000000"] = playlist("Janin", songs("a", 3))
+        run(imp.add(JANA, "Jana", "PLjana00000000000000000000000000000"))
+        # a0: vlastní 👍 zůstává
+        rep = imp.set_song(PETR, iid, k0, True)
+        self.assertIn("tvůj vlastní 👍 jí zůstal", rep["message"])
+        self.assertEqual((b.items[(SONG, k0)][PETR].vote, b.items[(SONG, k0)][PETR].src), (1, ""))
+        # a1: 👍 dál dává druhý playlist
+        rep = imp.set_song(PETR, iid, k1, True)
+        self.assertIn("dál jí ho ale dává playlist ‚Druhý‘", rep["message"])
+        self.assertEqual(b.items[(SONG, k1)][PETR].src, second)
+        self.assertEqual(len(b.imports[second].items), 2)
+        # a2: Petrův 👍 pryč, Janiny (vlastní i z jejího playlistu) beze změny
+        imp.set_song(PETR, iid, k2, True)
+        self.assertNotIn(PETR, b.items[(SONG, k2)])
+        self.assertEqual((b.items[(SONG, k2)][JANA].vote, b.items[(SONG, k2)][JANA].src), (1, ""))
+        self.assertEqual(b.items[(SONG, k1)][JANA].vote, 1)
+        self.assertEqual(b.tally(SONG, k2).up, 1)
+        # a3: vlastní 👎 zůstává při vyřazení i po vrácení
+        imp.set_song(PETR, iid, k3, True)
+        self.assertEqual(b.items[(SONG, k3)][PETR].vote, -1)
+        rep = imp.set_song(PETR, iid, k3, False)
+        self.assertEqual(b.items[(SONG, k3)][PETR].vote, -1)
+        self.assertIn("platí ale tvůj vlastní 👎", rep["message"])
+        # odebrání celého druhého playlistu vyřazenou a1 nevrátí
+        imp.remove(PETR, second)
+        self.assertNotIn(PETR, b.items.get((SONG, k1), {}))
+
+    def test_put_back_beats_an_older_own_withdrawal(self):
+        b, yt, imp, iid = self._one()
+        k1 = key_of("a", 1)
+        b.cast(SONG, PETR, 0, "Petr", key=k1)  # stáhl si 👍 z playlistu
+        self.assertEqual(b.items[(SONG, k1)][PETR].vote, 0)
+        imp.set_song(PETR, iid, k1, True)
+        rep = imp.set_song(PETR, iid, k1, False)  # vrátil ji výslovně: 👍 zase platí
+        self.assertEqual((rep["song"]["mine"], b.items[(SONG, k1)][PETR].vote), ("playlist", 1))
+
+    def test_removed_song_survives_refresh_restart_and_reappearing(self):
+        d = Path(tempfile.mkdtemp(dir=_TMP))
+        store = Store(d / "state.db", background=True)
+        b, yt, imp, iid = self._one(4, store)
+        k1, k2 = key_of("a", 1), key_of("a", 2)
+        tracks = songs("a", 4)
+        imp.set_song(PETR, iid, k1, True)
+        imp.set_song(PETR, iid, k2, True)
+        imp.set_song(PETR, iid, k2, False)  # a2 zase vrácená
+        # Obnovit: a1 v playlistu pořád je, ale zpátky se nedostane
+        rep = run(imp.refresh(PETR, iid))
+        self.assertEqual((rep["songs"], rep["new"], rep["gone"], rep["kept_out"]), (3, 0, 0, 1))
+        self.assertIn("1 vyřazená zůstává mimo", rep["message"])
+        self.assertNotIn((SONG, k1), b.items)
+        # z YouTube zmizí…
+        yt.lists[PL] = playlist("Petrův", [tracks[0], tracks[3]])
+        rep = run(imp.refresh(PETR, iid))
+        self.assertEqual((rep["songs"], rep["kept_out"]), (2, 0))
+        self.assertIn(k1, b.imports[iid].removed)
+        # …a zase se objeví (jako jiná nahrávka téže písničky): pořád vyřazená
+        again = item("jine0000001", "a song 1 (Remastered 2011)", "a band 1")
+        yt.lists[PL] = playlist("Petrův", [tracks[0], again, tracks[2], tracks[3]])
+        rep = run(imp.refresh(PETR, iid))
+        self.assertEqual((rep["songs"], rep["new"], rep["kept_out"]), (3, 1, 1))
+        self.assertNotIn((SONG, k1), b.items)
+        self.assertEqual(up_of(b, PETR), {key_of("a", i) for i in (0, 2, 3)})
+        # tentýž odkaz vložený znovu = obnovení: taky ne
+        rep = run(imp.add(PETR, "Petr", PL))
+        self.assertEqual((rep["action"], rep["songs"]), ("again", 3))
+        # restart
+        store.flush()
+        b2 = run(VoteBook(store, Config(**DEFAULTS)).aload())
+        self.assertEqual(up_of(b2, PETR), {key_of("a", i) for i in (0, 2, 3)})
+        self.assertEqual(list(b2.imports[iid].removed), [k1])
+        self.assertEqual(b2.imports[iid].removed[k1].title, "a song 1")
+        self.assertEqual([it.title for it in b2.imports[iid].items.values()],
+                         ["a song 0", "a song 2", "a song 3"])
+        # rozjezd DJe čte importy přímo ze Store: vyřazená mezi oblíbenými není
+        meta, items = store.all_imports()
+        self.assertEqual(sorted(r[1] for r in items), sorted(key_of("a", i) for i in (0, 2, 3)))
+        # vrátit po restartu a znovu restart: je zpátky
+        imp2 = importer(b2, yt, store)
+        imp2.set_song(PETR, iid, k1, False)
+        store.flush()
+        b3 = run(VoteBook(store, Config(**DEFAULTS)).aload())
+        self.assertEqual(len(up_of(b3, PETR)), 4)
+        self.assertEqual(b3.imports[iid].removed, {})
+        # odebrání celého playlistu uklidí i vyřazené
+        imp2.set_song(PETR, iid, k1, True)
+        imp2.remove(PETR, iid)
+        store.flush()
+        self.assertEqual((store.all_imports(), store.import_removed_rows()), (([], []), []))
+        store.close()
+
+    def test_custom_name_survives_refresh_and_restart(self):
+        d = Path(tempfile.mkdtemp(dir=_TMP))
+        store = Store(d / "state.db", background=True)
+        b, yt, imp, iid = self._one(3, store)
+        k0 = key_of("a", 0)
+        with self.assertRaises(ImportRefused) as cm:
+            imp.rename(JANA, iid, "Janin")  # cizí ne
+        self.assertEqual((cm.exception.status, str(cm.exception)),
+                         (403, "Přejmenovat jde jen vlastní playlist."))
+        rep = imp.rename(PETR, iid, "  Do   práce \n")
+        self.assertEqual((rep["changed"], rep["import"]["title"], rep["import"]["yt_title"],
+                          rep["import"]["custom"]), (True, "Do práce", "Petrův", True))
+        self.assertIn("‚Petrův‘ se teď jmenuje ‚Do práce‘", rep["message"])
+        # u hlasu „z playlistu ‚Do práce‘" i v přehledu pro DJe
+        self.assertEqual(b.item(SONG, k0)["voters"][0]["playlist"], "Do práce")
+        self.assertIn("‚Do práce‘", b.favourites_overview(PETR))
+        # Obnovit název z YouTube vezme na vědomí, ale vlastní nepřepíše
+        yt.lists[PL] = playlist("Petrův (nový)", songs("a", 3))
+        rep = run(imp.refresh(PETR, iid))
+        self.assertEqual((rep["title"], rep["import"]["title"], rep["import"]["yt_title"]),
+                         ("Do práce", "Do práce", "Petrův (nový)"))
+        self.assertIn("Playlist ‚Do práce‘ obnoven", rep["message"])
+        self.assertEqual(b.item(SONG, k0)["voters"][0]["playlist"], "Do práce")
+        # restart
+        store.flush()
+        b2 = run(VoteBook(store, Config(**DEFAULTS)).aload())
+        self.assertEqual((b2.imports[iid].name, b2.imports[iid].title),
+                         ("Do práce", "Petrův (nový)"))
+        self.assertEqual(b2.item(SONG, k0)["voters"][0]["playlist"], "Do práce")
+        # slušnost, délka, řídicí znaky
+        for bad, why in (("kurva playlist", "neobstál"), ("x" * 61, "nejvýš 60 znaků")):
+            with self.assertRaises(ImportRefused) as cm:
+                imp.rename(PETR, iid, bad)
+            self.assertEqual(cm.exception.status, 400)
+            self.assertIn(why, str(cm.exception))
+        self.assertEqual(imp.rename(PETR, iid, "Rock​\x07 <b>")["import"]["title"], "Rock <b>")
+        # stejný název podruhé nic nemění; prázdný vrací název z YouTube
+        self.assertEqual(imp.rename(PETR, iid, "Rock <b>")["changed"], False)
+        rep = imp.rename(PETR, iid, "")
+        self.assertEqual((rep["import"]["title"], rep["import"]["custom"]), ("Petrův (nový)", False))
+        self.assertEqual(b.item(SONG, k0)["voters"][0]["playlist"], "Petrův (nový)")
+        # název stejný jako na YouTube není vlastní: příští Obnovit ho zase sleduje
+        self.assertEqual(imp.rename(PETR, iid, "Petrův (nový)")["changed"], False)
+        store.flush()
+        b3 = run(VoteBook(store, Config(**DEFAULTS)).aload())
+        self.assertEqual((b3.imports[iid].label, b3.imports[iid].name), ("", "Petrův (nový)"))
+        store.close()
+
+    def test_old_database_migrates_without_loss(self):
+        import sqlite3
+
+        d = Path(tempfile.mkdtemp(dir=_TMP))
+        path = d / "state.db"
+        db = sqlite3.connect(path)
+        db.executescript(OLD_SCHEMA)
+        db.execute("INSERT INTO imports VALUES(?,?,?,?,?,?,?,?,?,?)",
+                   ("imp1", PETR, "Petr", PL, "Petrův", 100.0, 200.0, 5, 1, 0))
+        db.execute("INSERT INTO imports VALUES(?,?,?,?,?,?,?,?,?,?)",
+                   ("imp2", JANA, "Jana", PL2, "Janin", 150.0, 150.0, None, None, None))
+        rows = [("imp1", key_of("a", i), f"a{i:010d}", f"a band {i}", f"a song {i}", 100.0 + i, i)
+                for i in range(4)]
+        rows += [("imp2", key_of("j", i), f"j{i:010d}", f"j band {i}", f"j song {i}", 150.0, i)
+                 for i in range(2)]
+        db.executemany("INSERT INTO import_items VALUES(?,?,?,?,?,?,?)", rows)
+        db.execute("INSERT INTO votes VALUES(?,?,?,?,?,?,?,?,?)",
+                   (SONG, key_of("a", 3), PETR, -1, "Petr", "a0000000003", "a band 3", "a song 3", 300.0))
+        db.commit()
+        db.close()
+
+        store = Store(path, background=True)  # tady proběhne migrace
+        cols = [r[1] for r in store._read("PRAGMA table_info(imports)")]
+        self.assertEqual(cols[:10], ["id", "client", "who", "playlist_id", "title", "created",
+                                     "fetched", "total", "skipped", "cut"])
+        self.assertIn("label", cols)
+        self.assertEqual(store.import_removed_rows(), [])
+        meta, items = store.all_imports()
+        self.assertEqual([m[:10] for m in meta],
+                         [("imp1", PETR, "Petr", PL, "Petrův", 100.0, 200.0, 5, 1, 0),
+                          ("imp2", JANA, "Jana", PL2, "Janin", 150.0, 150.0, 0, 0, 0)])
+        self.assertEqual(sorted(items), sorted(rows))
+        b = run(VoteBook(store, Config(**DEFAULTS)).aload())
+        self.assertEqual({i: (x.name, x.label, len(x.items), len(x.removed))
+                          for i, x in b.imports.items()},
+                         {"imp1": ("Petrův", "", 4, 0), "imp2": ("Janin", "", 2, 0)})
+        self.assertEqual(up_of(b, PETR), {key_of("a", i) for i in range(3)})  # a3: vlastní 👎
+        self.assertEqual(b.items[(SONG, key_of("a", 3))][PETR].vote, -1)
+        self.assertEqual(b.imports["imp1"].items[key_of("a", 2)].added, 102.0)
+        # nové úpravy nad starými daty fungují a přežijí další start
+        imp = importer(b, FakeYT({PL: playlist("Petrův", songs("a", 4))}), store)
+        imp.rename(PETR, "imp1", "Staré dobré")
+        imp.set_song(PETR, "imp1", key_of("a", 0), True)
+        run(imp.refresh(PETR, "imp1"))
+        store.flush()
+        store.close()
+        store = Store(path, background=True)  # druhý start: migrace podruhé nic nerozbije
+        b2 = run(VoteBook(store, Config(**DEFAULTS)).aload())
+        self.assertEqual((b2.imports["imp1"].name, list(b2.imports["imp1"].removed)),
+                         ("Staré dobré", [key_of("a", 0)]))
+        self.assertEqual(up_of(b2, PETR), {key_of("a", 1), key_of("a", 2)})
+        self.assertEqual((b2.imports["imp1"].created, len(b2.imports["imp2"].items)), (100.0, 2))
+        self.assertEqual(up_of(b2, JANA), {key_of("j", 0), key_of("j", 1)})
+        store.close()
+
+    def test_edits_are_small_writes_off_the_loop_and_limited(self):
+        d = Path(tempfile.mkdtemp(dir=_TMP))
+        store = Store(d / "state.db", background=True)
+        b, yt, imp, iid = self._one(200, store)
+        store.flush()
+        writes = []
+        orig_tx = store._run_tx
+
+        def spy_tx(db, statements):
+            writes.append((threading.current_thread().name,
+                           sum(len(p) if isinstance(p, list) else 1 for _s, p in statements)))
+            time.sleep(0.2)  # pomalá SD karta
+            return orig_tx(db, statements)
+
+        store._run_tx = spy_tx  # type: ignore[method-assign]
+
+        async def go():
+            gaps = []
+            stop = asyncio.Event()
+
+            async def tick():
+                last = time.monotonic()
+                while not stop.is_set():
+                    await asyncio.sleep(0.01)
+                    now = time.monotonic()
+                    gaps.append(now - last)
+                    last = now
+
+            ticker = asyncio.create_task(tick())
+            imp.set_song(PETR, iid, key_of("a", 7), True)
+            imp.set_song(PETR, iid, key_of("a", 7), False)
+            imp.rename(PETR, iid, "Dlouhý")
+            imp.songs(iid, PETR)
+            await asyncio.sleep(0.6)
+            stop.set()
+            await ticker
+            return max(gaps)
+
+        worst = run(go())
+        self.assertLess(worst, 0.15, worst)
+        store.flush()
+        # jedna písnička = jedna malá transakce (dva řádky), ne celý playlist znovu
+        self.assertEqual(writes, [("ytdj-store", 2), ("ytdj-store", 2)])
+        store._run_tx = orig_tx  # type: ignore[method-assign]
+        self.assertEqual(store._read("SELECT label FROM imports"), [("Dlouhý",)])
+        self.assertEqual(len(store.all_imports()[1]), 200)
+        # pojistka: 120 úprav za 10 min, pak 429 (už provedené: 3)
+        for i in range(I.EDIT_MAX - 3):
+            imp.set_song(PETR, iid, key_of("a", i), True)
+        with self.assertRaises(ImportRefused) as cm:
+            imp.set_song(PETR, iid, key_of("a", 150), True)
+        self.assertEqual((cm.exception.status, str(cm.exception)),
+                         (429, "Moc úprav najednou — zkus to prosím za pár minut."))
+        with self.assertRaises(ImportRefused) as cm:
+            imp.rename(PETR, iid, "Ještě jinak")
+        self.assertEqual(cm.exception.status, 429)
+        self.assertIn(key_of("a", 150), b.imports[iid].items)
+        self.assertEqual(b.imports[iid].name, "Dlouhý")
+        store.close()
+
+    def test_put_back_respects_the_limit_per_person(self):
+        b, yt, imp, iid = self._one(3, playlist_import_max=3)
+        k0 = key_of("a", 0)
+        imp.set_song(PETR, iid, k0, True)  # uvolní místo…
+        yt.lists[PL2] = playlist("Druhý", songs("z", 1))
+        run(imp.add(PETR, "Petr", PL2))  # …a to zabere jiný playlist
+        with self.assertRaises(ImportRefused) as cm:
+            imp.set_song(PETR, iid, k0, False)
+        self.assertEqual(cm.exception.status, 409)
+        self.assertIn("Z playlistů už máš 3 písniček", str(cm.exception))
+        self.assertIn(k0, b.imports[iid].removed)
+
+    def test_edits_are_logged_without_client_ids(self):
+        from unittest import mock
+
+        b, yt, imp, iid = self._one(3)
+        with mock.patch.object(I.telemetry, "event") as ev:
+            imp.set_song(PETR, iid, key_of("a", 1), True)
+            imp.set_song(PETR, iid, key_of("a", 1), False)
+            imp.rename(PETR, iid, "Do práce")
+        calls = [(c.args[0], c.kwargs) for c in ev.call_args_list]
+        self.assertEqual([(k, f["action"]) for k, f in calls],
+                         [("vote.import_edit", "song_remove"), ("vote.import_edit", "song_restore"),
+                          ("vote.import_edit", "rename")])
+        self.assertEqual((calls[0][1]["song"], calls[0][1]["songs"], calls[0][1]["removed"]),
+                         ("a band 1 — a song 1", 2, 1))
+        self.assertEqual((calls[2][1]["title"], calls[2][1]["custom"]), ("Do práce", True))
+        for _k, f in calls:
+            self.assertEqual(f["voter"], PETR[-6:])  # jen konec id, jako u vote.import
+            self.assertNotIn(PETR, json.dumps(f))
+
+
 class Api(unittest.TestCase):
     def _server(self):
         from test_votes import FakePlayer, request
@@ -667,6 +1095,72 @@ class Api(unittest.TestCase):
             self.assertEqual(lists["counts"]["favourites"], 2)
             self.assertEqual(lists["favourites"][0]["voters"][0]["playlist"], "Janin")
             self.assertEqual(lists["mine"], [])
+
+        tw.run(go())
+
+    def test_songs_are_public_edits_only_for_the_owner(self):
+        async def go():
+            srv, app, h = self._server()
+            add = h[("/api/votes/imports", "POST")]
+            songs_get = h[("/api/votes/imports/{iid}/songs", "GET")]
+            song = h[("/api/votes/imports/{iid}/songs", "POST")]
+            rename = h[("/api/votes/imports/{iid}/rename", "POST")]
+            out = json.loads((await add(self.req({"client": PETR, "url": PL}))).body)
+            iid = out["import"]["id"]
+            k1 = V.song_key("a band 1", "a song 1")
+            # písničky playlistu si otevře každý (i bez přezdívky), id klienta v nich není
+            resp = await songs_get(self.req(query={"client": KAREL}, iid=iid))
+            data = json.loads(resp.body)
+            self.assertEqual((resp.status_code, len(data["songs"]), data["import"]["mine"]),
+                             (200, 4, False))
+            self.assertEqual({r["mine"] for r in data["songs"]}, {"playlist"})
+            self.assertNotIn(PETR.encode(), resp.body)
+            self.assertEqual((await songs_get(self.req(query={}, iid="neni"))).status_code, 404)
+            # upravovat: bez přezdívky ne, cizí ne, bez "removed" ne
+            body = {"client": KAREL, "key": k1, "removed": True}
+            self.assertEqual((await song(self.req(body, iid=iid))).status_code, 403)
+            resp = await song(self.req({**body, "client": JANA}, iid=iid))
+            self.assertEqual((resp.status_code, json.loads(resp.body)["error"]),
+                             (403, "Upravovat jde jen vlastní playlist."))
+            resp = await rename(self.req({"client": JANA, "label": "Janin"}, iid=iid))
+            self.assertEqual(resp.status_code, 403)
+            resp = await song(self.req({"client": PETR, "key": k1}, iid=iid))
+            self.assertEqual(resp.status_code, 400)
+            resp = await song(self.req({**body, "client": PETR, "key": "nikdo|nic"}, iid=iid))
+            self.assertEqual(resp.status_code, 404)
+            self.assertEqual(len(app.votes.imports[iid].items), 4)
+            # vlastní ano: 👍 zmizí, úklid podkresu proběhne jako u hlasu
+            resp = await song(self.req({**body, "client": PETR}, iid=iid))
+            out = json.loads(resp.body)
+            self.assertEqual((resp.status_code, out["song"]["mine"], out["import"]["songs"],
+                              out["import"]["removed"]), (200, "removed", 3, 1))
+            self.assertIn("effect", out)
+            self.assertNotIn(("song", k1), app.votes.items)
+            lists = json.loads((await h[("/api/votes", "GET")](self.req(query={"client": PETR}))).body)
+            self.assertEqual(lists["counts"]["favourites"], 3)
+            data = json.loads((await songs_get(self.req(query={"client": PETR}, iid=iid))).body)
+            self.assertEqual([(r["title"], r["removed"]) for r in data["songs"]][-1],
+                             ("a song 1", True))
+            # vrátit
+            resp = await song(self.req({**body, "client": PETR, "removed": False}, iid=iid))
+            out = json.loads(resp.body)
+            self.assertEqual((resp.status_code, out["song"]["mine"], out["import"]["songs"]),
+                             (200, "playlist", 4))
+            self.assertNotIn("effect", out)
+            # vlastní název: v seznamu playlistů i u hlasu; filtr slov z nastavení
+            resp = await rename(self.req({"client": PETR, "label": "Do práce"}, iid=iid))
+            self.assertEqual((resp.status_code, json.loads(resp.body)["import"]["title"]),
+                             (200, "Do práce"))
+            resp = await rename(self.req({"client": PETR, "label": "hovno"}, iid=iid))
+            self.assertEqual(resp.status_code, 400)
+            lst = json.loads((await h[("/api/votes/imports", "GET")](
+                self.req(query={"client": JANA}))).body)
+            self.assertEqual([(i["title"], i["yt_title"], i["custom"]) for i in lst["imports"]],
+                             [("Do práce", "Petrův", True)])
+            lists = json.loads((await h[("/api/votes", "GET")](self.req(query={"client": JANA}))).body)
+            self.assertEqual(lists["favourites"][0]["voters"][0]["playlist"], "Do práce")
+            # stav webu zůstává malý
+            self.assertNotIn("Do práce", json.dumps(await srv._snapshot()))
 
         tw.run(go())
 

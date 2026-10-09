@@ -92,7 +92,9 @@ oblíbenou písničku. Hlasy řídí podkres; výslovné přání se splní vžd
 jen s poznámkou, kdo skladbu vyřadil.
 
 Své oblíbené nemusíš vypisovat: odkaz na tvůj playlist z YouTube Music dá
-tvůj 👍 každé písničce v něm. Aby jeden velký playlist nepřehlušil kolegy,
+tvůj 👍 každé písničce v něm. Písničku, která se do kanceláře nehodí, z něj
+můžeš vyřadit (a zase vrátit) a playlist si pojmenovat po svém — obnovení
+z YouTube na tom nic nezmění. Aby jeden velký playlist nepřehlušil kolegy,
 berou se oblíbené kanceláře po lidech na střídačku — každý přispěje stejně.
 
 ## Displej

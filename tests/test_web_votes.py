@@ -97,6 +97,32 @@ class Page(unittest.TestCase):
         self.assertIn("(a.down_by || a.by || [])", html)
         self.assertIn('b.artist_status === "favourite"', html)
 
+    def test_page_edits_imported_playlists(self):
+        """Úpravy importu (F-HLASY-21…23): stránka volá API úprav, tlačítka
+        úprav dává jen k vlastnímu playlistu a názvy z YouTube i vlastní
+        název vkládá jen přes esc()."""
+        html = INDEX.read_text()
+        for needle in ('"/songs?client="', '"/songs"', '"/rename"', 'data-imp="songs:',
+                       "removed: !r.removed", "Písničky", "Vyřadit", "Vrátit", "Přejmenovat",
+                       "Vyřazené z playlistu"):
+            self.assertIn(needle, html)
+        # upravovat jen vlastní: tlačítka jen s it.mine / mine
+        self.assertIn("(it.mine ? '<button class=\"ibtn\" type=\"button\" data-imp=\"rename:'", html)
+        self.assertIn('var act = !mine ? ""', html)
+        # nic od YouTube ani od lidí bez esc()
+        for raw in ("esc(r.title)", "esc(r.artist)", 'esc(r.via || "")', "esc(it.title)",
+                    "esc(it.yt_title || it.title)", "esc(it.who)"):
+            self.assertIn(raw, html)
+        body = html[html.index("function impSongRow"):html.index("async function loadImpSongs")]
+        for m in re.finditer(r"\+\s*((?:r|it)\.(?:title|artist|via|who|yt_title|key)\b)", body):
+            self.fail("bez esc(): " + m.group(1))
+        # rozepsaný název nesmaže pravidelné obnovení stránky
+        self.assertIn('if (V.impRename && !force && vel.imp.querySelector(".impren")) return;', html)
+        # nápověda o úpravách ví
+        manual = (INDEX.parent / "napoveda.html").read_text()
+        for needle in ("Vyřadit", "Vrátit", "Přejmenovat", "Obnovit</b> ji nevrátí"):
+            self.assertIn(needle, manual)
+
     def test_artist_thumbs_up_from_history_row(self):
         async def go():
             srv, app, h = make()

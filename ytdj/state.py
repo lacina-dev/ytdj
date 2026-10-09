@@ -91,7 +91,8 @@ CREATE TABLE IF NOT EXISTS imports (
     fetched     REAL NOT NULL,                 -- poslední načtení (Obnovit)
     total       INTEGER,                       -- skladeb v playlistu podle YouTube
     skipped     INTEGER,                       -- nepísničky a nedostupné
-    cut         INTEGER                        -- nad limit playlist_import_max
+    cut         INTEGER,                       -- nad limit playlist_import_max
+    label       TEXT                           -- vlastní název od člověka ('' / NULL = název z YouTube)
 );
 CREATE TABLE IF NOT EXISTS import_items (
     import_id TEXT NOT NULL,
@@ -100,6 +101,20 @@ CREATE TABLE IF NOT EXISTS import_items (
     artist    TEXT,
     title     TEXT,
     added     REAL NOT NULL,                   -- kdy se písnička v importu objevila
+    pos       INTEGER,
+    PRIMARY KEY (import_id, key)
+);
+-- Písničky, které člověk ze svého importu vyřadil (F-HLASY-22): nejsou v
+-- `import_items`, takže jeho 👍 z playlistu nenesou; Obnovit je nevrátí,
+-- ani když z playlistu na YouTube zmizí a zase se objeví. Vrátit = řádek
+-- zpátky do `import_items`.
+CREATE TABLE IF NOT EXISTS import_removed (
+    import_id TEXT NOT NULL,
+    key       TEXT NOT NULL,
+    video_id  TEXT,
+    artist    TEXT,
+    title     TEXT,
+    removed   REAL NOT NULL,                   -- kdy ji člověk vyřadil
     pos       INTEGER,
     PRIMARY KEY (import_id, key)
 );
@@ -204,6 +219,7 @@ class Store:
             self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.executescript(SCHEMA)
         self._migrate_blacklist()
+        self._migrate_imports()
         self._writes: queue.Queue | None = None
         self._writer: threading.Thread | None = None
         self._pool = None  # ThreadPoolExecutor pro aread(), až bude potřeba
@@ -344,20 +360,44 @@ class Store:
 
     def save_import(self, meta: tuple, items: list[tuple]) -> None:
         """Import playlistu (nový i obnovený) celý najednou: `meta` = řádek
-        `imports`, `items` = (key, video_id, artist, title, added, pos)."""
+        `imports` (PlaylistImport.meta), `items` = (key, video_id, artist,
+        title, added, pos). Vyřazené písničky (`import_removed`) nechává být."""
         iid = meta[0]
         self._write_tx([
             ("""INSERT OR REPLACE INTO imports(id,client,who,playlist_id,title,created,fetched,
-                                                total,skipped,cut) VALUES(?,?,?,?,?,?,?,?,?,?)""",
-             tuple(meta)),
+                                                total,skipped,cut,label)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+             (*meta[:10], meta[10] if len(meta) > 10 else "")),
             ("DELETE FROM import_items WHERE import_id=?", (iid,)),
             ("""INSERT INTO import_items(import_id,key,video_id,artist,title,added,pos)
                 VALUES(?,?,?,?,?,?,?)""", [(iid, *it) for it in items]),
         ])
 
+    def remove_import_song(self, import_id: str, row: tuple, removed: float) -> None:
+        """Písnička z importu mezi vyřazené (jedna transakce, dva řádky):
+        `row` = (key, video_id, artist, title, added, pos)."""
+        key, vid, artist, title, _added, pos = row
+        self._write_tx([
+            ("DELETE FROM import_items WHERE import_id=? AND key=?", (import_id, key)),
+            ("""INSERT OR REPLACE INTO import_removed(import_id,key,video_id,artist,title,removed,pos)
+                VALUES(?,?,?,?,?,?,?)""", (import_id, key, vid, artist, title, removed, pos)),
+        ])
+
+    def restore_import_song(self, import_id: str, row: tuple) -> None:
+        """Vyřazená písnička zpátky do importu: `row` jako u `save_import`."""
+        self._write_tx([
+            ("DELETE FROM import_removed WHERE import_id=? AND key=?", (import_id, row[0])),
+            ("""INSERT OR REPLACE INTO import_items(import_id,key,video_id,artist,title,added,pos)
+                VALUES(?,?,?,?,?,?,?)""", (import_id, *row)),
+        ])
+
+    def rename_import(self, import_id: str, label: str) -> None:
+        self._write("UPDATE imports SET label=? WHERE id=?", (label, import_id))
+
     def delete_import(self, import_id: str) -> None:
         self._write_tx([
             ("DELETE FROM import_items WHERE import_id=?", (import_id,)),
+            ("DELETE FROM import_removed WHERE import_id=?", (import_id,)),
             ("DELETE FROM imports WHERE id=?", (import_id,)),
         ])
 
@@ -419,6 +459,15 @@ class Store:
                     "UPDATE blacklist SET until = ts + ? WHERE until IS NULL",
                     (BLACKLIST_DAYS * 86400,),
                 )
+
+    def _migrate_imports(self) -> None:
+        """Sloupec `label` (vlastní název importu, F-HLASY-23) do `imports`
+        založené před 9. 10. 2026. Řádky se nemění — bez vlastního názvu
+        platí dál název z YouTube. Tabulku `import_removed` zakládá SCHEMA."""
+        with self._lock, contextlib.suppress(sqlite3.Error):
+            cols = {r[1] for r in self.db.execute("PRAGMA table_info(imports)")}
+            if "label" not in cols:
+                self.db.execute("ALTER TABLE imports ADD COLUMN label TEXT")
 
     def blacklist(self, video_id: str, reason: str, days: float | None = BLACKLIST_DAYS) -> None:
         """Skladbu nenabízet. `days=None` = natrvalo (smazané video); jinak
@@ -523,10 +572,12 @@ class Store:
         )
 
     def all_imports(self) -> tuple[list[tuple], list[tuple]]:
-        """(importy, jejich písničky) — pár tisíc řádků, čte se při startu."""
+        """(importy, jejich písničky) — pár tisíc řádků, čte se při startu.
+        Vyřazené písničky v tom nejsou (`import_removed_rows`)."""
         meta = self._read(
             """SELECT id, client, COALESCE(who,''), playlist_id, COALESCE(title,''), created,
-                      fetched, COALESCE(total,0), COALESCE(skipped,0), COALESCE(cut,0)
+                      fetched, COALESCE(total,0), COALESCE(skipped,0), COALESCE(cut,0),
+                      COALESCE(label,'')
                  FROM imports ORDER BY created"""
         )
         items = self._read(
@@ -535,6 +586,14 @@ class Store:
                  FROM import_items ORDER BY import_id, pos"""
         )
         return meta, items
+
+    def import_removed_rows(self) -> list[tuple]:
+        """Písničky, které lidé ze svých importů vyřadili (čte se při startu)."""
+        return self._read(
+            """SELECT import_id, key, COALESCE(video_id,''), COALESCE(artist,''),
+                      COALESCE(title,''), removed, COALESCE(pos,0)
+                 FROM import_removed ORDER BY import_id, pos"""
+        )
 
     def ratings(self) -> dict[str, str]:
         """Latest like/dislike per track (the feedback table is small)."""

@@ -69,6 +69,9 @@ DEFAULTS: dict = {
     # má YouTube. Hlasitost (volume) je jiný stupeň a tímhle se nemění.
     "loudness_normalize": True,
     "loudness_target": -14,
+    # Přizvednutí tichých pasáží (F-ZVUK-32): výchozí vypnuto — dynamika skladby
+    # se nemění. Jen když se hlasitost srovnává.
+    "loudness_lift_quiet": False,
     # Zvukový výstup (ytdj/audio_outputs.py): název uzlu PipeWire, na který má
     # jukebox hrát; "" = automaticky podle priorit WirePlumberu. Vybírá se
     # v nastavení na webu ze seznamu připojených výstupů.
@@ -236,6 +239,7 @@ class Config:
     prefetch_max: int = 10
     loudness_normalize: bool = True
     loudness_target: int = -14
+    loudness_lift_quiet: bool = False
     audio_output: str = ""
     audio_switch_volume: int = 0
     tv_standby: bool = False

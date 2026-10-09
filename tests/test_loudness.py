@@ -1,4 +1,4 @@
-"""Srovnání hlasitosti skladeb (F-ZVUK-24, F-ZVUK-25).
+"""Srovnání hlasitosti skladeb (F-ZVUK-24, F-ZVUK-25, F-ZVUK-32).
 
 Vlastník 6. 10. 2026: „Potřebuju, aby to srovnávalo hlasitost písniček na
 stejnou úroveň, protože přestože mám stejnou úroveň hlasitosti nastavenou,
@@ -139,6 +139,23 @@ class YoutubeLoudness(unittest.TestCase):
         self.assertIsNone(L.pick([], "251"))
         silly = {"playerConfig": {"audioConfig": {"trackAbsoluteLoudnessLkfs": -90.0}}}
         self.assertIsNone(L.pick(L.summarize([silly]), None))
+
+    def test_premium_answer_with_four_clients_gives_the_value_of_the_played_format(self) -> None:
+        # Hlášení #30 (Europe – The Final Countdown, NNiTxUEnmKI): souhrn skutečné
+        # přihlášené odpovědi 9. 10. 2026 — čtyři klienti, formát Premium 774 jen
+        # u dvou, jeden z nich bez cíle. ffmpeg ebur128 na tomtéž formátu: −10,9 LUFS.
+        summary = [
+            {"absolute": -10.91, "perceptual": -10.91, "target": -14.0, "formats": {}},
+            {"absolute": None, "perceptual": -10.91, "target": None,
+             "formats": {"140": 3.0900002, "141": 3.0900002, "251": 3.08, "774": 3.08}},
+            {"absolute": -10.91, "perceptual": -10.91, "target": -14.0,
+             "formats": {"140": 3.0900002, "251": 3.08}},
+            {"absolute": -10.91, "perceptual": -10.91, "target": -7.0,
+             "formats": {"140": -3.9099998, "141": -3.9099998, "251": -3.92, "774": -3.92}},
+        ]
+        for fid in ("774", "251", "141"):
+            self.assertAlmostEqual(L.pick(summary, fid), -10.91, delta=0.02, msg=fid)
+        self.assertEqual(L.gain_db(L.pick(summary, "774"), -12), -1.1)  # jako na Pi 8. 10.
 
     def test_tag_and_read_roundtrip(self) -> None:
         data = json.dumps({"id": "x", "formats": [{"url": "u" * 5000}], "note": {"a": 1}})
@@ -472,6 +489,52 @@ class PlayerGain(unittest.TestCase):
                          [{"op": "gain", "target": -20}] * 2)
         self.assertEqual(sent, -20)
 
+    def test_lift_of_quiet_passages_is_off_by_default_and_reaches_the_script(self) -> None:
+        # F-ZVUK-32: výchozí vypnuto = mpv i skript přesně jako bez něj
+        self.assertIs(DEFAULTS["loudness_lift_quiet"], False)
+        with mock.patch.object(MpvPlayer, "_ytdl_shim", lambda self: "/shim"):
+            plain = MpvPlayer(Config(**DEFAULTS))._args()
+            on = MpvPlayer(Config(**{**DEFAULTS, "loudness_lift_quiet": True, "loudness_target": -12}))
+            lifted = on._args()
+            off = MpvPlayer(Config(**{**DEFAULTS, "loudness_lift_quiet": True,
+                                      "loudness_normalize": False}))._args()
+        self.assertFalse(any("ytdj_gain-" in a for a in plain + off))
+        self.assertEqual([a for a in lifted if a not in plain],
+                         ["--script-opts-append=ytdj_gain-lift=yes",
+                          "--script-opts-append=ytdj_gain-target=-12"])
+        self.assertEqual(on._lift_sent, (True, -12))
+        # ručně zapsaný nesmysl v config.toml nic nezapne
+        for junk in (1, "yes", "x", None):
+            self.assertEqual(
+                MpvPlayer(Config(**{**DEFAULTS, "loudness_lift_quiet": junk}))._gain_lift(),
+                (False, None))
+
+        async def go():
+            async with Harness() as h:
+                await h.player.config_changed()  # nic se nezměnilo → žádný příkaz
+                quiet = [c for c in h.fake.log if isinstance(c, list) and c[0] == "change-list"]
+                h.player.cfg.loudness_lift_quiet = True
+                await h.player.config_changed()
+                h.player.cfg.loudness_target = -18  # cíl se změnil: skript ho dostane taky
+                await h.player.config_changed()
+                h.player.cfg.loudness_lift_quiet = False
+                await h.player.config_changed()
+                await h.player.config_changed()
+                self.gain_event(h, vid(1), "-2.0", "-12.00", "json", "ok", "lift")
+                self.gain_event(h, vid(2), "-2.0", "-12.00", "json", "ok")
+                await h.settle()
+                return quiet, [c[3] for c in h.fake.log
+                               if isinstance(c, list)
+                               and c[:3] == ["change-list", "script-opts", "append"]], h.events
+
+        quiet, sent, events = run(go())
+        self.assertEqual(quiet, [])
+        self.assertEqual(sent, ["ytdj_gain-lift=yes", "ytdj_gain-target=-14",
+                                "ytdj_gain-lift=yes", "ytdj_gain-target=-18", "ytdj_gain-lift=no"])
+        self.assertEqual([(f["enabled"], f["target"]) for k, f in events if k == "player.gain_lift"],
+                         [(True, -14), (True, -18), (False, None)])
+        self.assertEqual([f.get("lift") for k, f in events if k == "track.gain"], [True, None])
+
     def test_gain_is_pushed_to_the_script_for_old_mpv(self) -> None:
         async def go(script: bool):
             async with Harness() as h:
@@ -549,7 +612,7 @@ class RealMpv(unittest.TestCase):
     SECS = 1.0
 
     def play(self, tracks: list[tuple[float, str | None]], json_tail: str | None = None,
-             script: Path = GAIN_SCRIPT):
+             script: Path = GAIN_SCRIPT, extra: tuple = (), before: tuple = ()):
         """tracks = [(amplituda, zisk nebo None)]. Vrací (zprávy skriptu,
         vzorky levého kanálu, hlasitost mpv na konci)."""
         d = Path(tempfile.mkdtemp(dir=_TMP))
@@ -563,7 +626,7 @@ class RealMpv(unittest.TestCase):
             ["mpv", "--no-config", "--idle=yes", "--no-video", "--no-terminal", "--ytdl=no",
              f"--input-ipc-server={sock}", "--gapless-audio=weak", "--audio-buffer=2",
              "--keep-open=no", "--volume=100", "--volume-max=100", f"--script={script}",
-             "--audio-format=float", "--ao=pcm", f"--ao-pcm-file={out}"],
+             "--audio-format=float", "--ao=pcm", f"--ao-pcm-file={out}", *extra],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             t0 = time.monotonic()
@@ -600,6 +663,10 @@ class RealMpv(unittest.TestCase):
             if json_tail is not None:  # co po sobě nechává ytdl_hook v mpv ≥ 0.38
                 cmd("set_property", "user-data/mpv/ytdl/json-subprocess-result",
                     {"status": 0, "stdout": '{"id": "x", "pad": "' + "y" * 4000 + '"' + json_tail})
+            for c in before:  # příkazy, které ytdj posílá za běhu (nastavení z webu)
+                cmd(*c)
+            if before:
+                time.sleep(0.2)
             for path in files:
                 cmd("loadfile", str(path), "append-play")
             wait_for(lambda m: m.get("event") == "start-file")
@@ -670,6 +737,53 @@ class RealMpv(unittest.TestCase):
         self.assertAlmostEqual(self.db(left[4800:-4800], 0.25), 0.0, delta=0.1)
 
 
+    def test_quiet_passages_are_lifted_by_a_bounded_amount_only_when_asked(self) -> None:
+        # F-ZVUK-32: hlasitá / tichá / velmi tichá „pasáž" (zisk skladby 0 dB)
+        amps = [0.5, 0.02, 0.002]
+        tracks = [(a, "0.0") for a in amps]
+        n = int(self.RATE * self.SECS)
+
+        def levels(left: list[float]) -> list[float]:
+            self.assertEqual(len(left), n * len(amps))
+            return [self.db(left[i * n + n // 2:(i + 1) * n - 480], a) for i, a in enumerate(amps)]
+
+        # výchozí (0): nic se nepřidává — skladba na cílové hlasitosti nemá žádný filtr
+        msgs, left, _ = self.play(tracks)
+        self.assertEqual([m[5:] for m in msgs if m[0] == mpvmod.GAIN_MESSAGE], [["unity"]] * 3)
+        for got in levels(left):  # 0,15: zaokrouhlení 16bitového sinu u nejtišší pasáže
+            self.assertAlmostEqual(got, 0.0, delta=0.15)
+        opts = MpvPlayer._lift_opts((True, -12))
+        started = self.play(tracks, extra=tuple(f"--script-opts-append={o}" for o in opts))
+        live = self.play(tracks, before=tuple(  # zapnuto za běhu, jak to posílá ytdj
+            ("change-list", "script-opts", "append", o) for o in opts))
+        for msgs, left, volume in (started, live):
+            self.assertEqual([m[5:] for m in msgs if m[0] == mpvmod.GAIN_MESSAGE],
+                             [["ok", "lift"]] * 3)
+            loud, quiet, faint = levels(left)
+            self.assertLess(abs(loud), 2.5)  # hlasitá pasáž zůstává, kde byla
+            self.assertAlmostEqual(quiet, 6.5, delta=0.5)  # tichá se přizvedne…
+            self.assertAlmostEqual(faint, 6.5, delta=0.5)  # …ale nikdy o víc (šum, dozvuk)
+            self.assertLessEqual(max(abs(v) for v in left), 0.9)  # vždy přes omezovač
+            self.assertEqual(volume, 100)
+        # vypnutí za běhu: další skladby zase beze změny
+        msgs, left, _ = self.play(
+            tracks, extra=tuple(f"--script-opts-append={o}" for o in opts),
+            before=(("change-list", "script-opts", "append", "ytdj_gain-lift=no"),))
+        self.assertEqual([m[5:] for m in msgs if m[0] == mpvmod.GAIN_MESSAGE], [["unity"]] * 3)
+        for got in levels(left):  # 0,15: zaokrouhlení 16bitového sinu u nejtišší pasáže
+            self.assertAlmostEqual(got, 0.0, delta=0.15)
+
+    def test_lift_follows_the_target(self) -> None:
+        # práh je vztažený k cíli: při cíli −18 je „tichá" až pasáž o 6 dB tišší
+        n = int(self.RATE * self.SECS)
+        out = []
+        for target in (-12, -18):
+            opts = MpvPlayer._lift_opts((True, target))
+            _, left, _ = self.play([(0.06, "0.0")],
+                                   extra=tuple(f"--script-opts-append={o}" for o in opts))
+            out.append(self.db(left[n // 2:n - 480], 0.06))
+        self.assertGreater(out[0], out[1] + 1.0)
+
     def test_unbuildable_filter_is_dropped_instead_of_silence(self) -> None:
         # jiné ffmpeg, které filtr nezná: skladba s filtrem by vůbec nezazněla
         text = GAIN_SCRIPT.read_text(encoding="utf-8")
@@ -692,7 +806,7 @@ class WebSettings(unittest.TestCase):
     def test_keys_are_plain_live_and_bounded(self) -> None:
         from ytdj.web import server as web
 
-        for key in ("loudness_normalize", "loudness_target"):
+        for key in ("loudness_normalize", "loudness_target", "loudness_lift_quiet"):
             self.assertIn(key, web.LIVE_KEYS)
             self.assertIn(key, web.FIELD_META)
             self.assertNotIn(key, web.RESTART_KEYS)
@@ -706,6 +820,11 @@ class WebSettings(unittest.TestCase):
                 web.coerce_value("loudness_target", bad)
         with self.assertRaises(web.BadValue):
             web.coerce_value("loudness_normalize", "--script=x")
+        # F-ZVUK-32: přizvednutí tichých pasáží je jen přepínač, výchozí vypnuto
+        self.assertEqual(web._field_type("loudness_lift_quiet"), "bool")
+        self.assertIs(web.coerce_value("loudness_lift_quiet", "true"), True)
+        with self.assertRaises(web.BadValue):
+            web.coerce_value("loudness_lift_quiet", "yes,ytdj_gain-target=0")
 
     def test_config_post_tells_the_player(self) -> None:
         from test_admin import call, make

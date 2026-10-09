@@ -187,6 +187,7 @@ LIVE_KEYS = (
     "prefetch_max",
     "loudness_normalize",
     "loudness_target",
+    "loudness_lift_quiet",
     "audio_output",
     "audio_switch_volume",
     "tv_standby",
@@ -260,6 +261,14 @@ FIELD_META: dict[str, tuple[str, str, tuple[int, int] | None]] = {
         "(−18) = všechno tišší, ale ani tiché nahrávky není třeba zesilovat. "
         "Platí od další skladby.",
         (-24, -8),
+    ),
+    "loudness_lift_quiet": (
+        "Přizvednout tiché pasáže skladeb",
+        "Vypnuto: každá skladba má jeden zisk a její dynamika se nemění — tiché intro zůstane "
+        "tiché. Zapnuto: dlouhé tiché pasáže (intro, sloka) se přizvednou nejvýš o 6,5 dB, "
+        "hlasité části zůstávají, kde byly. Mění dynamiku skladeb. Jen při zapnutém "
+        "srovnávání hlasitosti; platí od další skladby.",
+        None,
     ),
     "audio_output": (
         "Zvukový výstup",

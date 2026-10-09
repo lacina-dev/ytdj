@@ -125,7 +125,13 @@ class Restart(unittest.TestCase):
                 self.assertEqual(why, "was_not_playing")
                 eva = rig2.wq.by_id(e.id)
                 await rig2.until(lambda: eva.state in ("queued", "playing"))  # DJ ho dořeší
+                # až DJ přání opravdu dořeší (odpověď), ne jen uprostřed zařazování
+                await rig2.until(lambda: any(k == "request.queued" and f["id"] == e.id
+                                             for k, f in rig2.events))
+                await rig2.settle(0.2)
                 self.assertTrue(rig2.player._paused)  # hudba se sama nerozjela
+                self.assertIs(rig2.fake.props.get("pause"), True)  # ani v přehrávači
+                self.assertIn("Hudba je pozastavená", eva.reply)  # a Eva ví proč
                 ok, _ = await rig2.wq.remove(a.id, a.token)  # token z prohlížeče platí dál
                 self.assertTrue(ok)
                 pub = {r["id"]: r for r in rig2.wq.public()}

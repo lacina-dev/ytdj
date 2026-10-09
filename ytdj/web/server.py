@@ -1772,6 +1772,11 @@ class WebServer:
             access_log=False,
             lifespan="off",
             timeout_graceful_shutdown=3,
+            # Web žádný WebSocket nemá (stav jde přes SSE). Výchozí "auto" si
+            # při startu naimportuje knihovnu `websockets`, když ji najde —
+            # a se starou systémovou (venv má --system-site-packages) na tom
+            # start webu spadne (ImportError: ServerProtocol).
+            ws="none",
         )
         server = uvicorn.Server(config)
         # without this, uvicorn grabs SIGINT and Ctrl+C wouldn't reach the REPL

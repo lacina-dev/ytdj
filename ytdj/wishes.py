@@ -1988,6 +1988,11 @@ class WishQueue:
         own_older = any(x is not w and x.key == w.key and x.active for x in self.wishes)
         await self.replan(lock=not (replaced or own_older))
         paused = self._respect_pause()
+        if not paused and w.restored:
+            # Přání obnovené po restartu, které DJ dořešil až teď, není nové
+            # přání: když obnova nechala hudbu v pauze (byla pauza, noc, zapnutí
+            # Pi), samo ji nerozjede (F-RESTART-01, F-RESTART-11).
+            paused = (await self.player.status()).paused
         cut = False if paused else await self._maybe_cut(w, own=bool(replaced))
         if not paused:
             await self.player.toggle_pause(False)  # přání = chce slyšet hudbu

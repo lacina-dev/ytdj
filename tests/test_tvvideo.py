@@ -836,6 +836,45 @@ class TvPowerWeb(unittest.TestCase):
                 self.assertGreaterEqual(tvvideo.POWER_GAP, 10)
         run(go())
 
+    def test_request_numbers_only_grow_whatever_the_clock_does(self):
+        """Číslo povelu je čas v ms, ale nesmí se opakovat ani klesnout: proces
+        na telce bere jen číslo vyšší, než jaké už vyřídil, a web podle čísla
+        pozná, ke kterému povelu potvrzení patří."""
+        async def go():
+            with Rig(tv=self.ON) as rig:
+                await self.read(rig)
+                srv, _ = self.srv(rig)
+                route = tv_api.routes(srv)[0]
+                t0 = time.time()
+                with mock.patch.object(tvvideo.time, "time", lambda: t0):
+                    # dva povely ve stejné milisekundě (hodiny stojí)
+                    code, data = await self.ask(route, "off")
+                    rid = data["tv"]["power_request"]["id"]
+                    self.assertEqual(rid, int(t0 * 1000))  # běžně je to čas
+                    rig.tv_says({**self.ON, "power_done_id": rid, "power_done_action": "off",
+                                 "power_done_ok": False, "power_done_note": "Nepovedlo se."})
+                    await self.read(rig)
+                    self.assertEqual(rig.tv.public()["power_ctl"]["state"], "failed")
+                    rig.tv._power = None  # výsledek z webu zmizel
+                    code, data = await self.ask(route, "on")
+                    self.assertEqual(code, 200)
+                    self.assertGreater(data["tv"]["power_request"]["id"], rid)
+                    await self.read(rig)  # výsledek minulého povelu se za tenhle nevydává
+                    self.assertEqual(rig.tv.public()["power_ctl"]["state"], "sending")
+                    rid = data["tv"]["power_request"]["id"]
+                # hodiny skočily zpátky (i přes restart jukeboxu: telka si číslo pamatuje)
+                rig.tv_says({**self.ON, "power_done_id": rid, "power_done_action": "on",
+                             "power_done_ok": True, "power_done_note": "Telka je zapnutá."})
+                rig.tv._power, rig.tv._power_id = None, 0  # jako po restartu
+                await self.read(rig)
+                with mock.patch.object(tvvideo.time, "time", lambda: t0 - 3600):
+                    code, data = await self.ask(route, "off")
+                    self.assertEqual(code, 200)
+                    self.assertGreater(data["tv"]["power_request"]["id"], rid)
+                    await self.read(rig)
+                    self.assertEqual(rig.tv.public()["power_ctl"]["state"], "sending")
+        run(go())
+
     def test_no_confirmation_is_said_honestly_and_the_result_fades(self):
         async def go():
             with Rig(tv=self.ON) as rig:

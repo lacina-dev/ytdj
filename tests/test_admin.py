@@ -152,6 +152,36 @@ class PinFile(unittest.TestCase):
 
         asyncio.run(go())
 
+    def test_start_does_not_touch_the_websockets_library(self):
+        """Web nemá žádný WebSocket: start nesmí záviset na tom, jaká verze
+        knihovny `websockets` je zrovna v systému (venv vidí systémové balíky,
+        se starou uvicorn při startu spadl na ImportError)."""
+        async def go():
+            with tempfile.TemporaryDirectory() as d:
+                srv = web.WebServer(SimpleNamespace(cfg=Config(**DEFAULTS)), "127.0.0.1", 0)
+                srv.admin = adminpin.AdminGuard(Path(d) / "admin-pin")
+                # None v sys.modules = import toho modulu skončí ImportError
+                broken = {name: None for name in list(sys.modules)
+                          if name == "websockets" or name.startswith(("websockets.", "wsproto"))
+                          or name.startswith("uvicorn.protocols.websockets.")}
+                broken.update({"websockets": None, "wsproto": None,
+                               "uvicorn.protocols.websockets.auto": None})
+                with mock.patch.dict(sys.modules, broken):
+                    await srv.start()
+                    try:
+                        self.assertIsNone(srv._server.config.ws_protocol_class)
+                        reader, writer = await asyncio.open_connection("127.0.0.1", srv.port)
+                        writer.write(b"GET /api/nic-takoveho HTTP/1.1\r\nHost: x\r\n"
+                                     b"Connection: close\r\n\r\n")
+                        await writer.drain()
+                        head = await asyncio.wait_for(reader.readline(), 5)
+                        writer.close()
+                        self.assertTrue(head.startswith(b"HTTP/1.1 "), head)  # web odpovídá
+                    finally:
+                        await srv.stop()
+
+        asyncio.run(go())
+
 
 class ConfigNeedsPin(Base):
     """F-BEZP-09: nastavení a restart z webu jen se správným PINem v hlavičce."""

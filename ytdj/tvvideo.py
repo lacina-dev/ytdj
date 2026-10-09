@@ -187,6 +187,7 @@ class TvVideo:
         self.loaded = False
         self.report: dict = {}  # co o sobě řekl proces na telce
         self._power: dict | None = None  # poslední povel telce z webu (vypnout / zapnout)
+        self._power_id = 0  # číslo posledního povelu — další je vždycky vyšší
         self._report_at = 0.0
         self.kinds: dict[str, str] = {}  # videoId → druh (OMV / ATV / UGC / "")
         self._streams: dict[str, dict] = {}  # videoId → připravený proud
@@ -257,7 +258,14 @@ class TvVideo:
             return False, "Telce už jeden povel posílám — chvilku počkej."
         if p and now - p["at"] < POWER_GAP:
             return False, "Chvilku počkej — mezi dvěma povely telce musí být pár vteřin."
-        self._power = {"id": int(now * 1000), "action": action, "who": (who or "")[:40],
+        # Číslo povelu musí jen růst: proces na telce bere povel jen s číslem
+        # vyšším, než jaké už vyřídil, a web podle čísla pozná, ke kterému povelu
+        # patří potvrzení. Samotný čas to nezaručí (dva povely v téže milisekundě,
+        # hodiny posunuté zpátky — Pi nemá vlastní hodiny).
+        done = self.report.get("power_done_id")
+        self._power_id = max(int(now * 1000), self._power_id + 1,
+                             done + 1 if type(done) is int else 0)
+        self._power = {"id": self._power_id, "action": action, "who": (who or "")[:40],
                        "at": now, "end": now, "state": "sending", "note": ""}
         telemetry.event("tv.power_ask", action=action, who=self._power["who"] or None,
                         tv=self.report.get("power_tv") or None,

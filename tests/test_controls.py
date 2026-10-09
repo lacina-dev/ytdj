@@ -989,6 +989,10 @@ class WebApi(unittest.TestCase):
             async with tw.Rig() as rig:
                 await rig.background()
                 srv = web.WebServer(tw.WebApp(rig))
+                # hraje přání někoho jiného: Petrovo „znovu" čeká ve frontě (cizí
+                # přání se neutíná) a test nezávisí na tom, kdy skladba naběhne
+                jana = rig.wq.submit("pusť Kabát", "Jana")
+                await rig.until(lambda: jana.state == "playing")
                 rig.store.record_start(OLD.id, OLD.title, OLD.artist, None)
                 rig.store.record_outcome(OLD.id, "finished")
                 rig.store.flush()
@@ -1002,7 +1006,7 @@ class WebApi(unittest.TestCase):
                 self.assertEqual((w.replay.id, w.replay.title, w.replay.artist),
                                  (OLD.id, OLD.title, OLD.artist))
                 self.assertEqual(data["request"]["text"], "Znovu: Kapela — Stará známá")
-                await rig.until(lambda: w.state in ("queued", "playing"))
+                await rig.until(lambda: w.state == "queued" and bool(w.reply))
                 # co v Odehráno není, zahrát znovu nejde; nesmysl taky ne
                 r = await srv._prompt(post({"replay": "y" * 11, "who": "Petr", "client": PETR}))
                 self.assertEqual((r.status_code, tw.body(r)["error"]),
@@ -1019,9 +1023,38 @@ class WebApi(unittest.TestCase):
                 self.assertEqual(r.status_code, 409)
                 self.assertIn("nepodařilo přehrát", tw.body(r)["error"])
                 # podruhé totéž od téhož: už ji má
+                self.assertEqual((w.state, [t.id for t in w.pending()]), ("queued", [OLD.id]))
                 r = await srv._prompt(post({"replay": OLD.id, "who": "Petr", "client": PETR}))
                 self.assertEqual(r.status_code, 409)
                 self.assertIn("už ve frontě máš", tw.body(r)["error"])
+                self.assertEqual(len(rig.wq.wishes), 2)  # žádné další přání nevzniklo
+
+        run(go())
+
+    def test_replay_of_the_track_that_plays_right_now_does_not_queue_it_again(self) -> None:
+        """Skladba z „znovu" už hraje: ve frontě ji ten člověk nemá, takže další
+        ťuknutí není 409 — přání se přijme a poctivě řekne, že právě hraje."""
+        async def go():
+            async with tw.Rig() as rig:
+                await rig.background()
+                srv = web.WebServer(tw.WebApp(rig))
+                rig.store.record_start(OLD.id, OLD.title, OLD.artist, None)
+                rig.store.record_outcome(OLD.id, "finished")
+                rig.store.flush()
+                r = await srv._prompt(post({"replay": OLD.id, "who": "Petr", "client": PETR}))
+                self.assertEqual(r.status_code, 202)
+                w = rig.wq.by_id(tw.body(r)["id"])
+                # hrál jen podkres: Petrova skladba ho utne a hraje hned
+                await rig.until(lambda: w.state == "playing" and rig.fake.current_vid() == OLD.id)
+                srv._hist = None
+                r = await srv._prompt(post({"replay": OLD.id, "who": "Petr", "client": PETR}))
+                self.assertEqual(r.status_code, 202)
+                again = rig.wq.by_id(tw.body(r)["id"])
+                await rig.until(lambda: again.state == "done")
+                self.assertIn("právě hraje", again.reply)
+                self.assertEqual(again.tracks, [])
+                self.assertEqual(rig.upcoming().count(OLD.id), 0)  # podruhé se nezařadila
+                self.assertEqual(rig.fake.current_vid(), OLD.id)  # a hraje dál bez přerušení
 
         run(go())
 

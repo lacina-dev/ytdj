@@ -13,6 +13,22 @@ The touch panel's network screen uses `nmcli` (NetworkManager, part of the Raspb
 image) and, for the `<hostname>.local` address, `avahi-daemon` (also preinstalled). Its QR
 code is drawn by the panel itself — no `qrencode`/`python3-qrcode` needed.
 
+Fonts for scripts other than Latin on the TV screen and the touch panel (Korean, Japanese,
+Chinese, Thai, Devanagari…, monochrome emoji) — DejaVu has none of them and draws empty boxes
+instead. `install-service.sh` installs them where the TV screen or the panel is installed
+(`YTDJ_FONTS=0` skips it); by hand:
+
+    sudo apt-get install -y --no-install-recommends fonts-noto-cjk fonts-noto-core fonts-symbola
+    sudo systemctl restart ytdj-tv ytdj-panel     # the screens look for fonts once, at first use
+
+About 135 MB on disk (91 + 42 + 3). Nothing is loaded until a character needs it, then only the
+one file in the sizes being drawn, at most 6 at a time (`ytdj/panel/fontfallback.py`); measured
+on the laptop a Korean title costs the TV process about 10 MB (one size of Noto Sans CJK ≈ 1.3 MB).
+`fonts-droid-fallback` (7 MB) is used when present but has no Korean and no bold. Without the
+packages the screens work as before (boxes) and say so once per run in their events:
+`font.missing` (which character, which package), `font.fallback` = a fallback font was used
+(file, size, how long opening it took).
+
 **Node from apt (20.19) is not enough.** Current yt-dlp reports `node-20.19.2 (unsupported)`
 and solves no JS challenges; the only result is a format list with storyboards. Node 24 LTS
 from nodejs.org goes to `/opt/node`, and symlinks in `/usr/local/bin` put it ahead of

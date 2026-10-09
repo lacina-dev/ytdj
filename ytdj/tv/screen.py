@@ -22,6 +22,7 @@ from typing import Callable
 
 from PIL import Image, ImageChops, ImageDraw, ImageFont
 
+from ..panel.fontfallback import with_fallback
 from ..panel.hw import Box
 from ..panel.qr import encode as qr_encode
 from ..panel.ui import FONT_DIR, ellipsize, fmt_time, who_color, wrap
@@ -317,7 +318,8 @@ class Renderer:
         if f is None:
             name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
             try:
-                f = ImageFont.truetype(str(FONT_DIR / name), size)
+                # jiné abecedy než latinka (korejština, japonština…) kreslí náhradní písmo
+                f = with_fallback(ImageFont.truetype(str(FONT_DIR / name), size), bold)
             except OSError:
                 try:
                     f = ImageFont.truetype(name, size)

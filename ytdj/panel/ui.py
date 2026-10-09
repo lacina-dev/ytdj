@@ -20,6 +20,7 @@ from typing import Callable
 
 from PIL import Image, ImageChops, ImageDraw, ImageFont
 
+from .fontfallback import with_fallback
 from .hw import Box
 from .qr import encode as qr_encode
 
@@ -423,7 +424,8 @@ class Fonts:
     @staticmethod
     def _load(name: str, size: int) -> ImageFont.FreeTypeFont:
         try:
-            return ImageFont.truetype(str(FONT_DIR / name), size)
+            # jiné abecedy než latinka (korejština, japonština…) kreslí náhradní písmo
+            return with_fallback(ImageFont.truetype(str(FONT_DIR / name), size), "Bold" in name)
         except OSError:
             # without DejaVu (fonts-dejavu-core) at least something shows;
             # the bitmap fallback has no diacritics

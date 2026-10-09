@@ -93,6 +93,24 @@ if ! command -v bwrap > /dev/null && command -v apt-get > /dev/null; then
     sudo apt-get install -y bubblewrap
 fi
 
+# Písma pro jiné abecedy než latinku na telce a na displeji (korejština,
+# japonština, čínština, thajština, dévanágarí…, jednobarevné emoji): DejaVu je
+# nemá a místo znaků kreslí prázdné obdélníčky. Jen tam, kde se instaluje telka
+# nebo displej, a jen balíčky, které chybí (dohromady asi 135 MB na disku;
+# v paměti jen to, co se zrovna kreslí). YTDJ_FONTS=0 to vynechá — obrazovky
+# běží dál jen s DejaVu.
+if [ "${YTDJ_FONTS:-1}" != 0 ] && { [ "$panel" = yes ] || [ "$tv" = yes ]; } \
+        && command -v apt-get > /dev/null; then
+    fonts=()
+    [ -e /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc ] || fonts+=(fonts-noto-cjk)
+    [ -e /usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf ] || fonts+=(fonts-noto-core)
+    [ -e /usr/share/fonts/truetype/ancient-scripts/Symbola_hint.ttf ] || fonts+=(fonts-symbola)
+    if [ "${#fonts[@]}" -gt 0 ]; then
+        echo "instaluji písma pro jiné abecedy (telka, displej): ${fonts[*]}"
+        sudo apt-get install -y --no-install-recommends "${fonts[@]}"
+    fi
+fi
+
 # Web i na běžném portu 80 (http://jukebox.local bez :8765) — jen na jukeboxu
 # (Raspberry Pi) s nftables. Jádro přesměruje port 80 na port webu z config.toml;
 # sahá se jen na vlastní tabulku "ip ytdj_web" a port webu funguje dál.

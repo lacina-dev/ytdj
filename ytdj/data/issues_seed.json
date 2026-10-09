@@ -198,23 +198,24 @@
     {
       "key": "pozadavek-69",
       "kind": "chyba",
-      "state": "resi_se",
+      "state": "vyreseno",
       "who": "vlastník",
       "created": "2026-10-06",
       "title": "Pod jinou adresou jukeboxu chce web založit nový účet",
       "body": "„Když se připojím na jinou adresu/port, tak si musím udělat nový účet, přestože už účet na kompu mám. To je potřeba vyřešit.“\n\nPOZADAVKY #69.",
-      "resolution": "Prohlížeč si účet pamatuje zvlášť pro každou adresu (jméno i číslo portu), proto byl pod jinou adresou „nový člověk“. Oprava je hotová a čeká na nasazení: na stejném jméně s jiným portem tě jukebox pozná hned, na jiné jméno si prohlížeč při první návštěvě na okamžik odskočí přes ostatní adresy jukeboxu, které mu odpovídají, a účet si přinese — na přezdívku se neptá. Kdo už má na dvou adresách dva účty, tomu se spojí do staršího i s hlasy a playlisty a web to jednou větou řekne. Nepřenáší se PIN správce (na nové adrese se zadá znovu) a vlastní hlášení v Chybách a nápadech založená z mladšího účtu zůstanou pod jeho jménem. Na telefonu, který jméno jukeboxu v síti nenajde, se nic neděje — tam se dál pozná jen podle adresy, kterou používá. Nasazeno 6. 10. večer. Zkouší se v provozu."
+      "resolution": "Prohlížeč si účet pamatuje zvlášť pro každou adresu (jméno i číslo portu), proto byl pod jinou adresou „nový člověk“. Nově tě jukebox na stejném jméně s jiným portem pozná hned; na jiné jméno si prohlížeč při první návštěvě na okamžik odskočí přes ostatní adresy jukeboxu a účet si přinese — na přezdívku se neptá. Kdo už měl na dvou adresách dva účty, tomu se spojily do staršího i s hlasy a playlisty a web to jednou větou řekl. Nepřenáší se PIN správce (na nové adrese se zadá znovu) a vlastní hlášení v Chybách a nápadech založená z mladšího účtu zůstávají pod jeho jménem. Nasazeno 6. 10. večer. V provozu 6.–9. 10.: devětkrát si prohlížeč účet přinesl z jiné adresy, pokaždé odpovědělo všech pět ostatních adres; dvakrát se přitom spojily dva účty do jednoho. Kdyby se web na některé adrese přece zeptal na přezdívku, napiš sem na které.",
+      "resolved": "2026-10-09"
     },
     {
       "key": "pozadavek-70",
       "kind": "napad",
-      "state": "resi_se",
+      "state": "vyreseno",
       "who": "vlastník",
       "created": "2026-10-06",
       "title": "Ztlumit zvuk jedním kliknutím",
       "body": "„Ještě chci přidat do web UI možnost ztlumit zvuk jedním kliknutím.“\n\nPOZADAVKY #70.",
-      "resolution": "Reproduktor u posuvníku hlasitosti je teď tlačítko: jedno ťuknutí zvuk ztlumí, další ho vrátí přesně na předchozí hlasitost. Hudba mezitím běží dál (fronta, přání i hlasy pokračují) a že je ztlumeno, vidí všichni na webu i na displeji. Kdo pohne hlasitostí, zvuk tím zase zapne; po restartu jukeboxu je zvuk vždy zapnutý. Nasazeno 6. 10. večer. Zkouší se v provozu.",
-      "resolved": "2026-10-06"
+      "resolution": "Reproduktor u posuvníku hlasitosti je teď tlačítko: jedno ťuknutí zvuk ztlumí, další ho vrátí přesně na předchozí hlasitost. Hudba mezitím běží dál (fronta, přání i hlasy pokračují) a že je ztlumeno, vidí všichni na webu i na displeji. Kdo pohne hlasitostí, zvuk tím zase zapne; po restartu jukeboxu je zvuk vždy zapnutý. Nasazeno 6. 10. večer a vyzkoušeno (hlasitost zůstala po vrácení zvuku přesně stejná).",
+      "resolved": "2026-10-09"
     },
     {
       "key": "pozadavek-71",
@@ -224,7 +225,7 @@
       "created": "2026-10-06",
       "title": "Klipy na telce — jen když jsou v prohlížeči povolené",
       "body": "„Tímhle začneme, ale bude se to povolovat v prohlížeči a dít, jen když je to povolené, jinak na telce bude info jako teď. Povolit to může kdokoli.“\n\nKlip jen u skladeb, které samy jsou oficiálním klipem, bez zvuku a srovnaný s hudbou; písnička se za klip nezaměňuje. POZADAVKY #71.",
-      "resolution": "Připraveno, čeká na nasazení a večerní zkoušku na jukeboxu. Na hlavní stránce přibude vypínač „Klipy na telce“ — přepne ho kdokoli, platí pro všechny a je vidět, kdo ho zapnul; výchozí stav je vypnuto. Když je zapnuto a hraje skladba, která sama je oficiální klip (asi osmina toho, co tu hraje), pustí se na telce její obraz bez zvuku, srovnaný s hudbou. U ostatních skladeb zůstává obrazovka „právě hraje“. Zvuk jde pořád stejnou cestou. Když je jukebox horký, dochází mu paměť nebo by začal lupat zvuk, klip se sám vypne a vypínač řekne proč. Nasazeno 6. 10. večer. Zkouší se v provozu.",
+      "resolution": "Na hlavní stránce je vypínač „Klipy na telce“ — přepne ho kdokoli, platí pro všechny a je vidět, kdo ho zapnul; výchozí stav je vypnuto. Když je zapnuto a hraje skladba, která sama je oficiální klip (asi osmina toho, co tu hraje), pustí se na telce její obraz bez zvuku, srovnaný s hudbou. U ostatních skladeb zůstává obrazovka „právě hraje“. Zvuk jde pořád stejnou cestou. Když je jukebox horký, dochází mu paměť nebo by začal lupat zvuk, klip se sám vypne a vypínač řekne proč. Nasazeno 6. 10. večer a používá se: do 7. 10. ho přepnuli dva lidé, obraz se našel u sedmi skladeb a u deseti jukebox správně řekl, že jde jen o zvuk. Zbývá změřit, jak přesně obraz sedí na hudbu a jak se jukebox chová při půlhodině klipů za sebou — proto zatím „řeší se“.",
       "resolved": "2026-10-06"
     },
     {
@@ -235,7 +236,7 @@
       "created": "2026-10-06",
       "title": "Když chci video, ať DJ dodá video",
       "body": "„Chci ověřit video, ale asi by to chtělo, aby agent reagoval na to, když chci video, a dodal video.“\n\nPOZADAVKY #72.",
-      "resolution": "Klipy na telce se pouštěly jen u skladeb, které samy jsou oficiální klip — a DJ skoro vždy vybere písničku z alba, takže obraz nebyl. Nově stačí říct si o obraz („pusť klip k…“, „zahraj videa od…“, „chci to vidět na telce“): DJ vybere oficiální klipy — ke skladbě, od interpreta i k náladě — a Klipy na telce sám zapne. Když oficiální klip není, zahraje písničku a řekne to. Bez takového přání hraje dál vždy písnička, ne klip. V kódu a otestováno, i se skutečným modelem; čeká na nasazení a zkoušku na telce.",
+      "resolution": "Klipy na telce se pouštěly jen u skladeb, které samy jsou oficiální klip — a DJ skoro vždy vybere písničku z alba, takže obraz nebyl. Nově stačí říct si o obraz („pusť klip k…“, „zahraj videa od…“, „chci to vidět na telce“): DJ vybere oficiální klipy — ke skladbě, od interpreta i k náladě — a Klipy na telce sám zapne. Když oficiální klip není, zahraje písničku a řekne to. Bez takového přání hraje dál vždy písnička, ne klip. Nasazeno 6. 10. večer, se skutečným modelem otestováno (12 z 12). Od nasazení o obraz na jukeboxu nikdo nepožádal, takže na telce to ještě nikdo neviděl — proto zatím „řeší se“. Zkus třeba „pusť klip k Bohemian Rhapsody“.",
       "resolved": "2026-10-06"
     },
     {
@@ -246,19 +247,19 @@
       "created": "2026-10-06",
       "title": "Pustím klip, vybere to video, ale na telce není vidět",
       "body": "„Pustím tam klip, vybralo to video, ale klip nevidím na telce.“\n\nPOZADAVKY #73.",
-      "resolution": "Šlo o záznam koncertu nahraný uživatelem. Telka do té doby pouštěla obraz jen u oficiálních klipů a nikde neřekla, proč obraz není. Oprava je hotová a čeká na nasazení: video, o které si někdo výslovně řekne (odkazem nebo „pusť video…“), se na telce ukáže, i když to oficiální klip není — jen písnička bez obrazu zůstane bez obrazu. A když obraz není, vypínač Klipy na telce i řádek na telce vždy napíšou proč (jen zvuk, klip se načítá, málo paměti, telka není připojená…).",
+      "resolution": "Šlo o záznam koncertu nahraný uživatelem. Telka do té doby pouštěla obraz jen u oficiálních klipů a nikde neřekla, proč obraz není. Opraveno a nasazeno 7. 10.: video, o které si někdo výslovně řekne (odkazem nebo „pusť video…“), se na telce ukáže, i když to oficiální klip není — jen písnička bez obrazu zůstane bez obrazu. A když obraz není, vypínač Klipy na telce i řádek na telce vždy napíšou proč (jen zvuk, klip se načítá, málo paměti, telka není připojená…). Od nasazení si o video nikdo výslovně neřekl, takže oprava ještě nebyla vidět na telce — proto zatím „řeší se“.",
       "resolved": "2026-10-06"
     },
     {
       "key": "pozadavek-75",
       "kind": "napad",
-      "state": "nasazeni",
+      "state": "vyreseno",
       "who": "vlastník",
       "created": "2026-10-07",
       "title": "Výběr zvukového výstupu v nastavení",
       "body": "„Jo, dej někam do nastavení možnost výběru zvukového výstupu, tak aby si to pak vybraný výstup pamatovalo i po rebootu. A aby to vidělo nový výstup, i když se připojí.“\n\nPOZADAVKY #75.",
-      "resolution": "V Nastavení jukeboxu (s PINem správce) je nově „Zvukový výstup“: seznam všeho, co je k jukeboxu připojené, a „Automaticky“. Přepne se hned a hudba hraje dál. Volbu si jukebox pamatuje i po restartu a nově připojená zvukovka se v seznamu objeví sama. Když se vybraná zvukovka odpojí, hraje se dál náhradním výstupem a po připojení se jukebox sám vrátí. Hlasitost se při přepnutí nemění — jiné repro může hrát hlasitěji, uprav si ji podle potřeby. V kódu a otestováno; čeká na nasazení.",
-      "resolved": "2026-10-07"
+      "resolution": "V Nastavení jukeboxu (s PINem správce) je nově „Zvukový výstup“: seznam všeho, co je k jukeboxu připojené, a „Automaticky“. Přepne se hned a hudba hraje dál. Volbu si jukebox pamatuje i po restartu a nově připojená zvukovka se v seznamu objeví sama. Když se vybraná zvukovka odpojí, hraje se dál náhradním výstupem a po připojení se jukebox sám vrátí. Hlasitost se při přepnutí nemění — jiné repro může hrát hlasitěji, uprav si ji podle potřeby. Nasazeno 7. 10. večer: přepínání mezi čtyřmi výstupy vyzkoušeno, hudba hrála dál. 9. 10. dopoledne se vybraná zvukovka na chvíli odpojila — jukebox hrál dál přes soundbar a po 38 vteřinách se sám vrátil.",
+      "resolved": "2026-10-09"
     },
     {
       "key": "pozadavek-76",
@@ -285,13 +286,13 @@
     {
       "key": "pozadavek-78",
       "kind": "napad",
-      "state": "nasazeni",
+      "state": "vyreseno",
       "who": "vlastník",
       "created": "2026-10-07",
       "title": "Vypnout a zapnout telku z webu",
       "body": "„Udělej to ovládání telky i do web UI.“\n\nPOZADAVKY #78.",
-      "resolution": "Na hlavní stránce je pod vypínačem Klipy na telce nový řádek: píše, jestli je telka zapnutá, vypnutá, nebo jestli jukeboxu neodpovídá (pak je na ní potřeba zapnout Anynet+), a má tlačítko Vypnout telku / Zapnout telku. Zmáčknout ho smí kdokoli. Telka odpoví za pár vteřin a web napíše, jak to dopadlo — když se to nepovede, řekne to. Zapnutím se telka přepne na jukebox. Telku, kterou někdo vypnul tlačítkem nebo ovladačem, hudba sama nezapne; zapne ji zase tlačítko nebo ovladač. V kódu a otestováno; čeká na nasazení.",
-      "resolved": "2026-10-07"
+      "resolution": "Na hlavní stránce je pod vypínačem Klipy na telce nový řádek: píše, jestli je telka zapnutá, vypnutá, nebo jestli jukeboxu neodpovídá (pak je na ní potřeba zapnout Anynet+), a má tlačítko Vypnout telku / Zapnout telku. Zmáčknout ho smí kdokoli. Telka odpoví za pár vteřin a web napíše, jak to dopadlo — když se to nepovede, řekne to. Zapnutím se telka přepne na jukebox. Telku, kterou někdo vypnul tlačítkem nebo ovladačem, hudba sama nezapne; zapne ji zase tlačítko nebo ovladač. Nasazeno 7. 10. večer. Od té doby telku z webu vypnuli nebo zapnuli dva lidé celkem pětkrát (a dvakrát zkouška při nasazení), pokaždé to telka do 6–15 vteřin potvrdila. Přepnutí na jiný vstup ovladačem a vypnutí ovladačem zatím nikdo nezkoušel.",
+      "resolved": "2026-10-09"
     }
   ]
 }

@@ -38,6 +38,9 @@ web pro kolegy, dotykový displej, repro s kolečkem. Vlastník je náročný:
 - Na Pi jen commitnutý kód; před restartem zkušební import celého ytdj přímo
   na Pi. Restartů hudby co nejméně. Při testech na Pi neměnit hlasitost
   a testovací přání po měření uklidit.
+- Po nasazení a ověření na Pi se nasazený stav vždy sloučí do `main` a pushne
+  (vlastník 9. 10.: „finálně po nasazení vždy mergovat do masteru"). V `main`
+  je to, co běží na Pi; rozpracované větve se do něj neslučují.
 - Hlavní smyčka (asyncio) se nesmí blokovat: SQLite přes vlákno zapisovače,
   čtení mimo smyčku. SD karta je pomalá.
 - Nikdy nevypisovat tokeny, cookies ani celé adresy streamů.

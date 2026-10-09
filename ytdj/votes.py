@@ -37,7 +37,9 @@ Import playlistu (ytdj/imports.py): playlist člověka = jeho 👍 každé
 písničce v něm (Ballot.src = id importu). Takové 👍 se neukládají do `votes`,
 počítají se z importu (`_resync`): vlastní 👍/👎 člověka má vždycky přednost,
 vlastní stažení jen když je novější než písnička v importu. Import dává 👍
-jen skladbám, nikdy celému interpretovi.
+jen skladbám, nikdy celému interpretovi. Písnička, kterou člověk z importu
+vyřadil (`PlaylistImport.removed`), v `items` není — 👍 z toho importu
+nenese; její vlastní hlas ani 👍 z jiného jeho importu se tím nemění.
 
 Férovost oblíbených kanceláře (`fair_order`): "pusť oblíbené" i výběr pro DJ
 berou oblíbené po lidech na střídačku — každý, kdo dal 👍, přispěje zhruba
@@ -223,10 +225,19 @@ class PlaylistImport:
     skipped: int = 0
     cut: int = 0
     items: dict = field(default_factory=dict)  # klíč → ImportItem, v pořadí playlistu
+    label: str = ""  # vlastní název od člověka; "" = platí `title` z YouTube
+    # klíč → ImportItem písničky, kterou člověk vyřadil (`added` = kdy);
+    # v `items` není, Obnovit ji nevrátí
+    removed: dict = field(default_factory=dict)
+
+    @property
+    def name(self) -> str:
+        """Název k zobrazení: vlastní, jinak z YouTube."""
+        return self.label or self.title
 
     def meta(self) -> tuple:
         return (self.id, self.client, self.who, self.playlist_id, self.title, self.created,
-                self.fetched, self.total, self.skipped, self.cut)
+                self.fetched, self.total, self.skipped, self.cut, self.label)
 
     def rows(self) -> list[tuple]:
         return [(it.key, it.video_id, it.artist, it.title, it.added, it.pos)
@@ -337,24 +348,33 @@ class VoteBook:
         if aread is not None and hasattr(self.store, "all_imports"):
             try:
                 meta, items = await aread("all_imports")
+                removed = (await aread("import_removed_rows")
+                           if hasattr(self.store, "import_removed_rows") else ())
             except Exception:
                 log.exception("importy playlistů se nenačetly")
             else:
-                self.load_imports(meta, items)
+                self.load_imports(meta, items, removed)
         return self
 
-    def load_imports(self, meta: Iterable[tuple], items: Iterable[tuple]) -> "VoteBook":
-        """Řádky `Store.all_imports()` → importy a jejich 👍 (po `load`)."""
+    def load_imports(self, meta: Iterable[tuple], items: Iterable[tuple],
+                     removed: Iterable[tuple] = ()) -> "VoteBook":
+        """Řádky `Store.all_imports()` (+ `import_removed_rows()`) → importy
+        a jejich 👍 (po `load`). Řádek importu smí být i starý, bez názvu."""
         by_id: dict[str, PlaylistImport] = {}
-        for iid, client, who, pid, title, created, fetched, total, skipped, cut in meta:
+        for iid, client, who, pid, title, created, fetched, total, skipped, cut, *more in meta:
             if iid in self.imports or not client:
                 continue  # import z doby načítání je novější
             by_id[iid] = PlaylistImport(iid, client, who or "", pid, title or "", float(created),
                                         float(fetched), int(total or 0), int(skipped or 0),
-                                        int(cut or 0))
+                                        int(cut or 0), label=str(more[0] or "") if more else "")
+        for iid, key, vid, artist, title, when, pos in removed:
+            imp = by_id.get(iid)
+            if imp is not None and key:
+                imp.removed[key] = ImportItem(key, vid or "", artist or "", title or "",
+                                              float(when), int(pos or 0))
         for iid, key, vid, artist, title, added, pos in items:
             imp = by_id.get(iid)
-            if imp is not None and key and key not in imp.items:
+            if imp is not None and key and key not in imp.items and key not in imp.removed:
                 imp.items[key] = ImportItem(key, vid or "", artist or "", title or "",
                                             float(added), int(pos or 0))
         for imp in by_id.values():
@@ -389,6 +409,32 @@ class VoteBook:
             self._imports_by.pop(imp.client, None)
         self._resync(imp.client, set(imp.items))
         return imp
+
+    def set_import_song(self, import_id: str, key: str, removed: bool,
+                        now: float | None = None) -> ImportItem | None:
+        """Vyřadí písničku z importu (`removed`), nebo ji do něj vrátí, a
+        přepočítá 👍 toho člověka u té jedné písničky. Vlastní hlas ani 👍
+        z jiného jeho importu se nemění (`_resync`). Vrací položku; None,
+        když tam, odkud se má vzít, není."""
+        imp = self.imports.get(import_id)
+        if imp is None:
+            return None
+        src, dst = (imp.items, imp.removed) if removed else (imp.removed, imp.items)
+        it = src.pop(key, None)
+        if it is None:
+            return None
+        # vrácená písnička platí od teď: novější než dřívější vlastní stažení
+        it = ImportItem(it.key, it.video_id, it.artist, it.title,
+                        self.clock() if now is None else now, it.pos)
+        dst[key] = it
+        if not removed:  # zpátky na své místo v pořadí playlistu
+            imp.items = dict(sorted(imp.items.items(), key=lambda kv: kv[1].pos))
+        self._resync(imp.client, (key,))
+        return it
+
+    def touch(self) -> None:
+        """Změnilo se něco, co seznamy ukazují (název importu) — ať se přepočítají."""
+        self._version += 1
 
     def _import_ballot(self, voter: str, key: str) -> Ballot | None:
         """👍 z prvního (nejstaršího) importu člověka, který písničku má."""
@@ -846,7 +892,7 @@ class VoteBook:
              "tag": tag_of(b.voter)}
         if b.src:  # 👍 z importu: "z playlistu ‚Název'"
             imp = self.imports.get(b.src)
-            v["playlist"] = imp.title if imp is not None and imp.title else "playlist"
+            v["playlist"] = imp.name if imp is not None and imp.name else "playlist"
         return v
 
     def item(self, target: str, key: str, viewer: str = "") -> dict:
@@ -1160,7 +1206,7 @@ class VoteBook:
         if asker:
             mine = sum(1 for (t, _k), bs in self.items.items()
                        if t == SONG and (b := bs.get(asker)) is not None and b.vote > 0)
-            lists = [i.title for i in self._imports_by.get(asker, ())]
+            lists = [i.name for i in self._imports_by.get(asker, ())]
             out += (f" Kdo píše, má {mine} vlastních oblíbených"
                     + (f" (i z playlistu {', '.join(f'‚{x}‘' for x in lists[:2])})" if lists else "")
                     + "." if mine else " Kdo píše, vlastní oblíbené nemá.")
@@ -1372,6 +1418,8 @@ def wire(app: Any) -> VoteBook:
     from .imports import Importer  # import playlistů do oblíbených (POZADAVKY #48)
 
     app.imports = Importer(book, app.store, getattr(app, "catalog", None), app.cfg)
+    if wq is not None:
+        app.imports.censor_fn = lambda: wq.censor
     for part in (getattr(app, "pools", None), getattr(app, "dj", None)):
         if part is not None:
             part.votes = book

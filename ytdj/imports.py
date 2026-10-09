@@ -14,7 +14,10 @@ tady je všechno kolem:
     Importer    přidat / obnovit / odebrat / seznam: limit písniček na
                 člověka (`playlist_import_max`), jeden import naráz,
                 načtení ve vlákně s časovým limitem, zápis jednou
-                transakcí přes vlákno zápisů Store
+                transakcí přes vlákno zápisů Store;
+                úpravy vlastního importu (F-HLASY-21…24): písničky
+                importu (`songs`), vyřadit / vrátit jednu písničku
+                (`set_song`), vlastní název (`rename`)
 
 Nic tu nečeká na disk ani na YouTube v event loopu: ytmusicapi běží ve
 vlákně (asyncio.to_thread), zápis jde do fronty Store (`save_import`).
@@ -28,6 +31,7 @@ import logging
 import re
 import secrets
 import time
+import unicodedata
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -35,7 +39,7 @@ from typing import Any, Callable
 from . import telemetry
 from .music import match
 from .music.catalog import RE_VIDEO, Track, to_track
-from .votes import ImportItem, PlaylistImport, VoteBook, song_key, song_keys
+from .votes import SONG, ImportItem, PlaylistImport, VoteBook, song_key, song_keys
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +51,9 @@ RATE_MAX = 6  # importů a obnovení na člověka…
 RATE_WINDOW = 600.0  # …za 10 min
 LONG_S = 15 * 60  # delší „písnička" je mix nebo celé album
 SHORT_S = 30  # kratší je znělka, ukázka
+EDIT_MAX = 120  # úprav importu (vyřadit / vrátit písničku, přejmenovat) na člověka…
+EDIT_WINDOW = 600.0  # …za 10 min
+LABEL_MAX = 60  # znaků vlastního názvu importu
 
 # id playlistu: PL…(18/34), OLAK5uy_…(41, album), RDCLAK5uy_…(43, výběr YouTube Music),
 # UU…(nahraná videa kanálu); browse id má navíc VL na začátku
@@ -247,6 +254,9 @@ class Importer:
         self._lock: asyncio.Lock | None = None  # jeden import naráz (Pi, YouTube)
         self._busy: set[str] = set()
         self._rate: dict[str, deque[float]] = {}
+        self._edits: dict[str, deque[float]] = {}
+        # kancelářský filtr slov pro vlastní názvy (wire dodá ten živý z nastavení)
+        self.censor_fn: Callable[[], Any] | None = None
 
     def cap(self) -> int:
         return max(1, int(getattr(self.cfg, "playlist_import_max", MAX_DEFAULT) or MAX_DEFAULT))
@@ -261,7 +271,10 @@ class Importer:
         for imp in self.book.imports.values():
             rows.append({
                 "id": imp.id,
-                "title": imp.title,
+                "title": imp.name,
+                "yt_title": imp.title,
+                "custom": bool(imp.label),
+                "removed": len(imp.removed),
                 "who": self.book._label(imp.client, imp.who),
                 "tag": tag_of(imp.client),
                 "playlist_id": imp.playlist_id,
@@ -306,7 +319,7 @@ class Importer:
         fetched = await self._fetch(client, old.playlist_id)
         old = self._own(client, import_id, "Obnovit")  # mezitím ho mohl odebrat
         imp = PlaylistImport(old.id, client, old.who, old.playlist_id, fetched.title or old.title,
-                             old.created, self.clock())
+                             old.created, self.clock(), label=old.label)
         return self._apply(imp, fetched, old, "again" if again else "refresh")
 
     def remove(self, client: str, import_id: str) -> dict:
@@ -319,10 +332,156 @@ class Importer:
         telemetry.event("vote.import", action="remove", voter=client[-6:], who=imp.who or None,
                         playlist=imp.playlist_id, songs=len(imp.items), active=active)
         return {"ok": True, "removed": active, "songs": len(imp.items),
-                "message": f"Playlist ‚{imp.title}‘ odebrán — {_n(active, 'písnička', 'písničky', 'písniček')} "
+                "message": f"Playlist ‚{imp.name}‘ odebrán — {_n(active, 'písnička', 'písničky', 'písniček')} "
                            "už nemá tvůj 👍 (vlastní hlasy zůstaly)."}
 
+    # ---- úpravy vlastního importu (jukebox #31, F-HLASY-21…24) ----
+
+    def songs(self, import_id: str, viewer: str = "") -> dict:
+        """GET /api/votes/imports/{id}/songs — písničky importu v pořadí
+        playlistu a za nimi vyřazené. U každé, jak je na tom 👍 majitele
+        (`mine`) a co o ní rozhodla kancelář (`status`, `up`, `down`):
+
+            mine: "playlist"  👍 z tohohle playlistu platí
+                  "other"     👍 jí dává jiný playlist téhož člověka (`via`)
+                  "up"        má od něj vlastní 👍
+                  "down"      má od něj vlastní 👎 (ten platí)
+                  "withdrawn" vlastní hlas stáhl později, než ji playlist přinesl
+                  "removed"   z playlistu ji vyřadil
+        """
+        imp = self.book.imports.get(str(import_id or ""))
+        if imp is None:
+            raise ImportRefused("Tenhle playlist tu už není.", 404, reason="missing")
+        rows = [self._song_row(imp, it, False) for it in imp.items.values()]
+        rows += [self._song_row(imp, it, True)
+                 for it in sorted(imp.removed.values(), key=lambda i: i.pos)]
+        return {"import": self._row(imp, viewer), "songs": rows}
+
+    def set_song(self, client: str, import_id: str, key: str, removed: bool) -> dict:
+        """Vyřadit jednu písničku z vlastního importu, nebo ji vrátit."""
+        imp = self._own(client, import_id, "Upravovat")
+        key = str(key or "")
+        src, dst = (imp.items, imp.removed) if removed else (imp.removed, imp.items)
+        if key not in src:
+            if key in dst:  # dvojí ťuknutí: už to tak je
+                return {"ok": True, "changed": False,
+                        "song": self._song_row(imp, dst[key], removed),
+                        "import": self._row(imp, client),
+                        "message": "Už je vyřazená." if removed else "Už je zpátky."}
+            raise ImportRefused("Tahle písnička v playlistu není — zkus ho otevřít znovu.", 404,
+                                reason="no_song")
+        self._edit_check(client)
+        if not removed:
+            mine = self.book.import_keys(client)
+            if key not in mine and len(mine) >= self.cap():
+                raise ImportRefused(
+                    f"Z playlistů už máš {self.cap()} písniček, víc na člověka nejde — "
+                    "napřed nějakou vyřaď.", 409, reason="full")
+        old = src[key]
+        it = self.book.set_import_song(imp.id, key, removed, self.clock())
+        if it is None:  # nemá nastat (kontrola výš, bez await mezi tím)
+            raise ImportRefused("Tahle písnička v playlistu není.", 404, reason="no_song")
+        if self.store is not None:
+            with contextlib.suppress(Exception):
+                if removed:
+                    self.store.remove_import_song(
+                        imp.id, (old.key, old.video_id, old.artist, old.title, old.added, old.pos),
+                        it.added)
+                else:
+                    self.store.restore_import_song(
+                        imp.id, (it.key, it.video_id, it.artist, it.title, it.added, it.pos))
+        row = self._song_row(imp, it, removed)
+        name = f"{it.artist} — {it.title}" if it.artist else it.title
+        if removed:
+            msg = f"‚{name}‘ už z playlistu ‚{imp.name}‘ tvůj 👍 nemá"
+            b = self.book.items.get((SONG, key), {}).get(client)
+            if b is not None and b.src:
+                other = self.book.imports.get(b.src)
+                msg += f" — dál jí ho ale dává playlist ‚{other.name if other else 'jiný'}‘."
+            elif b is not None and b.vote > 0:
+                msg += " — tvůj vlastní 👍 jí zůstal."
+            else:
+                msg += ". Vrátit ji můžeš tamtéž."
+        elif row["mine"] == "playlist":
+            msg = f"‚{name}‘ je zpátky v playlistu ‚{imp.name}‘ a má tvůj 👍."
+        elif row["mine"] == "down":
+            msg = f"‚{name}‘ je zpátky v playlistu ‚{imp.name}‘ — platí ale tvůj vlastní 👎."
+        else:
+            msg = f"‚{name}‘ je zpátky v playlistu ‚{imp.name}‘."
+        telemetry.event("vote.import_edit", action="song_remove" if removed else "song_restore",
+                        voter=client[-6:], who=imp.who or None, playlist=imp.playlist_id,
+                        song=telemetry.clip(name, 80), mine=row["mine"],
+                        songs=len(imp.items), removed=len(imp.removed))
+        return {"ok": True, "changed": True, "song": row, "import": self._row(imp, client),
+                "message": msg}
+
+    def rename(self, client: str, import_id: str, label: Any) -> dict:
+        """Vlastní název importu; prázdný = zpátky název z YouTube."""
+        imp = self._own(client, import_id, "Přejmenovat")
+        label = unicodedata.normalize("NFC", " ".join(str(label or "").split()))
+        label = "".join(c for c in label if unicodedata.category(c)[0] != "C")
+        if len(label) > LABEL_MAX:
+            raise ImportRefused(f"Název může mít nejvýš {LABEL_MAX} znaků.", 400, reason="long")
+        censor = self.censor_fn() if self.censor_fn is not None else self.book.censor
+        if label and censor is not None and getattr(censor, "enabled", True) \
+                and censor.clean(label) != label:
+            raise ImportRefused("Tenhle název by v kanceláři neobstál — zkus prosím jiný.", 400,
+                                reason="rude")
+        if label == imp.title:
+            label = ""  # totéž co na YouTube = žádný vlastní název
+        if label == imp.label:
+            return {"ok": True, "changed": False, "import": self._row(imp, client),
+                    "message": f"Playlist se jmenuje ‚{imp.name}‘."}
+        self._edit_check(client)
+        before = imp.name
+        imp.label = label
+        self.book.touch()
+        if self.store is not None:
+            with contextlib.suppress(Exception):
+                self.store.rename_import(imp.id, label)
+        telemetry.event("vote.import_edit", action="rename", voter=client[-6:],
+                        who=imp.who or None, playlist=imp.playlist_id, custom=bool(label),
+                        title=telemetry.clip(imp.name, 80))
+        msg = (f"Playlist ‚{before}‘ se teď jmenuje ‚{imp.name}‘ — Obnovit název nezmění."
+               if label else f"Playlist se zase jmenuje jako na YouTube: ‚{imp.name}‘.")
+        return {"ok": True, "changed": True, "import": self._row(imp, client), "message": msg}
+
     # ---- vnitřek ----
+
+    def _row(self, imp: PlaylistImport, viewer: str = "") -> dict | None:
+        return next((r for r in self.listing(viewer)["imports"] if r["id"] == imp.id), None)
+
+    def _song_row(self, imp: PlaylistImport, it: ImportItem, removed: bool) -> dict:
+        book = self.book
+        b = book.items.get((SONG, it.key), {}).get(imp.client)
+        row: dict[str, Any] = {"key": it.key, "artist": it.artist, "title": it.title,
+                               "video_id": it.video_id, "removed": removed}
+        if removed:
+            row["mine"] = "removed"
+            row["at"] = round(it.added, 1)
+        elif b is None:
+            row["mine"] = "withdrawn"  # nemá nastat; bez 👍 = jako stažený
+        elif b.src == imp.id:
+            row["mine"] = "playlist"
+        elif b.src:
+            other = book.imports.get(b.src)
+            row["mine"] = "other"
+            row["via"] = other.name if other is not None else "playlist"
+        else:
+            row["mine"] = "up" if b.vote > 0 else "down" if b.vote < 0 else "withdrawn"
+        t = book.tally(SONG, it.key)
+        row["up"], row["down"], row["status"] = t.up, t.down, t.status
+        return row
+
+    def _edit_check(self, client: str) -> None:
+        now = self.mono()
+        q = self._edits.setdefault(client, deque())
+        while q and now - q[0] > EDIT_WINDOW:
+            q.popleft()
+        if len(q) >= EDIT_MAX:
+            raise ImportRefused("Moc úprav najednou — zkus to prosím za pár minut.", 429,
+                                reason="rate")
+        q.append(now)
 
     def _own(self, client: str, import_id: str, what: str) -> PlaylistImport:
         imp = self.book.imports.get(str(import_id or ""))
@@ -383,8 +542,15 @@ class Importer:
         others = book.import_keys(client, exclude=imp.id)
         room = self.cap() - len(others)
         used = doubled = over = 0
+        kept_out: set[str] = set()
+        if old is not None:
+            # co člověk vyřadil, zůstává vyřazené — i když to v playlistu zrovna není
+            imp.removed = dict(old.removed)
         for pos, t in enumerate(fetched.tracks):
             key = book.song_key_for(t)
+            if key in imp.removed:
+                kept_out.add(key)
+                continue
             if key in imp.items:
                 doubled += 1  # jiná nahrávka / verze téže písničky v playlistu podruhé
                 continue
@@ -422,7 +588,7 @@ class Importer:
         report = {
             "ok": True,
             "action": action,
-            "title": imp.title,
+            "title": imp.name,
             "songs": len(imp.items),
             "active": active,
             "new": len(added),
@@ -430,18 +596,20 @@ class Importer:
             "had": had,
             "own_down": own_down,
             "doubled": doubled,
+            "kept_out": len(kept_out),
             "unavailable": fetched.unavailable,
             "non_music": fetched.non_music,
             "cut": imp.cut,
             "max": self.cap(),
         }
         report["message"] = self._message(report)
-        report["import"] = next((r for r in self.listing(client)["imports"] if r["id"] == imp.id), None)
+        report["import"] = self._row(imp, client)
         telemetry.event("vote.import", action=action, voter=client[-6:], who=imp.who or None,
                         playlist=imp.playlist_id, title=telemetry.clip(imp.title, 80),
                         total=imp.total, seen=fetched.seen, songs=len(imp.items), active=active,
                         new=len(added), gone=len(gone), had=had, own_down=own_down,
-                        doubled=doubled, unavailable=fetched.unavailable,
+                        doubled=doubled, kept_out=len(kept_out),
+                        unavailable=fetched.unavailable,
                         non_music=fetched.non_music, cut=imp.cut, fetch_ms=fetched.took_ms,
                         apply_ms=int((time.monotonic() - t0) * 1000))
         return report
@@ -467,6 +635,8 @@ class Importer:
             notes.append(f"u {r['own_down']} platí tvůj 👎")
         if r["doubled"]:
             notes.append(f"{r['doubled']} v playlistu dvakrát")
+        if n := r.get("kept_out"):
+            notes.append(f"{n} {'vyřazená zůstává' if n == 1 else 'vyřazené zůstávají' if n <= 4 else 'vyřazených zůstává'} mimo")
         skipped = r["unavailable"] + r["non_music"]
         if skipped:
             notes.append(f"{skipped} vynecháno (nedostupné nebo to nejsou písničky)")

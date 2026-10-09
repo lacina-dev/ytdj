@@ -33,12 +33,21 @@ Položka (item) — stejná v POST, GET /api/votes i v detailu:
     GET /api/votes navíc "counts": celé počty seznamů (seznamy mají nejvýš 100).
 
 Import playlistu do oblíbených (ytdj/imports.py) — 👍 každé písničce z něj:
-    GET    /api/votes/imports?client=        {"imports": [{id, title, who, tag, url,
-                                               songs, active, skipped, cut, created,
-                                               fetched, mine}], "max": 300, "mine_songs": n}
+    GET    /api/votes/imports?client=        {"imports": [{id, title, yt_title, custom,
+                                               who, tag, url, songs, active, removed,
+                                               skipped, cut, created, fetched, mine}],
+                                              "max": 300, "mine_songs": n}
     POST   /api/votes/imports                {"client", "url"} → zpráva s počty
     POST   /api/votes/imports/{id}/refresh   {"client"}  (jen vlastní, jinak 403)
     DELETE /api/votes/imports/{id}           {"client"}  (jen vlastní, jinak 403)
+    GET    /api/votes/imports/{id}/songs?client=   {"import": {…}, "songs": [{key, artist,
+                                               title, video_id, removed, mine, via?, at?,
+                                               up, down, status}]}  — vidí každý;
+                                               mine viz Importer.songs
+    POST   /api/votes/imports/{id}/songs     {"client", "key", "removed": true|false}
+                                             vyřadit / vrátit jednu písničku (jen vlastní)
+    POST   /api/votes/imports/{id}/rename    {"client", "label"}  ("" = název z YouTube;
+                                             jen vlastní)
     Seznamy importů nejsou v /api/status (snímek zůstává malý).
 """
 
@@ -216,11 +225,22 @@ def routes(srv: "WebServer") -> list[Route]:
                 out = await imp.add(cid, who, str(data.get("url") or data.get("text") or "")[:500])
             elif action == "refresh":
                 out = await imp.refresh(cid, import_id)
+            elif action == "song":
+                if not isinstance(data.get("removed"), bool):
+                    return _err("Chybí, jestli písničku vyřadit (\"removed\": true), "
+                                "nebo vrátit (false).", 400)
+                out = imp.set_song(cid, import_id, str(data.get("key") or "")[:200],
+                                   data["removed"])
+            elif action == "rename":
+                out = imp.rename(cid, import_id, str(data.get("label") or "")[:200])
             else:
                 out = imp.remove(cid, import_id)
         except ImportRefused as exc:
+            if action in ("song", "rename"):
+                telemetry.event("vote.import_rejected", reason=exc.reason, status=exc.status,
+                                **rec)
             return _err(str(exc), exc.status)
-        if action != "add":
+        if action in ("refresh", "remove") or (action == "song" and data.get("removed")):
             # ubyly 👍 → skladba mohla spadnout pod vyřazení: úklid podkresu jako u hlasu
             try:
                 out["effect"] = await enforce(app, reason=f"import:{action}")
@@ -238,6 +258,24 @@ def routes(srv: "WebServer") -> list[Route]:
     async def import_remove(request: Request) -> Response:
         return await _import_call(request, "remove", request.path_params.get("iid", ""))
 
+    async def import_song(request: Request) -> Response:
+        return await _import_call(request, "song", request.path_params.get("iid", ""))
+
+    async def import_rename(request: Request) -> Response:
+        return await _import_call(request, "rename", request.path_params.get("iid", ""))
+
+    async def import_songs(request: Request) -> Response:
+        imp = importer()
+        if imp is None:
+            return _err("Import playlistů tu není.", 404)
+        from ..imports import ImportRefused
+
+        try:
+            return JSONResponse(imp.songs(request.path_params.get("iid", ""),
+                                          clean_cid(request.query_params.get("client"))))
+        except ImportRefused as exc:
+            return _err(str(exc), exc.status)
+
     async def import_list(request: Request) -> Response:
         imp = importer()
         if imp is None:
@@ -251,6 +289,9 @@ def routes(srv: "WebServer") -> list[Route]:
         Route("/api/votes/imports", _safe(import_list), methods=["GET"]),
         Route("/api/votes/imports", _safe(import_add), methods=["POST"]),
         Route("/api/votes/imports/{iid}/refresh", _safe(import_refresh), methods=["POST"]),
+        Route("/api/votes/imports/{iid}/songs", _safe(import_songs), methods=["GET"]),
+        Route("/api/votes/imports/{iid}/songs", _safe(import_song), methods=["POST"]),
+        Route("/api/votes/imports/{iid}/rename", _safe(import_rename), methods=["POST"]),
         Route("/api/votes/imports/{iid}", _safe(import_remove), methods=["DELETE"]),
     ]
 

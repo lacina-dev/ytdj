@@ -140,6 +140,23 @@ class YoutubeLoudness(unittest.TestCase):
         silly = {"playerConfig": {"audioConfig": {"trackAbsoluteLoudnessLkfs": -90.0}}}
         self.assertIsNone(L.pick(L.summarize([silly]), None))
 
+    def test_premium_answer_with_four_clients_gives_the_value_of_the_played_format(self) -> None:
+        # Hlášení #30 (Europe – The Final Countdown, NNiTxUEnmKI): souhrn skutečné
+        # přihlášené odpovědi 9. 10. 2026 — čtyři klienti, formát Premium 774 jen
+        # u dvou, jeden z nich bez cíle. ffmpeg ebur128 na tomtéž formátu: −10,9 LUFS.
+        summary = [
+            {"absolute": -10.91, "perceptual": -10.91, "target": -14.0, "formats": {}},
+            {"absolute": None, "perceptual": -10.91, "target": None,
+             "formats": {"140": 3.0900002, "141": 3.0900002, "251": 3.08, "774": 3.08}},
+            {"absolute": -10.91, "perceptual": -10.91, "target": -14.0,
+             "formats": {"140": 3.0900002, "251": 3.08}},
+            {"absolute": -10.91, "perceptual": -10.91, "target": -7.0,
+             "formats": {"140": -3.9099998, "141": -3.9099998, "251": -3.92, "774": -3.92}},
+        ]
+        for fid in ("774", "251", "141"):
+            self.assertAlmostEqual(L.pick(summary, fid), -10.91, delta=0.02, msg=fid)
+        self.assertEqual(L.gain_db(L.pick(summary, "774"), -12), -1.1)  # jako na Pi 8. 10.
+
     def test_tag_and_read_roundtrip(self) -> None:
         data = json.dumps({"id": "x", "formats": [{"url": "u" * 5000}], "note": {"a": 1}})
         tagged = L.tag(data, L.KEY_LOUD, -8.04)

@@ -344,11 +344,23 @@ class Running(unittest.TestCase):
         self.until(lambda: a.view().state == "playing" and a.screens and a.screens[0].calls)
         self.assertEqual(a.view().title, self.fake.snapshot()["current"]["title"])
         self.assertEqual(a.api.agent, "ytdj-tv")
-        time.sleep(0.3)
-        calls, px = a.screens[0].calls, a.screens[0].pushed_px
-        time.sleep(1.6)  # server posílá pozici každou chvíli — to se nekreslí
-        self.assertLessEqual(a.screens[0].calls - calls, 2)
-        self.assertLess(a.screens[0].pushed_px - px, 720 * 480 * 0.1)
+        # Jednou za minutu se obraz schválně celý posune a překreslí (péče o
+        # telku, `shift`) a změní se hodiny. Okno, do kterého se trefí celá
+        # minuta, o překreslování kvůli pozici nic neříká — měří se znovu.
+        for _ in range(3):
+            before = a.view()
+            time.sleep(0.3)
+            calls, px = a.screens[0].calls, a.screens[0].pushed_px
+            time.sleep(1.6)  # server posílá pozici každou chvíli — to se nekreslí
+            drawn, pushed = a.screens[0].calls - calls, a.screens[0].pushed_px - px
+            after = a.view()
+            if (before.shift, before.clock) == (after.shift, after.clock):
+                break
+        else:
+            self.fail("třikrát za sebou se do 2 s trefila celá minuta")
+        self.assertLessEqual(drawn, 2)
+        self.assertLess(pushed, 720 * 480 * 0.1)
+        calls = a.screens[0].calls
         # další skladba → překreslí se
         title = a.view().title
         self.fake.control({"action": "next"})

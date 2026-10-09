@@ -432,6 +432,8 @@ class MpvPlayer(Player):
         self._gain_retried: set[int] = set()  # položky už jednou puštěné znovu bez filtru
         self._retry_why: dict[int, str] = {}  # položka → proč se načítá znovu
         self._gain_unsent: tuple | None = None  # cíl, který resolver zatím nepřevzal
+        # přizvednutí tichých pasáží, jak ho zná skript v mpv: (zapnuto, cíl)
+        self._lift_sent: tuple = (False, None)
         # poslední posun ve skladbě: {"entry", "to", "t0"} — stav hned ukáže novou pozici
         self._seek: dict[str, Any] | None = None
 
@@ -503,6 +505,10 @@ class MpvPlayer(Player):
         self._gain_script = self._gain_target() is not None and GAIN_SCRIPT.is_file()
         if self._gain_script:
             args.append(f"--script={GAIN_SCRIPT}")
+        # Přizvednutí tichých pasáží (F-ZVUK-32): jen když je zapnuté, jinak
+        # příkazová řádka mpv zůstává přesně jako bez něj.
+        self._lift_sent = self._gain_lift() if self._gain_script else (False, None)
+        args += [f"--script-opts-append={opt}" for opt in self._lift_opts(self._lift_sent)]
         args += list(self.cfg.mpv_extra_args)
         return args
 
@@ -2111,6 +2117,35 @@ class MpvPlayer(Player):
             target = ytdl_loudness.DEFAULT_TARGET
         return max(GAIN_TARGET_RANGE[0], min(GAIN_TARGET_RANGE[1], target))
 
+    def _gain_lift(self) -> tuple:
+        """Přizvednutí tichých pasáží z nastavení: (True, cíl v LUFS);
+        (False, None) = vypnuto (výchozí) nebo se hlasitost nesrovnává."""
+        target = self._gain_target()
+        on = getattr(self.cfg, "loudness_lift_quiet", False) is True
+        return (True, target) if target is not None and on else (False, None)
+
+    @staticmethod
+    def _lift_opts(lift: tuple) -> list[str]:
+        """Volby skriptu ytdj_gain.lua (script-opts) pro tenhle stav."""
+        on, target = lift
+        if not on:
+            return []
+        return [f"{GAIN_CLIENT}-lift=yes", f"{GAIN_CLIENT}-target={target}"]
+
+    def _push_lift(self) -> None:
+        """Změnu přizvednutí tichých pasáží řekne skriptu v mpv (volby skriptu
+        platí i pro skript načtený později). Od další načtené skladby. Bez IPC."""
+        lift = self._gain_lift()
+        if lift == self._lift_sent or not self.writer:
+            return
+        if not self._gain_script and not lift[0]:
+            self._lift_sent = lift  # skript neběží a nic nechceme: není co říkat
+            return
+        for opt in self._lift_opts(lift) or [f"{GAIN_CLIENT}-lift=no"]:
+            self._post("change-list", "script-opts", "append", opt)
+        self._lift_sent = lift
+        telemetry.event("player.gain_lift", enabled=lift[0], target=lift[1])
+
     def _post(self, *cmd: Any) -> None:
         """Příkaz mpv bez čekání na odpověď — smí se volat i z čtecí smyčky."""
         if not self.writer:
@@ -2134,7 +2169,7 @@ class MpvPlayer(Player):
         """Skript v mpv hlásí, co skladbě nasadil: [videoId, dB, LUFS, odkud,
         stav]. Jedna událost `track.gain` na skladbu. Bez IPC."""
         try:
-            vid, gain, loud, via, state = (list(args) + [""] * 5)[:5]
+            vid, gain, loud, via, state, lift = (list(args) + [""] * 6)[:6]
 
             def num(text: Any) -> float | None:
                 try:
@@ -2161,6 +2196,8 @@ class MpvPlayer(Player):
                 via=via or "none",  # "json" (z resolveru přes mpv) | "message" | "none"
                 state=state,  # ok | limited (zesíleno přes omezovač) | unity | none | broken | unset
                 target=self._gain_target(),
+                # tiché pasáže přizvednuté (F-ZVUK-32); jinak pole chybí
+                **({"lift": True} if lift == "lift" else {}),
             )
         except Exception:
             pass
@@ -2192,6 +2229,7 @@ class MpvPlayer(Player):
         vypnutí platí od další načtené skladby — hrající se nemění."""
         target = self._gain_target()
         if target == self._gain_sent:
+            self._push_lift()
             return
         if (target is not None and not self._gain_script and self.writer is not None
                 and GAIN_SCRIPT.is_file()):
@@ -2208,6 +2246,7 @@ class MpvPlayer(Player):
             elif self._gain_unsent == (target,):
                 return  # resolver nepřevzal (restartuje se): zkusí se znovu, do logu jednou
             self._gain_unsent = None if ok else (target,)
+        self._push_lift()  # až po načtení skriptu; cíl je součást nastavení přizvednutí
         telemetry.event("player.gain_config", enabled=target is not None, target=target,
                         ok=ok, script=self._gain_script)
 
@@ -2433,7 +2472,7 @@ class MpvPlayer(Player):
             if not self._prefetch_now:
                 await asyncio.sleep(PREFETCH_SETTLE)  # fronta se mění po dávkách
             self._prefetch_now = False
-            if self._gain_target() != self._gain_sent:
+            if self._gain_target() != self._gain_sent or self._gain_lift() != self._lift_sent:
                 with suppress(Exception):  # nastavení změněné jinudy než z webu
                     await self.config_changed()
             ahead = self.prefetch_ids()

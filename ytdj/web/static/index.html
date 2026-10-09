@@ -552,6 +552,24 @@
   .ibtn.warn { border-color: color-mix(in srgb, var(--err) 55%, transparent); color: var(--err); }
   .ibtn[disabled] { opacity: .5; cursor: progress; }
   @media (max-width: 480px) { #vImp li { flex-wrap: wrap; } #vImp .acts { width: 100%; } #vImp .ibtn { flex: 1; } }
+  /* úpravy importu (jukebox #31): písničky playlistu, vyřadit / vrátit, vlastní název */
+  #vImp > li > .acts { flex-wrap: wrap; justify-content: flex-end; }
+  #vImp .ibtn[aria-expanded="true"] { background: var(--surface-2); border-color: var(--accent); }
+  #vImp li.impsongs { display: block; padding: 4px 0 12px; }
+  @media (min-width: 700px) { #vImp li.impsongs { padding-left: 14px; border-left: 2px solid var(--line); margin: 4px 0 10px; } }
+  .impsongs .hint2 { margin: 8px 0 4px; }
+  #vImp .impsongs .list li { padding: 7px 0; flex-wrap: nowrap; }
+  #vImp .impsongs .list li .acts { width: auto; }
+  #vImp .impsongs .list li .ibtn { flex: none; }
+  .impsongs .list li.gone .t, .impsongs .list li.gone .a { opacity: .6; }
+  #vImp .impsongs .list li.sep { display: block; padding: 12px 0 4px; border-bottom: 0; font-size: .78rem; font-weight: 650;
+                           color: var(--text-faint); text-transform: uppercase; letter-spacing: .08em; }
+  .impsongs .more { display: block; width: 100%; margin-top: 8px; }
+  .impren { display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 0 4px; }
+  .impren input { flex: 1 1 180px; min-width: 0; min-height: 44px; padding: 8px 12px; border-radius: 11px;
+                  border: 1px solid var(--line); background: var(--surface); font-size: 1rem; }
+  .impren input:focus { outline: none; border-color: var(--accent); }
+  @media (max-width: 480px) { .impren input { flex-basis: 100%; } }
   .quick { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
   .quick .btn { flex: 0 1 auto; }
   .linkbtn { border: 0; background: none; padding: 10px 12px; min-height: 44px; color: var(--text-faint);
@@ -2791,8 +2809,11 @@
       if (!vel.imp.children.length) vel.imp.innerHTML = '<li class="empty">Playlisty teď nejde načíst.</li>';
     }
   }
-  function renderImports() {
+  function renderImports(force) {
+    // rozepsaný název nepřekreslovat (stránka se každých 30 s obnovuje)
+    if (V.impRename && !force && vel.imp.querySelector(".impren")) return;
     var D = V.imports || {}, list = D.imports || [];
+    if (V.impOpen && !list.some(function (i) { return i.id === V.impOpen; })) { V.impOpen = ""; V.impSongs = null; }
     var mine = list.filter(function (i) { return i.mine; }).length;
     vel.impN.textContent = list.length ? "· " + list.length : "";
     if (D.max) {
@@ -2802,13 +2823,84 @@
     }
     vel.imp.innerHTML = list.length ? list.map(function (it) {
       var n = it.songs + " " + plural(it.songs, "písnička", "písničky", "písniček");
-      var sub = (it.mine ? "tvůj" : esc(it.who)) + " · " + n + " · " + esc(when(it.created)) +
+      var sub = (it.mine ? "tvůj" : esc(it.who)) + " · " + n +
+                (it.removed ? " (" + it.removed + " " + plural(it.removed, "vyřazená", "vyřazené", "vyřazených") + ")" : "") +
+                " · " + esc(when(it.created)) +
                 (it.fetched - it.created > 60 ? " · obnoveno " + esc(when(it.fetched)) : "");
-      var acts = it.mine ? '<button class="ibtn" type="button" data-imp="refresh:' + esc(it.id) + '">Obnovit</button>' +
-                           '<button class="ibtn" type="button" data-imp="remove:' + esc(it.id) + '">Odebrat</button>' : "";
-      return '<li><span class="meta"><a class="t" href="' + esc(it.url) + '" target="_blank" rel="noopener">' + esc(it.title) + "</a>" +
-             '<span class="a">' + sub + "</span></span>" + (acts ? '<span class="acts">' + acts + "</span>" : "") + "</li>";
+      var open = V.impOpen === it.id, id = esc(it.id);
+      var acts = '<button class="ibtn" type="button" data-imp="songs:' + id + '" aria-expanded="' + (open ? "true" : "false") +
+                 '">' + (open ? "Zavřít" : "Písničky") + "</button>" +
+                 (it.mine ? '<button class="ibtn" type="button" data-imp="rename:' + id + '">Přejmenovat</button>' +
+                            '<button class="ibtn" type="button" data-imp="refresh:' + id + '">Obnovit</button>' +
+                            '<button class="ibtn" type="button" data-imp="remove:' + id + '">Odebrat</button>' : "");
+      var head = it.mine && V.impRename === it.id
+        ? '<form class="impren" data-ren="' + id + '" novalidate><input type="text" maxlength="60" autocomplete="off" value="' +
+          esc(it.title) + '" aria-label="Název playlistu">' +
+          '<button class="ibtn" type="submit">Uložit</button>' +
+          '<button class="ibtn" type="button" data-imp="renx:' + id + '">Zrušit</button></form>' +
+          '<span class="a">Na YouTube se jmenuje ‚' + esc(it.yt_title || it.title) + "‘ — prázdný název ho vrátí. Obnovit tvůj název nezmění.</span>"
+        : '<a class="t" href="' + esc(it.url) + '" target="_blank" rel="noopener">' + esc(it.title) + "</a>" +
+          '<span class="a">' + sub + "</span>";
+      return '<li><span class="meta">' + head + '</span><span class="acts">' + acts + "</span></li>" +
+             (open ? '<li class="impsongs">' + impSongsHtml(it) + "</li>" : "");
     }).join("") : '<li class="empty">Zatím nikdo nepřidal playlist.</li>';
+  }
+
+  /* písničky jednoho playlistu: vidí je každý, vyřadit / vrátit smí jen ten, kdo ho importoval */
+  var IMP_PAGE = 100;
+  function impSongRow(r, i, mine) {
+    var chips = "";
+    if (r.mine === "other") chips += '<span class="vs low">👍 už z playlistu ‚' + esc(r.via || "") + "‘</span>";
+    else if (r.mine === "up") chips += '<span class="vs fav">' + (mine ? "tvůj " : "") + "vlastní 👍</span>";
+    else if (r.mine === "down") chips += '<span class="vs pend">' + (mine ? "tvůj " : "") + "vlastní 👎 — 👍 z playlistu neplatí</span>";
+    else if (r.mine === "withdrawn") chips += '<span class="vs low">👍 stažený</span>';
+    if (r.status === "banned") chips += '<span class="vs ban">vyřazená hlasováním</span>';
+    var act = !mine ? "" : '<span class="acts"><button class="ibtn" type="button" data-song="' + i + '" aria-label="' +
+              (r.removed ? "Vrátit do playlistu: " : "Vyřadit z playlistu: ") + esc(r.title) + '">' +
+              (r.removed ? "Vrátit" : "Vyřadit") + "</button></span>";
+    return '<li class="' + (r.removed ? "gone" : "") + (r.status === "banned" ? " banned-row" : "") + '"><span class="meta">' +
+           '<span class="t">' + esc(r.title) + '</span><span class="a">' + esc(r.artist) + "</span>" +
+           (chips ? '<span class="vss">' + chips + "</span>" : "") + "</span>" + act + "</li>";
+  }
+  function impSongsHtml(it) {
+    var D = V.impSongs;
+    if (!D || D.id !== it.id) return '<p class="hint2">' + (V.impSongsErr ? esc(V.impSongsErr) : "Načítám písničky…") + "</p>";
+    var rows = D.songs || [], shown = V.impShown || IMP_PAGE, live = "", gone = "", nLive = 0, nGone = 0;
+    rows.forEach(function (r, i) {
+      if (r.removed) { nGone++; gone += impSongRow(r, i, it.mine); }
+      else if (nLive++ < shown) live += impSongRow(r, i, it.mine);
+    });
+    var hint = it.mine
+      ? "Každá písnička tu má tvůj 👍. Která se do kanceláře nehodí, tu vyřaď — Obnovit ji nevrátí, vrátit ji můžeš ty."
+      : "Každá písnička tu má 👍 od " + esc(it.who) + ". Upravovat playlist může jen ten, kdo ho přidal.";
+    return '<p class="hint2">' + hint + '</p><ul class="list">' +
+           (live || '<li class="empty">V playlistu nezbyla žádná písnička.</li>') + "</ul>" +
+           (nLive > shown ? '<button class="ibtn more" type="button" data-imp="more:' + esc(it.id) + '">Ukázat dalších ' +
+                            Math.min(IMP_PAGE, nLive - shown) + " (zbývá " + (nLive - shown) + ")</button>" : "") +
+           (nGone ? '<ul class="list"><li class="sep">Vyřazené z playlistu · ' + nGone + "</li>" + gone + "</ul>" : "");
+  }
+  async function loadImpSongs(id) {
+    try {
+      var res = await fetch("/api/votes/imports/" + encodeURIComponent(id) + "/songs?client=" + encodeURIComponent(S.client),
+                            { cache: "no-store" });
+      var d = await res.json();
+      if (!res.ok) throw new Error(d && d.error || "");
+      if (V.impOpen !== id) return;
+      V.impSongs = { id: id, songs: d.songs || [] };
+      V.impSongsErr = "";
+    } catch (e) {
+      if (V.impOpen !== id) return;
+      V.impSongsErr = e.message || "Písničky teď nejde načíst — jukebox neodpovídá.";
+    }
+    renderImports();
+  }
+  function impAdopt(row) {  // řádek importu z odpovědi serveru do seznamu
+    var list = (V.imports || {}).imports || [];
+    for (var i = 0; i < list.length; i++) if (row && list[i].id === row.id) list[i] = row;
+  }
+  function impListsSoon() {  // seznamy Oblíbené / Vyřazené až po sérii úprav, ne po každé
+    clearTimeout(V.impSoon);
+    V.impSoon = setTimeout(loadLists, 1500);
   }
   function impSay(text, cls) {
     vel.impMsg.textContent = text || "";
@@ -2841,6 +2933,22 @@
     var b = ev.target.closest && ev.target.closest("[data-imp]");
     if (!b || b.disabled) return;
     var p = b.getAttribute("data-imp").split(":"), act = p[0], id = p[1];
+    if (act === "songs") {
+      var opening = V.impOpen !== id;
+      V.impOpen = opening ? id : "";
+      V.impSongs = null; V.impSongsErr = ""; V.impShown = IMP_PAGE;
+      renderImports();
+      if (opening) loadImpSongs(id);
+      return;
+    }
+    if (act === "more") { V.impShown = (V.impShown || IMP_PAGE) + IMP_PAGE; renderImports(); return; }
+    if (act === "rename" || act === "renx") {
+      V.impRename = act === "rename" ? id : "";
+      renderImports(true);
+      var inp = vel.imp.querySelector(".impren input");
+      if (inp) { inp.focus(); inp.select(); }
+      return;
+    }
     if (act === "remove" && !b.classList.contains("warn")) {  // odebrat až na druhé ťuknutí
       b.classList.add("warn");
       b.textContent = "Opravdu odebrat?";
@@ -2857,7 +2965,55 @@
     } catch (e) {
       impSay(e.status ? e.message : "Jukebox teď neodpovídá.", "err");
     }
+    if (act === "refresh" && V.impOpen === id) loadImpSongs(id);
     loadLists();
+  });
+  /* vyřadit / vrátit jednu písničku otevřeného playlistu */
+  vel.imp.addEventListener("click", async function (ev) {
+    var b = ev.target.closest && ev.target.closest("[data-song]");
+    if (!b || b.disabled || !V.impSongs) return;
+    var id = V.impSongs.id, idx = Number(b.getAttribute("data-song")), r = V.impSongs.songs[idx];
+    if (!r) return;
+    if (!S.nick) { openNick(false, ""); return; }
+    b.disabled = true;
+    try {
+      var d = await postJSON("/api/votes/imports/" + encodeURIComponent(id) + "/songs",
+                             { client: S.client, key: r.key, removed: !r.removed });
+      toast(d.message || "Hotovo.");
+      impAdopt(d.import);
+      if (V.impSongs && V.impSongs.id === id) {
+        if (d.song && d.song.removed) {  // vyřazená se přesune dolů mezi vyřazené
+          V.impSongs.songs.splice(idx, 1);
+          V.impSongs.songs.push(d.song);
+          renderImports();
+        } else {
+          await loadImpSongs(id);  // vrácená patří zpátky na své místo v pořadí
+        }
+      }
+      impListsSoon();
+    } catch (e) {
+      toast(e.status ? e.message : "Jukebox teď neodpovídá — nic se nezměnilo.", true);
+      if (b.isConnected) b.disabled = false;
+    }
+  });
+  vel.imp.addEventListener("submit", async function (ev) {
+    var f = ev.target.closest && ev.target.closest("[data-ren]");
+    if (!f) return;
+    ev.preventDefault();
+    if (!S.nick) { openNick(false, ""); return; }
+    var id = f.getAttribute("data-ren"), inp = f.querySelector("input");
+    try {
+      var d = await postJSON("/api/votes/imports/" + encodeURIComponent(id) + "/rename",
+                             { client: S.client, label: inp.value });
+      impSay(d.message || "Hotovo.", "ok");
+      impAdopt(d.import);
+      V.impRename = "";
+      renderImports(true);
+      impListsSoon();  // „z playlistu ‚…‘" u hlasů
+    } catch (e) {
+      impSay(e.status ? e.message : "Jukebox teď neodpovídá — název se nezměnil.", "err");
+      inp.focus();
+    }
   });
 
   function itemRow(it, idx, list) {

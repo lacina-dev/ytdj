@@ -369,8 +369,8 @@ class Wishes(unittest.TestCase):
                 self.assertTrue(w.tracks)  # nezůstane ticho
                 self.assertFalse({t.id for t in w.tracks} & {t.id for t in tw.OLYMPIC})
                 self.assertEqual(w.kind, "mood")
-                self.assertIn("Od Olympic tu v posledních 5 dnech hrálo všechno, co znám (10 skladeb), "
-                              "a to neopakuju — hraju podobnou hudbu.", w.reply)
+                self.assertIn("Od Olympic tu v posledních 5 dnech hrálo všechno, co znám (10 skladeb) "
+                              "— neopakuju to, hraju podobnou hudbu.", w.reply)
                 self.assertIn(REPEAT_HINT, w.reply)
                 self.assertEqual(rig.pools.mood, "Olympic a podobné")
                 self.assertEqual(rig.pools.artist, "")

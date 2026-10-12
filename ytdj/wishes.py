@@ -261,7 +261,7 @@ def count_tracks(n: int) -> str:
 
 # Jak si říct o to, co pravidlo neopakování vynechalo — smysl pozná DJ (model),
 # tohle je jen příklad, ne povel.
-REPEAT_HINT = "Když to chceš slyšet i tak, napiš to výslovně (třeba „klidně i to, co už hrálo“)."
+REPEAT_HINT = "Chceš-li to i tak, napiš to výslovně (třeba „klidně i to, co už hrálo“)."
 
 
 @dataclass
@@ -1940,8 +1940,8 @@ class WishQueue:
                 intent.mood = f"{label} a podobné"
                 plan.seeds = _dedup(dropped)[:3]
                 cut.notes.append(
-                    f"Od {label} tu {when} hrálo všechno, co znám ({count_tracks(len(dropped))}), "
-                    f"a to neopakuju — hraju podobnou hudbu. {REPEAT_HINT}")
+                    f"Od {label} tu {when} hrálo všechno, co znám ({count_tracks(len(dropped))}) "
+                    f"— neopakuju to, hraju podobnou hudbu. {REPEAT_HINT}")
             elif dropped:
                 cut.notes.append(f"Bez toho, co tu {when} už hrálo ({count_tracks(len(dropped))}).")
         elif intent.kind == "album":

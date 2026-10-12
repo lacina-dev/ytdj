@@ -243,7 +243,11 @@ class ConfigNeedsPin(Base):
                                    ("/api/audio/outputs", "GET"), ("/api/audio/outputs", "HEAD"),
                                    # Chyby a nápady: stav, řešení a mazání (F-HLASENI-05); psát smí každý
                                    ("/api/issues/{iid}/resolve", "POST"), ("/api/issues/{iid}", "DELETE"),
-                                   ("/api/issues/{iid}/comments/{cid}", "DELETE")})
+                                   ("/api/issues/{iid}/comments/{cid}", "DELETE"),
+                                   # přehled účtů a spojení účtů jednoho člověka (F-NICK-12)
+                                   ("/api/identity/admin/accounts", "GET"),
+                                   ("/api/identity/admin/accounts", "HEAD"),
+                                   ("/api/identity/admin/join", "POST")})
         for key in (("/api/prompt", "POST"), ("/api/control", "POST"), ("/api/me", "POST"),
                     ("/api/votes", "POST"), ("/api/status", "GET"), ("/api/requests/{rid}", "DELETE")):
             self.assertIn(key, self.routes)

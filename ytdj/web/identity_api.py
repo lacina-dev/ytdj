@@ -14,6 +14,11 @@
     POST /api/identity/report  {"client", "event": "<druh>", …} → 204
         Co se dělo v prohlížeči (které adresy odpověděly, cesta začala / skončila…) —
         jen kvůli logu; bere jen hodnoty z výčtů a vlastní adresy, s brzdou.
+    GET  /api/identity/admin/accounts?nick=   (PIN správce) přehled účtů: konec id, přezdívka,
+        první a poslední setkání, počty hlasů, playlistů a písniček — nikdy celé id
+    POST /api/identity/admin/join  {"accounts": ["<konec id>", …], "confirm": false|true}
+        (PIN správce) spojí jmenované účty do nejstaršího stejnou cestou jako sync / redeem;
+        bez "confirm" jen vrátí plán a nic nezmění (F-NICK-12, `python -m ytdj.identity`)
     GET  /identity             stránka, přes kterou si adresy účet předají
     GET  /identity.js          společná logika stránek
 
@@ -31,6 +36,8 @@ cookie — jen veřejná značka člověka (F-BEZP-04):
     identity.refused   odmítnutý požadavek: why = not_json | cross_site | origin | unknown_address | no_client
     identity.page      hlášení stránky: event = probe | trip_start | hop | trip_done | trip_lost | skip | moved
     identity.stale     požadavek přišel se starým (spojeným) id — server ho vyřídil za platný účet
+    identity.admin_list  správce si vypsal účty (kolik)
+    identity.admin_join  správce spojil účty (dry = jen plán): kept / joined = konce id, počty
 """
 
 from __future__ import annotations
@@ -50,6 +57,8 @@ if TYPE_CHECKING:
     from .server import WebServer
 
 log = logging.getLogger(__name__)
+
+JOIN_MAX = 12  # účtů v jednom spojení správcem
 
 REFUSALS = {
     "not_json": "Čekám JSON.",
@@ -232,7 +241,59 @@ def routes(srv: "WebServer") -> list[Route]:
                         **clean, **c)
         return Response(status_code=204)
 
+    # ---- správce: přehled účtů a spojení jmenovaných účtů (F-NICK-12) ----
+
+    async def admin_accounts(request: Request) -> Response:
+        idn = ident()
+        rows = idn.accounts(str(request.query_params.get("nick") or "")[:40])
+        telemetry.event("identity.admin_list", n=len(rows), **_client(request))
+        return JSONResponse({"accounts": rows}, headers={"Cache-Control": "no-store"})
+
+    async def admin_join(request: Request) -> Response:
+        idn = ident()
+        try:
+            data = await srv._body(request)
+        except ValueError as exc:
+            return _err(str(exc), 400)
+        given = data.get("accounts")
+        if not isinstance(given, list) or not 2 <= len(given) <= JOIN_MAX:
+            return _err(f"Zadej dva až {JOIN_MAX} účtů (konce jejich id z výpisu).", 400)
+        cids: list[str] = []
+        for raw in given:
+            suffix = str(raw or "").strip().lstrip("…. ")[:64]
+            if len(suffix) < identity.SUFFIX_MIN:
+                return _err(f"‚{suffix}‘ je moc krátké — zadej aspoň {identity.SUFFIX_MIN} "
+                            "poslední znaky id z výpisu.", 400)
+            hits = idn.find(suffix)
+            if not hits:
+                return _err(f"Účet, jehož id končí na ‚{suffix}‘, tu není.", 404)
+            if len(hits) > 1:
+                rows = sorted((idn.account_row(c) for c in hits), key=lambda r: r["first"])
+                return JSONResponse({"error": f"Na ‚{suffix}‘ končí víc účtů — zadej delší konec id.",
+                                     "candidates": rows}, status_code=409)
+            if hits[0] not in cids:
+                cids.append(hits[0])
+        if len(cids) < 2:
+            return JSONResponse({"error": "Zadané konce id vedou na jeden a tentýž účet — není co spojovat.",
+                                 "candidates": [idn.account_row(c) for c in cids]}, status_code=409)
+        confirm = data.get("confirm") is True
+        out = idn.join(cids) if confirm else idn.plan(cids)
+        out["done"] = bool(out.get("done"))
+        telemetry.event("identity.admin_join", dry=not out["done"], kept=out["kept"]["id"],
+                        joined=[r["id"] for r in out["joined"]],
+                        votes=sum(r["moved"] for r in out["joined"]),
+                        conflicts=sum(r["conflicts"] for r in out["joined"]),
+                        imports=sum(r["imports"] for r in out["joined"]),
+                        wishes=sum(r["wishes"] for r in out["joined"]), **_client(request))
+        if out["done"]:
+            log.info("správce spojil účty: %s → %s", ", ".join(r["id"] for r in out["joined"]),
+                     out["kept"]["id"])
+            srv.poke()
+        return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
     return [
+        Route("/api/identity/admin/accounts", _safe(srv._admin_only(admin_accounts)), methods=["GET"]),
+        Route("/api/identity/admin/join", _safe(srv._admin_only(admin_join)), methods=["POST"]),
         Route("/api/identity/sync", _safe(sync), methods=["POST"]),
         Route("/api/identity/hello", _safe(hello), methods=["GET"]),
         Route("/api/identity/offer", _safe(offer), methods=["POST"]),

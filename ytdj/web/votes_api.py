@@ -63,6 +63,7 @@ from starlette.routing import Route
 from .. import telemetry
 from ..votes import ARTIST, BANNED, FAVOURITE, SONG, VoteError, enforce
 from ..wishes import clean_cid
+from . import identity_api
 
 if TYPE_CHECKING:
     from .server import WebServer
@@ -121,6 +122,13 @@ def routes(srv: "WebServer") -> list[Route]:
 
     def book() -> Any:
         return getattr(app, "votes", None)
+
+    def viewer(request: Request) -> str:
+        """Kdo se dívá (?client=). Staré id účtu, který se mezitím spojil, je
+        tentýž člověk jako platný účet (F-NICK-09) — stejně jako u POSTů v `_body`."""
+        who = {"client": request.query_params.get("client")}
+        identity_api.current(app, who, request.url.path)
+        return clean_cid(who["client"])
 
     async def cast(request: Request) -> Response:
         votes = book()
@@ -182,7 +190,7 @@ def routes(srv: "WebServer") -> list[Route]:
         votes = book()
         if votes is None:
             return _err("Hlasování tu není.", 404)
-        return JSONResponse(votes.lists(clean_cid(request.query_params.get("client"))))
+        return JSONResponse(votes.lists(viewer(request)))
 
     async def detail(request: Request) -> Response:
         votes = book()
@@ -192,7 +200,7 @@ def routes(srv: "WebServer") -> list[Route]:
         track = await _track(app, video_id)
         if track is None:
             return _err("Teď nic nehraje." if not video_id else "Tuhle skladbu neznám.", 404)
-        return JSONResponse(votes.detail(track, clean_cid(request.query_params.get("client"))))
+        return JSONResponse(votes.detail(track, viewer(request)))
 
     # ---- import playlistů do oblíbených (ytdj/imports.py, POZADAVKY #48) ----
 
@@ -272,7 +280,7 @@ def routes(srv: "WebServer") -> list[Route]:
 
         try:
             return JSONResponse(imp.songs(request.path_params.get("iid", ""),
-                                          clean_cid(request.query_params.get("client"))))
+                                          viewer(request)))
         except ImportRefused as exc:
             return _err(str(exc), exc.status)
 
@@ -280,7 +288,7 @@ def routes(srv: "WebServer") -> list[Route]:
         imp = importer()
         if imp is None:
             return _err("Import playlistů tu není.", 404)
-        return JSONResponse(imp.listing(clean_cid(request.query_params.get("client"))))
+        return JSONResponse(imp.listing(viewer(request)))
 
     return [
         Route("/api/votes", _safe(cast), methods=["POST"]),

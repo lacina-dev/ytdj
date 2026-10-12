@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from . import telemetry
-from .nicks import tag_of
+from .nicks import fold, tag_of
 from .panel import webaddr
 
 log = logging.getLogger(__name__)
@@ -42,6 +42,8 @@ CODE_TTL = 120.0  # s — kód pro předání účtu platí jen chvíli a jen je
 CODES_MAX = 300
 KEEP = 3000  # nejvýš tolik starých id / záznamů (nejstarší vypadnou)
 TOKENS_MAX = 20
+SUFFIX = 6  # tolik posledních znaků id klienta vidí správce (jako provozní log hlasování)
+SUFFIX_MIN = 4  # kratší konec id k určení účtu nestačí
 REPORT_MAX, REPORT_WINDOW = 40, 60.0  # hlášení stránky do logu: nejvýš 40 za minutu z jedné adresy
 QUIET_EVERY = 1800.0  # běžné načtení stránky známého člověka do logu nejvýš jednou za půl hodiny
 PAGE_EVENTS = ("probe", "trip_start", "hop", "trip_done", "trip_lost", "skip", "moved")
@@ -323,14 +325,28 @@ class Identity:
         votes = getattr(self.app, "votes", None)
         return bool(votes is not None and hasattr(votes, "first_seen") and votes.first_seen(cid) is not None)
 
+    def _since_now(self, cid: str) -> float:
+        """Odkdy by se účet počítal, kdyby ho jukebox poznal právě teď (nic nezapisuje)."""
+        rec = getattr(self.nicks, "data", {}).get(cid) if self.nicks is not None else None
+        at = float((rec or {}).get("at") or 0)
+        now = self.clock()
+        return min(at, now) if at > 0 else now
+
     def note_seen(self, cid: str) -> None:
         """Zapamatuje, odkdy účet známe (jen u účtů, ne u prázdných id)."""
         if cid and cid not in self.since and self.known(cid):
-            rec = getattr(self.nicks, "data", {}).get(cid) if self.nicks is not None else None
-            at = float((rec or {}).get("at") or 0)
-            now = self.clock()
-            self.since[cid] = min(at, now) if at > 0 else now
+            self.since[cid] = self._since_now(cid)
             self.save()
+
+    def age(self, cid: str) -> float:
+        """Podle čeho `merge` vybírá starší účet — spočítáno bez zápisu (plán spojení)."""
+        seen = [self.since[cid] if cid in self.since else self._since_now(cid)]
+        votes = getattr(self.app, "votes", None)
+        if votes is not None and hasattr(votes, "first_seen"):
+            ts = votes.first_seen(cid)
+            if ts is not None:
+                seen.append(ts)
+        return min(seen)
 
     def me(self, cid: str) -> dict:
         return {"client": cid, "nick": self.nick(cid), "tag": tag_of(cid)}
@@ -449,6 +465,137 @@ class Identity:
                 lst.append(origin)
                 del lst[:-20]
 
+    # ---- správce: přehled účtů a spojení jmenovaných účtů (F-NICK-12) ----
+
+    def _accounts(self) -> dict[str, dict]:
+        """Platná id všech účtů (přezdívka, hlas nebo import; bez spojených starých id)
+        → kolik čeho mají. Jeden průchod hlasy — pár tisíc řádků v paměti."""
+        self._take_loaded()
+        votes = getattr(self.app, "votes", None)
+        nicks = getattr(self.nicks, "data", {}) or {}
+        got: dict[str, dict] = {}
+
+        def rec(cid: str) -> dict:
+            return got.setdefault(cid, {"votes": 0, "imports": 0, "songs": 0, "removed": 0,
+                                        "first": None})
+
+        for ballots in (getattr(votes, "items", {}) or {}).values():
+            for voter, b in ballots.items():
+                if not b.src:
+                    r = rec(voter)
+                    r["votes"] += 1 if b.vote else 0
+                    r["first"] = b.ts if r["first"] is None else min(r["first"], b.ts)
+        for imp in (getattr(votes, "imports", {}) or {}).values():
+            r = rec(imp.client)
+            r["imports"] += 1
+            r["removed"] += len(imp.removed)
+            r["first"] = imp.created if r["first"] is None else min(r["first"], imp.created)
+        for cid in nicks:
+            rec(cid)
+        out = {}
+        for cid, r in got.items():
+            if not cid or cid in self.alias:
+                continue
+            if r["imports"]:
+                r["songs"] = len(votes.import_keys(cid))
+            seen = [self.since[cid] if cid in self.since else self._since_now(cid)]
+            if r["first"] is not None:
+                seen.append(r["first"])
+            at = float((nicks.get(cid) or {}).get("at") or 0)
+            r.update(id=cid[-SUFFIX:], tag=tag_of(cid), nick=self.nick(cid),
+                     first=round(min(seen), 1), last=round(at, 1), browsers=1)
+            out[cid] = r
+        for old in self.alias:
+            now = self.resolve(old)
+            if now in out:
+                out[now]["browsers"] += 1
+        return out
+
+    def account_row(self, cid: str) -> dict:
+        """Jeden účet pro správce: konec id (nikdy celé), přezdívka, od kdy, kolik čeho má."""
+        return dict(self._accounts().get(cid) or {"id": cid[-SUFFIX:], "tag": tag_of(cid), "nick": "",
+                                                  "first": 0.0, "last": 0.0, "browsers": 1, "votes": 0,
+                                                  "imports": 0, "songs": 0, "removed": 0})
+
+    def accounts(self, nick: str = "") -> list[dict]:
+        """Přehled účtů (nejstarší první); `nick` = jen ty s touhle přezdívkou
+        (bez ohledu na velikost písmen a diakritiku)."""
+        want = fold(" ".join(str(nick or "").split()))
+        rows = [r for r in self._accounts().values() if not want or fold(r["nick"]) == want]
+        rows.sort(key=lambda r: (r["first"], r["id"]))
+        return rows
+
+    def find(self, suffix: str) -> list[str]:
+        """Účty, jejichž id (nebo dřívější, už spojené id) končí na `suffix`."""
+        suffix = str(suffix or "").strip().lstrip("…. ")
+        if len(suffix) < SUFFIX_MIN:
+            return []
+        known = self._accounts()
+        hits = [c for c in known if c.endswith(suffix)]
+        for old in self.alias:
+            now = self.resolve(old)
+            if old.endswith(suffix) and now not in hits and now in known:
+                hits.append(now)
+        return hits
+
+    def plan(self, cids: Iterable[str]) -> dict:
+        """Co by `merge(cids)` udělalo — který účet zůstane a co na něj přejde.
+        Nic nemění. Vítěze vybírá stejně jako `merge` (nejstarší účet)."""
+        order: list[str] = []
+        for cid in cids:
+            cid = self.resolve(cid)
+            if cid and cid not in order:
+                order.append(cid)
+        accounts = [c for c in order if self.known(c)]
+        if len(accounts) < 2:
+            return {"kept": self.account_row(accounts[0]) if accounts else None, "joined": [],
+                    "nick": self.nick(accounts[0]) if accounts else "", "after": None}
+        winner = min(accounts, key=lambda c: (self.age(c), order.index(c)))
+        votes = getattr(self.app, "votes", None)
+        items = getattr(votes, "items", {}) or {}
+        # kde už vítěz má vlastní platný hlas, hlas mladšího účtu propadne (jako merge_voter)
+        has = {k for k, ballots in items.items()
+               if (b := ballots.get(winner)) is not None and not b.src and b.vote}
+        joined, nick = [], self.nick(winner)
+        keys = set(votes.import_keys(winner)) if votes is not None and hasattr(votes, "import_keys") else set()
+        wishes = getattr(getattr(self.app, "wishes", None), "wishes", ()) or ()
+        for loser in accounts:
+            if loser == winner:
+                continue
+            row = self.account_row(loser)
+            moved = conflicts = 0
+            for k, ballots in items.items():
+                lb = ballots.get(loser)
+                if lb is None or lb.src or not lb.vote:
+                    continue
+                if k in has:
+                    conflicts += 1
+                else:
+                    moved += 1
+                    has.add(k)
+            keys |= set(votes.import_keys(loser)) if row["imports"] else set()
+            row.update(moved=moved, conflicts=conflicts,
+                       wishes=sum(1 for w in wishes if getattr(w, "cid", "") == loser))
+            nick = nick or row["nick"]
+            joined.append(row)
+        kept = self.account_row(winner)
+        imports = sum(r["imports"] for r in joined) + kept["imports"]
+        return {"kept": kept, "joined": joined, "nick": nick,
+                "nicks": sorted({r["nick"] for r in [kept, *joined] if r["nick"]}),
+                "after": {"votes": len(has), "imports": imports, "songs": len(keys)}}
+
+    def join(self, cids: Iterable[str]) -> dict:
+        """Správce spojí jmenované účty: stejná cesta jako `merge` (starší vyhrává).
+        Vrací plán, jak platil těsně před spojením, a `done`."""
+        cids = list(cids)
+        out = self.plan(cids)
+        if not out["joined"]:
+            return out
+        winner, _ = self.merge(cids, here="admin")
+        out["done"] = True
+        out["kept"] = self.account_row(winner)
+        return out
+
     # ---- předání mezi adresami: jednorázové kódy ----
 
     def offer(self, cid: str, origin: str, extras: dict | None = None) -> str:
@@ -565,3 +712,141 @@ def clean_report(raw: Any, own: Iterable[str]) -> dict | None:
         out["why"] = raw.get("why") if raw.get("why") in SKIP_WHY else "storage"
         out["n"] = num(raw.get("n"), 20)
     return out
+
+
+# --------------------------------------------------------------------------
+# python -m ytdj.identity — správce: přehled účtů a spojení (F-NICK-12)
+# --------------------------------------------------------------------------
+
+
+def _n(n: int, one: str, few: str, many: str) -> str:
+    return f"{n} {one if n == 1 else few if 2 <= n <= 4 else many}"
+
+
+def _day(ts: Any) -> str:
+    return time.strftime("%-d. %-m. %Y", time.localtime(ts)) if ts else "—"
+
+
+def _has(r: dict) -> str:
+    text = f"{_n(r['votes'], 'hlas', 'hlasy', 'hlasů')}, {_n(r['imports'], 'playlist', 'playlisty', 'playlistů')}"
+    if r["imports"]:
+        text += f" ({_n(r['songs'], 'písnička', 'písničky', 'písniček')}"
+        text += f", {r['removed']} vyřazeno)" if r["removed"] else ")"
+    return text
+
+
+def _name(r: dict) -> str:
+    return r["nick"] or "(bez přezdívky)"
+
+
+def _account_line(r: dict) -> str:
+    more = f", {r['browsers']} prohlížeče" if r.get("browsers", 1) > 1 else ""
+    return (f"…{r['id']}  {_name(r):<20}  poprvé {_day(r['first']):<13} "
+            f"naposledy {_day(r['last']):<13} {_has(r)}{more}")
+
+
+def _print_plan(data: dict, out: Any) -> None:
+    kept, joined = data["kept"], data["joined"]
+    done = data.get("done")
+    print(f"{'Spojeno' if done else 'Spojil bych'}: {_n(len(joined) + 1, 'účet', 'účty', 'účtů')} "
+          "do nejstaršího z nich.", file=out)
+    for r in joined:
+        text = f"{'přešlo' if done else 'přejde'}: {_n(r['moved'], 'hlas', 'hlasy', 'hlasů')}"
+        if r["conflicts"]:
+            text += f" ({r['conflicts']}× hlasovaly oba účty — platí hlas staršího)"
+        text += f", {_n(r['imports'], 'playlist', 'playlisty', 'playlistů')}"
+        if r["imports"]:
+            text += f" ({_n(r['songs'], 'písnička', 'písničky', 'písniček')}"
+            text += f", {r['removed']} vyřazeno a zůstane vyřazeno)" if r["removed"] else ")"
+        if r["wishes"]:
+            text += f", čekající přání: {r['wishes']}"
+        print(f"  {'připojen' if done else 'připojí se':<10}  …{r['id']}  {_name(r)}  "
+              f"(poprvé {_day(r['first'])}) — {text}", file=out)
+    if done:
+        print(f"  {'zůstal':<10}  …{kept['id']}  {_name(kept)}  (poprvé {_day(kept['first'])}) — teď má {_has(kept)}"
+              + (f", {kept['browsers']} prohlížeče" if kept.get("browsers", 1) > 1 else ""), file=out)
+    else:
+        print(f"  {'zůstane':<10}  …{kept['id']}  {_name(kept)}  (poprvé {_day(kept['first'])}) — má {_has(kept)}",
+              file=out)
+    nicks = data.get("nicks") or []
+    if len(nicks) > 1:
+        print(f"  POZOR: účty mají různé přezdívky ({', '.join(nicks)}) — je to opravdu jeden člověk?",
+              file=out)
+    print(f"  Přezdívka spojeného účtu: {data.get('nick') or '(žádná)'}.", file=out)
+    if done:
+        print("Každý z těch prohlížečů je odteď tenhle jeden účet. Otevřená stránka si to převezme sama "
+              "(při návratu na záložku, nejpozději do 5 minut) a řekne to jednou větou.", file=out)
+    else:
+        a = data["after"]
+        print(f"  Po spojení bude mít {_n(a['votes'], 'hlas', 'hlasy', 'hlasů')} a "
+              f"{_n(a['imports'], 'playlist', 'playlisty', 'playlistů')}"
+              f" ({_n(a['songs'], 'písnička', 'písničky', 'písniček')}).", file=out)
+        print("Zatím se nic nezměnilo. Spojení nejde vrátit — provedeš ho stejným příkazem s --yes.",
+              file=out)
+
+
+def main(argv: list[str] | None = None, out: Any = None) -> int:
+    import argparse
+    import sys
+    from urllib.parse import urlencode
+
+    from .issues import _call, _default_url  # stejné volání běžícího jukeboxu jako u hlášení
+
+    out = out or sys.stdout
+    ap = argparse.ArgumentParser(
+        prog="python -m ytdj.identity",
+        description="Účty lidí v jukeboxu: přehled a spojení účtů jednoho člověka z více zařízení. "
+                    "Mluví s běžícím jukeboxem a chce PIN správce.")
+    ap.add_argument("--url", default=None, help="adresa webu ytdj (výchozí http://127.0.0.1:<web_port>)")
+    ap.add_argument("--pin", default=None, help="PIN správce (výchozí: soubor admin-pin na tomhle stroji)")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("list", help="přehled účtů (nejstarší první)")
+    p.add_argument("--nick", default="", help="jen účty s touhle přezdívkou")
+    p = sub.add_parser("join", help="spojit účty do nejstaršího z nich (bez --yes jen ukáže, co by udělal)")
+    p.add_argument("accounts", nargs="+", metavar="KONEC_ID", help="konec id účtu z výpisu (aspoň 4 znaky)")
+    p.add_argument("--yes", action="store_true", help="opravdu spojit (nejde vrátit)")
+    args = ap.parse_args(argv)
+    base = (args.url or _default_url()).rstrip("/")
+    pin = args.pin
+    if pin is None:
+        from . import adminpin
+
+        pin = adminpin.read_pin()
+    if not pin:
+        print("Chybí PIN správce: zadej --pin (je na displeji jukeboxu: Síť).", file=sys.stderr)
+        return 2
+
+    def fail(status: int, data: dict) -> int:
+        print(f"Chyba {status}: {data.get('error', '')}", file=sys.stderr)
+        for r in data.get("candidates") or []:
+            print("  " + _account_line(r), file=sys.stderr)
+        return 1
+
+    try:
+        if args.cmd == "list":
+            status, data = _call(base, "GET", "/api/identity/admin/accounts?" + urlencode({"nick": args.nick}),
+                                 pin=pin)
+            if status != 200:
+                return fail(status, data)
+            for r in data["accounts"]:
+                print(_account_line(r), file=out)
+            n = len(data["accounts"])
+            print(f"— {_n(n, 'účet', 'účty', 'účtů')}" + (f" s přezdívkou {args.nick}" if args.nick else ""),
+                  file=out)
+            return 0
+        if len(args.accounts) < 2:
+            print("Zadej aspoň dva účty (konce jejich id z výpisu).", file=sys.stderr)
+            return 2
+        status, data = _call(base, "POST", "/api/identity/admin/join",
+                             {"accounts": args.accounts, "confirm": bool(args.yes)}, pin=pin)
+        if status != 200:
+            return fail(status, data)
+        _print_plan(data, out)
+        return 0
+    except OSError as exc:  # spojení odmítnuto, časový limit
+        print(f"Nedovolal jsem se na {base}: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

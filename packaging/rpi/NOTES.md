@@ -97,6 +97,35 @@ dependencies on the Pi. `canvas` downloads a linux-arm64 prebuild there:
   a value above 0 caps the volume to it on every output change.
 - Swap is already zram (`/dev/zram0`, about 900 MB) on this image.
 
+## Accounts: joining one person's browsers (`python -m ytdj.identity`)
+
+A person is a browser (client id + nickname). The same browser is recognised on every address
+of the jukebox by itself; a phone, a notebook and a second notebook are three accounts, and a
+playlist imported on one cannot be edited from the others. Only the administrator can join
+them (FUNKCE F-NICK-12). Run on the Pi while ytdj is running — the command talks to the running
+app over its web and reads the admin PIN from `~/.config/ytdj/admin-pin` (or `--pin`, `--url`):
+
+    cd ~/ytdj
+    .venv/bin/python -m ytdj.identity list --nick Robert      # accounts with that nickname
+    .venv/bin/python -m ytdj.identity join 0c662c 792b05 bbffeb         # dry run: prints the plan
+    .venv/bin/python -m ytdj.identity join 0c662c 792b05 bbffeb --yes   # does it
+
+- Accounts are named by the END of their client id as `list` prints it (at least 4 characters;
+  full ids are never printed). A suffix that fits more than one account is refused with the
+  candidates listed — give a longer one.
+- The OLDEST account survives (first vote, import or first seen), whatever the order on the
+  command line; votes, imported playlists (with custom names and removed songs) and waiting
+  wishes of the others move to it, where several accounts voted on the same thing the older
+  vote stands, and the survivor keeps its nickname. Same code path as the automatic merge
+  between addresses (F-NICK-09). It cannot be undone — read the dry run first; it warns when
+  the nicknames differ.
+- Every one of the joined browsers is the surviving account from then on; an open page takes
+  it over by itself (on returning to the tab, within 5 minutes at the latest) and says so.
+- Never edit `identity.json` or `state.db` by hand for this: the app holds both in memory.
+- Log: `identity.admin_list`, `identity.admin_join` (id suffixes and counts only) and one
+  `identity.merge` per joined account. Five wrong PINs lock this together with the settings
+  for 5 minutes.
+
 ## Web on port 80 (`ytdj-port80.service`)
 
 ytdj runs as an ordinary user and cannot open port 80, so the kernel redirects it: a oneshot

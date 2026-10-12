@@ -62,9 +62,14 @@ draws from already-fetched pools and never waits for the model.
 
 ### Requests beat the no-repeat rule
 
-Radio tracks don't repeat for `repeat_days` (30 by default). **What you ask
-for by name is exempt.** A DJ avoids repeating himself, but plays what he is
-asked for — so a track you name goes in even if it played yesterday, and it
+Nothing the jukebox queues on its own repeats for `repeat_days` (30 by
+default): not the radio, not an artist / album / favourites wish or its
+background — a song that started playing within the period is left out (another
+upload of the same song counts as the same song), the DJ says what he left out,
+and when an artist has nothing unplayed left he plays similar music instead.
+**What you ask for by name is exempt**, and so is the replay button and a wish
+that clearly asks for what already played (the model decides by meaning, field
+`repeat_ok`). A track you name goes in even if it played yesterday, and it
 goes in right behind the current one rather than at the end of the queue.
 
 The model marks such tracks in a separate `requested` field, apart from the
@@ -345,8 +350,10 @@ the artist's best-known track stand in.
 from their profile's "Songs" playlist, most popular first, each song once,
 live takes and remixes last. The radio has an artist mode built on it
 (`RadioPools.set_artist`) that keeps playing that artist — no drifting radio,
-no two-per-artist cap, no 30-day repeat rule — until something else is asked
-for, starting over when the list runs out.
+no two-per-artist cap — until something else is asked for. The no-repeat
+rule applies here too: when nothing unplayed is left it moves on to
+"<artist> and similar" (only a wish that explicitly asked for repeats starts
+over).
 
 **Artists who aren't in the catalog at all.** Live looping, DJ sets, the
 smaller scene — plenty of acts exist on YouTube only as a channel with videos,
@@ -466,7 +473,7 @@ until somebody presses Play.
 | `volume` | `100` | last volume set; mpv starts at it. Written by the player, not editable in the settings form — use the slider or `volume 70` |
 | `queue_target` / `queue_low` | `5` / `3` | how far ahead the queue is kept filled |
 | `radio_limit` | `50` | tracks fetched per seed radio |
-| `repeat_days` | `30` | don't repeat a track for N days |
+| `repeat_days` | `30` | nothing queued automatically repeats for N days (0 = off); only an explicit wish does |
 | `min_duration` / `max_duration` | `60` / `600` | track length filter (seconds) |
 | `max_duration_request` | `5400` | ceiling when a specific artist was asked for and short tracks are scarce — long sets get in rather than being dropped |
 | `artist_window` | `10` | max 2 tracks per artist within N tracks |

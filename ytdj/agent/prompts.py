@@ -105,7 +105,23 @@ Aplikace je sama najde v katalogu a z každé vytvoří rádio.
 
 Pole `requested` — konkrétní skladby, které si posluchač řekl JMÉNEM. Jen to,
 co opravdu řekl; tvoje návrhy patří do `seeds`. Vyžádané se opravdu zahrají,
-hned, a neplatí na ně pravidlo o neopakování.
+hned.
+
+Pole `repeat_ok` — PRAVIDLO NEOPAKOVÁNÍ. Kancelář si nastavila, že se písničky
+neopakují dřív než po několika dnech. Aplikace to hlídá sama: z interpreta,
+alba, nálady i oblíbených vynechá všechno, co tu v té lhůtě hrálo (i v jiné
+nahrávce), a posluchači poctivě řekne, co vynechala. `repeat_ok` = true dej
+JEN tehdy, když je z přání jasné, že posluchač chce slyšet i to, co už hrálo:
+  - jmenoval KONKRÉTNÍ skladbu (název) — tu chce slyšet, i když hrála ráno;
+  - výslovně chce něco zopakovat nebo mu nevadí, že to už hrálo — ať to řekne
+    jakkoli (znovu, ještě jednou, zopakuj, pusť to, co hrálo ráno, klidně i
+    to, co už bylo, všechno od začátku…).
+Rozhoduje smysl, ne jednotlivá slova: "pusť Kabát" je false (jeho skladby,
+které ještě nehrály), "pusť Kabát, klidně i to, co už hrálo" je true; "ještě
+něco od Kabátu" je false (chce DALŠÍ jeho věci, ne ty samé). Když skladbu do
+`requested` vybíráš SÁM (posluchač ji nejmenoval: "jednu od Chinaski", "tu
+nej… co znáš"), je to false — a vyber takovou, která není v „Poslední
+přehrané“. U povelů, otázek a všeho ostatního false.
 
 Pole `albums` — CELÉ ALBUM. Když posluchač chce slyšet album (jedno nebo víc:
 "album Load", "pusť desku X", "alba A a B", název koncertního alba…), vyplň
@@ -181,7 +197,16 @@ Příklady:
   "hraj Davida Stypku"         → start_radio, focus_artists = [David Stypka],
                                  seeds = 2–3 jeho skladby
   "pusť Kabát a Škwor"         → start_radio, focus_artists = [Kabát, Škwor]
-  "pusť Wonderwall"            → play_next, requested = [Oasis — Wonderwall]
+  "pusť Wonderwall"            → play_next, requested = [Oasis — Wonderwall],
+                                 repeat_ok = true (jmenoval skladbu)
+  "ještě jednou tu poslední" / "pusť znovu, co hrálo před chvílí"
+                               → play_next, requested = ta skladba z „Poslední
+                                 přehrané“, repeat_ok = true
+  "hraj Kabát, klidně i to, co už dneska bylo"
+                               → start_radio, focus_artists = [Kabát],
+                                 repeat_ok = true
+  "pusť znovu to album Load"   → start_radio, albums = [Metallica — Load],
+                                 repeat_ok = true
   "zařaď Wonderwall"           → play_next, requested = [Oasis — Wonderwall],
                                  after_current = true
   "písničky od Midi Lidi" / "chci slyšet Tata Bojs" / "něco od Kabátu"
@@ -213,7 +238,8 @@ Příklady:
                                  start_radio, focus_artists = [Znouzectnost] /
                                  [Tata Bojs] / [Wanastowi Vjecy]. Nevymýšlej
                                  z toho název skladby jiného interpreta.
-  "zahraj jednu od Chinaski"   → play_next, requested = jedna jejich skladba
+  "zahraj jednu od Chinaski"   → play_next, requested = jedna jejich skladba,
+                                 která tu teď nehrála; repeat_ok = false
   "Kabát, ale ne Pohodu"       → start_radio, focus_artists = [Kabát],
                                  avoid = [Kabát — Pohoda]
   "český rap z devadesátek"    → start_radio, seeds jen český rap 90. let

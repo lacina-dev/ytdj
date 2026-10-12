@@ -334,7 +334,10 @@ FIELD_META: dict[str, tuple[str, str, tuple[int, int] | None]] = {
     ),
     "repeat_days": (
         "Neopakovat N dní",
-        "Skladba, která hrála během posledních N dní, se znovu nenabídne.",
+        "Skladba, která tu hrála během posledních N dní, se sama nezařadí — do rádia ani "
+        "k přání interpreta, alba nebo oblíbených. Znovu ji pustí jen výslovné přání: "
+        "konkrétní skladba jménem, Zahrát znovu v Odehráno, nebo přání, které řekne, "
+        "že chce i to, co už hrálo. 0 = neplatí.",
         (0, 3650),
     ),
     "artist_window": (

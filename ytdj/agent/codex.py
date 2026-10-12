@@ -166,6 +166,10 @@ DECISION_SCHEMA = {
         # true = posluchač VÝSLOVNĚ chce vulgární / sprosté / nekorektní
         # texty; jen pro tohle přání se pak z rádia nevyřazují explicitní skladby
         "explicit_ok": {"type": "boolean"},
+        # true = z přání je jasné, že chce i to, co tu nedávno hrálo (jmenoval
+        # konkrétní skladbu, nebo chce něco zopakovat); jinak aplikace
+        # nedávno hrané sama vynechá (pravidlo neopakování)
+        "repeat_ok": {"type": "boolean"},
         # true = posluchač chce hudbu i s obrazem (klip, video, na telce):
         # hrají se oficiální klipy místo písniček — jen když si o obraz řekl
         "want_video": {"type": "boolean"},
@@ -212,6 +216,7 @@ DECISION_SCHEMA = {
         "focus_artists",
         "albums",
         "explicit_ok",
+        "repeat_ok",
         "want_video",
         "question",
         "options",
@@ -294,7 +299,8 @@ async def _reap(proc: asyncio.subprocess.Process) -> None:  # [latency]
 class Plan:
     """Vyložené přání převedené na konkrétní skladby — ještě nic nehraje.
 
-    requested  vyžádané skladby (hrají první, bez pravidla o neopakování)
+    requested  vyžádané skladby (hrají první; pravidlo neopakování na ně neplatí,
+               jen když je posluchač jmenoval — WishQueue._drop_repeats)
     artist_tracks  skladby vyžádaných interpretů, prostřídané (kind == "artist")
     seeds      z čeho postavit rádio (nálada, skladba)
     notes      pravdivé doplňky odpovědi ("Nenašel jsem: …")
@@ -310,6 +316,9 @@ class Plan:
     # kind == "album": skladby všech vyžádaných alb za sebou, v pořadí alb;
     # `album_label` je jejich název pro odpověď a štítky ("Metallica — Load")
     album_tracks: list[Track] = field(default_factory=list)
+    # sada, ze které je `requested` jen začátek (oblíbené, playlist z odkazu):
+    # pravidlo neopakování vybírá z celé, ne jen z prvních pár
+    candidates: list[Track] = field(default_factory=list)
     album_label: str = ""
     album_artists: list[str] = field(default_factory=list)
     # přání "i s obrazem": kolik zařazených skladeb jsou oficiální klipy
@@ -1299,6 +1308,7 @@ class CodexDJ:
                 plan.failed = "Kancelář zatím nemá oblíbené — dejte 👍 skladbám, které se líbí."
             return plan
         plan.requested = tracks[:FAVOURITES_MAX]
+        plan.candidates = list(tracks)
         plan.seeds = tracks[:4]
         intent.reply = (f"Hraju {label} ({len(plan.requested)}), pak dál, dokud neřekneš jinak."
                         if continuous else f"Hraju {label} ({len(plan.requested)}), pak podobné.")
@@ -1321,6 +1331,7 @@ class CodexDJ:
             return None
         intent = Intent(kind="song", text=title, tracks=[(track.artist, track.title)],
                         mood=f"{track.artist} a podobné", note="fast_path_title",
+                        repeat_ok=True,  # jmenoval tu skladbu
                         reply=f"Hraju {track.label()}, pak podobné.")
         return self._office_votes(Plan(intent=intent, requested=[track], seeds=[track]))
 
@@ -1340,6 +1351,7 @@ class CodexDJ:
         intent = Intent(
             kind="song", text=text, tracks=[(t.artist, t.title)],
             mood=f"{t.artist} a podobné", note="fast_path_song",
+            repeat_ok=True,  # jmenoval tu skladbu — smí, i když tu nedávno hrála
             reply=f"{song.note} Pak podobné." if song.note  # [truthful] jiná verze
             else f"Hraju {t.label()}, pak podobné.",
         )
@@ -1580,6 +1592,7 @@ class CodexDJ:
             focus_artists=data.get("focus_artists") or None,
             albums=_labels(data.get("albums")),
             explicit_ok=bool(data.get("explicit_ok")) or None,
+            repeat_ok=bool(data.get("repeat_ok")) or None,
             want_video=bool(data.get("want_video")) or None,
             question=str(data.get("question") or "")[:200] or None,
             options=[str(o.get("label") or "")[:80] for o in data.get("options") or []
@@ -1612,6 +1625,7 @@ class CodexDJ:
             control=intent.control or None, mood=intent.mood[:120],
             albums=[f"{a} — {t}" for a, t in intent.albums] or None,
             explicit_ok=intent.explicit_ok or None,
+            repeat_ok=intent.repeat_ok or None,
             want_video=intent.want_video or None,
             repaired=intent.note or None,
         )

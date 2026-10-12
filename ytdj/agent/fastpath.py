@@ -47,6 +47,13 @@ _NOT_NAME = re.compile(
     r"vic|min|nahodn\w*|cokoli\w*|neco|nic)$"
 )
 
+# Přání, které může chtít OPAKOVÁNÍ ("znovu Kabát", "zase X", "X ještě
+# jednou"): jestli chce totéž, co už hrálo, nebo jen dalšího interpreta, pozná
+# model podle smyslu (pole `repeat_ok`) — rychlá cesta ho nechá jemu. Pravidlo
+# neopakování (music/repeats.py) smí zvednout jen výslovné přání.
+_AGAIN = re.compile(r"\b(?:znovu|znova|zase|opet\w*|zopak\w*|opak\w*|podruhe|jeste jednou|"
+                    r"again|repeat\w*|replay)\b")
+
 # Koncovky, které čeština přilepí ke jménu (Stypka → Stypku, Farná → Farnou,
 # Kabát → Kabátu, Lucie → Lucii, David → Davida). Nic jiného se nepřipouští —
 # "kabaret" není "Kabát".
@@ -171,7 +178,7 @@ def parse(text: str) -> Parsed | None:
     raw = norm(text)
     if not raw or local_command(text):
         return None
-    if _SINGLE.search(raw) or _LIKE.search(raw) or _EXCEPT.search(raw):
+    if _SINGLE.search(raw) or _LIKE.search(raw) or _EXCEPT.search(raw) or _AGAIN.search(raw):
         return None
     tokens = raw.split()
     content = [i for i, t in enumerate(tokens) if t not in _FILLER]

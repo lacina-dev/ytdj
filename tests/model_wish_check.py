@@ -1,6 +1,6 @@
 """Does the real DJ model understand songs / albums / explicit wishes?
 
-(FUNKCE F-PRANI-19 až F-PRANI-27, F-FRONTA-21, F-ZVUK-11.) It also counts how
+(FUNKCE F-PRANI-19 až F-PRANI-27, F-PRANI-34, F-FRONTA-21, F-ZVUK-11.) It also counts how
 often the model ASKS instead of deciding: never on the wishes with a clear
 catalogue answer, and on the few genuinely ambiguous ones at the end. Not a unit test — a
 measurement with the real model and the real catalogue, the way the app
@@ -63,9 +63,10 @@ CASES = [
     ("Zahraj něco vulgárního, nechutnýho a nekorektního, co pohorší všechny slušný lidi "
      "v místnosti. A ať je to česky.", {"explicit_ok": True}),
     # controls: behaviour must not change
-    ("pusť Kabát", {"kind": "artist", "explicit_ok": False}),
-    ("něco veselého k práci", {"kind": "mood", "explicit_ok": False}),
-    ("pusť Jasnou zprávu od Olympicu", {"plays_first": "Jasná zpráva", "explicit_ok": False}),
+    ("pusť Kabát", {"kind": "artist", "explicit_ok": False, "repeat_ok": False}),
+    ("něco veselého k práci", {"kind": "mood", "explicit_ok": False, "repeat_ok": False}),
+    ("pusť Jasnou zprávu od Olympicu", {"plays_first": "Jasná zpráva", "explicit_ok": False,
+                                        "repeat_ok": True}),
     ("něco od Metallicy, klidně i z novějších alb", {"not_kind": "album", "explicit_ok": False}),
     ("zahraj nějaký pořádný český punk", {"kind": "mood", "explicit_ok": False}),
     ("něco klidného k práci", {"kind": "mood", "explicit_ok": False}),
@@ -89,6 +90,21 @@ CASES = [
     ("depeche mode album violator", {"video": False, "kind": "album"}),
     ("něco fakt sprostýho česky", {"video": False, "explicit_ok": True}),
     ("něco úplně jiného", {"video": False}),
+    # no-repeat rule (jukebox issue #32, F-PRANI-34): `repeat_ok` only when the wish
+    # clearly wants what already played — a song by name, or an explicit replay
+    ("pusť Wonderwall od Oasis", {"repeat_ok": True, "plays_first": "Wonderwall"}),
+    ("zahraj znovu Bohemian Rhapsody", {"repeat_ok": True, "plays_first": "Bohemian Rhapsody"}),
+    ("hraj Kabát, klidně i to, co už dneska hrálo", {"kind": "artist", "repeat_ok": True}),
+    ("pusť znovu celé album Load od Metallicy", {"kind": "album", "repeat_ok": True}),
+    ("Horkýže Slíže, a klidně zopakuj i ty, co už byly", {"kind": "artist", "repeat_ok": True}),
+    ("horkýže slíže", {"kind": "artist", "repeat_ok": False}),
+    ("horkýže slíže, něco co jsi ještě nehrál", {"kind": "artist", "repeat_ok": False}),
+    ("ještě něco od Kabátu", {"kind": "artist", "repeat_ok": False}),
+    ("zahraj jednu od Chinaski", {"repeat_ok": False}),
+    ("pusť album Load od Metallicy", {"kind": "album", "repeat_ok": False}),
+    # ambiguous on purpose (more of him, or the same again?) — measured, not judged
+    ("zase Kabát", {"kind": "artist"}),
+    ("znovu Kabát", {"kind": "artist"}),
     # genuinely ambiguous — the same words are a song and an album (or a band):
     # here, and only here, a question is the right answer
     ("Paranoid", {"ask": True}),
@@ -174,6 +190,8 @@ def verdict(want: dict, intent, plan, first: list[str], asked: bool = False) -> 
         ok &= len(intent.albums) == want["albums"] and bool(plan.album_tracks)
     if "explicit_ok" in want:
         ok &= bool(intent.explicit_ok) == want["explicit_ok"]
+    if "repeat_ok" in want:
+        ok &= bool(intent.repeat_ok) == want["repeat_ok"]
     if "video" in want:
         ok &= bool(intent.want_video) == want["video"]
         shown = (plan.requested or plan.artist_tracks[:4] or plan.seeds)
@@ -238,6 +256,7 @@ async def main() -> None:
                     "focus_artists": intent.artists,
                     "albums": [f"{a} — {t}" for a, t in intent.albums],
                     "explicit_ok": intent.explicit_ok, "want_video": intent.want_video,
+                    "repeat_ok": intent.repeat_ok,
                     "mood": intent.mood,
                     "seeds": [f"{a} — {t}" for a, t in intent.seeds][:5],
                 }

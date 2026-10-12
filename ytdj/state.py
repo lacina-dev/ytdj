@@ -188,6 +188,7 @@ class RequestCount:
         return f"{self.count}× {name}"
 
 
+PLAY_LOG_MAX = 20000  # záznamů v paměti (Store.play_log)
 BLACKLIST_DAYS = 7  # jak dlouho se nepřehratelná skladba nenabízí (smazaná natrvalo)
 
 
@@ -223,6 +224,11 @@ class Store:
         self._writes: queue.Queue | None = None
         self._writer: threading.Thread | None = None
         self._pool = None  # ThreadPoolExecutor pro aread(), až bude potřeba
+        # Co začalo hrát od startu procesu: [video_id, název, interpret, čas,
+        # platí]. Pravidlo neopakování (music/repeats.py) si z něj doplňuje
+        # paměť bez čtení z karty; `play_rev` roste, když se má načíst znovu.
+        self.play_log: list[list] = []
+        self.play_rev = 0
         if background:
             self._writes = queue.Queue()
             self._writer = threading.Thread(target=self._write_loop, name="ytdj-store", daemon=True)
@@ -303,7 +309,7 @@ class Store:
         self._writes.put(done.set)
         done.wait(timeout)
 
-    async def aread(self, name: str, *args: Any) -> Any:
+    async def aread(self, name: Any, *args: Any) -> Any:
         """Čtení z event loopu bez čekání na disk: metoda `name` ve vlákně."""
         # vlastní vlákno: sdílený pool (katalog, rádia) bývá plný a čtení
         # historie pro web by na něj čekalo
@@ -311,19 +317,32 @@ class Store:
             from concurrent.futures import ThreadPoolExecutor
 
             self._pool = ThreadPoolExecutor(1, thread_name_prefix="ytdj-store-read")
-        fn = getattr(self, name)
+        # `name` smí být i funkce (čte ze Store a počítá — pravidlo neopakování)
+        fn = name if callable(name) else getattr(self, name)
         return await asyncio.get_running_loop().run_in_executor(self._pool, lambda: fn(*args))
 
     # ---- writes ----
 
     def record_start(self, video_id: str, title: str, artist: str, seed_id: str | None) -> None:
+        ts = time.time()
+        self.play_log.append([video_id, title, artist, ts, True])
+        if len(self.play_log) > PLAY_LOG_MAX:
+            del self.play_log[: PLAY_LOG_MAX // 2]
+            self.play_rev += 1  # paměť neopakování se načte znovu z databáze
         self._write(
             "INSERT INTO plays(video_id,title,artist,ts,seed_id,outcome) VALUES(?,?,?,?,?,'started')",
-            (video_id, title, artist, time.time(), seed_id),
+            (video_id, title, artist, ts, seed_id),
         )
 
     def record_outcome(self, video_id: str, outcome: str) -> None:
         """Fills in the outcome for the most recently started play of this track."""
+        if outcome == "error":
+            # nepřehrála se — do pravidla neopakování se nepočítá
+            for row in reversed(self.play_log):
+                if row[0] == video_id:
+                    row[4] = False
+                    break
+            self.play_rev += 1
         self._write(
             """UPDATE plays SET outcome=?
                WHERE rowid = (SELECT rowid FROM plays WHERE video_id=? ORDER BY ts DESC LIMIT 1)""",
@@ -481,6 +500,14 @@ class Store:
         )
 
     # ---- reads ----
+
+    def played_since(self, cutoff: float) -> list[tuple]:
+        """(video_id, název, interpret, čas) všeho, co od `cutoff` začalo hrát —
+        kromě toho, co se přehrát nepovedlo. Pro pravidlo neopakování
+        (music/repeats.py); volá se ve vlákně, ne z event loopu."""
+        return self._read(
+            """SELECT video_id, COALESCE(title,''), COALESCE(artist,''), ts FROM plays
+                WHERE ts > ? AND outcome != 'error' ORDER BY ts""", (cutoff,))
 
     def recently_played(self, days: int) -> set[str]:
         cutoff = time.time() - days * 86400

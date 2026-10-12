@@ -223,6 +223,9 @@ jukeboxu a restart chtějí PIN správce, který je na displeji na obrazovce Sí
 - **F-HLASY-17** Oblíbené kanceláře se hrají po lidech na střídačku
 - **F-FRONTA-20** Oblíbené hrají dál napřeskáčku, dokud si někdo nepřeje něco jiného
 - **F-ZVUK-11** Vulgární skladby se samy do podkresu nedostanou
+- **F-ZVUK-33** Co tu hrálo v posledních dnech, se samo neopakuje — ani oblíbené, ani od interpreta, kterého si přeješ
+- **F-PRANI-33** Z interpreta, alba a oblíbených DJ vynechá, co už hrálo, a řekne to
+- **F-PRANI-34** Už hranou písničku pustí jen výslovné přání — jménem, Zahrát znovu, nebo „klidně i to, co už hrálo“
 - **F-FRONTA-21** Z alba jsou první 4 skladby přání, zbytek hraje dál jako podkres
 - **F-FRONTA-23** Skladby, které přeskočíš klikem do fronty, nezmizí — zahrají hned potom
 - **F-FRONTA-24** Klik do fronty nikdy neutne cizí přání — tvoje skladba pak hraje jako další
@@ -254,4 +257,6 @@ jukeboxu a restart chtějí PIN správce, který je na displeji na obrazovce Sí
 - F-HLASY-03: ban_song_votes
 - F-HLASY-04: ban_artist_votes, favourite_artist_votes
 - F-HLASY-05: repeat_days
+- F-PRANI-33: repeat_days
+- F-ZVUK-18: repeat_days
 - F-SLUSNOST-01: display_filter

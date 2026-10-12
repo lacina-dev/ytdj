@@ -64,6 +64,7 @@ from . import telemetry
 from .nicks import NickError, Nicks, clean_nick, tag_of
 from .agent.intent import complaint_in, corrects, local_command, meta_kind, near_same, norm
 from .music.catalog import RE_URL, Track
+from .music.repeats import RepeatGuard, one_per_song
 from .player.base import queue_transaction
 
 log = logging.getLogger(__name__)
@@ -251,6 +252,26 @@ def plural_tracks(n: int) -> str:
     return f"{n} skladeb"
 
 
+def count_tracks(n: int) -> str:
+    """ "1 skladba" / "3 skladby" / "8 skladeb" (1. pád)."""
+    if n == 1:
+        return "1 skladba"
+    return f"{n} skladby" if 2 <= n <= 4 else f"{n} skladeb"
+
+
+# Jak si říct o to, co pravidlo neopakování vynechalo — smysl pozná DJ (model),
+# tohle je jen příklad, ne povel.
+REPEAT_HINT = "Chceš-li to i tak, napiš to výslovně (třeba „klidně i to, co už hrálo“)."
+
+
+@dataclass
+class RepeatCut:
+    """Co z přání vyřadilo pravidlo neopakování (WishQueue._drop_repeats)."""
+
+    notes: list[str] = field(default_factory=list)  # pravdivé věty do odpovědi
+    empty: str = ""  # nezbylo nic k zařazení — celá odpověď
+
+
 def eta_text(ahead: int | None, seconds: float | None = None) -> str:
     """0 = hned po hrající; n = kolik skladeb je před ním (+ odhad v minutách)."""
     if ahead is None:
@@ -343,6 +364,13 @@ class Wish:
     context: str = ""  # dovětek pro model (odpověď na otázku DJe napsaná textem)
     # „Zahrát znovu" z Odehráno: přání přesně téhle skladby — bez výkladu (DJe)
     replay: Track | None = None
+    # Z přání je jasné, že chce i to, co tu nedávno hrálo (konkrétní skladba,
+    # „Zahrát znovu", výslovné opakování — Intent.repeat_ok): pravidlo
+    # neopakování (repeat_days) neplatí pro něj ani pro jeho podkres
+    # (interpret, album, oblíbené). `named` = skladby, které jmenoval, v přání,
+    # kde se zbytek hlídá ("Budulínka a Depeche Mode").
+    repeat_ok: bool = False
+    named: set[str] = field(default_factory=set)
     done_ids: set[str] = field(default_factory=set)
     current: str | None = None  # videoId, které z přání právě hraje
     played: int = 0  # kolik skladeb začalo hrát
@@ -462,6 +490,8 @@ class Wish:
             "want_video": self.want_video or None,
             "asked_video": self.asked_video or None,
             "replay": _track_json(self.replay) if self.replay is not None else None,
+            "repeat_ok": self.repeat_ok or None,
+            "named": sorted(self.named) or None,
         }
 
     @classmethod
@@ -496,6 +526,8 @@ class Wish:
         w.asked_video = bool(d.get("asked_video"))
         w.asked = bool(d.get("asked"))
         w.replay = _track_from(d.get("replay"))
+        w.repeat_ok = bool(d.get("repeat_ok"))
+        w.named = {str(x) for x in d.get("named") or []}
         if isinstance(d.get("current"), str):
             w.was_current = d["current"]
         return w
@@ -814,6 +846,9 @@ class WishQueue:
         # posluchač promluvil: zrušit automatické přeseedování, klid pro SkipWatch
         self.on_listener = on_listener
         self.wishes: list[Wish] = []
+        # pravidlo neopakování — tatáž paměť jako podkres (music/repeats.py)
+        self.repeats: RepeatGuard = getattr(pools, "repeats", None) or RepeatGuard(store, cfg)
+        self._resumed_vid: str | None = None  # skladba navázaná po restartu (není opakování)
         self.turns = Turns()
         self.owner: dict[str, str] = {}  # videoId zhmotněné položky → id přání
         # proč hraje podkres: start (chytrý rozjezd) | radio; kdo ho naposledy určil
@@ -1616,6 +1651,8 @@ class WishQueue:
                 # z hlasování, se "moje" = tenhle člověk
                 plan = await fav(w.text, w.key, which=intent.favourites,
                                  continuous=intent.fav_continuous, alternate=intent.fav_alternate)
+                if plan is not None and getattr(intent, "repeat_ok", False):
+                    plan.intent.repeat_ok = True  # "… klidně i ty, co už hrály"
             if plan is None:
                 plan = await self.dj.resolve(intent)
             if steered and plan.failed:
@@ -1807,12 +1844,166 @@ class WishQueue:
             p.failed = "Tenhle odkaz jsem nerozluštil — zkus název skladby nebo interpreta."
             return p
         if target.kind == "track":
-            intent = Intent(kind="songs", text=w.text, reply=f"Zařazuju {target.tracks[0].label()}.")
+            # odkaz na jednu skladbu = výslovné přání té skladby (smí i opakovaně)
+            intent = Intent(kind="songs", text=w.text, repeat_ok=True,
+                            reply=f"Zařazuju {target.tracks[0].label()}.")
             return Plan(intent=intent, requested=target.tracks[:1])
-        intent = Intent(kind="song", text=w.text, mood=target.label,
+        # playlist / kanál je sada: co z ní tu nedávno hrálo, se vynechá
+        intent = Intent(kind="song", text=w.text, mood=target.label, note="link_list",
                         reply=f"Jedu podle odkazu — {target.label}.")
         return Plan(intent=intent, requested=target.tracks[:self.amounts.artist_max],
-                    seeds=target.tracks[:4])
+                    seeds=target.tracks[:4], candidates=list(target.tracks))
+
+    # ---- pravidlo neopakování (music/repeats.py) ----
+
+    def _named(self, w: Wish, tracks: list[Track]) -> tuple[list[Track], list[Track]]:
+        """(skladby, jejichž název v přání padl; ty, které vybral DJ sám).
+
+        Pojistka vedle `repeat_ok` modelu: kdo skladbu jmenoval, dostane ji,
+        i když tu nedávno hrála. Porovnává se jméno, ne obraty (skloňování
+        snese: „Jasnou zprávu" = Jasná zpráva)."""
+        from .agent.intent import mentions
+        from .votes import title_key
+
+        named: list[Track] = []
+        own: list[Track] = []
+        for t in tracks:
+            title = title_key(t.title, t.artist) or t.title
+            (named if title and mentions(w.text, title) else own).append(t)
+        return named, own
+
+    async def _other_songs(self, dropped: list[Track]) -> list[Track]:
+        """DJ vybral sám skladbu, která tu nedávno hrála ("jednu od Chinaski"):
+        jiné od téhož interpreta, které nehrály. [] = nepodařilo se."""
+        from .votes import credits
+
+        catalog = self.catalog or getattr(self.dj, "catalog", None)
+        names = credits(dropped[0].artist) if dropped else ()
+        if catalog is None or not names:
+            return []
+        try:
+            pool = await asyncio.wait_for(catalog.artist_tracks(names[0], limit=50), 6.0)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.info("náhrada za nedávno hranou skladbu se nenašla", exc_info=True)
+            return []
+        votes = getattr(self.dj, "votes", None)
+        allowed = getattr(self.dj, "_allowed", lambda ts: ts)
+        fresh = self.repeats.split(one_per_song(allowed(list(pool))))[0]
+        if votes is not None and getattr(votes, "items", None):
+            fresh = [t for t in fresh if not votes.blocked(t)]
+        return fresh[:min(3, len(dropped))]
+
+    async def _drop_repeats(self, w: Wish, intent: Any, plan: Any) -> RepeatCut:
+        """Ze skladeb přání pryč, co tu hrálo ve lhůtě `repeat_days` — a pravdivě to říct.
+
+        Vlastník 12. 10. 2026 (hlášení #32): „aby agent neopakoval písničky co
+        nebyly hrané před nastavenou lhůtou. Jediná výjimka může být výslovné
+        přání na konkrétní písničku nebo na opakování již hraného." Proto:
+          - `repeat_ok` (rozhodl model podle smyslu; rychlá cesta jen u
+            konkrétní skladby, odkazu na skladbu a „Zahrát znovu") = celé
+            přání smí i už hrané, i jeho podkres;
+          - skladba, jejíž název v přání padl, smí vždy (`_named`);
+          - všechno ostatní je sada (interpret, album, oblíbené, playlist
+            z odkazu, výběr DJe): hrané se vynechá. Nálada bere skladby
+            z poolů — ty hlídají samy (RadioPools).
+        Když nezbyde nic: u interpreta podobná hudba ("… a podobné"), jinak
+        se nic nezařadí a odpověď řekne proč a jak si o to říct.
+        Mění `plan` (a u interpreta bez nehraných skladeb `intent` na náladu).
+        """
+        cut = RepeatCut()
+        guard = self.repeats
+        if not getattr(intent, "changes_music", False):
+            return cut
+        w.repeat_ok = w.replay is not None or bool(getattr(intent, "repeat_ok", False))
+        if w.repeat_ok or intent.kind == "mood" or guard.days <= 0:
+            return cut
+        await guard.refresh()
+        when = guard.period()
+        note = str(getattr(intent, "note", "") or "")
+        dropped: list[Track] = []
+        if intent.kind == "artist":
+            named, own = self._named(w, list(plan.requested))
+            own, d1 = guard.split(own)
+            # každá píseň jednou (živák a studiová verze nejsou dvě písně)
+            pool = [t for t in one_per_song(list(named) + list(plan.artist_tracks))
+                    if all(t is not n for n in named)]
+            rest, d2 = guard.split(pool)
+            dropped = d1 + d2
+            w.named = {t.id for t in named}
+            plan.requested, plan.artist_tracks = named + own, rest
+            label = ", ".join(intent.artists)
+            if dropped and not (plan.requested or plan.artist_tracks):
+                # nic nehraného nezbylo: neopakovat, ale ani nemlčet — podobná hudba
+                intent.kind = "mood"
+                intent.mood = f"{label} a podobné"
+                plan.seeds = _dedup(dropped)[:3]
+                cut.notes.append(
+                    f"Od {label} tu {when} hrálo všechno, co znám ({count_tracks(len(dropped))}) "
+                    f"— neopakuju to, hraju podobnou hudbu. {REPEAT_HINT}")
+            elif dropped:
+                cut.notes.append(f"Bez toho, co tu {when} už hrálo ({count_tracks(len(dropped))}).")
+        elif intent.kind == "album":
+            plan.album_tracks, dropped = guard.split(plan.album_tracks)
+            if dropped and not plan.album_tracks:
+                cut.empty = (f"Album {plan.album_label} tu {when} hrálo celé "
+                             f"({count_tracks(len(dropped))}), tak ho neopakuju — nic jsem "
+                             f"nezařadil. {REPEAT_HINT}")
+            elif dropped:
+                cut.notes.append(f"Bez toho, co z něj tu {when} už hrálo "
+                                 f"({count_tracks(len(dropped))}).")
+        elif note.startswith("favourites") or note == "link_list":
+            # blok přání je jen začátek sady — vybírá se z celé
+            block = len(plan.requested)
+            fresh, dropped = guard.split(getattr(plan, "candidates", None) or plan.requested)
+            plan.requested = fresh[:block]
+            what = "oblíbených" if note.startswith("favourites") else "z odkazu"
+            if dropped and not plan.requested:
+                cut.empty = (f"Všechno {what} tu {when} už hrálo ({count_tracks(len(dropped))}), "
+                             f"tak to neopakuju — nic jsem nezařadil. {REPEAT_HINT}")
+            elif dropped:
+                cut.notes.append(f"Bez toho, co tu {when} už hrálo ({count_tracks(len(dropped))}).")
+        else:
+            named, own = self._named(w, list(plan.requested))
+            own, dropped = guard.split(own)
+            w.named = {t.id for t in named}
+            said = ", ".join(f"„{t.title}“" for t in dropped[:3])
+            subs: list[Track] = []
+            if dropped and not named and not own:
+                subs = await self._other_songs(dropped)
+            plan.requested = named + own + subs
+            if subs:
+                cut.notes.append(f"{said} tu {when} už hrálo, tak místo toho hraju od "
+                                 f"{subs[0].artist} něco, co nehrálo. {REPEAT_HINT}")
+            elif dropped and not plan.requested:
+                cut.empty = (f"{said} tu {when} už hrálo, tak to neopakuju — nic jsem "
+                             f"nezařadil. {REPEAT_HINT}")
+            elif dropped:
+                cut.notes.append(f"{said} tu {when} už hrálo — vynechávám.")
+        if dropped:
+            telemetry.event("request.repeats_dropped", id=w.id, who=w.who, intent_kind=intent.kind,
+                            dropped=len(dropped), kept=len(plan.requested) + len(plan.artist_tracks)
+                            + len(plan.album_tracks), days=guard.days,
+                            first=telemetry.clip(dropped[0].label(), 120))
+        return cut
+
+    def repeat_reason(self, vid: str | None) -> str:
+        """Proč smí tahle skladba hrát, i když tu ve lhůtě už hrála ("" = nesmí —
+        do telemetrie `repeat.leak`, App._on_event)."""
+        if not vid:
+            return ""
+        if vid == self._resumed_vid:
+            self._resumed_vid = None
+            return "resume"
+        w = self._owner_of(vid) or next((x for x in self.wishes if x.current == vid), None)
+        if w is not None:
+            if w.replay is not None:
+                return "replay"
+            if w.repeat_ok:
+                return "wish"
+            return "named" if vid in w.named else ""
+        return "background_wish" if getattr(self.pools, "repeat_ok", False) else ""
 
     # ---- plán → přání se skladbami ----
 
@@ -1846,6 +2037,16 @@ class WishQueue:
             w.reply = plan.failed
             self._finish(w, "notfound", t0)
             return
+        # Pravidlo neopakování: ze sady (interpret, album, oblíbené, výběr DJe)
+        # pryč, co tu ve lhůtě hrálo — a říct to. Jen výslovné přání konkrétní
+        # skladby nebo opakování smí i tak (vlastník 12. 10. 2026, hlášení #32).
+        cut = await self._drop_repeats(w, intent, plan)
+        w.kind = intent.kind  # všechno od interpreta hrálo → podobná hudba (nálada)
+        if cut.empty:
+            w.reply = " ".join(x for x in [w.lead, *notes, cut.empty] if x)
+            self._finish(w, "done", t0)
+            return
+        notes += cut.notes
 
         dj = self.dj
         if intent.kind in ("artist", "song", "mood", "album"):
@@ -1932,7 +2133,8 @@ class WishQueue:
                     await self._set_background(favourites=fav, voter=w.key, seeds=seeds,
                                                mood=intent.mood, who=w.who, wid=w.id,
                                                played=[t.id for t in w.tracks],
-                                               alternate=w.fav_alternate)
+                                               alternate=w.fav_alternate,
+                                               repeat_ok=w.repeat_ok)
             elif seeds and not others and not held:
                 await self._set_background(seeds=seeds, mood=intent.mood, who=w.who, wid=w.id,
                                            allow_long=True, explicit_ok=explicit_ok,
@@ -2240,8 +2442,10 @@ class WishQueue:
                               played: list[str] | None = None, alternate: bool = True,
                               album: bool = False, done: set[str] | None = None,
                               explicit_ok: bool = False, keep_album: bool = False,
-                              video_only: bool = False) -> None:
+                              video_only: bool = False, repeat_ok: bool = False) -> None:
         focus: list[str] = []
+        # jen když přání výslovně chtělo i už hrané (atrapy poolů to pole neznají)
+        again = {"repeat_ok": True} if repeat_ok else {}
         playing = getattr(self.pools, "album", "")
         if playing and not keep_album and not (album and artist == playing):
             # podkres alba končí (jeho autor chtěl něco jiného, lidé ho
@@ -2252,7 +2456,7 @@ class WishQueue:
         set_fav = getattr(self.pools, "set_favourites", None)
         if favourites and set_fav is not None and (await set_fav(
                 favourites, voter, mood=mood, played=list(played or []),
-                alternate=alternate)).get("pool_size"):
+                alternate=alternate, **again)).get("pool_size"):
             # režim oblíbených: bez limitu skladeb a času, do dalšího přání (F-FRONTA-20)
             mood, artist = self.pools.mood, ""
         elif album and artist_tracks:
@@ -2260,7 +2464,7 @@ class WishQueue:
             # dokud neskončí (RadioPools.set_album)
             favourites = ""
             res = await self.pools.set_album(artist, artist_tracks, mood=mood or f"album {artist}",
-                                             done=done or set(), artists=artists)
+                                             done=done or set(), artists=artists, **again)
             if not res.get("pool_size"):
                 return  # nic z alba nezbývá — podkres zůstává, jak byl
             mood = self.pools.mood
@@ -2271,7 +2475,7 @@ class WishQueue:
                 until = time.time() + BG_ARTIST_TTL
             try:
                 await self.pools.set_artist(artist, artist_tracks, mood=mood or artist,
-                                            max_tracks=max_tracks, until=until)
+                                            max_tracks=max_tracks, until=until, **again)
             except TypeError:  # pooly bez omezení (atrapy)
                 await self.pools.set_artist(artist, artist_tracks, mood=mood or artist)
             focus = list(artists or [artist])
@@ -2393,16 +2597,18 @@ class WishQueue:
             await self._set_background(favourites=x.fav, voter=x.key, seeds=_dedup(list(x.tracks))[:4],
                                        mood="moje oblíbené" if x.fav == "mine" else "oblíbené kanceláře",
                                        who=x.who, wid=x.id, played=[t.id for t in x.tracks],
-                                       alternate=x.fav_alternate)
+                                       alternate=x.fav_alternate, repeat_ok=x.repeat_ok)
         elif x.kind == "album" and (x.tracks or x.rest):
             every = _dedup(list(x.tracks) + list(x.rest))
             await self._set_background(album=True, artist=x.artist, who=x.who, wid=x.id,
                                        artist_tracks=every, artists=x.artists or None,
-                                       done={t.id for t in x.tracks} | x.album_heard)
+                                       done={t.id for t in x.tracks} | x.album_heard,
+                                       repeat_ok=x.repeat_ok)
         elif x.kind == "artist" and (x.tracks or x.rest):
             every = _dedup(list(x.tracks) + list(x.rest))
             await self._set_background(artist=x.artist, mood=x.artist, who=x.who, wid=x.id,
-                                       artist_tracks=every, artists=x.artists or None)
+                                       artist_tracks=every, artists=x.artists or None,
+                                       repeat_ok=x.repeat_ok)
         elif x.kind == "mood":
             if self.bg_reason.get("id") == x.id:
                 return
@@ -2794,10 +3000,12 @@ class WishQueue:
                 w.rest = [t for t in every if all(t.id != k.id for k in w.tracks)]
                 await self._set_background(album=True, artist=w.artist, who=w.who, wid=w.id,
                                            artist_tracks=every, artists=w.artists,
-                                           done={t.id for t in w.tracks} | w.album_heard)
+                                           done={t.id for t in w.tracks} | w.album_heard,
+                                           repeat_ok=w.repeat_ok)
                 continue
             await self._set_background(artist=w.artist, mood=w.artist, who=w.who, wid=w.id,
-                                       artist_tracks=every, artists=w.artists)
+                                       artist_tracks=every, artists=w.artists,
+                                       repeat_ok=w.repeat_ok)
 
     # ---- události přehrávače ----
 
@@ -3269,6 +3477,7 @@ class WishQueue:
                       artists=list(getattr(pools, "_album_artists", []) or []),
                       tracks=[_track_json(t) for t in pools._artist_all[:100]],
                       done=[t.id for t in pools._artist_all if t.id not in left])
+            bg["repeat_ok"] = bool(getattr(pools, "repeat_ok", False)) or None
         elif getattr(pools, "artist", "") and getattr(pools, "_artist_all", None):
             bg.update(mode="artist", artist=pools.artist,
                       artists=list(getattr(self.dj, "_focus_artists", []) or []),
@@ -3276,12 +3485,14 @@ class WishQueue:
                       # omezení režimu interpreta — po restartu nesmí začít znovu
                       left=getattr(pools, "artist_left", None),
                       until=getattr(pools, "artist_until", None))
+            bg["repeat_ok"] = bool(getattr(pools, "repeat_ok", False)) or None
         elif getattr(pools, "favourites", "") and getattr(pools, "pools", None):
             # režim oblíbených: co už v tomhle kole zaznělo (ať se po restartu neopakuje)
             bg.update(mode="favourites", which=pools.favourites,
                       voter=getattr(pools, "_fav_voter", ""),
                       alternate=bool(getattr(pools, "_fav_alternate", True)),
                       played=sorted(getattr(pools, "_fav_played", ()))[:1000])
+            bg["repeat_ok"] = bool(getattr(pools, "repeat_ok", False)) or None
         elif getattr(pools, "pools", None):
             bg.update(mode="seeds", allow_long=bool(getattr(pools, "allow_long", False)),
                       seeds=[_track_json(p.seed) for p in pools.pools[:5]])
@@ -3435,7 +3646,9 @@ class WishQueue:
                 if w.state in ("queued", "playing") and any(t.id == track.id for t in w.pending()):
                     w.current = track.id
                     w.state = "playing"
+            self._resumed_vid = track.id  # pokračuje — není to opakování (repeat_reason)
             if not await play(track, pos):
+                self._resumed_vid = None
                 for w in self.wishes:
                     if w.current == track.id:
                         w.current = None
@@ -3473,7 +3686,7 @@ class WishQueue:
                 artist_tracks=tracks, artists=bg.get("artists") or None,
                 who=str(reason.get("who") or ""), kind=str(reason.get("kind") or "radio"),
                 wid=str(reason.get("id") or ""), max_tracks=left, until=float(until),
-                from_key=str(reason.get("key") or ""))
+                from_key=str(reason.get("key") or ""), repeat_ok=bool(bg.get("repeat_ok")))
             return
         live = [w for w in self.wishes if w.state in ("queued", "playing") and w.tracks]
         telemetry.event("request.background_stale", artist=artist, left=left,
@@ -3687,7 +3900,8 @@ class WishQueue:
                         artists=[str(a) for a in bg.get("artists") or []] or None,
                         done={str(x) for x in bg.get("done") or []},
                         who=str(reason.get("who") or ""), kind=str(reason.get("kind") or "radio"),
-                        wid=str(reason.get("id") or ""), from_key=str(reason.get("key") or ""))
+                        wid=str(reason.get("id") or ""), from_key=str(reason.get("key") or ""),
+                        repeat_ok=bool(bg.get("repeat_ok")))
             elif bg.get("mode") == "artist":
                 tracks = [t for t in (_track_from(x) for x in bg.get("tracks") or []) if t]
                 if tracks:
@@ -3699,7 +3913,8 @@ class WishQueue:
                     played=[str(x) for x in bg.get("played") or []],
                     alternate=bg.get("alternate") is not False,
                     who=str(reason.get("who") or ""), kind=str(reason.get("kind") or "radio"),
-                    wid=str(reason.get("id") or ""), from_key=str(reason.get("key") or ""))
+                    wid=str(reason.get("id") or ""), from_key=str(reason.get("key") or ""),
+                    repeat_ok=bool(bg.get("repeat_ok")))
             elif bg.get("mode") == "seeds":
                 seeds = [t for t in (_track_from(x) for x in bg.get("seeds") or []) if t]
                 if seeds:

@@ -27,8 +27,9 @@ Stav se neukládá, počítá se z hlasů (config `ban_song_votes`,
 
 Co to dělá s hudbou (radio.py, codex.py, enforce() níže): podkres (pooly)
 vyřazené nikdy nevydá, upozaděné jen napůl, oblíbené (skladby i skladby
-oblíbených interpretů) smí zase hrát i dřív než po `repeat_days` a v poolu
-se posunou dopředu (boost_pools). "Pusť oblíbené" hraje oblíbené skladby
+oblíbených interpretů) se v poolu posunou dopředu (boost_pools). Dřív než po
+`repeat_days` ale nehraje ani oblíbená (vlastník 12. 10. 2026, hlášení #32 —
+music/repeats.py; do té doby směla). "Pusť oblíbené" hraje oblíbené skladby
 i známé skladby oblíbených interpretů (favourite_mix). Výslovné přání vyřazené skladby / interpreta se
 splní — s poznámkou, kdo ji vyřadil. Při vyřazení zmizí z fronty jen
 podkres; hraje-li zrovna podkres, přeskočí se.

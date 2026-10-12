@@ -84,21 +84,36 @@ class ArtistRotation(unittest.TestCase):
         self.assertEqual(heard[:4], [t.id for t in KABAT[:4]])
 
     def test_after_whole_pool_the_least_recent_comes_first(self) -> None:
+        """Jen pro přání, které výslovně chtělo i už hrané (`repeat_ok`)."""
         store = Store()
         store.play(KABAT[5:])  # hrály dávno
         store.play(KABAT[:5])  # hrály nedávno
         pools = RadioPools(Catalog(), store, CFG)
-        run(pools.set_artist("Kabát", KABAT))
+        run(pools.set_artist("Kabát", KABAT, repeat_ok=True))
         got = [t.id for t in run(pools.next_tracks(7))]
         self.assertEqual(got, [t.id for t in KABAT[5:12]])
+
+    def test_everything_played_within_the_period_means_similar_music_not_a_repeat(self) -> None:
+        """Vlastník 12. 10. 2026 (hlášení #32): co ve lhůtě hrálo, se neopakuje
+        ani v režimu interpreta — dřív se jelo od začátku."""
+        store = Store()
+        store.play(KABAT)  # všechno hrálo ve lhůtě
+        pools = RadioPools(Catalog(), store, CFG)
+        run(pools.set_artist("Kabát", KABAT))
+        got = run(pools.next_tracks(4))
+        self.assertTrue(got)  # ticho ne
+        self.assertFalse({t.id for t in got} & {t.id for t in KABAT})
+        self.assertEqual(pools.artist, "")
+        self.assertEqual(pools.mood, "Kabát a podobné")
 
     def test_restart_inside_session_also_rotates(self) -> None:
         store = Store()
         pools = RadioPools(Catalog(), store, CFG)
-        run(pools.set_artist("Kabát", KABAT))
+        Catalog.radio_calls = 0
+        run(pools.set_artist("Kabát", KABAT, repeat_ok=True))
         first = run(pools.next_tracks(12))
         store.play(first)
-        again = run(pools.next_tracks(3))  # pool dohrán → jede znovu
+        again = run(pools.next_tracks(3))  # pool dohrán → jede znovu (výslovné přání)
         self.assertEqual([t.id for t in again], [t.id for t in first[:3]])
         self.assertEqual(Catalog.radio_calls, 0)  # nikdy rádio z cizích kapel
 

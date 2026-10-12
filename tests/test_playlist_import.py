@@ -524,8 +524,10 @@ class Fairness(unittest.TestCase):
         t = Track("a0000000001", "a song 1", "a band 1", duration=200)
         self.assertTrue(b.is_favourite(t))  # 👍 z playlistu = 👍 (F-HLASY-03/05)
 
+        t2 = Track("a0000000002", "a song 2", "a band 2", duration=200)
+
         async def radio(video_id, limit=50):
-            return [t]
+            return [t, t2]
 
         store = SimpleNamespace(blacklisted=lambda: set(), recently_played=lambda d: {t.id},
                                 record_seed=lambda *a: None, recent_history=lambda n: [])
@@ -536,7 +538,11 @@ class Fairness(unittest.TestCase):
             await pools.set_seeds([Track("seed0000001", "S", "Seed")])
             return [x.id for x in await pools.next_tracks(3)]
 
-        self.assertIn(t.id, run(go()))  # oblíbená smí i dřív než po repeat_days
+        got = run(go())
+        # oblíbená z playlistu jako každá jiná: hraje, ale ne dřív než po
+        # repeat_days (vlastník 12. 10. 2026, hlášení #32)
+        self.assertIn(t2.id, got)
+        self.assertNotIn(t.id, got)
 
 
 # --------------------------------------------------------------------------

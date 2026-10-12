@@ -701,6 +701,11 @@ class Intent:
     # posluchač výslovně chce vulgární / sprosté texty (rozhodl model): filtr
     # explicitních se zvedne jen pro tohle přání a jeho podkres
     explicit_ok: bool = False
+    # z přání je jasné, že posluchač chce i to, co tu nedávno hrálo (jmenoval
+    # konkrétní skladbu, nebo chce něco zopakovat) — rozhodl model. Jen pak se
+    # pro tohle přání a jeho podkres zvedá pravidlo neopakování (repeat_days);
+    # jinak aplikace nedávno hrané ze sady sama vynechá (music/repeats.py).
+    repeat_ok: bool = False
     # posluchač chce hudbu i s OBRAZEM (klipy na telce) — rozhodl model: hrají
     # se oficiální klipy (jiná nahrávka než písnička), jen pro tohle přání
     want_video: bool = False
@@ -759,7 +764,8 @@ def option_decision(opt: dict) -> dict:
     """Vybraná možnost → rozhodnutí ve tvaru modelu (hotové k provedení)."""
     pair = {"artist": opt.get("artist", ""), "title": opt.get("title", "")}
     data: dict = {"action": "start_radio", "seeds": [], "requested": [], "focus_artists": [],
-                  "albums": [], "explicit_ok": False, "after_current": False, "avoid": [],
+                  "albums": [], "explicit_ok": False, "repeat_ok": False,
+                  "after_current": False, "avoid": [],
                   "mood": "", "volume": 0, "remember": "", "reply": ""}
     if opt.get("kind") == "album":
         data["albums"] = [pair]
@@ -769,6 +775,7 @@ def option_decision(opt: dict) -> dict:
         data["requested"] = [pair]
         data["seeds"] = [pair]
         data["mood"] = f"{pair['artist']} a podobné"
+        data["repeat_ok"] = True  # posluchač si tu písničku sám vybral
     return data
 
 
@@ -776,6 +783,8 @@ def option_intent(user_text: str, opt: dict, auto: bool = False) -> "Intent":
     """Výklad přání podle jedné možnosti upřesnění (bez oprav — je jednoznačná)."""
     intent = build_intent(user_text, option_decision(opt), auto=True)
     intent.auto = auto
+    # písničku si posluchač vybral sám — smí, i když tu nedávno hrála
+    intent.repeat_ok = not auto and opt.get("kind") == "song"
     intent.note = "upřesnění: " + str(opt.get("label") or "")
     return intent
 
@@ -807,7 +816,8 @@ def build_intent(user_text: str, data: dict, auto: bool = False) -> Intent:
                       fav_continuous=bool(data.get("continuous", True)),
                       fav_alternate=bool(data.get("alternate_artists", True)),
                       mood="moje oblíbené" if scope == "mine" else "oblíbené kanceláře",
-                      note="favourites_model", remember=str(data.get("remember") or ""))
+                      note="favourites_model", remember=str(data.get("remember") or ""),
+                      repeat_ok=bool(data.get("repeat_ok")) and not auto)
     requested = [r for r in data.get("requested") or [] if isinstance(r, dict)]
     seeds = [s for s in data.get("seeds") or [] if isinstance(s, dict)]
     focus = [str(a).strip() for a in data.get("focus_artists") or [] if str(a).strip()]
@@ -863,6 +873,9 @@ def build_intent(user_text: str, data: dict, auto: bool = False) -> Intent:
         auto=auto,
         albums=albums if kind == "album" else [],
         explicit_ok=bool(data.get("explicit_ok")) and kind in ("mood", "song", "songs", "artist"),
+        # jen přání posluchače: co si aplikace vybírá sama, se neopakuje nikdy
+        repeat_ok=bool(data.get("repeat_ok")) and not auto
+        and kind in ("song", "songs", "artist", "album"),
         want_video=bool(data.get("want_video")) and not auto
         and kind in ("mood", "song", "songs", "artist"),
         note=note,

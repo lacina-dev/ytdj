@@ -468,7 +468,8 @@ class ArtistModeTest(unittest.TestCase):
         self.tracks = [
             catalog_mod.Track(f"m{n:010d}", f"Song {n}", "Midi Lidi", None, 240) for n in range(12)
         ]
-        # jedna "hrála včera" — vyžádaný interpret má přednost před neopakováním
+        # jedna "hrála včera" — pravidlo neopakování platí i pro vyžádaného
+        # interpreta (vlastník 12. 10. 2026, hlášení #32): ta se vynechá
         self.store = _Store(recent={self.tracks[1].id})
         self.catalog = _RadioCatalog()
         self.pools = RadioPools(self.catalog, self.store, self.cfg)
@@ -477,7 +478,8 @@ class ArtistModeTest(unittest.TestCase):
         summary = asyncio.run(self.pools.set_artist("Midi Lidi", self.tracks))
         self.assertEqual(summary["pool_size"], 12)
         out = asyncio.run(self.pools.next_tracks(5))
-        self.assertEqual([t.id for t in out], [t.id for t in self.tracks[:5]])
+        fresh = [t for t in self.tracks if t.id != self.tracks[1].id]
+        self.assertEqual([t.id for t in out], [t.id for t in fresh[:5]])
         self.assertEqual(self.catalog.radio_calls, 0)
         self.assertIn("Midi Lidi", self.pools.describe())
 
@@ -487,6 +489,7 @@ class ArtistModeTest(unittest.TestCase):
         for _ in range(6):
             played += asyncio.run(self.pools.next_tracks(5))
         self.assertEqual(len(played), 30)
+        self.assertNotIn(self.tracks[1].id, [t.id for t in played])  # hrála včera
         self.assertTrue(all(t.artist == "Midi Lidi" for t in played))
         self.assertEqual(self.catalog.radio_calls, 0)
         self.assertFalse(self.pools.exhausted())

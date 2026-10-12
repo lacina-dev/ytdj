@@ -637,7 +637,7 @@ class AppServerMemory(unittest.TestCase):
 
 class FavouriteArtistNeedsTwo(unittest.TestCase):
     def test_single_thumb_does_not_boost_the_artist(self):
-        """r11: 8 skladeb Kabátu v poolu 50, všechny hrály v repeat_days."""
+        """r11: 8 skladeb Kabátu v poolu 50 — přednost až od dvou 👍."""
         others = [Track(f"o{i:010d}", f"Song {i}", f"Band {i}", duration=200) for i in range(42)]
         kab = [Track(f"k{i:010d}", f"Kabát {i}", "Kabát", duration=200) for i in range(8)]
         tracks = []
@@ -649,7 +649,7 @@ class FavouriteArtistNeedsTwo(unittest.TestCase):
             b = book()
             for v in voters:
                 b.cast(ARTIST, v, 1, artist="Kabát")
-            pools = VotePools._pools(self, tracks, b, recent={t.id for t in kab})
+            pools = VotePools._pools(self, tracks, b)
             b.pools = pools
             await pools.set_seeds([Track("seed0000001", "S", "Seed")])
             out = []
@@ -657,10 +657,11 @@ class FavouriteArtistNeedsTwo(unittest.TestCase):
                 out += await pools.next_tracks(1)
             return sum(1 for t in out if t.artist == "Kabát"), b.tally(ARTIST, "kabat").status
 
-        self.assertEqual(asyncio.run(draw([PETR])), (0, NEUTRAL))
+        one, status = asyncio.run(draw([PETR]))
+        self.assertEqual(status, NEUTRAL)
         n, status = asyncio.run(draw([PETR, JANA]))
         self.assertEqual(status, FAVOURITE)
-        self.assertGreater(n, 0)
+        self.assertGreater(n, one)  # oblíbený interpret jde v poolu dopředu
 
     def test_song_needs_one_and_config_is_live(self):
         from ytdj.config import DEFAULTS

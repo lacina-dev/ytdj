@@ -222,15 +222,17 @@ class Pools(unittest.TestCase):
         pools.votes = b
         return pools
 
-    def test_banned_never_downweighted_half_favourite_again(self):
+    def test_banned_never_downweighted_half_favourite_not_before_repeat_days(self):
         b = book()
-        tracks = [DAMA, POHODA, ZPRAVA, Track("fav00000001", "Fav", "Nobody", duration=200)]
+        tracks = [DAMA, POHODA, ZPRAVA, Track("fav00000001", "Fav", "Nobody", duration=200),
+                  Track("fav00000002", "Fav 2", "Nobody 2", duration=200)]
         for t in tracks:
             t.duration = 200
         b.cast(SONG, PETR, -1, track=DAMA)
         b.cast(SONG, JANA, -1, track=DAMA)  # vyřazená
         b.cast(SONG, PETR, -1, track=POHODA)  # upozaděná
-        b.cast(SONG, JANA, 1, track=tracks[3])  # oblíbená
+        b.cast(SONG, JANA, 1, track=tracks[3])  # oblíbená, hrála ve lhůtě
+        b.cast(SONG, JANA, 1, track=tracks[4])  # oblíbená, nehrála
 
         async def go(rng):
             b.rng = rng
@@ -242,21 +244,25 @@ class Pools(unittest.TestCase):
         self.assertNotIn(DAMA.id, got)
         self.assertNotIn(POHODA.id, got)
         self.assertIn(ZPRAVA.id, got)
-        self.assertIn(tracks[3].id, got)  # oblíbená i přes repeat_days
+        # oblíbená dřív než po repeat_days ne (vlastník 12. 10. 2026, hlášení #32)
+        self.assertNotIn(tracks[3].id, got)
+        self.assertIn(tracks[4].id, got)
         got = asyncio.run(go(lambda: 0.1))  # upozaděná prošla
         self.assertIn(POHODA.id, got)
         self.assertNotIn(DAMA.id, got)
 
 
 class FavouriteArtists(unittest.TestCase):
-    def test_pool_boost_and_repeat_days(self):
+    def test_pool_boost_but_not_before_repeat_days(self):
         b = book()
         radio = [Track(f"r{i:010d}", f"Song {i}", f"Band {i}", duration=200) for i in range(20)]
         kab = Track("kab0000000x", "Burlaci", "Kabát", duration=200)
         tracks = radio[:15] + [kab] + radio[15:]
         b.cast(ARTIST, PETR, 1, artist="Kabát")
         b.cast(ARTIST, JANA, 1, artist="Kabát")  # oblíbený až od dvou lidí
-        pools = Pools._pools(self, tracks, b, recent={kab.id})
+        played = Track("kab0000000y", "Pohoda", "Kabát", duration=200)  # hrála ve lhůtě
+        tracks.insert(2, played)
+        pools = Pools._pools(self, tracks, b, recent={played.id})
         b.pools = pools  # jako wire(): pool_reject posune oblíbené dopředu
 
         async def go():
@@ -264,10 +270,12 @@ class FavouriteArtists(unittest.TestCase):
             return [t.id for t in await pools.next_tracks(10)]
 
         got = asyncio.run(go())
-        # 16. v rádiu, po posunu o BOOST_LIFT (8) míst mezi prvními deseti —
-        # a i když hrál v posledních repeat_days
+        # 17. v rádiu, po posunu o BOOST_LIFT (8) míst mezi prvními deseti
         self.assertIn(kab.id, got)
-        self.assertLessEqual(got.index(kab.id), 15 - V.BOOST_LIFT)
+        self.assertLessEqual(got.index(kab.id), 16 - V.BOOST_LIFT)
+        # skladba oblíbeného interpreta, která hrála v posledních repeat_days,
+        # ale ne (vlastník 12. 10. 2026, hlášení #32)
+        self.assertNotIn(played.id, got)
         # podruhé se už neposouvá (každá skladba jednou)
         self.assertEqual(b.boost_pools(pools.pools), 0)
 

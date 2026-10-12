@@ -134,6 +134,29 @@ def cookie_warning(cfg: Config) -> str | None:
     )
 
 
+def note_repeat(pools, wishes, track) -> None:
+    """Hlídka pravidla neopakování: skladba, která tu ve lhůtě už hrála, smí
+    začít jen z výslovného přání (`repeat.allowed`); cokoli jiného je díra
+    v některém zdroji skladeb a zapíše se jako `repeat.leak`."""
+    try:
+        guard = pools.repeats
+        last = guard.last_played(track)
+        if last is None:
+            return
+        why = wishes.repeat_reason(track.id)
+        ago = int(time.time() - last)
+        telemetry.event(
+            "repeat.allowed" if why else "repeat.leak", video_id=track.id,
+            label=telemetry.clip(track.label(), 120), ago_s=ago, why=why or None,
+            days=guard.days, mood=telemetry.clip(pools.mood or "", 80) or None,
+        )
+        if not why:
+            log.warning("pravidlo neopakování: %s hrála před %d min a hraje znovu",
+                        track.label(), ago // 60)
+    except Exception:
+        log.debug("hlídka neopakování selhala", exc_info=True)
+
+
 class App:
     def __init__(self, cfg: Config, player: MpvPlayer | None = None,
                  player_start: asyncio.Future | None = None,
@@ -320,6 +343,7 @@ class App:
 
     async def _on_event(self, ev: PlayerEvent) -> None:
         if ev.kind == "start" and ev.track:
+            note_repeat(self.pools, self.wishes, ev.track)  # před zápisem do historie
             self.store.record_start(
                 ev.track.id, ev.track.title, ev.track.artist, self.pools.mood or None
             )
@@ -570,6 +594,10 @@ class App:
 
     async def _run(self, repl: bool, aload_quietly) -> int:
         await aload_quietly(self.votes)  # state.db ve vlákně, ne v event loopu
+        with contextlib.suppress(Exception):
+            # paměť pravidla neopakování (co hrálo v posledních repeat_days) —
+            # taky ve vlákně; dál se jen doplňuje z paměti
+            await self.pools.repeats.refresh()
         from .issues import aload_quietly as aload_issues
 
         await aload_issues(self.issues)  # state.db a seed ve vlákně

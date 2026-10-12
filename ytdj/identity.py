@@ -740,7 +740,7 @@ def _name(r: dict) -> str:
 
 
 def _account_line(r: dict) -> str:
-    more = f", {r['browsers']} prohlížeče" if r.get("browsers", 1) > 1 else ""
+    more = f", {_n(r['browsers'], 'prohlížeč', 'prohlížeče', 'prohlížečů')}" if r.get("browsers", 1) > 1 else ""
     return (f"…{r['id']}  {_name(r):<20}  poprvé {_day(r['first']):<13} "
             f"naposledy {_day(r['last']):<13} {_has(r)}{more}")
 
@@ -764,7 +764,7 @@ def _print_plan(data: dict, out: Any) -> None:
               f"(poprvé {_day(r['first'])}) — {text}", file=out)
     if done:
         print(f"  {'zůstal':<10}  …{kept['id']}  {_name(kept)}  (poprvé {_day(kept['first'])}) — teď má {_has(kept)}"
-              + (f", {kept['browsers']} prohlížeče" if kept.get("browsers", 1) > 1 else ""), file=out)
+              + (f", {_n(kept['browsers'], 'prohlížeč', 'prohlížeče', 'prohlížečů')}" if kept.get("browsers", 1) > 1 else ""), file=out)
     else:
         print(f"  {'zůstane':<10}  …{kept['id']}  {_name(kept)}  (poprvé {_day(kept['first'])}) — má {_has(kept)}",
               file=out)

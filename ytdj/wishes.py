@@ -371,6 +371,9 @@ class Wish:
     # kde se zbytek hlídá ("Budulínka a Depeche Mode").
     repeat_ok: bool = False
     named: set[str] = field(default_factory=set)
+    # přání oblíbených, když nehrané došly: skladby z kola dokola (smí, i když
+    # ve lhůtě hrály — vlastník 16. 10. 2026)
+    again: set[str] = field(default_factory=set)
     done_ids: set[str] = field(default_factory=set)
     current: str | None = None  # videoId, které z přání právě hraje
     played: int = 0  # kolik skladeb začalo hrát
@@ -492,6 +495,7 @@ class Wish:
             "replay": _track_json(self.replay) if self.replay is not None else None,
             "repeat_ok": self.repeat_ok or None,
             "named": sorted(self.named) or None,
+            "again": sorted(self.again) or None,
         }
 
     @classmethod
@@ -528,6 +532,7 @@ class Wish:
         w.replay = _track_from(d.get("replay"))
         w.repeat_ok = bool(d.get("repeat_ok"))
         w.named = {str(x) for x in d.get("named") or []}
+        w.again = {str(x) for x in d.get("again") or []}
         if isinstance(d.get("current"), str):
             w.was_current = d["current"]
         return w
@@ -1959,7 +1964,19 @@ class WishQueue:
             fresh, dropped = guard.split(getattr(plan, "candidates", None) or plan.requested)
             plan.requested = fresh[:block]
             what = "oblíbených" if note.startswith("favourites") else "z odkazu"
-            if dropped and not plan.requested:
+            if note.startswith("favourites") and dropped and len(fresh) < block:
+                # Oblíbené nedojdou (vlastník 16. 10. 2026): po nehraných dokola,
+                # nejdéle nehraná první — žádná se nevrátí, dokud nezazní ostatní.
+                again = sorted(one_per_song(dropped), key=lambda t: guard.last_played(t) or 0.0)
+                again = again[:block - len(fresh)]
+                plan.requested = fresh + again
+                w.again = {t.id for t in again}
+                cut.notes.append(
+                    f"Nehraných oblíbených bylo jen {len(fresh)}, pak jedu dokola — od těch, "
+                    "co nejdéle nehrály." if fresh else
+                    f"Všechny oblíbené tu {when} už hrály, tak jedu dokola — od těch, "
+                    "co nejdéle nehrály.")
+            elif dropped and not plan.requested:
                 cut.empty = (f"Všechno {what} tu {when} už hrálo ({count_tracks(len(dropped))}), "
                              f"tak to neopakuju — nic jsem nezařadil. {REPEAT_HINT}")
             elif dropped:
@@ -2002,7 +2019,11 @@ class WishQueue:
                 return "replay"
             if w.repeat_ok:
                 return "wish"
+            if vid in w.again:
+                return "favourites_rotation"
             return "named" if vid in w.named else ""
+        if getattr(self.pools, "favourites", "") and vid in getattr(self.pools, "fav_again", ()):
+            return "favourites_rotation"  # oblíbené dokola (16. 10. 2026)
         return "background_wish" if getattr(self.pools, "repeat_ok", False) else ""
 
     # ---- plán → přání se skladbami ----
@@ -2256,7 +2277,8 @@ class WishQueue:
         elif others and w.kind == "artist":
             parts.append(f"Čekají i další přání, tak se střídáme po {am.shared} skladbách.")
         if self.bg_reason.get("id") == w.id and w.fav and getattr(self.pools, "favourites", ""):
-            parts.append("Pak hraju oblíbené dál napřeskáčku, dokud si nikdo nepřeje něco jiného.")
+            how = "dokola" if getattr(self.pools, "fav_again", None) else "napřeskáčku"
+            parts.append(f"Pak hraju oblíbené dál {how}, dokud si nikdo nepřeje něco jiného.")
         elif self.bg_reason.get("id") == w.id and w.kind == "song":
             parts.append("Potom podobná hudba.")
         parts.append(when)

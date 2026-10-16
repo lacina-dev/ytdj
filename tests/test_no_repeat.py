@@ -268,28 +268,32 @@ class Background(unittest.TestCase):
         self.assertNotIn(other.id, got)
         self.assertEqual(len({twice[0].id, twice[1].id} & set(got)), 1)  # v dávce jen jednou
 
-    def test_favourites_mode_never_starts_a_second_round_within_the_period(self) -> None:
-        """Pi 9. 10. 14:18–15:36: režim oblíbených zahrál 8 písniček, které
-        hrály před 44–71 h; po všech by jel nové kolo."""
+    def test_favourites_mode_plays_the_unplayed_first_then_goes_round(self) -> None:
+        """Pi 9. 10. 14:18–15:36: režim oblíbených zahrál 8 písniček hraných před
+        44–71 h. Vlastník 16. 10.: nejdřív nehrané, pak dokola od nejdéle
+        nehrané — nikdy „už všechno hrálo"."""
         store = new_store()
         b = book()
         favs = [T(f"fav{i}", f"Oblíbená {i}", f"Kapela {i}") for i in range(6)]
         for t in favs:
             b._rate.clear()
             b.cast(SONG, PETR, 1, "Petr", track=t)
-        played(store, favs[:4], ago_s=2 * DAY)
+        for i, t in enumerate(favs[:4]):
+            played(store, [t], ago_s=(3 - i * 0.5) * DAY)  # fav0 nejdávněji
         pools = pools_for(store, votes=b)
         res = run(pools.set_favourites("office"))
-        self.assertEqual(res["pool_size"], 2)  # jen dvě ve lhůtě nehrály
+        self.assertEqual(res["pool_size"], 2)  # nejdřív dvě, které ve lhůtě nehrály
         got = run(pools.next_tracks(2))
         self.assertEqual({t.id for t in got}, {favs[4].id, favs[5].id})
-        played(store, got, ago_s=60)
-        more = run(pools.next_tracks(5))
-        self.assertEqual(len(more), 5)  # hraje se dál…
-        self.assertFalse({t.id for t in more} & {t.id for t in favs})  # …ale ne oblíbené znovu
-        self.assertEqual((pools.favourites, pools.mood), ("", "oblíbené kanceláře a podobné"))
-        # všechno už hrálo: režim se ani nezapne (volající pak pustí podobnou hudbu)
-        self.assertEqual(run(pools_for(store, votes=b).set_favourites("office"))["pool_size"], 0)
+        for t in got:  # začaly hrát (až po vydání)
+            store.record_start(t.id, t.title, t.artist, "oblíbené")
+            time.sleep(0.001)
+        more = run(pools.next_tracks(6))
+        self.assertEqual([t.id for t in more],
+                         [t.id for t in favs[:4]] + [t.id for t in got])  # dokola, nejdéle nehraná první
+        self.assertEqual((pools.favourites, pools.mood), ("office", "oblíbené kanceláře"))
+        # všechno už hrálo: režim se zapne rovnou dokola (ne „a podobné")
+        self.assertEqual(run(pools_for(store, votes=b).set_favourites("office"))["pool_size"], 6)
 
     def test_album_in_the_background_leaves_out_what_was_played(self) -> None:
         store = new_store()
@@ -322,6 +326,125 @@ class Background(unittest.TestCase):
                 # další naplnění poolů (rádio) výjimku ruší
                 run(pools.set_seeds([T("seed", "Seed", "Seed")], mood="rádio"))
                 self.assertFalse(pools.repeat_ok)
+
+
+class FavouritesRound(unittest.TestCase):
+    """Vlastník 16. 10. 2026: „Oblíbených se to týká způsobem, že to nejdříve
+    hraje ty, co to ve lhůtě ještě nehrálo, a pak klidně opakuje, ale zas
+    nezahraje znovu, dokud nepřehraje všechny." Jako na Pi: ~160 oblíbených
+    od tří lidí, lhůta 5 dní, většina už ve lhůtě hrála."""
+
+    SPLIT = {"client-robert": (84, 10), "client-jana": (50, 6), "client-karel": (26, 4)}  # (všech, nehraných)
+
+    def setUp(self) -> None:
+        self.store = new_store()
+        self.book = book()
+        self.book.prng.seed(16)
+        self.by_person: dict[str, list[Track]] = {}
+        self.unplayed: set[str] = set()
+        old: list[Track] = []
+        for cid, (n, fresh) in self.SPLIT.items():
+            tag = cid.split("-")[1][:3]
+            tracks = [T(f"{tag}{i:05d}", f"{tag} píseň {i}", f"{tag} kapela {i % 40}") for i in range(n)]
+            self.by_person[cid] = tracks
+            for t in tracks:
+                self.book._rate.clear()
+                self.book.cast(SONG, cid, 1, cid, track=t)
+            self.unplayed |= {t.id for t in tracks[:fresh]}
+            old += tracks[fresh:]
+        # 140 už hrálo, každá jindy během posledních 5 dnů (pořadí zamíchané)
+        import random
+        rnd = random.Random(5)
+        rnd.shuffle(old)
+        for i, t in enumerate(old):
+            played(self.store, [t], ago_s=4.5 * DAY - i * 1800)
+        self.old_order = [t.id for t in old]  # od nejdéle nehrané
+        self.owner = {t.id: cid for cid, ts in self.by_person.items() for t in ts}
+        self.pools = pools_for(self.store, votes=self.book)
+
+    def pull(self, n: int) -> list[Track]:
+        """Jako plnič: dávky po 4, co se vydá, začne hrát (zapíše se do historie)."""
+        async def go():
+            out: list[Track] = []
+            while len(out) < n:
+                got = await self.pools.next_tracks(min(4, n - len(out)))
+                if not got:
+                    break
+                for t in got:
+                    self.store.record_start(t.id, t.title, t.artist, "oblíbené")
+                    await asyncio.sleep(0.001)  # každá začne jindy
+                out += got
+            return out
+        return run(go())
+
+    def test_unplayed_first_then_strictly_least_recently_played(self) -> None:
+        res = run(self.pools.set_favourites("office"))
+        self.assertEqual(res["pool_size"], 20)
+        first = self.pull(20)
+        self.assertEqual({t.id for t in first}, self.unplayed)  # 1. fáze: jen nehrané
+        # po lidech na střídačku (F-HLASY-17): v prvních 12 má každý svůj díl
+        share = {cid: sum(self.owner[t.id] == cid for t in first[:12]) for cid in self.SPLIT}
+        self.assertGreaterEqual(min(share.values()), 3, share)
+        self.assertLessEqual(max(share.values()), 5, share)
+        # 2. fáze: dokola přesně od nejdéle nehrané, každá jednou
+        cycle = self.pull(160)
+        ids = [t.id for t in cycle]
+        self.assertEqual(len(ids), 160)
+        self.assertEqual(len(set(ids)), 160)  # žádná dvakrát, dokud nezazní všechny
+        self.assertEqual(ids, self.old_order + [t.id for t in first])
+        self.assertEqual((self.pools.favourites, self.pools.mood), ("office", "oblíbené kanceláře"))
+        again = [t.id for t in self.pull(30)]
+        self.assertEqual(again, ids[:30])  # a zase stejně: nejdéle nehraná první
+        # hlídka: kolo dokola je dovolené opakování, ne díra
+        wq = SimpleNamespace(_resumed_vid=None, pools=self.pools, wishes=[],
+                             _owner_of=lambda vid: None)
+        from ytdj.wishes import WishQueue
+
+        self.assertEqual(WishQueue.repeat_reason(wq, again[0]), "favourites_rotation")
+        self.pools.favourites = ""  # jiný režim podkresu: už ne
+        self.assertEqual(WishQueue.repeat_reason(wq, again[0]), "")
+
+    def test_no_favourite_twice_while_another_has_not_played_since(self) -> None:
+        """Obecně, i s přerušením: mezi dvěma přehráními téže oblíbené zazněly
+        všechny ostatní (z těch, které ve lhůtě hrály)."""
+        run(self.pools.set_favourites("office"))
+        seq = [t.id for t in self.pull(60)]
+        # přání někoho jiného na chvíli přeruší oblíbené, pak zase oblíbené
+        run(self.pools.set_seeds([T("seed", "Seed", "Seed")], mood="rádio"))
+        self.pull(5)
+        run(self.pools.set_favourites("office"))
+        seq += [t.id for t in self.pull(300)]
+        last: dict[str, int] = {}
+        for i, vid in enumerate(seq):
+            if vid in last:
+                between = set(seq[last[vid] + 1:i])
+                self.assertEqual(len(between), 159, (vid, i))
+            last[vid] = i
+
+    def test_the_wish_takes_the_unplayed_and_then_the_longest_unplayed(self) -> None:
+        """„pusť oblíbené" (blok 8 skladeb): když nehrané nestačí, doplní ho
+        nejdéle nehrané a DJ to řekne jednou krátkou větou."""
+        async def go():
+            async with tw.Rig() as rig:
+                rig.cfg.repeat_days = 5
+                every = [t for ts in self.by_person.values() for t in ts]
+                rig.store = self.store
+                rig.wq.repeats = RepeatGuard(self.store, rig.cfg)
+                w = Wish(id="w", token="t", who="Marek", source="web", text="pusť oblíbené",
+                         created=time.time(), mono=time.monotonic(), cid="client-marek")
+                fresh = [t for t in every if t.id in self.unplayed][:3]
+                stale = [t for t in every if t.id not in self.unplayed]
+                plan = Plan(intent=Intent(kind="song", text=w.text, note="favourites"),
+                            requested=(fresh + stale)[:8], candidates=fresh + stale)
+                cut = await rig.wq._drop_repeats(w, plan.intent, plan)
+                self.assertEqual([t.id for t in plan.requested],
+                                 [t.id for t in fresh] + self.old_order[:5])
+                self.assertEqual(w.again, set(self.old_order[:5]))
+                self.assertEqual(cut.notes, ["Nehraných oblíbených bylo jen 3, pak jedu dokola — "
+                                             "od těch, co nejdéle nehrály."])
+                self.assertLess(len(" ".join(cut.notes)), 120)  # krátce (web ukáže ~400 znaků)
+
+        run(go())
 
 
 # --------------------------------------------------------------------------
@@ -445,13 +568,21 @@ class Wishes(unittest.TestCase):
                                             "(2 skladby), tak ho neopakuju — nic jsem nezařadil. "
                                             + REPEAT_HINT)
                 # oblíbené (rychlá cesta i model) a playlist z odkazu jsou taky sady
-                for note in ("favourites", "link_list"):
-                    plan = Plan(intent=Intent(kind="song", text="pusť oblíbené", note=note),
-                                requested=list(album))
-                    cut = await rig.wq._drop_repeats(wish("pusť oblíbené"), plan.intent, plan)
-                    self.assertEqual([t.id for t in plan.requested], [t.id for t in album[2:]], note)
-                    self.assertEqual(cut.notes, ["Bez toho, co tu v posledních 5 dnech už hrálo "
-                                                 "(2 skladby)."])
+                plan = Plan(intent=Intent(kind="song", text="pusť", note="link_list"),
+                            requested=list(album))
+                cut = await rig.wq._drop_repeats(wish("pusť"), plan.intent, plan)
+                self.assertEqual([t.id for t in plan.requested], [t.id for t in album[2:]])
+                self.assertEqual(cut.notes, ["Bez toho, co tu v posledních 5 dnech už hrálo "
+                                             "(2 skladby)."])
+                # oblíbené nedojdou (vlastník 16. 10.): po nehraných dokola
+                plan = Plan(intent=Intent(kind="song", text="pusť oblíbené", note="favourites"),
+                            requested=list(album))
+                w = wish("pusť oblíbené")
+                cut = await rig.wq._drop_repeats(w, plan.intent, plan)
+                self.assertEqual([t.id for t in plan.requested], [t.id for t in album[2:] + album[:2]])
+                self.assertEqual(w.again, {album[0].id, album[1].id})
+                self.assertEqual(cut.notes, ["Nehraných oblíbených bylo jen 4, pak jedu dokola — "
+                                             "od těch, co nejdéle nehrály."])
                 # blok přání je jen začátek sady: vybírá se z celé, ne z prvních pár
                 plan = Plan(intent=Intent(kind="song", text="pusť oblíbené", note="favourites"),
                             requested=list(album[:3]), candidates=list(album))
@@ -460,7 +591,9 @@ class Wishes(unittest.TestCase):
                 plan = Plan(intent=Intent(kind="song", text="pusť oblíbené", note="favourites"),
                             requested=list(album[:1]))
                 cut = await rig.wq._drop_repeats(wish("pusť oblíbené"), plan.intent, plan)
-                self.assertIn("Všechno oblíbených tu v posledních 5 dnech už hrálo (1 skladba)", cut.empty)
+                self.assertEqual(([t.id for t in plan.requested], cut.empty), ([album[0].id], ""))
+                self.assertEqual(cut.notes, ["Všechny oblíbené tu v posledních 5 dnech už hrály, tak "
+                                             "jedu dokola — od těch, co nejdéle nehrály."])
                 # výslovně i s tím, co už hrálo (rozhodl model): nic se nevynechá
                 plan = Plan(intent=Intent(kind="album", text="znovu album Deska", repeat_ok=True),
                             album_tracks=list(album), album_label="Kapela — Deska")

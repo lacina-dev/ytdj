@@ -221,10 +221,10 @@ jukeboxu a restart chtějí PIN správce, který je na displeji na obrazovce Sí
 - **F-PRESKOK-10** Kdo přeskočí hrající skladbu, ukáže se všem jménem
 - **F-HLASY-06** Vyřazená skladba hned zmizí z podkresu
 - **F-HLASY-17** Oblíbené kanceláře se hrají po lidech na střídačku
-- **F-FRONTA-20** Oblíbené hrají dál napřeskáčku, dokud si někdo nepřeje něco jiného
+- **F-FRONTA-20** Oblíbené hrají dál, dokud si někdo nepřeje něco jiného — nejdřív to, co dlouho nehrálo, pak dokola
 - **F-ZVUK-11** Vulgární skladby se samy do podkresu nedostanou
-- **F-ZVUK-33** Co tu hrálo v posledních dnech, se samo neopakuje — ani oblíbené, ani od interpreta, kterého si přeješ
-- **F-PRANI-33** Z interpreta, alba a oblíbených DJ vynechá, co už hrálo, a řekne to
+- **F-ZVUK-33** Co tu hrálo v posledních dnech, se samo neopakuje — ani od interpreta, kterého si přeješ
+- **F-PRANI-33** Z interpreta a alba DJ vynechá, co už hrálo, a řekne to
 - **F-PRANI-34** Už hranou písničku pustí jen výslovné přání — jménem, Zahrát znovu, nebo „klidně i to, co už hrálo“
 - **F-FRONTA-21** Z alba jsou první 4 skladby přání, zbytek hraje dál jako podkres
 - **F-FRONTA-23** Skladby, které přeskočíš klikem do fronty, nezmizí — zahrají hned potom

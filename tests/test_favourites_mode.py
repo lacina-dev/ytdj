@@ -197,11 +197,25 @@ class Rotation(unittest.TestCase):
                 got = await self.pools.next_tracks(batch)
                 if not got:
                     break
-                out += got
-            return out[:n]
+                keep, extra = got[:n - len(out)], got[n - len(out):]
+                self.pools.give_back(extra)  # jako plnič: co se nevešlo, vrátí
+                out += keep
+                store = getattr(self, "played_into", None)
+                for t in keep if store is not None else ():
+                    store.record_start(t.id, t.title, t.artist, "oblíbené")  # začala hrát
+                    await asyncio.sleep(0.001)  # každá jindy (pořadí podle času)
+            return out
         return asyncio.run(go())
 
     def test_plays_every_favourite_once_alternating_then_a_new_round(self):
+        # opravdová historie: co se vydá, začne hrát (pravidlo neopakování ji čte)
+        from ytdj.music.repeats import RepeatGuard
+        from ytdj.state import Store
+
+        store = Store(Path(tempfile.mkdtemp(dir=_TMP)) / "state.db")
+        self.pools.store = store
+        self.pools.repeats = RepeatGuard(store, Config(**DEFAULTS))
+        self.played_into = store
         res = asyncio.run(self.pools.set_favourites("office", mood="oblíbené kanceláře"))
         self.assertEqual((res["pool_size"], self.pools.favourites), (self.total, "office"))
         first = self.pull(self.total)
@@ -214,10 +228,12 @@ class Rotation(unittest.TestCase):
         self.assertEqual(c["Karel"], 5)
         self.assertGreaterEqual(c["Jana"], 10)
         self.assertLessEqual(c["Robert"], 15)
-        # pořád: žádný limit 10 skladeb / 40 min jako u interpreta (F-FRONTA-14)
+        # pořád: žádný limit 10 skladeb / 40 min jako u interpreta (F-FRONTA-14);
+        # všechny ve lhůtě hrály → dokola od nejdéle nehrané (vlastník 16. 10. 2026)
         more = self.pull(40)
         self.assertEqual(len(more), 40)
         self.assertEqual(self.pools.favourites, "office")
+        self.assertEqual([t.id for t in more], ids[:40])
         self.assertFalse(set(t.id for t in more[:5]) & set(ids[-FAV_KEEP:]))  # konec kola se nevrací hned
         self.assertTrue(no_neighbours(more))
 

@@ -147,13 +147,18 @@ def register_pid(name: str, pid: Callable[[], int | None]) -> None:
     EXTRA_PIDS[name] = pid
 
 
-def _rss_anon_kb(pid: int) -> int | None:
+def _status_kb(pid: int, key: str) -> int | None:
+    """Řádek `key:` z /proc/<pid>/status v kB (RssAnon, VmSwap)."""
     text = _read(f"/proc/{pid}/status")
     for line in (text or "").splitlines():
-        if line.startswith("RssAnon:"):
+        if line.startswith(key + ":"):
             with contextlib.suppress(ValueError, IndexError):
                 return int(line.split()[1])
     return None
+
+
+def _rss_anon_kb(pid: int) -> int | None:
+    return _status_kb(pid, "RssAnon")
 
 
 class SystemSampler:
@@ -303,6 +308,11 @@ class SystemSampler:
                 rec[f"rss_{name}_mb"] = rss // 1024
                 if name in extra and (anon := _rss_anon_kb(pid)) is not None:
                     rec[f"anon_{name}_mb"] = anon // 1024
+                # Co proces odložil do swapu (zram / karta), RSS to nevidí: na Pi
+                # 26. 10. měl hlavní ytdj RSS 93 MB, ale 295 MB ve swapu — trend
+                # paměti procesu jde vidět jen z obojího.
+                if (swap := _status_kb(pid, "VmSwap")):
+                    rec[f"swap_{name}_mb"] = swap // 1024
             prev = self._prev_proc.get(name)
             if prev and prev[0] == pid and dt > 0:
                 rec[f"cpu_{name}"] = round(100 * (ticks - prev[1]) / CLK_TCK / dt, 1)

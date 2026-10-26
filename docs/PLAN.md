@@ -72,7 +72,7 @@ Pravidla při rozhodování (v tomhle pořadí):
 | D4 | Přání se přijmou hned, žádné „DJ ještě dokončuje…" | ✅ (F-PRANI-01) |
 | D5 | Fronta vidět na webu i displeji; autor může své přání odebrat | ✅ (F-FRONTA-06, F-DISPLEJ-05) |
 | D6 | Automatické změny nálady jen v podkladovém rádiu, nikdy nemažou přání | ✅ (F-FRONTA-06, F-FRONTA-12) |
-| D7 | Podkres jde za naposledy SPLNĚNÝM přáním; režim interpreta v podkresu je omezený (10 skladeb / 40 min, pak „… a podobné"); po restartu se vypršelý neobnoví | ✅ |
+| D7 | Podkres jde za naposledy SPLNĚNÝM přáním; režim interpreta v podkresu je omezený (10 skladeb / 40 min, pak „… a podobné"); po restartu se vypršelý neobnoví. Se zaškrtnutím „Obohatit" je podkres po přání mix z toho, co hrálo, a z přání (vlastník 26. 10. 2026, hlášení #34, #35; F-FRONTA-25) | ✅ |
 | D8 | Nové přání člověka jde PŘED jeho starší, to zůstává; nahrazuje jen oprava („ne, radši…", „místo toho", „zruš…"), změna směru („něco jiného") nebo skoro stejný text | ✅ |
 
 #### Pravidla fronty (26. 9., po ranním provozu)
@@ -109,7 +109,9 @@ přání, podkres se k Parni Valjak vracel i po restartu.
    je-li to už ve frontě, řekne kdy.
 7. **Podkres po přáních.** Když už žádné přání nemá co hrát (jakkoli
    skončilo i poslední — splněné, nenalezené, chyba, otázka), jde podkres za
-   naposledy splněným přáním, pokud se od té doby nezměnil jinak.
+   naposledy splněným přáním, pokud se od té doby nezměnil jinak. Přání
+   s „Obohatit" se do podkresu přimíchá: mix z toho, co hrálo, a z něj
+   (nejvýš 4 zdroje; vlastník 26. 10. 2026, F-FRONTA-25).
 8. **Restart.** Přání se ukládají až po přehrávači (playback.json); co podle
    historie nebo playback.json mezitím dohrálo, je po obnově hotové —
    nezazní dvakrát. Starý klíč displeje v pořadí („panel-…") = místo „panel".

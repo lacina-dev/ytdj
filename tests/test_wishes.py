@@ -428,6 +428,9 @@ class Queue(unittest.TestCase):
                     self.assertIn("hned po téhle", j.reply, text)
                     queued = [f for k, f in rig.events if k == "request.queued"][-1]
                     self.assertIsNone(queued.get("cut"), text)
+                    rig.fake.finish_current()  # skladba rádia dohraje sama — pak přání
+                    await rig.until(lambda: j.state == "playing")
+                    self.assertEqual(rig.fake.current_vid(), j.tracks[0].id, text)
 
             run(go())
 

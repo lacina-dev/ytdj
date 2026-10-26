@@ -779,6 +779,9 @@
           <label class="toggle" title="Tvoje přání přijde na řadu po skladbě, která právě hraje — nic se neutne. Jedno na člověka.">
             <input type="checkbox" id="playNext"> Hned po téhle skladbě
           </label>
+          <label class="toggle" title="Přání zahraje jako každé jiné, ale rádio potom nepřepne jen na tvoje přání — přimíchá ho k tomu, co hrálo předtím.">
+            <input type="checkbox" id="enrich"> Obohatit
+          </label>
         </div>
         <div class="chips" id="chips" role="group" aria-label="Rychlá přání">
           <button class="chip" type="button" data-chip="more" data-wish="víc takového">Víc takového</button>
@@ -1056,7 +1059,7 @@
     tvRow: $("#tvRow"), tvBtn: $("#tvBtn"), tvNote: $("#tvNote"),
     tvPowRow: $("#tvPowRow"), tvPowState: $("#tvPowState"), tvPowBtn: $("#tvPowBtn"), tvPowNote: $("#tvPowNote"),
     volBox: $("#volBox"), btnMute: $("#btnMute"), icoVol: $("#icoVol"), icoMute: $("#icoMute"),
-    prompt: $("#prompt"), btnSend: $("#btnSend"), playNext: $("#playNext"),
+    prompt: $("#prompt"), btnSend: $("#btnSend"), playNext: $("#playNext"), enrich: $("#enrich"),
     chips: $("#chips"), reply: $("#reply"),
     mineSec: $("#mineSec"), mine: $("#mine"),
     wishes: $("#wishes"), wishesEmpty: $("#wishesEmpty"), wishCount: $("#wishCount"),
@@ -2110,10 +2113,12 @@
     try {
       var data = await postJSON("/api/prompt", {
         text: text, who: S.nick, source: "web", play_next: !!el.playNext.checked, wait: false,
+        enrich: !!el.enrich.checked || undefined,
         client: S.client, chip: opts.chip || undefined
       });
       if (!opts.quiet) { el.prompt.value = ""; autosize(); }
       el.playNext.checked = false;
+      el.enrich.checked = false;  // „Obohatit" platí jen pro tohle přání
       if (data && data.id) {
         adoptWish(data);
       } else {

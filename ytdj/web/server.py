@@ -1190,10 +1190,11 @@ class WebServer:
             self.poke(later=0.3)
             return JSONResponse({"reply": local, "local": True})
         play_next = data.get("play_next") is True
+        enrich = data.get("enrich") is True  # „Obohatit" (F-FRONTA-25)
         try:
             w = wq.submit(text, data.get("who"), source, play_next=play_next,
                           client={"ip": rec.get("ip"), "ua": rec.get("ua"),
-                                  "id": data.get("client")})
+                                  "id": data.get("client")}, enrich=enrich)
             chip = data.get("chip")
             if isinstance(chip, str) and chip in CHIP_KEYS:
                 w.chip = chip  # tlačítko nálady — funguje i bez mozku DJe

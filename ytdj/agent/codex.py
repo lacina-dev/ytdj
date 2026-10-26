@@ -1242,12 +1242,13 @@ class CodexDJ:
         skladby vypadnou, dokud zbude co hrát; jmenovaný interpret zůstává."""
         votes = self.votes
         intent = plan.intent
-        if votes is None or plan.failed or intent.auto or not getattr(votes, "items", None):
+        ai_on = bool(getattr(getattr(votes, "ai", None), "active", None))  # AI tvorba (#37)
+        if votes is None or plan.failed or intent.auto or not (getattr(votes, "items", None) or ai_on):
             return plan
         notes: list[str] = []
         if intent.kind in ("song", "songs"):
             for t in plan.requested:
-                note = votes.ban_note(t)
+                note = votes.ban_note(t) or (votes.ai_note(t) if ai_on else "")
                 if note:
                     if len(plan.requested) > 1:
                         note = note.replace("(pozn.: ", f"(pozn.: {t.label()} — ", 1)
@@ -1263,6 +1264,10 @@ class CodexDJ:
             for t in plan.artist_tracks[:30]:
                 note = votes.ban_note(t, asked)
                 if note and "je vyřazený" in note:
+                    notes.append(note)
+                    break
+            for t in plan.artist_tracks[:30] if ai_on else ():
+                if note := votes.ai_note(t, asked):
                     notes.append(note)
                     break
         if notes:

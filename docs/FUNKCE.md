@@ -441,6 +441,27 @@ Tohle je seznam všeho, co aplikace umí (stav 26. 9. 2026, commit e713074).
   Nové pravidlo 26. 10. 2026 na hlášení vlastníka (jukebox #33: „Nejde přidat celého interpreta do oblíbených u aktuálně hrané písně." — u hrající šlo 👍 jen písničce, 👎 list nabízel interpreta jen k vyřazení).
   Testy: `tests/test_web_votes.py::PlayingArtistThumbsUp::test_playing_song_has_an_artist_thumbs_up_like_the_rows`, `tests/test_web_votes.py::PlayingArtistThumbsUp::test_honest_counts_in_node`, `tests/test_web_votes.py::PlayingArtistThumbsUp::test_playing_song_carries_the_threshold_and_the_answer_is_honest`
 
+## AI tvorba
+
+- **F-AI-01** Na stránce Hlasování je seznam AI tvorby: interpreta označí kdokoli s přezdívkou jedním klikem (u hrající skladby „🤖 Je to AI“, u návrhu „Potvrdit: AI“) a kdokoli to jedním klikem vrátí („Není AI“); u každého záznamu je vidět kdo, kdy a proč. Návrh (z rozboru přehrávání, `ytdj/data/ai_seed.json`) nic nefiltruje, dokud ho někdo nepotvrdí. Nejvýš 20 změn na člověka za 10 min (pak 429).
+  Nové pravidlo 26. 10. 2026 na přání vlastníka (hlášení z jukeboxu #37: „Ty AI songy jsou jeden jako druhej a je to nuda. Bylo by fajn, kdybychom je uměli vyřadit z našeho repertoáru a prostě je nenabízet.“). Že stačí jeden člověk, je návrh k potvrzení vlastníkem.
+  Testy: `tests/test_ai.py::Flagging::test_one_person_flags_anyone_undoes_suggestion_does_not_filter`, `tests/test_ai.py::Flagging::test_rate_limit_and_bad_input`, `tests/test_ai.py::Flagging::test_seed_file_is_only_suggestions_with_reasons`, `tests/test_ai.py::Api::test_flag_now_playing_lists_and_undo`
+- **F-AI-02** Podkres (rádio, režim oblíbených) ani „pusť oblíbené kanceláře“ interpreta ze seznamu AI tvorby nenabídnou — platí pro každého uvedeného interpreta skladby — a DJ ho dostane jako „nenavrhuj ani jako seedy“. Zbytek rádia hraje dál, takže kvůli tomu nenastane ticho. Neplatí pro interpreta, o kterého si někdo řekl jménem, ani pro „pusť moje oblíbené“.
+  Nové pravidlo 26. 10. 2026 na přání vlastníka (hlášení #37).
+  Testy: `tests/test_ai.py::Background::test_radio_skips_ai_and_still_plays_the_rest`, `tests/test_ai.py::Background::test_artist_asked_by_name_is_exempt_and_favourites_skip_ai`
+- **F-AI-03** Označení hned uklidí podkres toho interpreta z fronty a hrající podkres přeskočí; přání (ani cizího) se nedotkne. Výslovné přání AI tvorby se zahraje s poznámkou „X je na seznamu AI tvorby — označil(a) …“; Zahrát znovu ji neodmítne.
+  Nové pravidlo 26. 10. 2026 na přání vlastníka (hlášení #37).
+  Testy: `tests/test_ai.py::Queue::test_flag_cleans_background_skips_playing_keeps_wishes`, `tests/test_ai.py::Queue::test_explicit_wish_plays_with_note`
+- **F-AI-04** Jukebox se u každé skladby podkresu, která čeká ve frontě nebo hraje, jednou zeptá YouTube, jestli autor u videa uvedl „Made with AI“; když ano, interpreta zapíše na seznam AI tvorby s tímhle důvodem (vidět jako „označil ho sám YouTube“) a skladbu z fronty vyřadí. Na přání se neptá a interpreta, o kterém už rozhodl člověk, nepřeznačí. Dotaz jde mimo hlavní smyčku, nejvýš 3 za 20 s, s limitem 10 s; chyba sítě nic neoznačí. Bez štítku jukebox nic netvrdí — chybějící štítek AI nevylučuje.
+  Nové pravidlo 26. 10. 2026 (hlášení #37). Štítek je jediný spolehlivý signál, který YouTube dává: na Pi 12.–26. 10. ho mělo 6 z 1552 hraných videí (Kraken89, Beskydo, PrehiStories); YouTube Music (ytmusicapi, yt-dlp) ho neukazuje.
+  Testy: `tests/test_ai.py::YouTubeLabel::test_parse_real_responses`, `tests/test_ai.py::YouTubeLabel::test_label_flags_background_with_reason_once_per_track`, `tests/test_ai.py::YouTubeLabel::test_human_not_ai_wins_and_errors_are_unknown`, `tests/test_ai.py::YouTubeLabel::test_slow_youtube_does_not_block_the_loop`, `tests/test_ai.py::YouTubeLabel::test_fetch_uses_fixed_youtube_endpoint`
+- **F-AI-05** Seznam přežije restart (state.db, tabulka `ai_flags`, zápis přes vlákno zápisů); `state.db` z doby před ním se při startu doplní a žádný hlas ani historie se neztratí. Rozhodnutí člověka má přednost před návrhem. Každá změna jde do telemetrie (`ai.flag`, `ai.label`) jen s koncem id prohlížeče.
+  Nové pravidlo 26. 10. 2026 (hlášení #37; SD karta je pomalá, F-PROVOZ-04).
+  Testy: `tests/test_ai.py::Persist::test_old_database_migrates_and_flags_survive_restart`, `tests/test_ai.py::Flagging::test_one_person_flags_anyone_undoes_suggestion_does_not_filter`
+- **F-AI-06** Sekce AI tvorba na webu: seznam, návrhy a „Není AI“; hraje-li něco, nabídne to k označení; jména a důvody se ukazují jako text (ne HTML), barvy jsou z motivu stránky (Den i Noc).
+  Nové pravidlo 26. 10. 2026 (hlášení #37).
+  Testy: `tests/test_ai.py::Api::test_page_script_escapes_and_is_loaded`, `tests/test_ai.py::Api::test_flag_now_playing_lists_and_undo`
+
 ## Displej
 
 - **F-DISPLEJ-01** Displej ukazuje, co hraje (název, interpret, čas), a ovládá hrát/pauza, další a hlasitost; ťuknutí dál než 10 px od tlačítka nic nedělá (mezera mezi tlačítky patří nejbližšímu). Horní lišta je 46 px vysoká a tlačítka Mobil, Přání a Síť jsou v ní nakreslená o 14 px níž, dál od rámečku (stará 32px lišta jen na vyžádání: `YTDJ_PANEL_TALL_STRIP=0`).

@@ -1,0 +1,15 @@
+{
+  "_comment": "Návrhy AI tvorby z rozboru přehrávání na Pi 12.–26. 10. 2026 (hlášení #37). Stav je 'navrzeno': nic nefiltrují, dokud je na stránce Hlasování někdo nepotvrdí. Rozhodnutí člověka (state.db, tabulka ai_flags) má vždy přednost.",
+  "artists": [
+    {"name": "Kraken89", "video_id": "c2VeyAFR5-Y", "ts": 1793023200,
+     "reason": "YouTube u videí uvádí „Made with AI“ (2 ze 2 hraných), v popisu odkaz na profil Suno; hrálo 2× z rádia, 26. 10. ho Radek 👎."},
+    {"name": "Kraken89 World", "video_id": "yTp6gQSuQR4", "ts": 1793023200,
+     "reason": "Druhý kanál téhož autora jako Kraken89; YouTube u videa uvádí „Made with AI“; hrálo 1× z rádia."},
+    {"name": "Beskydo", "video_id": "PuTKSXI43jw", "ts": 1793023200,
+     "reason": "YouTube u videí uvádí „Made with AI“ (2 ze 2 hraných), v popisu „Hudba - AI“; hrálo 2× z rádia, 26. 10. ho Radek 👎."},
+    {"name": "PrehiStories", "video_id": "I-VgX9pJZ7A", "ts": 1793023200,
+     "reason": "YouTube u videa uvádí „Made with AI“; hrálo 1× z rádia 26. 10."},
+    {"name": "Papizon", "video_id": "lNqz2uCrNLM", "ts": 1793023200,
+     "reason": "Bez štítku YouTube — jen nepřímé znaky: první vydání 2026, přes 10 singlů za pár měsíců, 624 odběratelů; 26. 10. hrál 8× za odpoledne z rádia a 3 lidé ho vyřadili hlasováním."}
+  ]
+}

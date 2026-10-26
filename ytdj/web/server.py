@@ -45,7 +45,7 @@ from .. import adminpin
 from .. import config as cfgmod
 from .. import manual
 from .. import telemetry
-from . import identity_api, issues_api, tv_api, votes_api
+from . import ai_api, identity_api, issues_api, tv_api, votes_api
 
 if TYPE_CHECKING:  # circular import — we pull in App for typing only
     from ..__main__ import App
@@ -715,6 +715,7 @@ class WebServer:
             # vzhled Auto / Den / Noc pro všechny stránky (F-WEB-09)
             Route("/theme.js", _safe(self._manual), methods=["GET"]),
             *votes_api.routes(self),  # hlasování kanceláře (PLAN H)
+            *ai_api.routes(self),  # AI tvorba se nenabízí (hlášení #37, F-AI-…)
             *tv_api.routes(self),  # vypínač „Klipy na telce“ (POZADAVKY #71)
             # Chyby a nápady kolegů (POZADAVKY #52, F-HLASENI-01…)
             Route("/hlaseni", _safe(self._manual), methods=["GET"]),

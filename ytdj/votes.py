@@ -321,6 +321,8 @@ class VoteBook:
         # skladby, přitom posune oblíbené v poolech dopředu — radio.py nic
         # dalšího volat nemusí
         self.pools: Any = None
+        # AI tvorba (ytdj/aitvorba.py, hlášení #37): podkres ji nenabízí jako vyřazené
+        self.ai: Any = None
         self.loaded = False
 
     # ---- načtení ----
@@ -346,6 +348,11 @@ class VoteBook:
         aread = getattr(self.store, "aread", None)
         rows = await aread("all_votes") if aread is not None else None
         self.load(rows)
+        if self.ai is not None:
+            try:
+                await self.ai.aload()
+            except Exception:
+                log.exception("seznam AI tvorby se nenačetl")
         if aread is not None and hasattr(self.store, "all_imports"):
             try:
                 meta, items = await aread("all_imports")
@@ -645,7 +652,9 @@ class VoteBook:
         return next(iter(sorted(self._song_hits(track) & idx.banned_songs)), None)
 
     def blocked(self, track: Any, exempt: Iterable[str] = ()) -> str | None:
-        """ "song" / "artist" = do podkresu ne; None = smí."""
+        """ "song" / "artist" / "ai" = do podkresu ne; None = smí."""
+        if self.ai is not None and self.ai.flagged(track, exempt):
+            return "ai"  # AI tvorba (aitvorba.py)
         if not self.items:
             return None
         if self.banned_song(track):
@@ -654,8 +663,14 @@ class VoteBook:
             return ARTIST
         return None
 
+    def ai_note(self, track: Any, asked_artists: Iterable[str] = ()) -> str:
+        """Poznámka k výslovnému přání AI tvorby ("" = není na seznamu)."""
+        return self.ai.note(track, asked_artists) if self.ai is not None else ""
+
     def pool_reject(self, track: Any, exempt: Iterable[str] = ()) -> str | None:
-        """Důvod do statistiky radio.pool: "voted_out" | "downweighted" | None."""
+        """Důvod do statistiky radio.pool: "voted_out" | "ai" | "downweighted" | None."""
+        if self.ai is not None and self.ai.flagged(track, exempt):
+            return "ai"
         if not self.items:
             return None
         self._maybe_boost()
@@ -1090,7 +1105,11 @@ class VoteBook:
             b = src_of.get(key)
             if b is None or b.video_id in seen:
                 continue
-            if not self.banned_artists_of(Track(b.video_id, b.title, b.artist)):
+            t = Track(b.video_id, b.title, b.artist)
+            # oblíbené kanceláře bez AI tvorby (hlášení #37); vlastní 👍 jsou vlastní přání
+            if self.ai is not None and not voter and self.ai.flagged(t):
+                continue
+            if not self.banned_artists_of(t):
                 seen.add(b.video_id)
                 out.append(Track(b.video_id, b.title, b.artist))
         return out
@@ -1233,6 +1252,8 @@ class VoteBook:
                 parts.append("skladby " + "; ".join(songs))
             lines.append("Vyřazené hlasováním — nenavrhuj ani jako seedy (na výslovné přání "
                          "se zahrají): " + "; ".join(parts))
+        if self.ai is not None and (ai_line := self.ai.describe()):
+            lines.append(ai_line)
         text = "\n".join(lines)
         return text if len(text) <= max_chars else text[: max_chars - 1] + "…"
 
@@ -1416,6 +1437,9 @@ def wire(app: Any) -> VoteBook:
     book = VoteBook(app.store, app.cfg, label=label)
     book.pools = getattr(app, "pools", None)
     app.votes = book
+    from .aitvorba import wire as wire_ai  # AI tvorba se nenabízí (hlášení #37)
+
+    wire_ai(app, book, label=label)
     from .imports import Importer  # import playlistů do oblíbených (POZADAVKY #48)
 
     app.imports = Importer(book, app.store, getattr(app, "catalog", None), app.cfg)

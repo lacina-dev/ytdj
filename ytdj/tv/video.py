@@ -129,17 +129,19 @@ class Limits:
     # with 0 audio dropouts; over the evening it was ≥ 380 MB 58 % of the time,
     # ≥ 300 MB 88 %, with the DJ's model warm typically ~350 MB.
     #
-    # A clip the jukebox shows on its own (an official video that happens to
-    # play) must never cost the DJ: his model is closed below 250 MB, so such a
-    # clip stops above that and starts only where it will stay above it.
-    mem_stop: int = 260  # MB
-    mem_start: int = 380  # MB — 260 + what a clip costs
-    # A video somebody asked for by name (a link, "pusť video…") may go lower:
-    # then the DJ's model may be closed meanwhile and the next wish is answered
-    # cold (some 10–25 s slower) — the clip was the wish. Sound still comes first:
-    # dropouts, heat and throttling stop it exactly as before.
-    mem_stop_wish: int = 180  # MB
-    mem_start_wish: int = 300  # MB
+    # Office hours 21.–26. 10. (13 820 samples): ≥ 380 MB 0 % of the time,
+    # ≥ 300 MB 35 %, ≥ 250 MB 60 % — with 380/260 clips never ran. Hours at
+    # 124–180 MB brought no dropouts (1 in ~100 min), the DJ's model was closed
+    # for memory anyway. Owner 26. 10.: lower them. The music is guarded by the
+    # first dropout, heat and throttling, which stop any clip at once.
+    #
+    # A clip the jukebox shows on its own (an official video that happens to play):
+    mem_stop: int = 170  # MB
+    mem_start: int = 300  # MB — 170 + what a clip costs (~120) + a little
+    # A video somebody asked for by name (a link, "pusť video…") may go lower;
+    # the DJ's model may be closed meanwhile and the next wish is answered cold.
+    mem_stop_wish: int = 130  # MB
+    mem_start_wish: int = 250  # MB
     drop_frames: int = 25  # dropped frames in one CHECK window (10 s) that count as stutter…
     drop_windows: int = 2  # …this many windows in a row
     cooldown: float = 300.0  # s off after a stop; doubles with every further stop

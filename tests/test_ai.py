@@ -433,7 +433,7 @@ class Api(unittest.TestCase):
 
     def test_page_script_escapes_and_is_loaded(self):
         index = (ROOT / "ytdj/web/static/index.html").read_text()
-        self.assertIn('<script src="/ai.js?v=1"></script>', index)
+        self.assertIn('<script src="/ai.js?v=3"></script>', index)
         js = (ROOT / "ytdj/web/static/ai.js").read_text()
         # každé pole ze serveru jde do HTML přes esc()
         for field in ("it.name", "it.reason", "n.name", "n.title"):

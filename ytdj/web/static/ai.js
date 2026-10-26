@@ -17,6 +17,10 @@
     "  border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }" +
     "#aiSec .ainow .meta { flex: 1 1 200px; min-width: 0; }" +
     "#aiSec .ainow .ibtn { flex: none; }" +
+    "#aiSec .ainow .kind, #aiSec .ainow .t, #aiSec .ainow .a { display: block; }" +
+    "#aiSec .ainow .kind { font-size: .72rem; color: var(--text-faint); text-transform: uppercase; letter-spacing: .08em; }" +
+    "#aiSec .ainow .t { font-size: .93rem; overflow-wrap: anywhere; }" +
+    "#aiSec .ainow .a { font-size: .8rem; color: var(--text-faint); overflow-wrap: anywhere; }" +
     "#aiSec h3 { margin: 16px 0 4px; font-size: .78rem; font-weight: 650; color: var(--text-faint);" +
     "  text-transform: uppercase; letter-spacing: .08em; }" +
     "#aiSec .why { display: block; font-size: .8rem; color: var(--text-dim); overflow-wrap: anywhere; margin-top: 2px; }" +

@@ -268,9 +268,9 @@ Tohle je seznam všeho, co aplikace umí (stav 26. 9. 2026, commit e713074).
 - **F-FRONTA-03** Displej je v pořadí jeden člověk, i když každé zavření přání je nová relace (i starý zápis „panel-…" po restartu).
   Testy: `tests/test_pi0926.py::ArtistWishBudget::test_display_is_one_seat_across_sessions`, `tests/test_review2.py::OldSessionFormat::test_old_panel_key_maps_to_the_seat`
 - **F-FRONTA-04** „Zařadit hned" dá přání hned za hrající skladbu (jedno na člověka, displej jako celek jedno) a nic nepřeruší.
-  Testy: `tests/test_wishes.py::Queue::test_play_next_is_right_after_current_and_capped`, `tests/test_wishes.py::FairOrder::test_play_next_jumps_the_queue`, `tests/test_review2.py::PanelSeat::test_one_play_next_per_display`
+  Testy: `tests/test_wishes.py::Queue::test_play_next_is_right_after_current_and_capped`, `tests/test_wishes.py::FairOrder::test_play_next_jumps_the_queue`, `tests/test_review2.py::PanelSeat::test_one_play_next_per_display`, `tests/test_wishes.py::Queue::test_play_next_never_cuts_the_background`
 - **F-FRONTA-05** Cizí přání se neutne nikdy, ani „hned teď"; přání první na řadě utne jen podkres nebo vlastní skladbu.
-  Testy: `tests/test_wishes.py::Queue::test_explicit_cut_never_cuts_somebody_elses_wish`, `tests/test_wishes.py::Queue::test_wish_never_cuts_somebody_elses_wish`
+  Testy: `tests/test_wishes.py::Queue::test_explicit_cut_never_cuts_somebody_elses_wish`, `tests/test_wishes.py::Queue::test_wish_never_cuts_somebody_elses_wish`, `tests/test_wishes.py::Queue::test_wish_first_in_line_still_cuts_the_background`
 - **F-FRONTA-06** Vlastní přání odebere jen autor (token); automatika ani stop přání nikdy nemažou.
   Testy: `tests/test_wishes.py::Queue::test_owner_token_removes_and_others_cannot`, `tests/test_wishes.py::WebApi::test_remove_needs_the_owner_token`, `tests/test_wishes.py::Queue::test_remove_while_dj_thinks_discards_result`, `tests/test_wishes.py::Queue::test_auto_reseed_never_removes_requests`, `tests/test_wishes.py::WebApi::test_stop_never_removes_anybodys_wishes`
 - **F-FRONTA-07** Nové přání člověka jde před jeho starší, to zůstává; nahrazuje jen oprava („ne, radši…", „místo toho", „zruš"), změna směru nebo skoro stejný text; „a pak…"/„přidej…" jde za ně.

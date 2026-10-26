@@ -2216,7 +2216,10 @@ class WishQueue:
             # přání: když obnova nechala hudbu v pauze (byla pauza, noc, zapnutí
             # Pi), samo ji nerozjede (F-RESTART-01, F-RESTART-11).
             paused = (await self.player.status()).paused
-        cut = False if paused else await self._maybe_cut(w, own=bool(replaced))
+        # „hned po téhle" (zaškrtnutí, text, nebo jak to pochopil DJ — pole
+        # `after_current`) hrající skladbu nikdy neutne (F-FRONTA-04)
+        after = w.play_next or bool(getattr(intent, "play_next", False))
+        cut = False if paused else await self._maybe_cut(w, own=bool(replaced), after=after)
         if not paused:
             await self.player.toggle_pause(False)  # přání = chce slyšet hudbu
         ahead = self.ahead_of(w)
@@ -2428,10 +2431,16 @@ class WishQueue:
                                        who=w.who, wid=w.id, allow_long=True, replace=True)
         return old
 
-    async def _maybe_cut(self, w: Wish, own: bool = False) -> bool:
+    async def _maybe_cut(self, w: Wish, own: bool = False, after: bool = False) -> bool:
         """Utnout hrající skladbu? Podkres, když je přání první na řadě;
         výslovné "hned teď"; a když si člověk řekl o něco jiného, než mu
-        hraje, a nikdo jiný nečeká (`own`)."""
+        hraje, a nikdo jiný nečeká (`own`).
+
+        „Hned po téhle" (`after`) nic nepřeruší (F-FRONTA-04), ani podkres:
+        Pi 20. 10. 13:27 zaškrtnuté „Hned po téhle skladbě" utnulo hrající
+        skladbu podkresu po 65 s (hlášení z jukeboxu #35)."""
+        if after and not w.cut:
+            return False
         st = await self.player.status()
         if st.current is None:
             return False

@@ -404,6 +404,46 @@ class Queue(unittest.TestCase):
 
         run(go())
 
+    def test_play_next_never_cuts_the_background(self):
+        """Hlášení #35 (Pi 20. 10. 13:27): hrálo jen rádio, „Hned po téhle
+        skladbě" zaškrtnuté — a hrající skladba podkresu se utnula. „Hned po
+        téhle" nic nepřeruší, ani podkres; zaškrtnutí, text i výklad DJe."""
+        SCRIPT["zařaď Dancing Queen"] = ("codex", decision(
+            action="play_next", requested=[{"artist": "ABBA", "title": "Dancing"}],
+            after_current=True))
+        for text, ticked in (("Dancing Queen", True), ("Dancing Queen hned po téhle", False),
+                             ("zařaď Dancing Queen", False)):
+            SCRIPT.setdefault(text, SCRIPT["Dancing Queen"])
+
+            async def go():
+                async with Rig() as rig:
+                    await rig.background()
+                    cur = rig.fake.current_vid()
+                    self.assertIsNone(rig.wq.owner.get(cur))  # hraje podkres
+                    j = rig.wq.submit(text, "Radek", play_next=ticked)
+                    await rig.until(lambda: j.state == "queued")
+                    await rig.settle(0.2)
+                    self.assertEqual(rig.fake.current_vid(), cur, text)  # nic se neutnulo
+                    self.assertEqual(rig.upcoming()[0], j.tracks[0].id, text)
+                    self.assertIn("hned po téhle", j.reply, text)
+                    queued = [f for k, f in rig.events if k == "request.queued"][-1]
+                    self.assertIsNone(queued.get("cut"), text)
+
+            run(go())
+
+    def test_wish_first_in_line_still_cuts_the_background(self):
+        """Bez „hned po téhle" přání první na řadě podkres utne jako dřív (F-FRONTA-05)."""
+        async def go():
+            async with Rig() as rig:
+                await rig.background()
+                cur = rig.fake.current_vid()
+                j = rig.wq.submit("Dancing Queen", "Radek")
+                await rig.until(lambda: j.state in ("queued", "playing"))
+                await rig.until(lambda: rig.fake.current_vid() != cur)
+                self.assertEqual(rig.fake.current_vid(), j.tracks[0].id)
+
+        run(go())
+
     def test_explicit_cut_never_cuts_somebody_elses_wish(self):
         """ "hned teď" utne podkres nebo vlastní skladbu — cizí přání ne."""
         async def go():

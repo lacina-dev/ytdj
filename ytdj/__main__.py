@@ -594,6 +594,9 @@ class App:
 
     async def _run(self, repl: bool, aload_quietly) -> int:
         await aload_quietly(self.votes)  # state.db ve vlákně, ne v event loopu
+        from .aitvorba import start_watch
+
+        start_watch(self)  # štítek YouTube „Made with AI" u podkresu ve frontě (F-AI-04)
         with contextlib.suppress(Exception):
             # paměť pravidla neopakování (co hrálo v posledních repeat_days) —
             # taky ve vlákně; dál se jen doplňuje z paměti

@@ -153,6 +153,22 @@ CREATE TABLE IF NOT EXISTS issue_plus (
     ts       REAL NOT NULL,
     PRIMARY KEY (issue_id, voter)
 );
+
+-- AI tvorba (ytdj/aitvorba.py, FUNKCE F-AI-…, hlášení z jukeboxu #37):
+-- interpreti, které podkres nenabízí. Jeden řádek na interpreta = poslední
+-- rozhodnutí (kdo, kdy, proč); historie je v telemetrii (ai.flag).
+CREATE TABLE IF NOT EXISTS ai_flags (
+    key      TEXT PRIMARY KEY,                 -- votes.artist_key
+    name     TEXT,                             -- jméno k zobrazení
+    state    TEXT NOT NULL,                    -- ai|navrzeno|neni_ai
+    source   TEXT,                             -- clovek|youtube|seznam
+    reason   TEXT,
+    voter    TEXT,                             -- id klienta (prázdné u automatiky)
+    who      TEXT,                             -- přezdívka v době rozhodnutí
+    ts       REAL NOT NULL,
+    video_id TEXT,                             -- skladba, u které se rozhodlo
+    title    TEXT
+);
 """
 
 
@@ -453,6 +469,16 @@ class Store:
             ("DELETE FROM issue_plus WHERE issue_id=?", iid),
             ("DELETE FROM issues WHERE id=?", iid),
         ])
+
+    def save_ai_flag(self, row: tuple) -> None:
+        """Rozhodnutí o AI tvorbě (aitvorba.Flag.row) — přepíše předchozí."""
+        self._write(
+            "INSERT OR REPLACE INTO ai_flags (key, name, state, source, reason, voter, who, ts,"
+            " video_id, title) VALUES (?,?,?,?,?,?,?,?,?,?)", tuple(row))
+
+    def all_ai_flags(self) -> list[tuple]:
+        return self._read("SELECT key, name, state, source, reason, voter, who, ts, video_id, title"
+                          " FROM ai_flags")
 
     def all_issues(self) -> tuple[list[tuple], list[tuple], list[tuple]]:
         """(položky, komentáře, +1) — nejvýš stovky řádků, čte se při startu."""

@@ -99,6 +99,11 @@ STARVED = 10 * 60  # s — kdo tak dlouho nic svého neslyšel, na stížnost do
 # "<interpret> a podobné" (Pi 26. 9.: Parni Valjak v podkresu i po restartu)
 BG_ARTIST_TRACKS = 10
 BG_ARTIST_TTL = 40 * 60  # s
+# „Obohatit" (vlastník 26. 10. 2026, hlášení #34, #35): podkres po přání je mix
+# z toho, co hrálo předtím, a z přání — nejvýš tolik zdrojů (nejnovější),
+# z každého stejně semínek, prokládaně
+MIX_SOURCES = 4
+MIX_SEEDS = 2  # semínek na zdroj (nejvýš; všechny zdroje stejně)
 HORIZON = 8  # kolik skladeb z přání držet zhmotněných v playlistu mpv
 STABLE = 2  # první dvě čekající položky se kvůli přeřazení nehýbou (připravené)
 MAX_ACTIVE = 5  # rozpracovaných přání na člověka (ochrana před zahlcením)
@@ -296,6 +301,19 @@ def _dedup(tracks: list[Track]) -> list[Track]:
     return out
 
 
+def _mix_seeds(sources: list[dict]) -> list[Track]:
+    """Semínka mixu: z každého zdroje stejně (nejvýš MIX_SEEDS), prokládaně —
+    rádia se v poolech střídají po jednom, takže zdroje mají stejný podíl a
+    hrají napřeskáčku, ne po blocích."""
+    per = max(1, min(MIX_SEEDS, min(len(x["seeds"]) for x in sources)))
+    return [x["seeds"][i] for i in range(per) for x in sources if i < len(x["seeds"])]
+
+
+def mix_label(sources: list[dict]) -> str:
+    """„Mix: Horkýže Slíže + Gojira" — co je v podkresu namíchané."""
+    return "Mix: " + " + ".join(x["label"] for x in sources)
+
+
 # slib, který aplikace nesplní — v odpovědi modelu na "nothing" nesmí zůstat
 _PROMISE = re.compile(
     r"\b(nastav\w*|strid\w*|zarad\w*|zarazu\w*|pustim|zahraju|budu (ted )?(porad|hrat|poustet|stridat)"
@@ -371,6 +389,13 @@ class Wish:
     # kde se zbytek hlídá ("Budulínka a Depeche Mode").
     repeat_ok: bool = False
     named: set[str] = field(default_factory=set)
+    # „Obohatit" (zaškrtnutí u přání, vlastník 26. 10. 2026): přání hraje jako
+    # každé jiné, ale podkres pak nepřepne na „<přání> a podobné" — přimíchá ho
+    # k tomu, co hrálo předtím (mix z víc přání, F-FRONTA-25)
+    enrich: bool = False
+    # podkres, který hrál, když se přání zařazovalo — zdroje mixu (neukládá se;
+    # po restartu se vezme podkres, který je)
+    mix_prev: list = field(default_factory=list, repr=False)
     # přání oblíbených, když nehrané došly: skladby z kola dokola (smí, i když
     # ve lhůtě hrály — vlastník 16. 10. 2026)
     again: set[str] = field(default_factory=set)
@@ -496,6 +521,7 @@ class Wish:
             "repeat_ok": self.repeat_ok or None,
             "named": sorted(self.named) or None,
             "again": sorted(self.again) or None,
+            "enrich": self.enrich or None,
         }
 
     @classmethod
@@ -533,6 +559,7 @@ class Wish:
         w.repeat_ok = bool(d.get("repeat_ok"))
         w.named = {str(x) for x in d.get("named") or []}
         w.again = {str(x) for x in d.get("again") or []}
+        w.enrich = bool(d.get("enrich"))
         if isinstance(d.get("current"), str):
             w.was_current = d["current"]
         return w
@@ -859,6 +886,9 @@ class WishQueue:
         # proč hraje podkres: start (chytrý rozjezd) | radio; kdo ho naposledy určil
         self.bg_reason: dict[str, str] = {"kind": "radio", "who": "", "text": ""}
         self._bg_at = 0.0  # epoch — kdy se podkres naposledy změnil (_set_background)
+        # podkres jako mix z víc přání („Obohatit", F-FRONTA-25): zdroje
+        # [{"label", "seeds"}], nejstarší první; [] = podkres není mix
+        self.mix: list[dict] = []
         self.starting = False
         self._inflight: dict[str, asyncio.Task] = {}
         # Na Codex se čeká v pořadí příchodu přání — i když se to dřívější
@@ -1113,7 +1143,7 @@ class WishQueue:
 
     def submit(self, text: str, who: Any = "", source: str = "web",
                play_next: bool = False, client: dict | None = None,
-               replay: Track | None = None) -> Wish:
+               replay: Track | None = None, enrich: bool = False) -> Wish:
         """`replay` = přání přesně téhle skladby („Zahrát znovu" z Odehráno):
         text je jen popisek, nevykládá se (ani jako oprava, „hned" nebo povel)."""
         text = " ".join(str(text or "").split())[:TEXT_MAX]
@@ -1160,7 +1190,7 @@ class WishQueue:
         w = Wish(
             id=secrets.token_hex(4), token=secrets.token_urlsafe(12), who=who, source=source,
             text=text, created=time.time(), mono=time.monotonic(), play_next=play_next, cut=cut,
-            cid=cid, replay=replay,
+            cid=cid, replay=replay, enrich=bool(enrich),
         )
         w.settled = asyncio.Event()
         if cid and answered:
@@ -1185,7 +1215,8 @@ class WishQueue:
                         text=telemetry.clip(text, 300), **w.client)
         telemetry.event(
             "request.created", id=w.id, who=w.who, source=source, text=telemetry.clip(text, 300),
-            len=len(text), play_next=w.play_next or None, cut=cut or None, **w.client,
+            len=len(text), play_next=w.play_next or None, cut=cut or None,
+            enrich=w.enrich or None, **w.client,
             replay=replay.id if replay is not None else None,
             waiting=sum(1 for x in self.wishes if x.state in ("waiting", "thinking")),
             active_people=len({x.key for x in self.wishes if x.active}),
@@ -2069,6 +2100,13 @@ class WishQueue:
             return
         notes += cut.notes
 
+        if w.enrich and self._mixable(w, intent):
+            # „Obohatit": co hrálo předtím, než na podkres sáhne tohle přání
+            w.mix_prev = self._bg_sources()
+            telemetry.event("request.enrich", id=w.id, who=w.who, intent_kind=intent.kind,
+                            before=[x["label"] for x in w.mix_prev] or None)
+        mixing = bool(w.mix_prev)
+
         dj = self.dj
         if intent.kind in ("artist", "song", "mood", "album"):
             # nový výslovný pokyn: výjimky ("ale ne Pohodu") podle něj
@@ -2136,6 +2174,8 @@ class WishQueue:
         elif intent.kind == "songs":
             w.tracks = list(plan.requested)
             w.summary = "skladba: " + "; ".join(t.label() for t in plan.requested[:3])
+            if mixing and not held and not any(x.key != w.key and x.active for x in self.wishes):
+                await self._set_mix(w)  # „Obohatit": mix hned (jinak až po přání, _follow)
         elif intent.kind == "song":
             w.tracks = list(plan.requested) or []
             w.summary = "skladba: " + "; ".join(t.label() for t in plan.requested[:3])
@@ -2156,6 +2196,8 @@ class WishQueue:
                                                played=[t.id for t in w.tracks],
                                                alternate=w.fav_alternate,
                                                repeat_ok=w.repeat_ok)
+            elif seeds and not others and not held and mixing:
+                await self._set_mix(w)  # „Obohatit": přimíchat, ne přepnout
             elif seeds and not others and not held:
                 await self._set_background(seeds=seeds, mood=intent.mood, who=w.who, wid=w.id,
                                            allow_long=True, explicit_ok=explicit_ok,
@@ -2168,7 +2210,11 @@ class WishQueue:
                                        keep_album=stash is not None, video_only=video)
             # blok nálady patří autorovi — ať ji uslyší, i když čekají jiní
             w.tracks = await dj.next_tracks(self.amounts.block)
-            if stash is not None:
+            if mixing and stash is None:
+                # „Obohatit": blok je ta nálada, podkres pak mix s tím, co hrálo
+                self.pools.session_seen.update(t.id for t in w.tracks)
+                await self._set_mix(w)
+            elif stash is not None:
                 # cizí album pokračuje za tímhle blokem tam, kde přestalo
                 self.pools.session_seen.update(t.id for t in w.tracks)
                 await self._album_restore(stash)
@@ -2216,7 +2262,10 @@ class WishQueue:
             # přání: když obnova nechala hudbu v pauze (byla pauza, noc, zapnutí
             # Pi), samo ji nerozjede (F-RESTART-01, F-RESTART-11).
             paused = (await self.player.status()).paused
-        cut = False if paused else await self._maybe_cut(w, own=bool(replaced))
+        # „hned po téhle" (zaškrtnutí, text, nebo jak to pochopil DJ — pole
+        # `after_current`) hrající skladbu nikdy neutne (F-FRONTA-04)
+        after = w.play_next or bool(getattr(intent, "play_next", False))
+        cut = False if paused else await self._maybe_cut(w, own=bool(replaced), after=after)
         if not paused:
             await self.player.toggle_pause(False)  # přání = chce slyšet hudbu
         ahead = self.ahead_of(w)
@@ -2240,6 +2289,7 @@ class WishQueue:
         telemetry.event(
             "request.queued", id=w.id, who=w.who, source=w.source, intent_kind=w.kind, n_tracks=len(w.tracks),
             ahead=ahead, play_next=w.play_next or None, cut=cut or None,
+            enrich=w.enrich or None, mixed=bool(self.mix and self.bg_reason.get("id") == w.id) or None,
             took_ms=int((time.monotonic() - t0) * 1000),
             people=len({x.seat for x in self.wishes if x.state in ("queued", "playing")}),
             model_reply=telemetry.clip(intent.reply, 200) or None,
@@ -2428,10 +2478,16 @@ class WishQueue:
                                        who=w.who, wid=w.id, allow_long=True, replace=True)
         return old
 
-    async def _maybe_cut(self, w: Wish, own: bool = False) -> bool:
+    async def _maybe_cut(self, w: Wish, own: bool = False, after: bool = False) -> bool:
         """Utnout hrající skladbu? Podkres, když je přání první na řadě;
         výslovné "hned teď"; a když si člověk řekl o něco jiného, než mu
-        hraje, a nikdo jiný nečeká (`own`)."""
+        hraje, a nikdo jiný nečeká (`own`).
+
+        „Hned po téhle" (`after`) nic nepřeruší (F-FRONTA-04), ani podkres:
+        Pi 20. 10. 13:27 zaškrtnuté „Hned po téhle skladbě" utnulo hrající
+        skladbu podkresu po 65 s (hlášení z jukeboxu #35)."""
+        if after and not w.cut:
+            return False
         st = await self.player.status()
         if st.current is None:
             return False
@@ -2454,6 +2510,76 @@ class WishQueue:
 
     # ---- podkres ----
 
+    @staticmethod
+    def _mixable(w: Wish, intent: Any = None) -> bool:
+        """Jde přání přimíchat do podkresu? Skladby, interpret, nálada — album
+        a oblíbené mají vlastní podkres (F-FRONTA-20, F-FRONTA-21)."""
+        kind = intent.kind if intent is not None else w.kind
+        fav = (getattr(intent, "note", "") == "favourites") if intent is not None else bool(w.fav)
+        return kind in ("artist", "song", "songs", "mood") and not fav
+
+    def _bg_sources(self) -> list[dict]:
+        """Podkres, který teď hraje, jako zdroje mixu ([] = nic nehraje)."""
+        if self.mix:
+            return [dict(x) for x in self.mix]
+        pools = self.pools
+        every = list(getattr(pools, "_artist_all", None) or [])
+        label, seeds = "", []
+        if (getattr(pools, "artist", "") or getattr(pools, "album", "")) and every:
+            label = getattr(pools, "album", "") or pools.artist
+            seen: set[str] = set()
+            for t in every:  # nejznámější od každého uvedeného interpreta
+                if t.artist not in seen:
+                    seen.add(t.artist)
+                    seeds.append(t)
+            seeds = (seeds + [t for t in every if t not in seeds])[:MIX_SEEDS]
+        elif getattr(pools, "pools", None):
+            label = str(getattr(pools, "mood", "") or "rádio").removesuffix(" a podobné")
+            if getattr(pools, "favourites", ""):
+                known = getattr(pools, "known", {}) or {}
+                last = [known.get(v) for v in reversed(list(getattr(pools, "_fav_last", ())))]
+                seeds = [t for t in last if t is not None][:MIX_SEEDS]
+            seeds = seeds or [p.seed for p in pools.pools][:MIX_SEEDS]
+        return [{"label": label[:40], "seeds": _dedup(seeds)}] if seeds else []
+
+    @staticmethod
+    def _wish_source(w: Wish) -> dict | None:
+        """Přání jako zdroj mixu: jméno a pár jeho skladeb jako semínka rádia."""
+        seeds = _dedup(list(w.tracks))[:MIX_SEEDS]
+        if not seeds:
+            return None
+        if w.kind == "artist":
+            label = w.artist
+        elif w.kind == "mood":
+            label = w.summary.removeprefix("nálada: ").removeprefix("nálada") or "nálada"
+        else:
+            names: list[str] = []
+            for t in seeds:
+                if t.artist not in names:
+                    names.append(t.artist)
+            label = ", ".join(names)
+        return {"label": (label or seeds[0].artist)[:40], "seeds": seeds}
+
+    async def _set_mix(self, w: Wish, prev: list[dict] | None = None) -> bool:
+        """„Obohatit" (vlastník 26. 10. 2026): podkres = mix z toho, co hrálo,
+        a z přání `w` — nejvýš MIX_SOURCES nejnovějších zdrojů, z každého
+        stejně semínek, prokládaně (rádia se v poolech střídají po jednom).
+        False = není co míchat (nic nehrálo) — pak platí, co dřív."""
+        prev = w.mix_prev if prev is None else prev
+        src = self._wish_source(w)
+        if not prev or src is None:
+            return False
+        sources = [x for x in prev if norm(x["label"]) != norm(src["label"]) and x.get("seeds")]
+        sources = (sources + [src])[-MIX_SOURCES:]
+        if len(sources) < 2:
+            return False  # podkres už je tohle přání — není s čím míchat
+        await self._set_background(
+            seeds=_mix_seeds(sources), mood=mix_label(sources), who=w.who, wid=w.id,
+            explicit_ok=w.explicit_ok, video_only=w.want_video, mix=sources)
+        telemetry.event("request.mix", id=w.id, who=w.who, sources=[x["label"] for x in sources],
+                        seeds=sum(len(x["seeds"]) for x in sources))
+        return True
+
     async def _set_background(self, seeds: list[Track] | None = None, mood: str = "",
                               who: str = "", allow_long: bool = False, kind: str = "radio",
                               artist: str = "", artist_tracks: list[Track] | None = None,
@@ -2464,7 +2590,8 @@ class WishQueue:
                               played: list[str] | None = None, alternate: bool = True,
                               album: bool = False, done: set[str] | None = None,
                               explicit_ok: bool = False, keep_album: bool = False,
-                              video_only: bool = False, repeat_ok: bool = False) -> None:
+                              video_only: bool = False, repeat_ok: bool = False,
+                              mix: list[dict] | None = None) -> None:
         focus: list[str] = []
         # jen když přání výslovně chtělo i už hrané (atrapy poolů to pole neznají)
         again = {"repeat_ok": True} if repeat_ok else {}
@@ -2518,7 +2645,12 @@ class WishQueue:
         with contextlib.suppress(AttributeError):
             self.dj._focus_artists = focus
         self.bg_reason = {"kind": kind, "who": who, "text": mood or artist, "id": wid}
-        if favourites:
+        # mix končí s každou jinou změnou podkresu (přání bez „Obohatit",
+        # přeseedování, …) — jen _set_mix ho předává dál
+        self.mix = [dict(x) for x in mix] if mix else []
+        if self.mix:
+            self.bg_reason["mode"] = "mix"
+        elif favourites:
             self.bg_reason["mode"] = "favourites"
         elif album and getattr(self.pools, "album", ""):
             self.bg_reason["mode"] = "album"
@@ -2613,6 +2745,13 @@ class WishQueue:
                 log.exception("podkres po přání %s se nepodařilo přeladit", w.id)
 
     async def _follow(self, x: Wish, why: str) -> None:
+        if x.enrich and self._mixable(x) and why != "album":
+            if self.bg_reason.get("id") == x.id and self.mix:
+                return  # mix už je jeho
+            if await self._set_mix(x, self._bg_sources()):
+                telemetry.event("request.background_follow", id=x.id, who=x.who, why=why,
+                                intent_kind=x.kind, enrich=True)
+                return
         if x.fav:
             if self.bg_reason.get("id") == x.id and getattr(self.pools, "favourites", ""):
                 return  # už hraje jeho oblíbené
@@ -3025,6 +3164,8 @@ class WishQueue:
                                            done={t.id for t in w.tracks} | w.album_heard,
                                            repeat_ok=w.repeat_ok)
                 continue
+            if w.mix_prev and await self._set_mix(w):
+                continue  # „Obohatit": zbytek interpreta nehraje, podkres je mix
             await self._set_background(artist=w.artist, mood=w.artist, who=w.who, wid=w.id,
                                        artist_tracks=every, artists=w.artists,
                                        repeat_ok=w.repeat_ok)
@@ -3515,6 +3656,12 @@ class WishQueue:
                       alternate=bool(getattr(pools, "_fav_alternate", True)),
                       played=sorted(getattr(pools, "_fav_played", ()))[:1000])
             bg["repeat_ok"] = bool(getattr(pools, "repeat_ok", False)) or None
+        elif self.mix and getattr(pools, "pools", None):
+            # mix („Obohatit"): zdroje, ať po restartu další přání přimíchá dál
+            bg.update(mode="seeds", allow_long=False,
+                      seeds=[_track_json(t) for t in _mix_seeds(self.mix)],
+                      mix=[{"label": x["label"], "seeds": [_track_json(t) for t in x["seeds"]]}
+                           for x in self.mix])
         elif getattr(pools, "pools", None):
             bg.update(mode="seeds", allow_long=bool(getattr(pools, "allow_long", False)),
                       seeds=[_track_json(p.seed) for p in pools.pools[:5]])
@@ -3939,12 +4086,17 @@ class WishQueue:
                     repeat_ok=bool(bg.get("repeat_ok")))
             elif bg.get("mode") == "seeds":
                 seeds = [t for t in (_track_from(x) for x in bg.get("seeds") or []) if t]
+                mix = []
+                for x in bg.get("mix") or []:
+                    ts = [t for t in (_track_from(y) for y in (x or {}).get("seeds") or []) if t]
+                    if ts:
+                        mix.append({"label": str(x.get("label") or "")[:40], "seeds": ts})
                 if seeds:
                     await self._set_background(
                         seeds=seeds, mood=str(bg.get("mood") or ""),
                         allow_long=bool(bg.get("allow_long")),
                         who=str(reason.get("who") or ""), kind=str(reason.get("kind") or "radio"),
-                        from_key=str(reason.get("key") or ""))
+                        from_key=str(reason.get("key") or ""), mix=mix or None)
         except Exception:
             log.exception("podkres se po restartu nepodařilo obnovit")
         info.update(restored_wishes=len(self.active()),

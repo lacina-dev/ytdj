@@ -635,6 +635,10 @@ class RadioPools:
                     track, out, blocked, recent, artist_counts, self._long_limit()
                 ):
                     long_ones.append(track)
+                # vyřazená skladba nebere poolu tah: další zkusí týž pool, ať se
+                # pooly střídají po vydaných skladbách (mix „Obohatit" — rádio
+                # z dřívějšího semínka začíná už zahranými a jinak by šly bloky)
+                self._rr -= 1
                 continue
 
             self.session_seen.add(track.id)

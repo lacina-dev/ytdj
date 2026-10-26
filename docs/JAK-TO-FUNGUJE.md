@@ -73,7 +73,8 @@ Dlouhé přání (třeba celý interpret) ostatní nezablokuje — hraje po kous
 mezi jejich přáními a dohraje, až nikdo nečeká.
 
 Když si nikdo nic nepřeje, hraje podkres (rádio), který navazuje na poslední
-přání. Cizí přání nikdo neutne a odebrat ho může jen jeho autor — ani
+přání. Se zaškrtnutím „Obohatit" přání rádio nepřepne, ale přimíchá se do
+toho, co hrálo — vznikne mix z víc přání. Cizí přání nikdo neutne a odebrat ho může jen jeho autor — ani
 automatika ne.
 
 ## Přezdívky a identita

@@ -352,7 +352,10 @@ class TvVideo:
             return {"reason": "tv_off", "note": why, "note_tv": ""}
         blocked = str(report.get("blocked") or "")
         if blocked and (self.video or self.pending or self.reason in ("", "loading")):
-            return {"reason": "blocked", "note": f"{blocked} — klip je vypnutý",
+            # čísla k paměti jen na web (telka má na řádek málo místa)
+            detail = str(report.get("detail") or "")[:80]
+            blocked_web = f"{blocked} ({detail})" if detail else blocked
+            return {"reason": "blocked", "note": f"{blocked_web} — klip je vypnutý",
                     "note_tv": f"klip vypnutý: {blocked}"}
         if self.video and str(report.get("mode")) == "video":
             return {"reason": "", "note": "", "note_tv": ""}

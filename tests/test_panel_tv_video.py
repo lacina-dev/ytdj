@@ -311,6 +311,60 @@ class StartUp(unittest.TestCase):
             rig.step(pos=32.0)
         self.assertEqual(len(FakeSession.made), 1)
 
+    def test_decoder_not_known_yet_is_asked_again_and_always_logged(self):
+        """7. 10. skončil klip jako „procesor“, aniž se vědělo, co přehrávač
+        řekl. Nevím ≠ procesor: chvíli se ptá znovu; hodnota jde vždy do logu."""
+        # přehrávač dekodér hned neřekne, za 2 s řekne hardware → klip běží dál
+        rig = Rig()
+        rig.picture(CLIP)
+        rig.step(pos=30.0)
+        s = rig.s
+        s.hw = ""
+        s.pos = s.start
+        self.assertEqual(rig.step(pos=31.0), "video")
+        start = [f for k, f in rig.events if k == "tv.video_start"][-1]
+        self.assertIsNone(start["hwdec"])
+        self.assertEqual(start["mem_avail_mb"], COOL.mem_avail_mb)
+        self.assertEqual(rig.step(pos=32.0), "video")
+        s.hw = "v4l2m2m"
+        self.assertEqual(rig.step(pos=33.0), "video")
+        ev = [f for k, f in rig.events if k == "tv.video_hwdec"]
+        self.assertEqual(ev[-1]["hwdec"], "v4l2m2m")
+        for _ in range(8):
+            self.assertEqual(rig.step(pos=34.0), "video")
+        self.assertFalse(s.stopped)
+        # hardware hned → v logu startu
+        rig = Rig()
+        rig.showing()
+        self.assertEqual([f for k, f in rig.events if k == "tv.video_start"][-1]["hwdec"], "v4l2m2m")
+        # nikdy to neřekne → po 5 s jako procesor, s tím, co víme, v logu
+        rig = Rig()
+        rig.picture(CLIP)
+        rig.step(pos=30.0)
+        s = rig.s
+        s.hw = ""
+        s.codec = lambda: "h264"
+        s.pos = s.start
+        self.assertEqual(rig.step(pos=31.0), "video")
+        for _ in range(4):
+            self.assertEqual(rig.step(pos=32.0), "video")
+        self.assertEqual(rig.step(pos=33.0), "screen")
+        self.assertTrue(s.stopped)
+        self.assertEqual(rig.report()["blocked"], "obraz by dekódoval procesor")
+        g = [f for k, f in rig.events if k == "tv.video_guard"][-1]
+        self.assertEqual((g["hwdec"], g["codec"]), ("neznámý", "h264"))
+        # „no“ až po chvíli → hned pryč
+        rig = Rig()
+        rig.picture(CLIP)
+        rig.step(pos=30.0)
+        s = rig.s
+        s.hw = ""
+        s.pos = s.start
+        rig.step(pos=31.0)
+        s.hw = "no"
+        self.assertEqual(rig.step(pos=32.0), "screen")
+        self.assertEqual([f for k, f in rig.events if k == "tv.video_guard"][-1]["hwdec"], "no")
+
     def test_phases_and_drift_go_to_the_log(self):
         rig = Rig()
         rig.picture(CLIP)
@@ -607,6 +661,44 @@ class Protection(unittest.TestCase):
         self.assertTrue(want_from(st, 1.0).explicit)
         st["tv"]["explicit"] = False
         self.assertFalse(want_from(st, 1.0).explicit)
+
+    def test_memory_numbers_are_said_and_a_wait_is_logged_once_per_track(self):
+        """Vlastník 26. 10.: klipy „vždy skončily na nedostatku paměti“ — a v logu
+        o tom nebylo nic. Kolik je volno a kolik klip chce, vidí web i log."""
+        rig = Rig(readings=Readings(64.0, 259, 0))
+        rig.picture(CLIP)
+        for _ in range(4):
+            self.assertEqual(rig.step(), "screen")
+        rep = rig.report()
+        self.assertEqual(rep["blocked"], "málo volné paměti")
+        self.assertEqual(rep["detail"], "volno 250 MB, klip potřebuje 380 MB")
+        waits = [f for k, f in rig.events if k == "tv.video_wait"]
+        self.assertEqual(len(waits), 1)  # jednou na skladbu, ne každý krok
+        self.assertEqual((waits[0]["video_id"], waits[0]["mem_avail_mb"], waits[0]["need_mb"]),
+                         (CLIP, 259, 380))
+        # vyžádané video má svou hranici
+        rig.clock.tick()
+        rig.d.step(Want(vid=CLIP2, position=1.0, on=True, explicit=True, xruns=7))
+        self.assertEqual(rig.report()["detail"], "volno 250 MB, klip potřebuje 300 MB")
+        self.assertEqual([f for k, f in rig.events if k == "tv.video_wait"][-1]["explicit"], True)
+        # uvolní se → začne a čísla zmizí
+        rig.readings = COOL
+        rig.step()
+        self.assertEqual(len(FakeSession.made), 1)
+        self.assertEqual(rig.report()["detail"], "")
+        # běžící klip zastavený kvůli paměti: čísla po celou pauzu
+        rig = Rig()
+        rig.showing()
+        rig.readings = Readings(64.0, 241, 0)
+        self.assertEqual(rig.step(dt=6.0), "screen")
+        self.assertEqual(rig.report()["detail"], "volno 240 MB, klip potřebuje 260 MB")
+        self.assertEqual([f for k, f in rig.events if k == "tv.video_guard"][-1]["need_mb"], 260)
+        # jiný důvod → žádná čísla
+        rig = Rig()
+        rig.showing()
+        rig.readings = Readings(79.0, 560, 0)
+        rig.step(dt=6.0)
+        self.assertEqual((rig.report()["blocked"], rig.report()["detail"]), ("jukebox je horký", ""))
 
     def test_each_trigger_stops_the_clip_and_says_why(self):
         cases = (

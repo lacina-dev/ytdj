@@ -78,6 +78,13 @@ for unit in ytdj ytdj-pot; do
         aff_changed=1
     fi
 done
+# PO token server s menší haldou node (viz pot-memory.conf)
+pot_d="$HOME/.config/systemd/user/ytdj-pot.service.d"
+if ! cmp -s packaging/rpi/pot-memory.conf "$pot_d/60-memory.conf"; then
+    install -m 644 packaging/rpi/pot-memory.conf "$pot_d/60-memory.conf"
+    aff_changed=1
+    echo "ytdj-pot: menší halda node (restart)"
+fi
 if [ -n "$aff_changed" ]; then
     systemctl --user daemon-reload
     systemctl --user restart ytdj-pot.service || true

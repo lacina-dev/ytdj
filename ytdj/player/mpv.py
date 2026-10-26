@@ -23,7 +23,7 @@ from contextlib import suppress
 from typing import Any, Callable
 from pathlib import Path
 
-from .. import telemetry
+from .. import memtune, telemetry
 from ..config import MPV_SOCKET, Config, save_values
 from ..telemetry_sampler import SystemSampler
 from . import ytdl_cache, ytdl_loudness
@@ -1971,7 +1971,8 @@ class MpvPlayer(Player):
                     # srovnání hlasitosti skladeb: cíl v LUFS (bez volby vypnuto)
                     *([f"--gain-target={target}"] if target is not None else [])],
                    RESOLVER_NICE),  # zvuk má přednost
-            env=self.cfg.child_env(),
+            # glibc bez děravých arén jako hlavní proces (ytdj/memtune.py); mpv ne
+            env=memtune.malloc_env(self.cfg.child_env()),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )

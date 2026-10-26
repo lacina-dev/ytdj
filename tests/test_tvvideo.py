@@ -309,6 +309,16 @@ class Requested(unittest.TestCase):
                 self.assertEqual((p["reason"], p["note"], p["note_tv"]),
                                  ("blocked", "málo volné paměti — klip je vypnutý",
                                   "klip vypnutý: málo volné paměti"))
+            # kolik je volno a kolik klip chce — jen na web, telka má řádek krátký
+            with Rig(current=CLIP, tv={"can": True, "mode": "screen", "blocked": "málo volné paměti",
+                                       "detail": "volno 250 MB, klip potřebuje 300 MB"}) as rig:
+                rig.resolver_has(CLIP)
+                await rig.tv.set(True, "x")
+                await rig.tv.tick()
+                p = rig.tv.public()
+                self.assertEqual((p["note"], p["note_tv"]),
+                                 ("málo volné paměti (volno 250 MB, klip potřebuje 300 MB)"
+                                  " — klip je vypnutý", "klip vypnutý: málo volné paměti"))
             with Rig(current=CLIP, tv={"can": False, "why": "Telka není připojená (HDMI)."}) as rig:
                 await rig.tv.set(True, "x")
                 await rig.tv.tick()

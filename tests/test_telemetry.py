@@ -378,6 +378,27 @@ R   57   2048  48000  40.1us  90.2us  0.01  0.02    1    F32LE 2 48000  + mpv
         self.assertIn("self_us", rec)
         self.assertNotIn("codex", rec)  # False se nepíše
 
+    def test_swapped_out_memory_of_each_process_is_sampled(self) -> None:
+        """RSS nevidí, co proces odložil do swapu (Pi 26. 10.: ytdj 93 MB RSS,
+        295 MB ve swapu) — trend paměti jde vidět jen z obojího."""
+        from ytdj import telemetry_sampler as ts
+
+        status = {"VmSwap": 302080, "RssAnon": 88064}  # kB
+        real = ts._read
+
+        def fake_read(path):
+            if path.endswith("/status"):
+                return "".join(f"{k}:\t{v} kB\n" for k, v in status.items())
+            return real(path)
+
+        with mock.patch.object(ts, "_read", fake_read):
+            rec = ts.SystemSampler(lambda: {}, lambda: {}).sample(emit=False)
+            if Path("/proc/self/stat").exists():
+                self.assertEqual(rec["swap_ytdj_mb"], 295)
+                status["VmSwap"] = 0  # nic ve swapu → pole se nepíše (nejčastější řádek logu)
+                rec = ts.SystemSampler(lambda: {}, lambda: {}).sample(emit=False)
+                self.assertNotIn("swap_ytdj_mb", rec)
+
 
 def _fixture_lines() -> list[str]:
     ev = []

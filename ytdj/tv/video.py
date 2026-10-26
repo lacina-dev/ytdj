@@ -54,10 +54,24 @@ SEEK_EVERY = 5.0  # s — at most one re-seek in this time (no seek storms)
 SYNC_EVERY = 2.0  # s between looks at the drift
 CHECK_EVERY = 5.0  # s between looks at temperature, memory, dropped frames
 STARTUP_MAX = 25.0  # s without a first frame = the player is stuck → give up
+# mpv may not know its decoder yet when the first frame is up (the property is
+# "unavailable", not "no"). Only "no", or still not knowing after this, means
+# the CPU decodes. The 7 Oct clip was stopped as "CPU" without the value being
+# kept — now it goes to the log either way.
+HWDEC_WAIT = 5.0  # s
 # A paused clip is a frozen, bright frame — exactly what a TV panel should not
 # show for long. After this the dim screen takes over; the clip comes back
 # (in step) when the music goes on.
 PAUSE_MAX = 60.0  # s
+MEM_LOW = "málo volné paměti"
+
+
+def mem_detail(avail_mb: int | None, need_mb: int) -> str:
+    """The numbers behind MEM_LOW, for the web: rounded down to 10 MB so the
+    line (and the status file) do not change with every few MB."""
+    if avail_mb is None:
+        return ""
+    return f"volno {max(0, avail_mb) // 10 * 10} MB, klip potřebuje {need_mb} MB"
 
 
 def sync_action(drift: float) -> tuple[str, float]:
@@ -115,17 +129,19 @@ class Limits:
     # with 0 audio dropouts; over the evening it was ≥ 380 MB 58 % of the time,
     # ≥ 300 MB 88 %, with the DJ's model warm typically ~350 MB.
     #
-    # A clip the jukebox shows on its own (an official video that happens to
-    # play) must never cost the DJ: his model is closed below 250 MB, so such a
-    # clip stops above that and starts only where it will stay above it.
-    mem_stop: int = 260  # MB
-    mem_start: int = 380  # MB — 260 + what a clip costs
-    # A video somebody asked for by name (a link, "pusť video…") may go lower:
-    # then the DJ's model may be closed meanwhile and the next wish is answered
-    # cold (some 10–25 s slower) — the clip was the wish. Sound still comes first:
-    # dropouts, heat and throttling stop it exactly as before.
-    mem_stop_wish: int = 180  # MB
-    mem_start_wish: int = 300  # MB
+    # Office hours 21.–26. 10. (13 820 samples): ≥ 380 MB 0 % of the time,
+    # ≥ 300 MB 35 %, ≥ 250 MB 60 % — with 380/260 clips never ran. Hours at
+    # 124–180 MB brought no dropouts (1 in ~100 min), the DJ's model was closed
+    # for memory anyway. Owner 26. 10.: lower them. The music is guarded by the
+    # first dropout, heat and throttling, which stop any clip at once.
+    #
+    # A clip the jukebox shows on its own (an official video that happens to play):
+    mem_stop: int = 170  # MB
+    mem_start: int = 300  # MB — 170 + what a clip costs (~120) + a little
+    # A video somebody asked for by name (a link, "pusť video…") may go lower;
+    # the DJ's model may be closed meanwhile and the next wish is answered cold.
+    mem_stop_wish: int = 130  # MB
+    mem_start_wish: int = 250  # MB
     drop_frames: int = 25  # dropped frames in one CHECK window (10 s) that count as stutter…
     drop_windows: int = 2  # …this many windows in a row
     cooldown: float = 300.0  # s off after a stop; doubles with every further stop
@@ -198,6 +214,13 @@ class Guard:
         self.reason = reason
         return pause
 
+    def mem_need(self, explicit: bool = False, running: bool = False) -> int:
+        """The memory threshold that applies: to start, or (running) to keep going."""
+        lim = self.limits
+        if running:
+            return lim.mem_stop_wish if explicit else lim.mem_stop
+        return lim.mem_start_wish if explicit else lim.mem_start
+
     def started(self, r: Readings) -> None:
         """A video just started: dropouts and dropped frames count from here."""
         self._xruns0, self._dropped0, self._bad_windows = r.xruns, r.dropped, 0
@@ -212,7 +235,7 @@ class Guard:
         if r.temp_c is not None and r.temp_c > (lim.temp_ok if self._hot else lim.temp_stop - 1):
             return False, "jukebox je horký"
         if r.mem_avail_mb is not None and r.mem_avail_mb < mem_start:
-            return False, "málo volné paměti"
+            return False, MEM_LOW
         self._hot = False
         self.reason = ""
         return True, ""
@@ -227,7 +250,7 @@ class Guard:
         elif r.throttled is not None and r.throttled & 0xF:
             why = "procesor je přiškrcený nebo má málo napětí"
         elif r.mem_avail_mb is not None and r.mem_avail_mb < mem_stop:
-            why = "málo volné paměti"
+            why = MEM_LOW
         elif r.xruns is not None and self._xruns0 is not None and r.xruns > self._xruns0:
             why = "zvuk začal lupat"
         elif r.dropped is not None and self._dropped0 is not None:
@@ -381,11 +404,21 @@ class Session:
         return None
 
     def hwdec(self) -> str:
-        """Which hardware decoder really decodes ("" / "no" = the CPU does)."""
+        """Which hardware decoder really decodes: "no" = the CPU does, "" = the
+        player does not say (yet)."""
         if self.ipc is None:
             return ""
         try:
             return str(self.ipc.get("hwdec-current") or "")
+        except OSError:
+            return ""
+
+    def codec(self) -> str:
+        """What the picture is (for the log when the decoder is not the hardware one)."""
+        if self.ipc is None:
+            return ""
+        try:
+            return str(self.ipc.get("video-codec") or "")[:60]
         except OSError:
             return ""
 
@@ -501,6 +534,11 @@ class Director:
     session: Any = None
     mode: str = "screen"  # "video" only while the player really shows a picture
     blocked: str = ""
+    # numbers behind a memory "no" for the web: "volno 260 MB, klip potřebuje 300 MB"
+    detail: str = ""
+    _detail_trip: str = ""  # the numbers of the last memory stop, while its pause lasts
+    _waited: tuple = ()  # (video, reason) already logged as waiting — once per track
+    _hw_until: float | None = None  # decoder not known yet: ask again until then
     _can: tuple[bool, str] = (False, "")
     _can_at: float = float("-inf")
     _sync_at: float = float("-inf")
@@ -545,7 +583,7 @@ class Director:
         self._drift_report(s, final=True)
         s.stop()
         self.mode = "screen"
-        self._hold = None
+        self._hold = self._hw_until = None
         self.emit("tv.video_stop", video_id=s.vid, reason=why, shown=was == "video",
                   ran_s=int(self.clock() - s.started_at) if hasattr(s, "started_at") else None)
 
@@ -566,7 +604,7 @@ class Director:
     def step(self, want: Want) -> str:
         """Advance one tick; returns the mode ("video" = the screen must not draw)."""
         now = self.clock()
-        waiting = ""
+        waiting = wait_detail = ""
         can, why_not = self.capable()
         s = self.session
         if want.paused:
@@ -614,23 +652,27 @@ class Director:
                 self.guard.started(r)
                 startup = now - s.started_at
                 late = max(0.0, want.position - self._hold) if self._hold is not None else 0.0
+                hw = s.hwdec() if hasattr(s, "hwdec") else "?"
                 self.emit("tv.video_start", video_id=s.vid, startup_ms=int(startup * 1000),
                           ipc_ms=getattr(s, "ipc_ms", None), open_ms=getattr(s, "open_ms", None),
-                          lead_ms=int(self.lead * 1000), late_ms=int(late * 1000))
-                hw = s.hwdec() if hasattr(s, "hwdec") else "?"
-                if self.require_hwdec and hw in ("", "no"):
-                    self.guard.trip("obraz by dekódoval procesor")
-                    self.emit("tv.video_guard", video_id=s.vid, reason="obraz by dekódoval procesor",
-                              cooldown_s=int(self.guard.blocked_until - now))
-                    self._stop("no_hwdec")
-                    self._refused = s.vid
-                    self.blocked = self.guard.reason
-                    self._report(can, why_not)
-                    return self.mode
+                          lead_ms=int(self.lead * 1000), late_ms=int(late * 1000),
+                          hwdec=hw or None, mem_avail_mb=r.mem_avail_mb)
+                if self.require_hwdec and hw == "no":
+                    return self._no_hwdec(s, hw, now, can, why_not)
+                # the player does not say yet: ask again for a moment before judging
+                self._hw_until = now + HWDEC_WAIT if self.require_hwdec and hw == "" else None
                 # next time start as far ahead as the start really takes
                 self.lead = min(LEAD_MAX, max(LEAD_MIN, 0.5 * self.lead + 0.5 * (startup + LEAD_SPARE)))
                 self._synced, self._drift_at = False, now
                 self._drift_max, self._drift_n, self._seeks = 0.0, 0, 0
+            elif self._hw_until is not None and s.showing:
+                hw = s.hwdec() if hasattr(s, "hwdec") else "?"
+                if hw and hw != "no":
+                    self._hw_until = None
+                    self.emit("tv.video_hwdec", video_id=s.vid, hwdec=hw,
+                              after_ms=int((now - s.started_at) * 1000))
+                elif hw == "no" or now >= self._hw_until:
+                    return self._no_hwdec(s, hw, now, can, why_not)
             if self._hold is not None:
                 # started paused ahead of the music: hold the first frame until
                 # the music gets there, then let go exactly on time
@@ -673,8 +715,11 @@ class Director:
                 r.xruns, r.dropped = want.xruns, s.dropped()
                 why = self.guard.while_running(r, want.explicit)
                 if why:
+                    need = self.guard.mem_need(want.explicit, running=True)
+                    self._detail_trip = mem_detail(r.mem_avail_mb, need) if why == MEM_LOW else ""
                     self.emit("tv.video_guard", video_id=s.vid, reason=why, temp_c=r.temp_c,
-                              mem_avail_mb=r.mem_avail_mb, throttled=r.throttled, xruns=r.xruns,
+                              mem_avail_mb=r.mem_avail_mb, need_mb=need if why == MEM_LOW else None,
+                              throttled=r.throttled, xruns=r.xruns,
                               dropped=r.dropped, cooldown_s=int(self.guard.blocked_until - now))
                     self._stop("guard")
         # 3. start what should run
@@ -685,6 +730,15 @@ class Director:
                 # not in a pause after a stop, just not enough room right now
                 # (memory, heat): say so instead of showing nothing without a word
                 waiting = why
+                need = self.guard.mem_need(want.explicit)
+                if why == MEM_LOW:
+                    wait_detail = mem_detail(r.mem_avail_mb, need)
+                if (want.vid, why) != self._waited:
+                    # once per track and reason: so "it never started" has numbers in the log
+                    self._waited = (want.vid, why)
+                    self.emit("tv.video_wait", video_id=want.vid, reason=why,
+                              mem_avail_mb=r.mem_avail_mb, need_mb=need if why == MEM_LOW else None,
+                              temp_c=r.temp_c, explicit=want.explicit or None)
             if ok:
                 stream = self._stream(want.vid)
                 if stream is None:
@@ -694,6 +748,7 @@ class Director:
                     try:
                         # paused, `lead` ahead of the music; released when the music arrives
                         self._hold = want.position + self.lead
+                        self._hw_until = None
                         self.session = self.start_session(
                             want.vid, stream, self._hold, True, self.size(), self.sock)
                         self._sync_at = self._check_at = now
@@ -703,14 +758,30 @@ class Director:
         if not want.vid:
             self._refused = ""
         # what the web's switch says about us
-        blocked = ""
+        blocked = detail = ""
         if can and want.on and self.session is None and self.clock() < self.guard.blocked_until:
             blocked = self.guard.reason
+            detail = self._detail_trip if blocked == MEM_LOW else ""
         elif waiting and self.session is None:
             blocked = waiting
+            detail = wait_detail
         elif can and want.vid and self.session is None and want.vid == self._refused:
             blocked = "obraz téhle skladby se nepodařilo spustit"
-        self.blocked = blocked
+        self.blocked, self.detail = blocked, detail
+        self._report(can, why_not)
+        return self.mode
+
+    def _no_hwdec(self, s: Any, hw: str, now: float, can: bool, why_not: str) -> str:
+        """The picture would be decoded by the CPU (or the player never says by
+        what): stop it at once — software decoding took the Pi to 84 °C."""
+        self._hw_until = None
+        self.guard.trip("obraz by dekódoval procesor")
+        self.emit("tv.video_guard", video_id=s.vid, reason="obraz by dekódoval procesor",
+                  hwdec=hw or "neznámý", codec=(s.codec() if hasattr(s, "codec") else "") or None,
+                  cooldown_s=int(self.guard.blocked_until - now))
+        self._stop("no_hwdec")
+        self._refused = s.vid
+        self.blocked, self.detail = self.guard.reason, ""
         self._report(can, why_not)
         return self.mode
 
@@ -718,14 +789,15 @@ class Director:
         if self.status_file is None:
             return
         now = self.clock()
-        sig = (can, why, self.mode, self.blocked, tuple(sorted(self.extra.items())))
+        sig = (can, why, self.mode, self.blocked, self.detail, tuple(sorted(self.extra.items())))
         if sig == self._status_sig and now - self._status_at < 15.0:
             return
         self._status_sig, self._status_at = sig, now
         try:
             tmp = self.status_file.with_suffix(".tmp")
             tmp.write_text(json.dumps({"can": can, "why": why, "mode": self.mode,
-                                       "blocked": self.blocked, "at": time.time(), **self.extra},
+                                       "blocked": self.blocked, "detail": self.detail,
+                                       "at": time.time(), **self.extra},
                                       ensure_ascii=False), encoding="utf-8")
             os.replace(tmp, self.status_file)
         except OSError:

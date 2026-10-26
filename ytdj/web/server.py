@@ -1354,6 +1354,8 @@ class WebServer:
         action = data.get("action")
         value = data.get("value")
         rec["action"] = telemetry.clip(action, 40) if action is not None else None
+        if data.get("via") == "key":
+            rec["via"] = "key"  # zkratka z klávesnice na webu (F-WEB-11), ne ťuknutí
         if value is not None:
             rec["value"] = value if isinstance(value, (int, float, bool)) else telemetry.clip(value, 40)
         player = self.app.player

@@ -425,6 +425,10 @@ Tohle je seznam všeho, co aplikace umí (stav 26. 9. 2026, commit e713074).
   Nové pravidlo 9. 10. 2026 (jukebox #31; SD karta je pomalá, F-PROVOZ-04).
   Testy: `tests/test_playlist_import.py::EditImport::test_edits_are_small_writes_off_the_loop_and_limited`, `tests/test_playlist_import.py::EditImport::test_old_database_migrates_without_loss`, `tests/test_playlist_import.py::EditImport::test_edits_are_logged_without_client_ids`
 
+- **F-HLASY-25** 👍 celému interpretovi jde na webu dát i u hrající skladby, ne jen u řádků fronty a Odehráno: tlačítko „👍 interpret" vedle 👍/👎 otevře týž list jako řádky, jen s 👍 pro každého uvedeného interpreta (hlas jde i stáhnout). Na tlačítku je vidět můj 👍 (zvýrazněné), kolik 👍 interpret má z potřebných („1/2") nebo ♥, když už je oblíbený; u hrající je štítek „Kabát: 1 z 2 👍" a list i odpověď po hlasu řeknou poctivě, kolik 👍 ještě chybí — prahy a pravidlo F-HLASY-04 se nemění (jeden 👍 oblíbeného interpreta neudělá). Displej hlasovat neumí (F-HLASY-11 jen ukazuje).
+  Nové pravidlo 26. 10. 2026 na hlášení vlastníka (jukebox #33: „Nejde přidat celého interpreta do oblíbených u aktuálně hrané písně." — u hrající šlo 👍 jen písničce, 👎 list nabízel interpreta jen k vyřazení).
+  Testy: `tests/test_web_votes.py::PlayingArtistThumbsUp::test_playing_song_has_an_artist_thumbs_up_like_the_rows`, `tests/test_web_votes.py::PlayingArtistThumbsUp::test_honest_counts_in_node`, `tests/test_web_votes.py::PlayingArtistThumbsUp::test_playing_song_carries_the_threshold_and_the_answer_is_honest`
+
 ## Displej
 
 - **F-DISPLEJ-01** Displej ukazuje, co hraje (název, interpret, čas), a ovládá hrát/pauza, další a hlasitost; ťuknutí dál než 10 px od tlačítka nic nedělá (mezera mezi tlačítky patří nejbližšímu). Horní lišta je 46 px vysoká a tlačítka Mobil, Přání a Síť jsou v ní nakreslená o 14 px níž, dál od rámečku (stará 32px lišta jen na vyžádání: `YTDJ_PANEL_TALL_STRIP=0`).
@@ -567,6 +571,9 @@ Tohle je seznam všeho, co aplikace umí (stav 26. 9. 2026, commit e713074).
 - **F-WEB-10** Bez ruční volby se web řídí zařízením jako dřív (světlý nebo tmavý režim telefonu či počítače). Když prohlížeč nedovolí volbu uložit, stránka funguje dál podle zařízení a volba platí do zavření stránky; neznámá uložená hodnota znamená „Auto" a bez skriptu vzhledu přepínač není vidět.
   Nové pravidlo 6. 10. 2026 se souhlasem vlastníka (přání kolegů: ruční přepínání den/noc).
   Testy: `tests/test_theme.py::ThemeWithoutStorage::test_nothing_saved_follows_the_device`, `tests/test_theme.py::ThemeWithoutStorage::test_unknown_saved_value_is_auto`, `tests/test_theme.py::ThemeWithoutStorage::test_broken_storage_does_not_break_the_page`, `tests/test_theme.py::ThemeWithoutStorage::test_switch_is_hidden_until_the_script_runs`
+- **F-WEB-11** Klávesové zkratky webu — mezerník ▶/⏸, „n" další skladba, „/" do pole přání — platí jen na hlavní stránce přehrávače a jen když není otevřené žádné okno (Hlasování, list hlasu, přezdívka, nastavení). Nikdy neovládají hudbu, když je fokus v poli, na tlačítku, odkazu, posuvníku nebo v čemkoli, co klávesu potřebuje samo: mezerník v poli napíše mezeru, na tlačítku zmáčkne to tlačítko. Podržená klávesa a kombinace s Ctrl/Alt/⌘ nedělají nic. Povel z klávesy je v provozním logu označený (`web.control` s `via=key`).
+  Nové pravidlo 26. 10. 2026 na hlášení kolegy (jukebox #36: „V záložce hlasování při zmáčknutí mezerníku jde pauznout a pustit hudba." — zkratka dosud platila na každé stránce a i na tlačítkách).
+  Testy: `tests/test_web_keys.py::KeyRule::test_space_on_the_player_page_plays_and_pauses`, `tests/test_web_keys.py::KeyRule::test_nothing_on_another_page_or_with_a_window_open`, `tests/test_web_keys.py::KeyRule::test_space_belongs_to_the_focused_control`, `tests/test_web_keys.py::KeyRule::test_held_or_combined_keys_do_nothing`, `tests/test_web_keys.py::KeyWiring::test_handler_asks_the_rule_and_knows_the_player_page`, `tests/test_web_keys.py::KeyWiring::test_control_from_a_key_is_logged_as_such`
 
 ## Chyby a nápady
 

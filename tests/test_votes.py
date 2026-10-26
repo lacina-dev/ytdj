@@ -564,7 +564,7 @@ class Api(unittest.TestCase):
             out = json.loads(resp.body)
             self.assertEqual((out["item"]["key"], out["item"]["status"], out["item"]["up"]),
                              ("kabat", NEUTRAL, 1))  # jeden 👍 celého interpreta nestačí
-            self.assertIn("až mu 👍 dají aspoň 2 lidé", out["message"])
+            self.assertIn("1 z 2 potřebných 👍", out["message"])  # poctivě: jeden nestačí (F-HLASY-25)
             resp = await post(request({"target": "artist", "vote": 1, "client": JANA,
                                        "artist": "Kabát"}))
             out = json.loads(resp.body)

@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -141,6 +143,103 @@ class Page(unittest.TestCase):
             self.assertEqual(set(hv["artists"][0]["up_by"]), {tag_of(JANA), tag_of(PETR)})
             cur = snap["current"]["votes"]["artists"][0]  # hrající je taky od Kabátu
             self.assertEqual((cur["name"], cur["up"], cur["status"]), ("Kabát", 2, "favourite"))
+
+        tw.run(go())
+
+
+ARTIST_HARNESS = r"""
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[2], "utf8");
+const cases = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+const f = new Function(src + "\nreturn {artistUpNote, artistUpBadge};")();
+const out = cases.map((c) => c.badge
+  ? f.artistUpBadge(c.arts, c.favA, (a) => (a.mine || 0))
+  : f.artistUpNote(c.a, c.favA));
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+class PlayingArtistThumbsUp(unittest.TestCase):
+    """F-HLASY-25 (hlášení #33): 👍 celému interpretovi jde dát i u hrající
+    skladby, stav je vidět a jeden 👍 se poctivě ukáže jako „1 z 2 potřebných"."""
+
+    def test_playing_song_has_an_artist_thumbs_up_like_the_rows(self):
+        html = INDEX.read_text()
+        row = html[html.index('id="vrow"'):html.index('id="vInfo"')]
+        self.assertIn('id="vArt"', row)
+        self.assertIn('aria-haspopup="dialog"', row[row.index('id="vArt"') - 60:])
+        # tlačítko otevře týž list jako řádky fronty a Odehráno, jen s 👍 interpretům
+        self.assertIn('votes: cur.votes }, "artistUp");', html)
+        sheet = html[html.index("function renderSheet()"):html.index("function opt(")]
+        self.assertIn("if (!sh.downOnly && !sh.artistUp) {", sheet)   # bez 👍 písničce
+        self.assertIn("if (!sh.artistUp) html += opt(\"song:", sheet)  # bez 👎 písničce
+        self.assertIn("if (sh.artistUp) return;", sheet)               # bez 👎 interpretovi
+        self.assertIn("artistUpNote(a, favA)", sheet)
+        # stav u hrající: tlačítko „on" s mým 👍, počet „1/2" nebo ♥
+        now = html[html.index("function renderNowVotes"):html.index("async function loadDetail")]
+        self.assertIn("artistUpBadge(b.artists, b.fav_artist_votes, myArtistVote)", now)
+        self.assertIn('vel.art.classList.toggle("on", ab.on)', now)
+        # 👎 u hrající svítí jen pro můj 👎 (písničce nebo interpretovi), ne pro můj 👍 interpretovi
+        self.assertIn("some(function (a) { return myArtistVote(a) === -1; })", now)
+        manual = (INDEX.parent / "napoveda.html").read_text()
+        self.assertIn("<b>👍 interpret</b>", manual)
+        self.assertIn('data-cfg="favourite_artist_votes"', manual)
+
+    @unittest.skipUnless(shutil.which("node"), "texty se zkouší v Node (není nainstalovaný)")
+    def test_honest_counts_in_node(self):
+        html = INDEX.read_text()
+        m = re.search(r"/\* hlasy-interpret:start.*?\*/(.*?)/\* hlasy-interpret:end \*/", html, re.S)
+        self.assertIsNotNone(m)
+        src = Path(_TMP) / "artist.js"
+        src.write_text(m.group(1), encoding="utf-8")
+        harness = Path(_TMP) / "artist_harness.js"
+        harness.write_text(ARTIST_HARNESS, encoding="utf-8")
+        cases = [
+            {"a": {"up": 1, "down": 0, "status": "neutral", "mine": 1}, "favA": 2},
+            {"a": {"up": 1, "down": 0, "status": "neutral", "mine": 0}, "favA": 2},
+            {"a": {"up": 0, "down": 0, "status": "neutral"}, "favA": 2},
+            {"a": {"up": 2, "down": 2, "status": "pending", "mine": 1}, "favA": 2},  # 👎 zvedají práh
+            {"a": {"up": 2, "down": 0, "status": "favourite"}, "favA": 2},
+            {"badge": True, "arts": [{"name": "Kabát", "up": 1, "down": 0, "status": "neutral", "mine": 1},
+                                     {"name": "Tomáš Klus", "up": 0, "down": 0, "status": "neutral"}], "favA": 2},
+            {"badge": True, "arts": [{"name": "Kabát", "up": 2, "status": "favourite"}], "favA": 2},
+            {"badge": True, "arts": [{"name": "Kabát", "up": 0, "status": "neutral"}], "favA": 3},
+        ]
+        f = Path(_TMP) / "artist_cases.json"
+        f.write_text(json.dumps(cases), encoding="utf-8")
+        r = subprocess.run([shutil.which("node"), str(harness), str(src), str(f)],
+                           capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = json.loads(r.stdout)
+        self.assertEqual(out[0], "Tvůj 👍 platí: 1 z 2 potřebných, chybí ještě 1× 👍 od dalšího člověka")
+        self.assertEqual(out[1], "1 z 2 potřebných 👍, chybí ještě 1× 👍 od dalšího člověka")
+        self.assertIn("jeden 👍 z něj oblíbeného neudělá", out[2])
+        self.assertEqual(out[3], "Tvůj 👍 platí: 2 z 3 potřebných, chybí ještě 1× 👍 od dalšího člověka")
+        self.assertEqual(out[4], "♥ oblíbený interpret kanceláře — 2× 👍")
+        self.assertEqual(out[5], {"on": True, "n": "1/2"})
+        self.assertEqual(out[6], {"on": False, "n": "♥"})
+        self.assertEqual(out[7], {"on": False, "n": ""})
+
+    def test_playing_song_carries_the_threshold_and_the_answer_is_honest(self):
+        async def go():
+            srv, app, h = make()
+            post = h[("/api/votes", "POST")]
+            snap = await srv._snapshot()
+            self.assertEqual(snap["current"]["votes"]["fav_artist_votes"], 2)
+            # 👍 celému interpretovi hrající skladby: jen video_id + jméno interpreta
+            resp = await post(request({"target": "artist", "vote": 1, "client": JANA,
+                                       "video_id": "cur00000001", "artist": "Kabát"}))
+            out = json.loads(resp.body)
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual((out["item"]["key"], out["item"]["status"]), ("kabat", "neutral"))
+            self.assertEqual(out["message"], "Hlas zapsán — Kabát má 1 z 2 potřebných 👍. "
+                                             "Oblíbený interpret bude, až mu 👍 dá i další člověk.")
+            cur = (await srv._snapshot())["current"]["votes"]
+            kabat = next(a for a in cur["artists"] if a["name"] == "Kabát")
+            self.assertEqual((kabat["up"], kabat["status"], kabat["up_by"]), (1, "neutral", [tag_of(JANA)]))
+            resp = await post(request({"target": "artist", "vote": 1, "client": PETR,
+                                       "video_id": "cur00000001", "artist": "Kabát"}))
+            self.assertIn("mezi oblíbenými interprety", json.loads(resp.body)["message"])
 
         tw.run(go())
 

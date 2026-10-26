@@ -1922,8 +1922,9 @@
   async function control(action, value) {
     try {
       // kdo přeskočil — vlastník přeskočeného přání to uvidí
-      await postJSON("/api/control", { action: action, value: (value == null ? null : value),
-                                       who: S.nick, client: S.client });
+      var body = { action: action, value: (value == null ? null : value), who: S.nick, client: S.client };
+      if (S.viaKey) body.via = "key";
+      await postJSON("/api/control", body);
       hideBanner();
       if (!polling) setTimeout(refresh, 120);
     } catch (e) {
@@ -2059,17 +2060,47 @@
   el.btnBack.addEventListener("click", function () { seekTo(predictPos() - 10); });
   el.btnFwd.addEventListener("click", function () { seekTo(predictPos() + 10); });
 
+  /* klávesy:start — zkratky (F-WEB-11): mezerník ▶/⏸, n = další, / = přání.
+     Jen na hlavní stránce přehrávače bez otevřeného okna a jen když fokus není
+     v ničem, co klávesu potřebuje samo (pole, tlačítko, odkaz, posuvník…):
+     mezerník na tlačítku zmáčkne to tlačítko, v poli napíše mezeru. */
+  var KEY_OWN_TAGS = { INPUT: 1, TEXTAREA: 1, SELECT: 1, OPTION: 1, BUTTON: 1, A: 1, SUMMARY: 1, LABEL: 1,
+                       AUDIO: 1, VIDEO: 1, IFRAME: 1 };
+  var KEY_OWN_ROLES = /^(button|link|checkbox|radio|switch|slider|spinbutton|textbox|searchbox|combobox|listbox|option|menuitem|tab)$/;
+  function keyOwnedBy(t) {
+    for (var n = t; n && n.nodeType === 1; n = n.parentElement) {
+      if (KEY_OWN_TAGS[n.tagName] || n.isContentEditable) return true;
+      if (KEY_OWN_ROLES.test((n.getAttribute && n.getAttribute("role")) || "")) return true;
+    }
+    return false;
+  }
+  // onPlayer: hlavní stránka přehrávače a žádné okno (Hlasování, list hlasu, přezdívka, nastavení)
+  function shortcutFor(ev, onPlayer) {
+    if (!onPlayer || ev.defaultPrevented || ev.repeat || ev.metaKey || ev.ctrlKey || ev.altKey) return "";
+    if (keyOwnedBy(ev.target)) return "";
+    if (ev.key === " " || ev.key === "Spacebar") return "play";
+    if (ev.key === "n") return "next";
+    if (ev.key === "/") return "wish";
+    return "";
+  }
+  /* klávesy:end */
+  function onPlayerView() {
+    return location.hash !== "#hlasovani" && $("#votesView").hasAttribute("hidden") &&
+           el.voteSheet.hasAttribute("hidden") && el.nickModal.hasAttribute("hidden") &&
+           !el.settings.classList.contains("show");
+  }
   document.addEventListener("keydown", function (ev) {
     if (ev.key === "Escape" && el.settings.classList.contains("show")) { closeSettings(); return; }
     if (ev.key === "Escape" && !el.voteSheet.hasAttribute("hidden")) { closeSheet(); return; }
-    if (!el.voteSheet.hasAttribute("hidden")) return;
-    if (!el.nickModal.hasAttribute("hidden")) return;
-    var t = ev.target;
-    var typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
-    if (typing || ev.metaKey || ev.ctrlKey || ev.altKey) return;
-    if (ev.key === " ") { ev.preventDefault(); el.btnPlay.click(); }
-    else if (ev.key === "n") el.btnNext.click();
-    else if (ev.key === "/") { ev.preventDefault(); el.prompt.focus(); }
+    var act = shortcutFor(ev, onPlayerView());
+    if (!act) return;
+    ev.preventDefault();
+    S.viaKey = true;  // povel z klávesy: provozní log ho pozná (web.control via=key)
+    try {
+      if (act === "play") el.btnPlay.click();
+      else if (act === "next") el.btnNext.click();
+      else el.prompt.focus();
+    } finally { S.viaKey = false; }
   });
 
   /* ------------------------------------------------------------------ */

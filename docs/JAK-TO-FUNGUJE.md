@@ -97,6 +97,14 @@ můžeš vyřadit (a zase vrátit) a playlist si pojmenovat po svém — obnoven
 z YouTube na tom nic nezmění. Aby jeden velký playlist nepřehlušil kolegy,
 berou se oblíbené kanceláře po lidech na střídačku — každý přispěje stejně.
 
+## AI tvorba
+
+Písničky z umělé inteligence bývají jedna jako druhá a rádio YouTube je
+umí nabízet dokola. Proto je na stránce Hlasování seznam AI tvorby: kdo
+pozná AI, označí ji jedním klikem a jukebox ji sám nenabídne. Není to
+otázka vkusu jako 👎, ale faktu — proto stačí jeden člověk, vždycky je
+vidět kdo a kdokoli to vrátí. Když si ji někdo výslovně přeje, zahraje se.
+
 ## Displej
 
 Dotykový displej u repráku je pro toho, kdo zrovna stojí u něj: co hraje,
@@ -221,6 +229,7 @@ jukeboxu a restart chtějí PIN správce, který je na displeji na obrazovce Sí
 - **F-PRESKOK-10** Kdo přeskočí hrající skladbu, ukáže se všem jménem
 - **F-HLASY-06** Vyřazená skladba hned zmizí z podkresu
 - **F-HLASY-17** Oblíbené kanceláře se hrají po lidech na střídačku
+- **F-AI-04** Interpreta, u jehož videa autor uvedl „Made with AI“, jukebox sám zapíše mezi AI tvorbu
 - **F-FRONTA-20** Oblíbené hrají dál, dokud si někdo nepřeje něco jiného — nejdřív to, co dlouho nehrálo, pak dokola
 - **F-ZVUK-11** Vulgární skladby se samy do podkresu nedostanou
 - **F-ZVUK-33** Co tu hrálo v posledních dnech, se samo neopakuje — ani od interpreta, kterého si přeješ

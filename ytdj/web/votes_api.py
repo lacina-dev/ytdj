@@ -104,10 +104,17 @@ def _message(target: str, res: Any, fav_artist: int = 2) -> str:
         return f"Hlas zapsán (už je vyřazen{'ý' if target == ARTIST else 'á'})."
     if res.vote > 0 and item["status"] == FAVOURITE and target == ARTIST:
         return f"Hlas zapsán — {name} je mezi oblíbenými interprety kanceláře."
-    if res.vote > 0 and target == ARTIST and item.get("up", 0) < fav_artist:
-        # jeden 👍 celého interpreta z něj oblíbeného neudělá (PLAN H3)
-        who = f"dají aspoň {fav_artist} lidé" if fav_artist <= 4 else f"dá aspoň {fav_artist} lidí"
-        return f"Hlas zapsán — oblíbený interpret bude, až mu 👍 {who}."
+    if res.vote > 0 and target == ARTIST:
+        # jeden 👍 celého interpreta z něj oblíbeného neudělá (PLAN H3, F-HLASY-04):
+        # řekni poctivě, kolik 👍 má a kolik je potřeba (prah a víc 👍 než 👎)
+        up = int(item.get("up", 0) or 0)
+        need = max(fav_artist, int(item.get("down", 0) or 0) + 1)
+        left = max(0, need - up)
+        if left:
+            who = ("dá i další člověk" if left == 1 else
+                   f"dají i další {left} lidé" if left <= 4 else f"dá i dalších {left} lidí")
+            return (f"Hlas zapsán — {name} má {up} z {need} potřebných 👍. "
+                    f"Oblíbený interpret bude, až mu 👍 {who}.")
     need = item.get("need") or 0
     if res.vote < 0 and need:
         return f"Hlas zapsán — k vyřazení chybí ještě {need}× 👎 od dalších."
@@ -322,7 +329,8 @@ def annotate(app: Any, current: dict | None, queue: list[dict]) -> None:
                          "up_by": ["<tag>"], "down_by": [],
                          "artists": [{"name": "Kabát", "up": 2, "down": 1,
                                       "status": "favourite", "up_by": ["<tag>", …],
-                                      "by": ["<tag>"], "down_by": ["<tag>"]}]}
+                                      "by": ["<tag>"], "down_by": ["<tag>"]}],
+                         "fav_artist_votes": 2}
         queue[i].votes = {"up", "down", "status", "up_by"?, "down_by"?,
                           "artist_status"?, "artists"?}   — jen u položek s hlasy
         artists[].by = down_by (👎; starší web a displej čtou "by");
@@ -335,6 +343,10 @@ def annotate(app: Any, current: dict | None, queue: list[dict]) -> None:
         return
     if current is not None:
         current["votes"] = votes.brief(current, full=True)
+        fav = getattr(votes, "fav_artist_threshold", None)
+        if current["votes"] is not None and fav is not None:
+            # web u hrající ukáže „1 z 2 potřebných 👍" pro celého interpreta (F-HLASY-25)
+            current["votes"]["fav_artist_votes"] = fav()
     if not getattr(votes, "items", None):
         return
     for item in queue:

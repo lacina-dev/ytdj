@@ -481,6 +481,8 @@
   .vbtn:hover { background: var(--surface-2); }
   .vbtn .n { font-weight: 650; color: var(--text-dim); }
   .vbtn.on.up { background: color-mix(in srgb, var(--ok) 20%, transparent); border-color: color-mix(in srgb, var(--ok) 55%, transparent); }
+  .vbtn.artup { color: var(--text); }
+  .vbtn.on.artup { background: color-mix(in srgb, var(--ok) 20%, transparent); border-color: color-mix(in srgb, var(--ok) 55%, transparent); }
   .vbtn.on.down { background: color-mix(in srgb, var(--err) 16%, transparent); border-color: color-mix(in srgb, var(--err) 50%, transparent); }
   .vbtn.on .n { color: var(--text); }
   .vbtn[disabled] { opacity: .5; cursor: not-allowed; }
@@ -714,6 +716,7 @@
         <div class="vrow" id="vrow" hidden>
           <button class="vbtn up" id="vUp" type="button" aria-pressed="false"><span aria-hidden="true">👍</span><span class="n" id="vUpN">0</span></button>
           <button class="vbtn down" id="vDown" type="button" aria-haspopup="dialog"><span aria-hidden="true">👎</span><span class="n" id="vDownN">0</span></button>
+          <button class="vbtn artup" id="vArt" type="button" aria-haspopup="dialog"><span aria-hidden="true">👍</span><span>interpret</span><span class="n" id="vArtN"></span></button>
           <span id="vInfo"></span>
         </div>
         <p class="vwho" id="vWho" hidden></p>
@@ -2499,6 +2502,7 @@
   var vel = {
     votesBtn: $("#votesBtn"), view: $("#votesView"), back: $("#votesBack"), cols: $(".cols"), foot: $("footer.foot"),
     vrow: $("#vrow"), up: $("#vUp"), upN: $("#vUpN"), down: $("#vDown"), downN: $("#vDownN"), info: $("#vInfo"),
+    art: $("#vArt"), artN: $("#vArtN"),
     who: $("#vWho"), toast: $("#toast"),
     sheet: $("#voteSheet"), sH: $("#vsH"), sSub: $("#vsSub"), sWho: $("#vsWho"), sOpts: $("#vsOpts"), sClose: $("#vsClose"),
     fav: $("#vFav"), favN: $("#vFavN"), pend: $("#vPend"), pendN: $("#vPendN"), ban: $("#vBan"), banN: $("#vBanN"),
@@ -2528,6 +2532,31 @@
     });
     return line;
   }
+
+  /* hlasy-interpret:start — 👍 celému interpretovi: kolik má a kolik je potřeba (F-HLASY-04, F-HLASY-25) */
+  // oblíbený = aspoň favA lidí 👍 a víc 👍 než 👎 → potřeba celkem max(favA, 👎 + 1)
+  function artistFavNeed(a, favA) { return Math.max(favA || 2, (a.down || 0) + 1); }
+  function artistUpNote(a, favA) {
+    var up = a.up || 0, need = artistFavNeed(a, favA), left = Math.max(0, need - up);
+    if (a.status === "favourite") return "♥ oblíbený interpret kanceláře — " + up + "× 👍";
+    if (!left) return up + "× 👍";
+    var more = "chybí ještě " + left + "× 👍 od " + (left === 1 ? "dalšího člověka" : "dalších lidí");
+    if (a.mine === 1) return "Tvůj 👍 platí: " + up + " z " + need + " potřebných, " + more;
+    if (up) return up + " z " + need + " potřebných 👍, " + more;
+    return need === 1 ? "oblíbený od jednoho 👍" :
+      "oblíbený, až 👍 dají aspoň " + need + " lidé — jeden 👍 z něj oblíbeného neudělá";
+  }
+  // tlačítko „👍 interpret" u hrající: {on: můj 👍 aspoň jednomu, n: "♥" | "1/2" | ""}
+  function artistUpBadge(arts, favA, mine) {
+    var on = false, fav = false, best = null;
+    (arts || []).forEach(function (a) {
+      if (mine(a) === 1) on = true;
+      if (a.status === "favourite") fav = true;
+      else if ((a.up || 0) > 0 && (!best || a.up > best.up)) best = a;
+    });
+    return { on: on, n: fav ? "♥" : best ? best.up + "/" + artistFavNeed(best, favA) : "" };
+  }
+  /* hlasy-interpret:end */
 
   var SONG_STATUS = { favourite: ["oblíbená", "fav"], downweighted: ["upozaděná", "low"], banned: ["vyřazená", "ban"] };
   function voteMarks(b) {
@@ -2605,7 +2634,7 @@
     vel.upN.textContent = b.up || 0;
     vel.downN.textContent = b.down || 0;
     vel.up.classList.toggle("on", mine === 1);
-    vel.down.classList.toggle("on", mine === -1 || (b.artists || []).some(function (a) { return myArtistVote(a); }));
+    vel.down.classList.toggle("on", mine === -1 || (b.artists || []).some(function (a) { return myArtistVote(a) === -1; }));
     vel.up.setAttribute("aria-pressed", mine === 1 ? "true" : "false");
     vel.up.setAttribute("aria-label", mine === 1 ? "Líbí se ti — klepnutím hlas stáhneš" : "Líbí se mi (" + (b.up || 0) + " 👍)");
     vel.down.setAttribute("aria-label", "Nelíbí se mi — písnička, nebo interpret? (" + (b.down || 0) + " 👎)");
@@ -2614,8 +2643,16 @@
       if (a.status === "banned") info += ' <span class="vs ban">' + esc(a.name) + " vyřazen</span>";
       else if (a.status === "pending") info += ' <span class="vs pend">' + esc(a.name) + ": " + a.down + "× 👎</span>";
       else if (a.status === "favourite") info += ' <span class="vs fav">♥ ' + esc(a.name) + "</span>";
+      else if (a.up) info += ' <span class="vs low">' + esc(a.name) + ": " + a.up + " z " + artistFavNeed(a, b.fav_artist_votes) + " 👍</span>";
     });
     if (vel.info.innerHTML !== info) vel.info.innerHTML = info;
+    // 👍 celému interpretovi (F-HLASY-25): stav na tlačítku, volba v listu jako u řádků
+    var ab = artistUpBadge(b.artists, b.fav_artist_votes, myArtistVote);
+    vel.art.classList.toggle("on", ab.on);
+    vel.art.setAttribute("aria-pressed", ab.on ? "true" : "false");
+    vel.artN.textContent = ab.n;
+    vel.art.setAttribute("aria-label", "Celý interpret se mi líbí" + (ab.on ? " — tvůj 👍 platí" : "") +
+                         (ab.n === "♥" ? " (oblíbený)" : ab.n ? " (" + ab.n.replace("/", " z ") + " potřebných 👍)" : ""));
     // who voted: names come from /api/votes/track, only when the counts change
     var sig = (cur.id || "") + "|" + JSON.stringify(b);
     if (sig !== V.detailSig) {
@@ -2646,7 +2683,11 @@
   });
   vel.down.addEventListener("click", function () {
     var cur = S.status && S.status.current;
-    if (cur) openSheet({ id: cur.id, artist: cur.artist, title: cur.title, votes: cur.votes }, true);
+    if (cur) openSheet({ id: cur.id, artist: cur.artist, title: cur.title, votes: cur.votes }, "down");
+  });
+  vel.art.addEventListener("click", function () {
+    var cur = S.status && S.status.current;
+    if (cur) openSheet({ id: cur.id, artist: cur.artist, title: cur.title, votes: cur.votes }, "artistUp");
   });
 
   /* ---- one sheet for the playing track, the queue and Odehráno ---- */
@@ -2654,10 +2695,12 @@
     return String(artist || "").split(/\s*(?:,|&|\bfeat\.?|\bft\.?)\s*/i).filter(Boolean);
   }
 
-  function openSheet(t, downOnly) {
-    V.sheet = { t: t, downOnly: !!downOnly };
-    vel.sH.textContent = downOnly ? "Co se ti nelíbí?" : (t.title || "Skladba");
-    vel.sSub.textContent = downOnly ? (t.artist ? t.artist + " — " : "") + (t.title || "") : (t.artist || "");
+  // mode: "" = všechno (řádky fronty a Odehráno), "down" = 👎 u hrající, "artistUp" = 👍 interpretovi u hrající
+  function openSheet(t, mode) {
+    V.sheet = { t: t, downOnly: mode === "down", artistUp: mode === "artistUp" };
+    var only = mode === "down" || mode === "artistUp";
+    vel.sH.textContent = mode === "down" ? "Co se ti nelíbí?" : mode === "artistUp" ? "Líbí se ti celý interpret?" : (t.title || "Skladba");
+    vel.sSub.textContent = only ? (t.artist ? t.artist + " — " : "") + (t.title || "") : (t.artist || "");
     setHidden(vel.sWho, true);
     renderSheet();
     setHidden(vel.sheet, false);
@@ -2683,23 +2726,23 @@
                    .map(function (a) { return { name: a.name, up: a.up || 0, down: a.down || 0, status: a.status, mine: a.mine != null ? a.mine : myArtistVote(a) }; });
     var html = "";
     var up = song ? song.up : (b.up || 0), down = song ? song.down : (b.down || 0);
-    if (!sh.downOnly) {
+    var favA = (d && d.rules && d.rules.favourite_artist_votes) || b.fav_artist_votes ||
+               (V.lists && V.lists.rules && V.lists.rules.favourite_artist_votes) || 2;
+    if (!sh.downOnly && !sh.artistUp) {
       html += opt("song:" + (mine === 1 ? 0 : 1), "👍", mine === 1 ? "Líbí se ti — stáhnout hlas" : "Líbí se mi",
                   up ? up + "× 👍" : "", mine === 1);
     }
-    html += opt("song:" + (mine === -1 ? 0 : -1), "👎", mine === -1 ? "Stáhnout můj 👎 u písničky" : "Jen tuhle písničku",
+    if (!sh.artistUp) html += opt("song:" + (mine === -1 ? 0 : -1), "👎", mine === -1 ? "Stáhnout můj 👎 u písničky" : "Jen tuhle písničku",
                 down ? down + "× 👎" + (song && song.status === "banned" ? " — vyřazená" : song && song.need ? ", k vyřazení chybí " + song.need + "×" : "") : "vypadne, když ji 👎 aspoň 2 lidi",
                 mine === -1);
     var banA = (V.lists && V.lists.rules && V.lists.rules.ban_artist_votes) || 3;
-    var favA = (V.lists && V.lists.rules && V.lists.rules.favourite_artist_votes) || 2;
     arts.forEach(function (a, i) {
       if (!sh.downOnly) {
         html += opt("artist:" + i + ":" + (a.mine === 1 ? 0 : 1), "👍",
                     a.mine === 1 ? "Stáhnout můj 👍 pro " + a.name : "Celý interpret " + a.name,
-                    a.status === "favourite" ? "♥ oblíbený" + (a.up ? " — " + a.up + "× 👍" : "") :
-                      (a.up ? a.up + "× 👍, oblíbený bude od " + favA + "×" : "oblíbený, když 👍 dají aspoň " + favA + " " + plural(favA, "člověk", "lidi", "lidí")),
-                    a.mine === 1);
+                    artistUpNote(a, favA), a.mine === 1);
       }
+      if (sh.artistUp) return;
       var need = a.need != null ? a.need : banA - (a.down || 0);
       html += opt("artist:" + i + ":" + (a.mine === -1 ? 0 : -1), "👎",
                   a.mine === -1 ? "Stáhnout můj 👎 pro " + a.name : "Celého interpreta " + a.name,
@@ -2709,7 +2752,7 @@
     sh.arts = arts;
     vel.sOpts.innerHTML = html;
     if (d) {
-      var line = votersLine(song && song.voters), al = artistVoters(d);
+      var line = sh.artistUp ? "" : votersLine(song && song.voters), al = artistVoters(d);
       if (al) line += (line ? " · " : "") + al;
       vel.sWho.textContent = line;
       setHidden(vel.sWho, !line);
@@ -2747,7 +2790,7 @@
       if (!b) return;
       var i = Number(b.getAttribute("data-vote").split(":")[1]);
       var t = (list === "q" ? S.queueItems : S.histItems || [])[i];
-      if (t) openSheet({ id: t.id, artist: t.artist, title: t.title, votes: t.votes }, false);
+      if (t) openSheet({ id: t.id, artist: t.artist, title: t.title, votes: t.votes }, "");
     };
   }
   el.queue.addEventListener("click", rowClick("q"));

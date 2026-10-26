@@ -425,6 +425,10 @@ Tohle je seznam všeho, co aplikace umí (stav 26. 9. 2026, commit e713074).
   Nové pravidlo 9. 10. 2026 (jukebox #31; SD karta je pomalá, F-PROVOZ-04).
   Testy: `tests/test_playlist_import.py::EditImport::test_edits_are_small_writes_off_the_loop_and_limited`, `tests/test_playlist_import.py::EditImport::test_old_database_migrates_without_loss`, `tests/test_playlist_import.py::EditImport::test_edits_are_logged_without_client_ids`
 
+- **F-HLASY-25** 👍 celému interpretovi jde na webu dát i u hrající skladby, ne jen u řádků fronty a Odehráno: tlačítko „👍 interpret" vedle 👍/👎 otevře týž list jako řádky, jen s 👍 pro každého uvedeného interpreta (hlas jde i stáhnout). Na tlačítku je vidět můj 👍 (zvýrazněné), kolik 👍 interpret má z potřebných („1/2") nebo ♥, když už je oblíbený; u hrající je štítek „Kabát: 1 z 2 👍" a list i odpověď po hlasu řeknou poctivě, kolik 👍 ještě chybí — prahy a pravidlo F-HLASY-04 se nemění (jeden 👍 oblíbeného interpreta neudělá). Displej hlasovat neumí (F-HLASY-11 jen ukazuje).
+  Nové pravidlo 26. 10. 2026 na hlášení vlastníka (jukebox #33: „Nejde přidat celého interpreta do oblíbených u aktuálně hrané písně." — u hrající šlo 👍 jen písničce, 👎 list nabízel interpreta jen k vyřazení).
+  Testy: `tests/test_web_votes.py::PlayingArtistThumbsUp::test_playing_song_has_an_artist_thumbs_up_like_the_rows`, `tests/test_web_votes.py::PlayingArtistThumbsUp::test_honest_counts_in_node`, `tests/test_web_votes.py::PlayingArtistThumbsUp::test_playing_song_carries_the_threshold_and_the_answer_is_honest`
+
 ## Displej
 
 - **F-DISPLEJ-01** Displej ukazuje, co hraje (název, interpret, čas), a ovládá hrát/pauza, další a hlasitost; ťuknutí dál než 10 px od tlačítka nic nedělá (mezera mezi tlačítky patří nejbližšímu). Horní lišta je 46 px vysoká a tlačítka Mobil, Přání a Síť jsou v ní nakreslená o 14 px níž, dál od rámečku (stará 32px lišta jen na vyžádání: `YTDJ_PANEL_TALL_STRIP=0`).

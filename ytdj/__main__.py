@@ -52,6 +52,11 @@ class StartClock:
 CLOCK = StartClock()
 CLOCK.mark("py")  # interpret + site, do prvního řádku ytdj
 
+# glibc malloc bez děravých arén — dřív, než vznikne první vlákno (ytdj/memtune.py)
+from . import memtune  # noqa: E402
+
+MALLOC_TUNED = memtune.tune_malloc()
+
 import asyncio  # noqa: E402
 import contextlib  # noqa: E402
 import importlib  # noqa: E402
@@ -634,7 +639,7 @@ class App:
                 self.web = None
         self._mark("web")
         telemetry.event("app.start", **(self.clock.fields() if self.clock else {}),
-                        web=self.web is not None, repl=repl)
+                        web=self.web is not None, repl=repl, malloc_tuned=MALLOC_TUNED)
         # sonda yt-dlp a ytmusicapi až po navázání; kdo katalog potřebuje dřív,
         # vytvoří si YTMusic sám (LazyYT)
         self._later_task = asyncio.create_task(self._after_resume(resume), name="ytdj-after-resume")

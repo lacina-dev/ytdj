@@ -389,7 +389,7 @@ def request(body=None, query=None):
 
 
 class Api(unittest.TestCase):
-    """F-AI-06: stránka Hlasování — seznam, hraje teď, označit/vrátit jen s přezdívkou."""
+    """F-AI-06: stránka AI tvorba — seznam, hraje teď, označit/vrátit jen s přezdívkou."""
 
     def _server(self):
         player = FakePlayer(Track("cur00000001", "NEČUM <b>A</b> PRACUJ", "Kraken89, Rendys", duration=200),
@@ -433,12 +433,50 @@ class Api(unittest.TestCase):
 
     def test_page_script_escapes_and_is_loaded(self):
         index = (ROOT / "ytdj/web/static/index.html").read_text()
-        self.assertIn('<script src="/ai.js?v=3"></script>', index)
+        self.assertIn('<script src="/ai.js?v=4"></script>', index)
         js = (ROOT / "ytdj/web/static/ai.js").read_text()
         # každé pole ze serveru jde do HTML přes esc()
         for field in ("it.name", "it.reason", "n.name", "n.title"):
             self.assertIn(f"esc({field})", js)
         self.assertNotIn("#fff", js.lower())  # barvy jen z proměnných stránky (Den i Noc)
+
+
+class OwnPage(unittest.TestCase):
+    """F-AI-06: AI tvorba má vlastní stránku #ai (vlastník 27. 10. 2026: „V hlasování se to ztrácí.“)."""
+
+    _server = Api._server
+
+    def test_own_page_reached_from_header_and_votes_link(self):
+        index = (ROOT / "ytdj/web/static/index.html").read_text()
+        header = index[index.index('<header class="top">'):index.index("</header>")]
+        self.assertIn('id="aiBtn"', header)
+        self.assertIn("🤖", header[header.index('id="aiBtn"'):])
+        page = index[index.index('<section id="aiView"'):]
+        page = page[:page.index("</section>")]
+        self.assertIn('id="aiBack"', page)  # zpět
+        self.assertIn("AI tvorba", page)
+        votes = index[index.index('<section id="votesView"'):index.index('<section id="aiView"')]
+        self.assertIn('<a href="#ai" id="aiLink">', votes)  # na Hlasování jen odkaz
+        self.assertNotIn('id="aiSec"', votes)
+        self.assertIn('if (h === "#ai") { showVotes(false); showAi(true); }', index)
+        # zpět z hlubokého odkazu (/ai) zůstane v jukeboxu, history.back() jen po vlastní navigaci
+        self.assertIn('if (hashNav && location.hash === "#ai") history.back();', index)
+        self.assertNotIn("history.length > 1", index)
+        # zkratky přehrávače na stránce AI neplatí (F-WEB-11)
+        self.assertIn('location.hash !== "#ai" && $("#aiView").hasAttribute("hidden")', index)
+        js = (ROOT / "ytdj/web/static/ai.js").read_text()
+        self.assertIn('var view = document.getElementById("aiView");', js)  # obsah na vlastní stránce
+        self.assertIn("view.appendChild(sec);", js)
+        self.assertNotIn("vgrid", js)  # už se nevkládá mezi seznamy Hlasování
+        self.assertIn('a.textContent = "🤖 AI tvorba" + (n ? " (" + n + ")" : "") + " →";', js)
+        self.assertIn('<a href="#">← Zpět na hlavní stránku</a>', js)
+        manual = (ROOT / "ytdj/web/static/napoveda.html").read_text()
+        self.assertIn("Na vlastní stránce <b>🤖 AI tvorba</b>", manual)
+
+    def test_short_address_redirects_to_the_page(self):
+        srv, app, h = self._server()
+        r = tw.run(h[("/ai", "GET")](request()))
+        self.assertEqual((r.status_code, r.headers["location"]), (302, "/#ai"))
 
 
 AI_HARNESS = r"""

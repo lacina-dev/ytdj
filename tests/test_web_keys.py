@@ -136,6 +136,7 @@ class KeyWiring(unittest.TestCase):
         self.assertIsNotNone(m)
         body = m.group(1)
         for needle in ('location.hash !== "#hlasovani"', '$("#votesView").hasAttribute("hidden")',
+                       'location.hash !== "#ai"', '$("#aiView").hasAttribute("hidden")',
                        'el.voteSheet.hasAttribute("hidden")', 'el.nickModal.hasAttribute("hidden")',
                        '!el.settings.classList.contains("show")'):
             self.assertIn(needle, body)

@@ -1,5 +1,6 @@
 """HTTP API seznamu AI tvorby (hlášení #37) — logika je v ytdj/aitvorba.py.
 
+    GET  /ai               → 302 na /#ai (stránka AI tvorba na hlavní stránce)
     GET  /api/ai?client=   {"ai": [...], "suggested": [...], "not_ai": [...],
                             "counts": {...}, "now": {...} | null}
          položka: {key, name, state, source, reason, by, at, video_id, title,
@@ -21,7 +22,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
 from .. import telemetry
@@ -150,7 +151,12 @@ def routes(srv: "WebServer") -> list[Route]:
         srv.poke(later=0.4)
         return JSONResponse(out)
 
+    async def page(request: Request) -> Response:
+        # stránka AI tvorba je #ai na hlavní stránce (vlastní stránka od 27. 10. 2026)
+        return RedirectResponse("/#ai", status_code=302)
+
     return [
+        Route("/ai", _safe(page), methods=["GET"]),
         Route("/api/ai", _safe(lists), methods=["GET"]),
         Route("/api/ai", _safe(decide), methods=["POST"]),
     ]

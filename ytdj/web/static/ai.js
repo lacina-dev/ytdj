@@ -1,18 +1,23 @@
-/* AI tvorba na stránce Hlasování (hlášení z jukeboxu #37, FUNKCE F-AI-…).
+/* Stránka AI tvorba (#ai, hlášení z jukeboxu #37, FUNKCE F-AI-…).
  *
- * Samostatný kousek: sekci si vloží do #votesView sám (za seznamy hlasů),
+ * Samostatný kousek: obsah si vloží do #aiView sám (vlastní stránka od
+ * 27. 10. 2026 — vlastník: „V hlasování se to ztrácí.“), na Hlasování
+ * jen doplní počet do odkazu #aiLink,
  * data bere z /api/ai a mění přes POST /api/ai. Barvy jen z proměnných
  * stránky (--text, --line, --err…), takže sedí Den i Noc. Všechny texty ze
  * serveru jdou přes esc().
  */
 (function () {
   "use strict";
-  var view = document.getElementById("votesView");
+  var view = document.getElementById("aiView");
+  var votes = document.getElementById("votesView");
   if (!view || document.getElementById("aiSec")) return;
 
   var css = document.createElement("style");
   css.textContent =
-    "#aiSec { margin-top: 22px; }" +
+    "#aiSec { margin-top: 10px; }" +
+    "#aiSec #aiH { margin-top: 18px; }" +
+    "#aiSec .aiback a { display: inline-flex; align-items: center; min-height: 44px; color: var(--accent-text); }" +
     "#aiSec .ainow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 12px; margin: 4px 0 10px;" +
     "  border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }" +
     "#aiSec .ainow .meta { flex: 1 1 200px; min-width: 0; }" +
@@ -37,18 +42,18 @@
   sec.id = "aiSec";
   sec.setAttribute("aria-labelledby", "aiH");
   sec.innerHTML =
-    '<h2 class="sec-h" id="aiH">AI tvorba <span class="count" id="aiN"></span></h2>' +
     '<p class="hint2" id="aiHint">Interpreti, jejichž hudbu dělá umělá inteligence. Jukebox je sám nenabízí — ' +
     "rádio, podkres ani „pusť oblíbené“ je nepustí; když si je někdo výslovně přeje, zahrají se s poznámkou. " +
     "Označit i vrátit může kdokoli s přezdívkou, vždycky je vidět kdo.</p>" +
     '<div class="ainow" id="aiNow" hidden></div>' +
     '<p class="impmsg" id="aiMsg" role="status" aria-live="polite"></p>' +
+    '<h2 class="sec-h" id="aiH">Na seznamu <span class="count" id="aiN"></span></h2>' +
     '<ul class="list vlist" id="aiList"></ul>' +
     '<h3 id="aiSugH" hidden>Návrhy — hrají dál, dokud je někdo nepotvrdí</h3>' +
     '<ul class="list vlist" id="aiSug" aria-labelledby="aiSugH"></ul>' +
-    '<details id="aiNotBox" hidden><summary id="aiNotS">Není AI</summary><ul class="list vlist" id="aiNot"></ul></details>';
-  var grid = view.querySelector(".vgrid");
-  if (grid && grid.parentNode === view) view.insertBefore(sec, grid.nextSibling); else view.appendChild(sec);
+    '<details id="aiNotBox" hidden><summary id="aiNotS">Není AI</summary><ul class="list vlist" id="aiNot"></ul></details>' +
+    '<p class="aiback"><a href="#">← Zpět na hlavní stránku</a></p>';
+  view.appendChild(sec);
 
   function $(id) { return document.getElementById(id); }
   function esc(s) {
@@ -98,8 +103,9 @@
     var d = A.data || {};
     var ai = d.ai || [], sug = d.suggested || [], not = d.not_ai || [];
     $("aiN").textContent = ai.length ? "· " + ai.length : "";
+    link(ai.length);
     $("aiList").innerHTML = ai.length ? ai.map(function (it, i) { return row(it, "ai", i); }).join("")
-      : '<li class="empty">Zatím nikdo — kdo z AI se ozve, označ ho tlačítkem nahoře, když hraje.</li>';
+      : '<li class="empty">Zatím nikdo — kdo z AI se ozve, označ ho, když hraje — tady nahoře, nebo tlačítkem 🤖 AI u hrající písničky na hlavní stránce.</li>';
     $("aiSugH").hidden = !sug.length;
     $("aiSug").innerHTML = sug.map(function (it, i) { return row(it, "suggested", i); }).join("");
     $("aiNotBox").hidden = !not.length;
@@ -158,13 +164,23 @@
     send({ state: p[2], key: it.key });
   });
 
+  // odkaz na Hlasování: „🤖 AI tvorba (N) →“
+  function link(n) {
+    var a = $("aiLink");
+    if (a) a.textContent = "🤖 AI tvorba" + (n ? " (" + n + ")" : "") + " →";
+  }
+
   function shown() { return !view.hasAttribute("hidden"); }
   function sync() {
     clearInterval(A.timer);
-    if (!shown()) return;
+    if (!shown()) {
+      if (votes && !votes.hasAttribute("hidden")) load();  // jen kvůli počtu v odkazu
+      return;
+    }
     load();
     A.timer = setInterval(function () { if (!document.hidden && shown()) load(); }, 20000);
   }
   new MutationObserver(sync).observe(view, { attributes: true, attributeFilter: ["hidden"] });
+  if (votes) new MutationObserver(sync).observe(votes, { attributes: true, attributeFilter: ["hidden"] });
   sync();
 })();

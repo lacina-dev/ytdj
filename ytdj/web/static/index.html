@@ -463,7 +463,9 @@
                           font-size: .68rem; background: var(--btn); color: var(--on-btn); }
     .brand .name { display: none; }
   }
-  @media (max-width: 360px) { header.top { gap: 6px; } }
+  @media (max-width: 360px) { header.top { gap: 4px; } }
+  /* s 🤖 AI tvorba je v záhlaví o tlačítko víc: na 320 px se vejde i kolečko přezdívky */
+  @media (max-width: 360px) { .navbtn { padding: 6px 7px; } #aiBtn { min-width: 40px; justify-content: center; } }
   /* Hlavička se nesmí rozlézt ani s dlouhou přezdívkou: logo a název drží šířku, popisky
      ustupují dřív, než dojde místo, a jméno se zkrátí třeba až na kolečko s iniciálou. */
   .brand { flex: none; }
@@ -524,8 +526,10 @@
   .toast.show { opacity: 1; transform: translate(-50%, 0); }
   .toast.err { background: var(--err); color: #fff; }
 
-  #votesView .vhead { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
-  #votesView h1 { margin: 0; font-size: 1.4rem; }
+  #votesView .vhead, #aiView .vhead { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  #votesView h1, #aiView h1 { margin: 0; font-size: 1.4rem; }
+  #votesView .ailink { margin: 2px 0 6px; font-size: .92rem; }
+  #votesView .ailink a { display: inline-flex; align-items: center; min-height: 44px; color: var(--accent-text); font-weight: 600; }
   #votesView .rule { margin: 4px 0 14px; color: var(--text-dim); font-size: .92rem; }
   .vgrid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 22px; align-items: start; }
   @media (max-width: 900px) { .vgrid { grid-template-columns: minmax(0, 1fr); } }
@@ -679,6 +683,9 @@
     <span class="conn" id="conn" title="Spojení s jukeboxem"><span class="dot"></span><span id="connText">připojuji…</span></span>
     <button class="navbtn" id="votesBtn" type="button" aria-label="Hlasování kanceláře — oblíbené a vyřazené">
       <span aria-hidden="true">👍👎</span><span class="lbl">Hlasování</span>
+    </button>
+    <button class="navbtn" id="aiBtn" type="button" aria-label="AI tvorba — interpreti, které jukebox nenabízí" title="AI tvorba">
+      <span aria-hidden="true">🤖</span><span class="lbl">AI tvorba</span>
     </button>
     <a class="navbtn issues" id="issuesBtn" href="/hlaseni" aria-label="Chyby a nápady — nahlásit chybu nebo navrhnout vylepšení" title="Chyby a nápady">
       <span aria-hidden="true">💡</span><span class="lbl">Chyby a nápady</span><span class="cnt" id="issuesCnt" hidden></span>
@@ -837,6 +844,7 @@
       </button>
       <h1 id="votesH">Hlasování kanceláře</h1>
     </div>
+    <p class="ailink"><a href="#ai" id="aiLink">🤖 AI tvorba →</a></p>
     <p class="rule" id="votesRule">Písnička vypadne, když ji 👎 aspoň 2 lidi (a víc než 👍). Interpret při 3. 👍 jde dát i celému interpretovi. Vyřazené DJ sám nepustí, oblíbené hraje rád.</p>
     <div class="quick">
       <button class="btn primary" type="button" data-fav="pusť oblíbené kanceláře">▶ Pusť oblíbené kanceláře</button>
@@ -876,6 +884,16 @@
           <ul class="list vlist" id="vMine"></ul>
         </section>
       </div>
+    </div>
+  </section>
+
+  <!-- AI tvorba: vlastní stránka (#ai, /ai) — přání vlastníka 27. 10. 2026; obsah vkládá ai.js -->
+  <section id="aiView" aria-labelledby="aiViewH" hidden>
+    <div class="vhead">
+      <button class="icon-btn" id="aiBack" type="button" aria-label="Zpět">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+      </button>
+      <h1 id="aiViewH">🤖 AI tvorba</h1>
     </div>
   </section>
 
@@ -2096,6 +2114,7 @@
   /* klávesy:end */
   function onPlayerView() {
     return location.hash !== "#hlasovani" && $("#votesView").hasAttribute("hidden") &&
+           location.hash !== "#ai" && $("#aiView").hasAttribute("hidden") &&
            el.voteSheet.hasAttribute("hidden") && el.nickModal.hasAttribute("hidden") &&
            !el.settings.classList.contains("show");
   }
@@ -2917,13 +2936,33 @@
       setTimeout(function () { vel.back.focus(); }, 30);
     }
   }
-  function route() { showVotes(location.hash === "#hlasovani"); }
-  window.addEventListener("hashchange", route);
+  /* ---- stránka AI tvorba (#ai): obsah a data má ai.js, tady jen přepínání jako u Hlasování ---- */
+  var aiView = $("#aiView"), aiBtn = $("#aiBtn");
+  function showAi(on) {
+    setHidden(aiView, !on);
+    if (on) { setHidden(vel.cols, true); setHidden(vel.foot, true); }
+    if (on) aiBtn.setAttribute("aria-current", "page"); else aiBtn.removeAttribute("aria-current");
+    if (on) { window.scrollTo(0, 0); setTimeout(function () { $("#aiBack").focus(); }, 30); }
+  }
+  function route() {
+    var h = location.hash;
+    if (h === "#ai") { showVotes(false); showAi(true); }
+    else { showAi(false); showVotes(h === "#hlasovani"); }
+  }
+  // zpět jen po historii téhle stránky: hluboký odkaz (/ai, /#hlasovani) by history.back() z jukeboxu odvedl
+  var hashNav = false;
+  window.addEventListener("hashchange", function () { hashNav = true; route(); });
+  aiBtn.addEventListener("click", function () {
+    if (location.hash === "#ai") history.back(); else location.hash = "#ai";
+  });
+  $("#aiBack").addEventListener("click", function () {
+    if (hashNav && location.hash === "#ai") history.back(); else { location.hash = ""; route(); }
+  });
   vel.votesBtn.addEventListener("click", function () {
     if (location.hash === "#hlasovani") history.back(); else location.hash = "#hlasovani";
   });
   vel.back.addEventListener("click", function () {
-    if (history.length > 1 && location.hash === "#hlasovani") history.back(); else { location.hash = ""; route(); }
+    if (hashNav && location.hash === "#hlasovani") history.back(); else { location.hash = ""; route(); }
   });
 
   async function loadLists() {
@@ -3245,6 +3284,6 @@
 })();
 </script>
 <!-- AI tvorba na stránce Hlasování (hlášení #37): sekci si vloží sám -->
-<script src="/ai.js?v=3"></script>
+<script src="/ai.js?v=4"></script>
 </body>
 </html>

@@ -441,5 +441,83 @@ class Api(unittest.TestCase):
         self.assertNotIn("#fff", js.lower())  # barvy jen z proměnných stránky (Den i Noc)
 
 
+AI_HARNESS = r"""
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[2], "utf8");
+const cases = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+const f = new Function(src + "\nreturn aiSheetOptions;")();
+process.stdout.write(JSON.stringify(cases.map((c) => f(c.arts, c.wish))));
+"""
+
+
+class MainCard(unittest.TestCase):
+    """F-AI-06: 🤖 AI na kartě hrající skladby na hlavní stránce (27. 10. 2026)."""
+
+    _server = Api._server
+
+    def test_status_carries_the_ai_state_of_each_playing_artist(self):
+        async def go():
+            srv, app, h = self._server()
+            post = h[("/api/ai", "POST")]
+            cur = (await srv._snapshot())["current"]
+            self.assertEqual(cur["ai"], [{"name": "Kraken89", "key": "kraken89", "state": ""},
+                                         {"name": "Rendys", "key": "rendys", "state": ""}])
+            # karta posílá key + jméno; neoznačený interpret se pozná podle jména
+            r = await post(request({"state": "ai", "client": PETR, "key": "rendys", "artist": "Rendys"}))
+            out = json.loads(r.body)
+            self.assertEqual((r.status_code, out["item"]["name"]), (200, "Rendys"))
+            self.assertEqual(out["effect"]["skipped"], True)  # hrající podkres se přeskočí (F-AI-03)
+            cur = (await srv._snapshot())["current"]
+            self.assertEqual([a["state"] for a in cur["ai"]], ["", "ai"])
+            # vrátit z karty: key ze seznamu
+            r = await post(request({"state": "neni_ai", "client": PETR, "key": "rendys", "artist": "Rendys"}))
+            self.assertIn("nabízí jako dřív", json.loads(r.body)["message"])
+            cur = (await srv._snapshot())["current"]
+            self.assertEqual([a["state"] for a in cur["ai"]], ["", "neni_ai"])
+            # bez přezdívky to řekne server (karta jen ukáže jeho větu)
+            r = await post(request({"state": "ai", "client": JANA, "key": "kraken89", "artist": "Kraken89"}))
+            self.assertEqual(r.status_code, 403)
+            self.assertIn("s přezdívkou", json.loads(r.body)["error"])
+
+        tw.run(go())
+
+    def test_button_on_the_main_card_uses_the_same_api(self):
+        index = (ROOT / "ytdj/web/static/index.html").read_text()
+        row = index[index.index('id="vrow"'):index.index('id="vInfo"')]
+        self.assertIn('id="vAi"', row)
+        self.assertIn('var d = await postJSON("/api/ai", body);', index)
+        self.assertIn('wish: !!(cur.reason && cur.reason.kind === "wish") }, "ai");', index)
+        self.assertIn('vel.aiN.textContent = isAi ? "✓" : "";', index)
+        self.assertIn("@media (max-width: 480px) { .vrow { gap: 6px; }", index)  # 4 tlačítka na 320 px
+        manual = (ROOT / "ytdj/web/static/napoveda.html").read_text()
+        self.assertIn("🤖 AI</b> na kartě", manual)
+
+    @unittest.skipUnless(__import__("shutil").which("node"), "list se zkouší v Node (není nainstalovaný)")
+    def test_sheet_confirms_in_one_line_and_offers_undo(self):
+        import re
+        import shutil
+        import subprocess
+
+        index = (ROOT / "ytdj/web/static/index.html").read_text()
+        m = re.search(r"/\* ai-hrajici:start.*?\*/(.*?)/\* ai-hrajici:end \*/", index, re.S)
+        self.assertIsNotNone(m)
+        src, harness, cases = (Path(_TMP) / n for n in ("ai.js", "ai_harness.js", "ai_cases.json"))
+        src.write_text(m.group(1), encoding="utf-8")
+        harness.write_text(AI_HARNESS, encoding="utf-8")
+        arts = [{"name": "Papizon", "key": "papizon", "state": ""},
+                {"name": "Kraken89", "key": "kraken89", "state": "ai"}]
+        cases.write_text(json.dumps([{"arts": arts, "wish": False}, {"arts": arts[:1], "wish": True}]),
+                         encoding="utf-8")
+        r = subprocess.run([shutil.which("node"), str(harness), str(src), str(cases)],
+                           capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        bg, wish = json.loads(r.stdout)
+        self.assertEqual((bg[0]["act"], bg[0]["label"], bg[0]["sub"]),
+                         ("ai:0:ai", "Označit Papizon jako AI?",
+                          "Rádio ho přestane nabízet a tahle skladba se přeskočí."))
+        self.assertEqual((bg[1]["act"], bg[1]["label"], bg[1]["on"]), ("ai:1:neni_ai", "Není AI — Kraken89", True))
+        self.assertEqual(wish[0]["sub"], "Rádio ho přestane nabízet; tohle je něčí přání, takže dohraje.")
+
+
 if __name__ == "__main__":
     unittest.main()

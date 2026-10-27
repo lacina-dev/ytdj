@@ -840,6 +840,10 @@ class WebServer:
             votes_api.annotate(self.app, current, queue)  # 👍/👎 u skladeb (PLAN H)
         except Exception:
             log.debug("hlasy ke skladbám se nepodařilo přiřadit", exc_info=True)
+        try:
+            ai_api.annotate(self.app, current)  # 🤖 AI u hrající (F-AI-06)
+        except Exception:
+            log.debug("AI stav k hrající se nepodařilo přiřadit", exc_info=True)
 
         history: list[dict] = []
         try:

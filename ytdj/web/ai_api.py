@@ -5,6 +5,7 @@
          položka: {key, name, state, source, reason, by, at, video_id, title,
                    nick?, tag?, mine?}
          now: hrající skladba {video_id, title, artist, name, key, wish, flag}
+    /api/status: current.ai = [{name, key, state}] — každý uvedený interpret hrající
     POST /api/ai           {"client", "state": "ai" | "neni_ai" | "navrzeno",
                             "key"? (ze seznamu) | "artist"? | nic = hlavní
                             interpret hrající skladby, "reason"?}
@@ -25,7 +26,7 @@ from starlette.routing import Route
 
 from .. import telemetry
 from ..aitvorba import AI, NOT_AI, SUGGESTED
-from ..votes import VoteError, credits, enforce
+from ..votes import VoteError, artist_key, credits, enforce
 from ..wishes import clean_cid
 from . import identity_api
 
@@ -46,6 +47,26 @@ def _message(flag: Any, prev: Any) -> str:
         return (f"{flag.name} není AI — jukebox ho nabízí jako dřív."
                 if prev is not None and prev.state == AI else f"Zapsáno: {flag.name} není AI.")
     return f"{flag.name} je mezi návrhy — hraje dál, dokud to někdo nepotvrdí."
+
+
+def annotate(app: Any, current: dict | None) -> None:
+    """AI stav interpretů hrající skladby do sdíleného snímku (tlačítko 🤖 AI na
+    kartě hrající, F-AI-06) — malé, bez jmen toho, kdo označil:
+
+        current.ai = [{"name": "Kraken89", "key": "kraken89", "state": "ai"},
+                      {"name": "Rendys", "key": "rendys", "state": ""}]
+    """
+    book = getattr(app, "ai", None)
+    if book is None or current is None:
+        return
+    flags = getattr(book, "flags", {})
+    out = []
+    for name in credits(str(current.get("artist") or "")):
+        key = artist_key(name)
+        f = flags.get(key)
+        out.append({"name": name, "key": key, "state": f.state if f is not None else ""})
+    if out:
+        current["ai"] = out
 
 
 def routes(srv: "WebServer") -> list[Route]:

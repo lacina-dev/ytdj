@@ -389,7 +389,7 @@ def request(body=None, query=None):
 
 
 class Api(unittest.TestCase):
-    """F-AI-06: stránka Hlasování — seznam, hraje teď, označit/vrátit jen s přezdívkou."""
+    """F-AI-06: stránka AI tvorba — seznam, hraje teď, označit/vrátit jen s přezdívkou."""
 
     def _server(self):
         player = FakePlayer(Track("cur00000001", "NEČUM <b>A</b> PRACUJ", "Kraken89, Rendys", duration=200),
@@ -433,12 +433,128 @@ class Api(unittest.TestCase):
 
     def test_page_script_escapes_and_is_loaded(self):
         index = (ROOT / "ytdj/web/static/index.html").read_text()
-        self.assertIn('<script src="/ai.js?v=3"></script>', index)
+        self.assertIn('<script src="/ai.js?v=4"></script>', index)
         js = (ROOT / "ytdj/web/static/ai.js").read_text()
         # každé pole ze serveru jde do HTML přes esc()
         for field in ("it.name", "it.reason", "n.name", "n.title"):
             self.assertIn(f"esc({field})", js)
         self.assertNotIn("#fff", js.lower())  # barvy jen z proměnných stránky (Den i Noc)
+
+
+class OwnPage(unittest.TestCase):
+    """F-AI-06: AI tvorba má vlastní stránku #ai (vlastník 27. 10. 2026: „V hlasování se to ztrácí.“)."""
+
+    _server = Api._server
+
+    def test_own_page_reached_from_header_and_votes_link(self):
+        index = (ROOT / "ytdj/web/static/index.html").read_text()
+        header = index[index.index('<header class="top">'):index.index("</header>")]
+        self.assertIn('id="aiBtn"', header)
+        self.assertIn("🤖", header[header.index('id="aiBtn"'):])
+        page = index[index.index('<section id="aiView"'):]
+        page = page[:page.index("</section>")]
+        self.assertIn('id="aiBack"', page)  # zpět
+        self.assertIn("AI tvorba", page)
+        votes = index[index.index('<section id="votesView"'):index.index('<section id="aiView"')]
+        self.assertIn('<a href="#ai" id="aiLink">', votes)  # na Hlasování jen odkaz
+        self.assertNotIn('id="aiSec"', votes)
+        self.assertIn('if (h === "#ai") { showVotes(false); showAi(true); }', index)
+        # zpět z hlubokého odkazu (/ai) zůstane v jukeboxu, history.back() jen po vlastní navigaci
+        self.assertIn('if (hashNav && location.hash === "#ai") history.back();', index)
+        self.assertNotIn("history.length > 1", index)
+        # zkratky přehrávače na stránce AI neplatí (F-WEB-11)
+        self.assertIn('location.hash !== "#ai" && $("#aiView").hasAttribute("hidden")', index)
+        js = (ROOT / "ytdj/web/static/ai.js").read_text()
+        self.assertIn('var view = document.getElementById("aiView");', js)  # obsah na vlastní stránce
+        self.assertIn("view.appendChild(sec);", js)
+        self.assertNotIn("vgrid", js)  # už se nevkládá mezi seznamy Hlasování
+        self.assertIn('a.textContent = "🤖 AI tvorba" + (n ? " (" + n + ")" : "") + " →";', js)
+        self.assertIn('<a href="#">← Zpět na hlavní stránku</a>', js)
+        manual = (ROOT / "ytdj/web/static/napoveda.html").read_text()
+        self.assertIn("Na vlastní stránce <b>🤖 AI tvorba</b>", manual)
+
+    def test_short_address_redirects_to_the_page(self):
+        srv, app, h = self._server()
+        r = tw.run(h[("/ai", "GET")](request()))
+        self.assertEqual((r.status_code, r.headers["location"]), (302, "/#ai"))
+
+
+AI_HARNESS = r"""
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[2], "utf8");
+const cases = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+const f = new Function(src + "\nreturn aiSheetOptions;")();
+process.stdout.write(JSON.stringify(cases.map((c) => f(c.arts, c.wish))));
+"""
+
+
+class MainCard(unittest.TestCase):
+    """F-AI-06: 🤖 AI na kartě hrající skladby na hlavní stránce (27. 10. 2026)."""
+
+    _server = Api._server
+
+    def test_status_carries_the_ai_state_of_each_playing_artist(self):
+        async def go():
+            srv, app, h = self._server()
+            post = h[("/api/ai", "POST")]
+            cur = (await srv._snapshot())["current"]
+            self.assertEqual(cur["ai"], [{"name": "Kraken89", "key": "kraken89", "state": ""},
+                                         {"name": "Rendys", "key": "rendys", "state": ""}])
+            # karta posílá key + jméno; neoznačený interpret se pozná podle jména
+            r = await post(request({"state": "ai", "client": PETR, "key": "rendys", "artist": "Rendys"}))
+            out = json.loads(r.body)
+            self.assertEqual((r.status_code, out["item"]["name"]), (200, "Rendys"))
+            self.assertEqual(out["effect"]["skipped"], True)  # hrající podkres se přeskočí (F-AI-03)
+            cur = (await srv._snapshot())["current"]
+            self.assertEqual([a["state"] for a in cur["ai"]], ["", "ai"])
+            # vrátit z karty: key ze seznamu
+            r = await post(request({"state": "neni_ai", "client": PETR, "key": "rendys", "artist": "Rendys"}))
+            self.assertIn("nabízí jako dřív", json.loads(r.body)["message"])
+            cur = (await srv._snapshot())["current"]
+            self.assertEqual([a["state"] for a in cur["ai"]], ["", "neni_ai"])
+            # bez přezdívky to řekne server (karta jen ukáže jeho větu)
+            r = await post(request({"state": "ai", "client": JANA, "key": "kraken89", "artist": "Kraken89"}))
+            self.assertEqual(r.status_code, 403)
+            self.assertIn("s přezdívkou", json.loads(r.body)["error"])
+
+        tw.run(go())
+
+    def test_button_on_the_main_card_uses_the_same_api(self):
+        index = (ROOT / "ytdj/web/static/index.html").read_text()
+        row = index[index.index('id="vrow"'):index.index('id="vInfo"')]
+        self.assertIn('id="vAi"', row)
+        self.assertIn('var d = await postJSON("/api/ai", body);', index)
+        self.assertIn('wish: !!(cur.reason && cur.reason.kind === "wish") }, "ai");', index)
+        self.assertIn('vel.aiN.textContent = isAi ? "✓" : "";', index)
+        self.assertIn("@media (max-width: 480px) { .vrow { gap: 6px; }", index)  # 4 tlačítka na 320 px
+        manual = (ROOT / "ytdj/web/static/napoveda.html").read_text()
+        self.assertIn("🤖 AI</b> na kartě", manual)
+
+    @unittest.skipUnless(__import__("shutil").which("node"), "list se zkouší v Node (není nainstalovaný)")
+    def test_sheet_confirms_in_one_line_and_offers_undo(self):
+        import re
+        import shutil
+        import subprocess
+
+        index = (ROOT / "ytdj/web/static/index.html").read_text()
+        m = re.search(r"/\* ai-hrajici:start.*?\*/(.*?)/\* ai-hrajici:end \*/", index, re.S)
+        self.assertIsNotNone(m)
+        src, harness, cases = (Path(_TMP) / n for n in ("ai.js", "ai_harness.js", "ai_cases.json"))
+        src.write_text(m.group(1), encoding="utf-8")
+        harness.write_text(AI_HARNESS, encoding="utf-8")
+        arts = [{"name": "Papizon", "key": "papizon", "state": ""},
+                {"name": "Kraken89", "key": "kraken89", "state": "ai"}]
+        cases.write_text(json.dumps([{"arts": arts, "wish": False}, {"arts": arts[:1], "wish": True}]),
+                         encoding="utf-8")
+        r = subprocess.run([shutil.which("node"), str(harness), str(src), str(cases)],
+                           capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        bg, wish = json.loads(r.stdout)
+        self.assertEqual((bg[0]["act"], bg[0]["label"], bg[0]["sub"]),
+                         ("ai:0:ai", "Označit Papizon jako AI?",
+                          "Rádio ho přestane nabízet a tahle skladba se přeskočí."))
+        self.assertEqual((bg[1]["act"], bg[1]["label"], bg[1]["on"]), ("ai:1:neni_ai", "Není AI — Kraken89", True))
+        self.assertEqual(wish[0]["sub"], "Rádio ho přestane nabízet; tohle je něčí přání, takže dohraje.")
 
 
 if __name__ == "__main__":

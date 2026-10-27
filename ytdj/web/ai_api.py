@@ -1,10 +1,12 @@
 """HTTP API seznamu AI tvorby (hlášení #37) — logika je v ytdj/aitvorba.py.
 
+    GET  /ai               → 302 na /#ai (stránka AI tvorba na hlavní stránce)
     GET  /api/ai?client=   {"ai": [...], "suggested": [...], "not_ai": [...],
                             "counts": {...}, "now": {...} | null}
          položka: {key, name, state, source, reason, by, at, video_id, title,
                    nick?, tag?, mine?}
          now: hrající skladba {video_id, title, artist, name, key, wish, flag}
+    /api/status: current.ai = [{name, key, state}] — každý uvedený interpret hrající
     POST /api/ai           {"client", "state": "ai" | "neni_ai" | "navrzeno",
                             "key"? (ze seznamu) | "artist"? | nic = hlavní
                             interpret hrající skladby, "reason"?}
@@ -20,12 +22,12 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
 from .. import telemetry
 from ..aitvorba import AI, NOT_AI, SUGGESTED
-from ..votes import VoteError, credits, enforce
+from ..votes import VoteError, artist_key, credits, enforce
 from ..wishes import clean_cid
 from . import identity_api
 
@@ -46,6 +48,26 @@ def _message(flag: Any, prev: Any) -> str:
         return (f"{flag.name} není AI — jukebox ho nabízí jako dřív."
                 if prev is not None and prev.state == AI else f"Zapsáno: {flag.name} není AI.")
     return f"{flag.name} je mezi návrhy — hraje dál, dokud to někdo nepotvrdí."
+
+
+def annotate(app: Any, current: dict | None) -> None:
+    """AI stav interpretů hrající skladby do sdíleného snímku (tlačítko 🤖 AI na
+    kartě hrající, F-AI-06) — malé, bez jmen toho, kdo označil:
+
+        current.ai = [{"name": "Kraken89", "key": "kraken89", "state": "ai"},
+                      {"name": "Rendys", "key": "rendys", "state": ""}]
+    """
+    book = getattr(app, "ai", None)
+    if book is None or current is None:
+        return
+    flags = getattr(book, "flags", {})
+    out = []
+    for name in credits(str(current.get("artist") or "")):
+        key = artist_key(name)
+        f = flags.get(key)
+        out.append({"name": name, "key": key, "state": f.state if f is not None else ""})
+    if out:
+        current["ai"] = out
 
 
 def routes(srv: "WebServer") -> list[Route]:
@@ -129,7 +151,12 @@ def routes(srv: "WebServer") -> list[Route]:
         srv.poke(later=0.4)
         return JSONResponse(out)
 
+    async def page(request: Request) -> Response:
+        # stránka AI tvorba je #ai na hlavní stránce (vlastní stránka od 27. 10. 2026)
+        return RedirectResponse("/#ai", status_code=302)
+
     return [
+        Route("/ai", _safe(page), methods=["GET"]),
         Route("/api/ai", _safe(lists), methods=["GET"]),
         Route("/api/ai", _safe(decide), methods=["POST"]),
     ]

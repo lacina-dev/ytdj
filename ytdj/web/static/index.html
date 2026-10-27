@@ -463,7 +463,9 @@
                           font-size: .68rem; background: var(--btn); color: var(--on-btn); }
     .brand .name { display: none; }
   }
-  @media (max-width: 360px) { header.top { gap: 6px; } }
+  @media (max-width: 360px) { header.top { gap: 4px; } }
+  /* s 🤖 AI tvorba je v záhlaví o tlačítko víc: na 320 px se vejde i kolečko přezdívky */
+  @media (max-width: 360px) { .navbtn { padding: 6px 7px; } #aiBtn { min-width: 40px; justify-content: center; } }
   /* Hlavička se nesmí rozlézt ani s dlouhou přezdívkou: logo a název drží šířku, popisky
      ustupují dřív, než dojde místo, a jméno se zkrátí třeba až na kolečko s iniciálou. */
   .brand { flex: none; }
@@ -482,6 +484,9 @@
   .vbtn .n { font-weight: 650; color: var(--text-dim); }
   .vbtn.on.up { background: color-mix(in srgb, var(--ok) 20%, transparent); border-color: color-mix(in srgb, var(--ok) 55%, transparent); }
   .vbtn.artup { color: var(--text); }
+  .vbtn.aiflag { color: var(--text); }
+  .vbtn.on.aiflag { background: color-mix(in srgb, var(--warn) 18%, transparent); border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+  @media (max-width: 480px) { .vrow { gap: 6px; } .vbtn { min-width: 0; padding: 6px 10px; gap: 6px; } }
   .vbtn.on.artup { background: color-mix(in srgb, var(--ok) 20%, transparent); border-color: color-mix(in srgb, var(--ok) 55%, transparent); }
   .vbtn.on.down { background: color-mix(in srgb, var(--err) 16%, transparent); border-color: color-mix(in srgb, var(--err) 50%, transparent); }
   .vbtn.on .n { color: var(--text); }
@@ -521,8 +526,10 @@
   .toast.show { opacity: 1; transform: translate(-50%, 0); }
   .toast.err { background: var(--err); color: #fff; }
 
-  #votesView .vhead { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
-  #votesView h1 { margin: 0; font-size: 1.4rem; }
+  #votesView .vhead, #aiView .vhead { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  #votesView h1, #aiView h1 { margin: 0; font-size: 1.4rem; }
+  #votesView .ailink { margin: 2px 0 6px; font-size: .92rem; }
+  #votesView .ailink a { display: inline-flex; align-items: center; min-height: 44px; color: var(--accent-text); font-weight: 600; }
   #votesView .rule { margin: 4px 0 14px; color: var(--text-dim); font-size: .92rem; }
   .vgrid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 22px; align-items: start; }
   @media (max-width: 900px) { .vgrid { grid-template-columns: minmax(0, 1fr); } }
@@ -677,6 +684,9 @@
     <button class="navbtn" id="votesBtn" type="button" aria-label="Hlasování kanceláře — oblíbené a vyřazené">
       <span aria-hidden="true">👍👎</span><span class="lbl">Hlasování</span>
     </button>
+    <button class="navbtn" id="aiBtn" type="button" aria-label="AI tvorba — interpreti, které jukebox nenabízí" title="AI tvorba">
+      <span aria-hidden="true">🤖</span><span class="lbl">AI tvorba</span>
+    </button>
     <a class="navbtn issues" id="issuesBtn" href="/hlaseni" aria-label="Chyby a nápady — nahlásit chybu nebo navrhnout vylepšení" title="Chyby a nápady">
       <span aria-hidden="true">💡</span><span class="lbl">Chyby a nápady</span><span class="cnt" id="issuesCnt" hidden></span>
     </a>
@@ -717,6 +727,7 @@
           <button class="vbtn up" id="vUp" type="button" aria-pressed="false"><span aria-hidden="true">👍</span><span class="n" id="vUpN">0</span></button>
           <button class="vbtn down" id="vDown" type="button" aria-haspopup="dialog"><span aria-hidden="true">👎</span><span class="n" id="vDownN">0</span></button>
           <button class="vbtn artup" id="vArt" type="button" aria-haspopup="dialog"><span aria-hidden="true">👍</span><span>interpret</span><span class="n" id="vArtN"></span></button>
+          <button class="vbtn aiflag" id="vAi" type="button" aria-haspopup="dialog" hidden><span aria-hidden="true">🤖</span><span>AI</span><span class="n" id="vAiN"></span></button>
           <span id="vInfo"></span>
         </div>
         <p class="vwho" id="vWho" hidden></p>
@@ -833,6 +844,7 @@
       </button>
       <h1 id="votesH">Hlasování kanceláře</h1>
     </div>
+    <p class="ailink"><a href="#ai" id="aiLink">🤖 AI tvorba →</a></p>
     <p class="rule" id="votesRule">Písnička vypadne, když ji 👎 aspoň 2 lidi (a víc než 👍). Interpret při 3. 👍 jde dát i celému interpretovi. Vyřazené DJ sám nepustí, oblíbené hraje rád.</p>
     <div class="quick">
       <button class="btn primary" type="button" data-fav="pusť oblíbené kanceláře">▶ Pusť oblíbené kanceláře</button>
@@ -872,6 +884,16 @@
           <ul class="list vlist" id="vMine"></ul>
         </section>
       </div>
+    </div>
+  </section>
+
+  <!-- AI tvorba: vlastní stránka (#ai, /ai) — přání vlastníka 27. 10. 2026; obsah vkládá ai.js -->
+  <section id="aiView" aria-labelledby="aiViewH" hidden>
+    <div class="vhead">
+      <button class="icon-btn" id="aiBack" type="button" aria-label="Zpět">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+      </button>
+      <h1 id="aiViewH">🤖 AI tvorba</h1>
     </div>
   </section>
 
@@ -2092,6 +2114,7 @@
   /* klávesy:end */
   function onPlayerView() {
     return location.hash !== "#hlasovani" && $("#votesView").hasAttribute("hidden") &&
+           location.hash !== "#ai" && $("#aiView").hasAttribute("hidden") &&
            el.voteSheet.hasAttribute("hidden") && el.nickModal.hasAttribute("hidden") &&
            !el.settings.classList.contains("show");
   }
@@ -2507,7 +2530,7 @@
   var vel = {
     votesBtn: $("#votesBtn"), view: $("#votesView"), back: $("#votesBack"), cols: $(".cols"), foot: $("footer.foot"),
     vrow: $("#vrow"), up: $("#vUp"), upN: $("#vUpN"), down: $("#vDown"), downN: $("#vDownN"), info: $("#vInfo"),
-    art: $("#vArt"), artN: $("#vArtN"),
+    art: $("#vArt"), artN: $("#vArtN"), ai: $("#vAi"), aiN: $("#vAiN"),
     who: $("#vWho"), toast: $("#toast"),
     sheet: $("#voteSheet"), sH: $("#vsH"), sSub: $("#vsSub"), sWho: $("#vsWho"), sOpts: $("#vsOpts"), sClose: $("#vsClose"),
     fav: $("#vFav"), favN: $("#vFavN"), pend: $("#vPend"), pendN: $("#vPendN"), ban: $("#vBan"), banN: $("#vBanN"),
@@ -2562,6 +2585,21 @@
     return { on: on, n: fav ? "♥" : best ? best.up + "/" + artistFavNeed(best, favA) : "" };
   }
   /* hlasy-interpret:end */
+
+  /* ai-hrajici:start — 🤖 AI u hrající (F-AI-06): co nabídne list; čistá funkce, test ji spustí v Node */
+  // arts = current.ai [{name, key, state}], wish = hraje něčí přání (to se nepřeskočí, F-AI-03)
+  function aiSheetOptions(arts, wish) {
+    return (arts || []).map(function (a, i) {
+      if (a.state === "ai") {
+        return { act: "ai:" + i + ":neni_ai", emoji: "↩", label: "Není AI — " + a.name,
+                 sub: "na seznamu AI tvorby; vrácením ho jukebox zase nabízí", on: true };
+      }
+      return { act: "ai:" + i + ":ai", emoji: "🤖", label: "Označit " + a.name + " jako AI?",
+               sub: "Rádio ho přestane nabízet" + (wish ? "; tohle je něčí přání, takže dohraje." : " a tahle skladba se přeskočí."),
+               on: false };
+    });
+  }
+  /* ai-hrajici:end */
 
   var SONG_STATUS = { favourite: ["oblíbená", "fav"], downweighted: ["upozaděná", "low"], banned: ["vyřazená", "ban"] };
   function voteMarks(b) {
@@ -2634,6 +2672,14 @@
   function renderNowVotes(cur) {
     var b = cur && cur.votes;
     setHidden(vel.vrow, !b);
+    // 🤖 AI (F-AI-06): stav interpretů hrající jde ve snímku (current.ai)
+    var aiArts = (cur && cur.ai) || [];
+    var isAi = aiArts.some(function (a) { return a.state === "ai"; });
+    setHidden(vel.ai, !aiArts.length);
+    vel.ai.classList.toggle("on", isAi);
+    vel.ai.setAttribute("aria-pressed", isAi ? "true" : "false");
+    vel.aiN.textContent = isAi ? "✓" : "";
+    vel.ai.setAttribute("aria-label", isAi ? "Na seznamu AI tvorby — klepnutím nabídne Není AI" : "Označit interpreta jako AI tvorbu");
     if (!b) { setHidden(vel.who, true); return; }
     var mine = myVote(b);
     vel.upN.textContent = b.up || 0;
@@ -2694,6 +2740,30 @@
     var cur = S.status && S.status.current;
     if (cur) openSheet({ id: cur.id, artist: cur.artist, title: cur.title, votes: cur.votes }, "artistUp");
   });
+  vel.ai.addEventListener("click", function () {
+    var cur = S.status && S.status.current;
+    if (cur && cur.ai && cur.ai.length) {
+      openSheet({ id: cur.id, artist: cur.artist, title: cur.title, votes: cur.votes, ai: cur.ai,
+                  wish: !!(cur.reason && cur.reason.kind === "wish") }, "ai");
+    }
+  });
+  // POST /api/ai jako v sekci AI tvorba (ai.js); bez přezdívky řekne server proč ne
+  async function sendAi(body) {
+    if (V.busy) return null;
+    V.busy = true;
+    try {
+      body.client = S.client;
+      var d = await postJSON("/api/ai", body);
+      toast(d.message || "Zapsáno.");
+      if (!polling) setTimeout(refresh, 150);
+      return d;
+    } catch (e) {
+      toast(e.status ? e.message : "Jukebox teď neodpovídá — nic se nezapsalo.", true);
+      return null;
+    } finally {
+      V.busy = false;
+    }
+  }
 
   /* ---- one sheet for the playing track, the queue and Odehráno ---- */
   function splitArtists(artist) {
@@ -2702,9 +2772,10 @@
 
   // mode: "" = všechno (řádky fronty a Odehráno), "down" = 👎 u hrající, "artistUp" = 👍 interpretovi u hrající
   function openSheet(t, mode) {
-    V.sheet = { t: t, downOnly: mode === "down", artistUp: mode === "artistUp" };
-    var only = mode === "down" || mode === "artistUp";
-    vel.sH.textContent = mode === "down" ? "Co se ti nelíbí?" : mode === "artistUp" ? "Líbí se ti celý interpret?" : (t.title || "Skladba");
+    V.sheet = { t: t, downOnly: mode === "down", artistUp: mode === "artistUp", ai: mode === "ai" };
+    var only = mode === "down" || mode === "artistUp" || mode === "ai";
+    vel.sH.textContent = mode === "down" ? "Co se ti nelíbí?" : mode === "artistUp" ? "Líbí se ti celý interpret?" :
+                         mode === "ai" ? "Je to AI tvorba?" : (t.title || "Skladba");
     vel.sSub.textContent = only ? (t.artist ? t.artist + " — " : "") + (t.title || "") : (t.artist || "");
     setHidden(vel.sWho, true);
     renderSheet();
@@ -2713,7 +2784,7 @@
     el.page.setAttribute("aria-hidden", "true");
     setTimeout(function () { var f = vel.sOpts.querySelector("button"); if (f) f.focus(); }, 30);
     // names and exact states from the server, when it knows the track
-    if (t.id) {
+    if (t.id && mode !== "ai") {
       fetch("/api/votes/track?client=" + encodeURIComponent(S.client) + "&video_id=" + encodeURIComponent(t.id),
             { cache: "no-store" })
         .then(function (r) { if (!r.ok) throw new Error(); return r.json(); })
@@ -2724,6 +2795,10 @@
 
   function renderSheet() {
     var sh = V.sheet, t = sh.t, d = sh.detail, b = t.votes || {};
+    if (sh.ai) {
+      vel.sOpts.innerHTML = aiSheetOptions(t.ai, t.wish).map(function (o) { return opt(o.act, o.emoji, o.label, o.sub, o.on); }).join("");
+      return;
+    }
     var song = d ? d.song : null;
     var mine = song ? (song.mine || 0) : myVote(b);
     var arts = d ? d.artists.map(function (a) { return { name: a.name, up: a.up || 0, down: a.down || 0, status: a.status, need: a.need, mine: a.mine || 0, voters: a.voters }; })
@@ -2781,6 +2856,14 @@
     var btn = ev.target.closest && ev.target.closest("[data-act]");
     if (!btn || !V.sheet) return;
     var sh = V.sheet, t = sh.t, p = btn.getAttribute("data-act").split(":");
+    if (p[0] === "ai") {
+      var a = (t.ai || [])[Number(p[1])];
+      if (!a) return;
+      btn.disabled = true;
+      var r = await sendAi({ state: p[2], key: a.key, artist: a.name });
+      if (r) closeSheet(); else btn.disabled = false;
+      return;
+    }
     var body = { video_id: t.id || "", artist: t.artist || "", title: t.title || "" };
     if (p[0] === "song") { body.target = "song"; body.vote = Number(p[1]); }
     else { body.target = "artist"; body.vote = Number(p[2]); body.artist = sh.arts[Number(p[1])].name; }
@@ -2853,13 +2936,33 @@
       setTimeout(function () { vel.back.focus(); }, 30);
     }
   }
-  function route() { showVotes(location.hash === "#hlasovani"); }
-  window.addEventListener("hashchange", route);
+  /* ---- stránka AI tvorba (#ai): obsah a data má ai.js, tady jen přepínání jako u Hlasování ---- */
+  var aiView = $("#aiView"), aiBtn = $("#aiBtn");
+  function showAi(on) {
+    setHidden(aiView, !on);
+    if (on) { setHidden(vel.cols, true); setHidden(vel.foot, true); }
+    if (on) aiBtn.setAttribute("aria-current", "page"); else aiBtn.removeAttribute("aria-current");
+    if (on) { window.scrollTo(0, 0); setTimeout(function () { $("#aiBack").focus(); }, 30); }
+  }
+  function route() {
+    var h = location.hash;
+    if (h === "#ai") { showVotes(false); showAi(true); }
+    else { showAi(false); showVotes(h === "#hlasovani"); }
+  }
+  // zpět jen po historii téhle stránky: hluboký odkaz (/ai, /#hlasovani) by history.back() z jukeboxu odvedl
+  var hashNav = false;
+  window.addEventListener("hashchange", function () { hashNav = true; route(); });
+  aiBtn.addEventListener("click", function () {
+    if (location.hash === "#ai") history.back(); else location.hash = "#ai";
+  });
+  $("#aiBack").addEventListener("click", function () {
+    if (hashNav && location.hash === "#ai") history.back(); else { location.hash = ""; route(); }
+  });
   vel.votesBtn.addEventListener("click", function () {
     if (location.hash === "#hlasovani") history.back(); else location.hash = "#hlasovani";
   });
   vel.back.addEventListener("click", function () {
-    if (history.length > 1 && location.hash === "#hlasovani") history.back(); else { location.hash = ""; route(); }
+    if (hashNav && location.hash === "#hlasovani") history.back(); else { location.hash = ""; route(); }
   });
 
   async function loadLists() {
@@ -3181,6 +3284,6 @@
 })();
 </script>
 <!-- AI tvorba na stránce Hlasování (hlášení #37): sekci si vloží sám -->
-<script src="/ai.js?v=3"></script>
+<script src="/ai.js?v=4"></script>
 </body>
 </html>

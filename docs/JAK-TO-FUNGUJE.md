@@ -101,8 +101,9 @@ berou se oblíbené kanceláře po lidech na střídačku — každý přispěje
 ## AI tvorba
 
 Písničky z umělé inteligence bývají jedna jako druhá a rádio YouTube je
-umí nabízet dokola. Proto je na stránce Hlasování seznam AI tvorby: kdo
-pozná AI, označí ji jedním klikem a jukebox ji sám nenabídne. Není to
+umí nabízet dokola. Proto má jukebox vlastní stránku AI tvorba (🤖 v záhlaví):
+kdo pozná AI, označí ji jedním klikem — tam, nebo rovnou tlačítkem 🤖 AI
+u hrající písničky — a jukebox ji sám nenabídne. Není to
 otázka vkusu jako 👎, ale faktu — proto stačí jeden člověk, vždycky je
 vidět kdo a kdokoli to vrátí. Když si ji někdo výslovně přeje, zahraje se.
 

@@ -247,7 +247,7 @@ class SongOrBand(unittest.TestCase):
         self.assertEqual(yt.calls, [("search", "Nerdici v neklidu od kapely Polednici", None)])
         self.assertEqual(probe.songs, ["Pondělníci — Nerdíci v neklidu [album Demo]"])
         self.assertEqual(probe.artists, ["Pondělníci"])
-        self.assertEqual(probe.albums, ["Metallica — Load (Album, 1996)"])
+        self.assertEqual(probe.albums, ["Metallica — Load [Album, rok 1996]"])
         lines = "\n".join(probe.lines())
         self.assertIn("skladby: Pondělníci — Nerdíci v neklidu", lines)
         self.assertIn("interpreti: Pondělníci", lines)
@@ -560,6 +560,88 @@ class Albums(unittest.TestCase):
         plan = run(rig.dj.resolve(build_intent("album Neexistuje", decision(
             action="start_radio", albums=[P("Metallica", "Neexistuje")]))))
         self.assertIn("Album Metallica — Neexistuje jsem v katalogu nenašel", plan.failed)
+
+    def test_album_title_with_catalogue_year_is_found(self):
+        """Pi 2. 11. 14:58 (hlášení #39): "sepultura album dante XXI" — model opsal
+        z podkladu katalogu i rok, "Dante XXI (2021 Remaster) (2006)". YouTube Music
+        na tohle mezi alby nevrátil nic (candidates 0) a odpověď byla "jsem
+        v katalogu nenašel", i když album katalog má."""
+        dante = {"title": "Dante XXI (2021 Remaster)", "type": "Album", "browseId": "BD",
+                 "year": "2006", "artists": [{"name": "Sepultura"}]}
+
+        class Picky(_YT):  # jako skutečný YTM: s rokem v závorce nic
+            def search(self, query, filter=None, limit=20):
+                self.calls.append(("search", query, filter))
+                return [] if "(2006)" in query or "Remaster)" in query and "XXI (" not in query \
+                    else [dante]
+
+        yt = Picky(album_data={"BD": {"title": "Dante XXI (2021 Remaster)", "year": "2006",
+                                      "artists": [{"name": "Sepultura"}], "tracks": [
+                                          {"videoId": "d" * 11, "title": "Lost (Intro) (2021 Remaster)"},
+                                          {"videoId": "e" * 11, "title": "Dark Wood of Error (2021 Remaster)"}]}})
+        album = run(real_catalog(yt).album_tracks("Sepultura", "Dante XXI (2021 Remaster) (2006)"))
+        self.assertIsNotNone(album)
+        self.assertEqual(album.label(), "Sepultura — Dante XXI (2021 Remaster)")
+        self.assertEqual(yt.calls[0], ("search", "Sepultura Dante XXI (2021 Remaster)", "albums"))
+        # nový tvar podkladu ([Album, rok …]) i holý název taky
+        for asked in ("Dante XXI (2021 Remaster) [Album, rok 2006]", "Dante XXI", "dante xxi"):
+            self.assertIsNotNone(run(real_catalog(yt).album_tracks("Sepultura", asked)), asked)
+
+    def test_bare_title_is_the_second_try(self):
+        """Když název se závorkou edice mezi alby nic nenajde, hledá se ještě vlastní
+        název bez závorek — jen tehdy (druhý dotaz nic nestojí, když první našel)."""
+        load = {"title": "Load", "type": "Album", "browseId": "B1", "artists": [{"name": "Metallica"}]}
+
+        class Bare(_YT):
+            def search(self, query, filter=None, limit=20):
+                self.calls.append(("search", query, filter))
+                return [] if "(" in query else [load]
+
+        yt = Bare(album_data={"B1": {"title": "Load", "tracks": [{"videoId": "a" * 11, "title": "2 x 4"}]}})
+        self.assertIsNotNone(run(real_catalog(yt).album_tracks("Metallica", "Load (Remastered)")))
+        self.assertEqual([c[1] for c in yt.calls if c[0] == "search"],
+                         ["Metallica Load (Remastered)", "Metallica Load"])
+        yt.calls.clear()
+        self.assertIsNotNone(run(real_catalog(yt).album_tracks("Metallica", "Load")))
+        self.assertEqual([c[1] for c in yt.calls if c[0] == "search"], ["Metallica Load"])
+
+    def test_catalogue_notes_are_not_part_of_the_title(self):
+        from ytdj.music.catalog import strip_album_meta
+        cases = {
+            "Dante XXI (2021 Remaster) (2006)": "Dante XXI (2021 Remaster)",
+            "Chicago 17 (Expanded & Remastered) (Album, 1984)": "Chicago 17 (Expanded & Remastered)",
+            "Load [Album, rok 1996]": "Load",
+            "Primo Victoria (Re-Armed) [rok 2010]": "Primo Victoria (Re-Armed)",
+            "1989 (Taylor's Version) (2023)": "1989 (Taylor's Version)",
+            "Live aus Berlin": "Live aus Berlin",       # edice zůstává
+            "Load (Remastered)": "Load (Remastered)",
+            "(2006)": "(2006)",                         # prázdný název nezbude
+        }
+        for asked, want in cases.items():
+            self.assertEqual(strip_album_meta(asked), want, asked)
+
+    def test_roman_numeral_matches_arabic(self):
+        """"Chicago XVII" je na YouTube Music "Chicago 17 (Expanded & Remastered)"."""
+        self.assertIsNotNone(album_rank("Chicago 17 (Expanded & Remastered)", "Album", "Chicago XVII", 0))
+        self.assertIsNotNone(album_rank("Dante XXI (2021 Remaster)", "Album", "Dante 21", 0))
+        self.assertIsNone(album_rank("Chicago 16", "Album", "Chicago XVII", 0))  # jiné číslo
+        self.assertIsNone(album_rank("Chicago 16", "Album", "Chicago 17", 0))
+        self.assertIsNotNone(album_rank("Led Zeppelin IV 2001", "Album", "Led Zeppelin IV", 0))
+
+    def test_lookup_error_is_not_called_not_found(self):
+        """Chyba katalogu není "album neznám" (PLAN C4: DJ netvrdí, co se nestalo)."""
+        rig = Rig()
+        teach(rig)
+
+        async def broken(artist, title):
+            raise RuntimeError("síť")
+
+        rig.catalog.album_tracks = broken
+        plan = run(rig.dj.resolve(build_intent("sepultura album dante XXI", decision(
+            action="start_radio", albums=[P("Sepultura", "Dante XXI (2021 Remaster) (2006)")]))))
+        self.assertNotIn("nenašel", plan.failed)
+        self.assertIn("Album Sepultura — Dante XXI (2021 Remaster) se teď nepodařilo vyhledat",
+                      plan.failed)
 
     def test_album_background_survives_restart(self):
         async def go():

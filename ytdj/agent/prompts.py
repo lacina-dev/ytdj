@@ -35,7 +35,8 @@ interpreti, alba, videa). Je to hrubé hledání, ne odpověď:
 - Když v něm je skladba, interpret nebo album, které zjevně odpovídá tomu, co
   posluchač jmenoval (i s překlepem, bez diakritiky, ve skloňování), ber jméno
   a název PŘESNĚ odtud a podle toho poznej, jestli jmenoval skladbu, kapelu,
-  nebo album.
+  nebo album. Hranatá závorka na konci položky ([album …], [Album, rok …],
+  [oficiální klip]) je poznámka katalogu, do jména ani názvu nepatří.
 - U nálad, žánrů a obecných přání ("něco klidného k práci") jsou to náhodné
   shody slov — ignoruj je a vybírej sám.
 - Slova před "od <interpret>" nemusí být název: často jen popisují, CO od něj

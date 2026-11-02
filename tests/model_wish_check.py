@@ -58,6 +58,12 @@ CASES = [
     ("metallica - album load", {"kind": "album", "albums": 1}),
     ("rammstein live aus berlin 1998 remastered", {"kind": "album", "albums": 1}),
     ("pusť celé album Load", {"kind": "album", "albums": 1}),
+    # hlášení #39 (Pi 2. 11.): model opsal z podkladu i rok → "nenašel"
+    ("sepultura album dante XXI", {"kind": "album", "albums": 1}),
+    ("chicago album chicago XVII", {"kind": "album", "albums": 1}),
+    ("taylor swift album 1989 taylor's version", {"kind": "album", "albums": 1}),
+    ("pusť desku Lucie Černý kočky mokrý žáby", {"kind": "album", "albums": 1}),
+    ("chinaski album 1. signální", {"kind": "album", "albums": 1}),
     # C: explicitly vulgar
     ("Zahraj tu nejvulgárnější, nejsprostější prasárnu, co znáš", {"explicit_ok": True}),
     ("Zahraj něco vulgárního, nechutnýho a nekorektního, co pohorší všechny slušný lidi "

@@ -32,7 +32,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from ..config import DATA_DIR, Config
-from ..music.catalog import OMV, Catalog, Track
+from ..music.catalog import OMV, Catalog, Track, strip_album_meta
 from ..music.radio import RadioPools
 from ..player.base import Player, queue_transaction
 from ..state import Store
@@ -927,6 +927,8 @@ class CodexDJ:
         intent = plan.intent
         finder = getattr(self.catalog, "album_tracks", None)
 
+        broken = object()  # hledání selhalo — to není "katalog ho nezná"
+
         async def one(artist: str, title: str):
             if finder is None:
                 return None
@@ -934,15 +936,22 @@ class CodexDJ:
                 return await finder(artist, title)
             except Exception as exc:
                 log.warning("album %r selhalo: %s", f"{artist} {title}", exc)
-                return None
+                return broken
 
         pairs = [(a, t) for a, t in intent.albums[:3] if t.strip()]
         found = await asyncio.gather(*(one(a, t) for a, t in pairs))
         labels: list[str] = []
         missing: list[str] = []
+        failed: list[str] = []
         for (artist, title), alb in zip(pairs, found):
+            # v odpovědi název bez údajů katalogu o druhu a roku (hlášení #39)
+            title = strip_album_meta(title)
+            name = f"{artist} — {title}" if artist else title
+            if alb is broken:
+                failed.append(name)
+                continue
             if alb is None or not alb.tracks:
-                missing.append(f"{artist} — {title}" if artist else title)
+                missing.append(name)
                 continue
             labels.append(alb.label())
             for a in [x.strip() for x in alb.artist.split(",") if x.strip()]:
@@ -953,6 +962,10 @@ class CodexDJ:
         if missing:
             plan.notes.append(("Album " if len(missing) == 1 else "Alba ")
                               + "; ".join(missing) + " jsem v katalogu nenašel.")
+        if failed:
+            plan.notes.append(("Album " if len(failed) == 1 else "Alba ")
+                              + "; ".join(failed) + " se teď nepodařilo vyhledat (katalog "
+                              "neodpověděl) — zkus to prosím za chvíli znovu.")
         if not plan.album_tracks:
             plan.failed = " ".join(plan.notes) or "Album jsem v katalogu nenašel."
             return plan

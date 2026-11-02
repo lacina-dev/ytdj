@@ -122,13 +122,66 @@ _EDITION_COST = {"live": 3, "demo": 3, "instrumental": 4, "cover": 4, "speed": 4
                  "remix": 2, "acoustic": 2, "extended": 1}
 
 
+# Údaje katalogu, které k názvu alba nepatří: druh a rok vydání. Podklad pro
+# model (Catalog.probe) je připisuje za název a model je s názvem opsal —
+# "Dante XXI (2021 Remaster) (2006)" YouTube Music mezi alby nenajde vůbec
+# (hlášení #39, Pi 2. 11.). Bere se jen závorka na konci, ve které není nic
+# jiného než druh, rok nebo obojí.
+_KIND = r"(?:album|ep|single|singl|live\s+album|compilation|kompilace)"
+_YEAR = r"(?:(?:rok|year)\s*:?\s*)?(?:19|20)\d\d"
+_ALBUM_META = re.compile(
+    rf"\s*[(\[]\s*(?:{_KIND}(?:\s*,?\s*{_YEAR})?|{_YEAR})\s*[)\]]\s*$", re.I)
+
+
+def strip_album_meta(title: str) -> str:
+    """"Dante XXI (2021 Remaster) (2006)" → "Dante XXI (2021 Remaster)";
+    "Load [Album, rok 1996]" → "Load". Vlastní edice v závorce zůstává,
+    název, který by zůstal prázdný, taky."""
+    title = _clean(title)
+    while (m := _ALBUM_META.search(title)) and title[: m.start()].strip():
+        title = title[: m.start()].rstrip()
+    return title
+
+
+# Římská čísla v názvech alb ("Chicago XVII" je na YTM "Chicago 17"): když
+# název nesedí, porovná se ještě jednou s římskými čísly převedenými na arabská.
+_ROMAN = re.compile(r"\b(?=[ivx]{2,6}\b)(x{0,3})(ix|iv|v?i{0,3})\b")
+_ROMAN_VAL = {"": 0, "i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5, "vi": 6, "vii": 7,
+              "viii": 8, "ix": 9}
+
+
+def _arabic(text: str) -> str:
+    def sub(m: re.Match) -> str:
+        if m.group(2) not in _ROMAN_VAL:
+            return m.group(0)
+        n = 10 * len(m.group(1)) + _ROMAN_VAL[m.group(2)]
+        return str(n) if n >= 2 else m.group(0)
+    return _ROMAN.sub(sub, text.lower())
+
+
 def album_rank(found_title: str, found_type: str, wanted: str, rank: int) -> tuple | None:
     """Klíč pro výběr edice alba (menší = lepší); None = jiné album.
 
     Vlastní název (bez závorek a přívlastků edice) musí sedět. O jakou edici
     jde, určuje zadání: "Live aus Berlin" nebo "Load (Remastered)" berou tu
     jmenovanou; bez přívlastku vyhrává edice bez přívlastku (studiová).
+    Římské číslo sedí na arabské ("Chicago XVII" = "Chicago 17").
     """
+    # Jiné číslo je jiné album: "Chicago 16" není "Chicago XVII", i když se
+    # názvy jinak skoro shodují (podobnost by je pustila).
+    f_num, w_num = (set(re.findall(r"\b\d+\b", _norm(_arabic(match.split_title(x)[0]))))
+                    for x in (found_title, wanted))
+    if f_num and w_num and not (f_num <= w_num or w_num <= f_num):
+        return None
+    key = _album_rank(found_title, found_type, wanted, rank)
+    if key is None:
+        f2, w2 = _arabic(found_title), _arabic(wanted)
+        if (f2, w2) != (found_title.lower(), wanted.lower()):
+            key = _album_rank(f2, found_type, w2, rank)
+    return key
+
+
+def _album_rank(found_title: str, found_type: str, wanted: str, rank: int) -> tuple | None:
     f_base, f_tags = match.split_title(found_title)
     w_base, w_tags = match.split_title(wanted)
     f_full, w_full = _norm(found_title), _norm(wanted)
@@ -620,23 +673,39 @@ class Catalog:
         název musí sedět, edici vybírá `album_rank` podle zadání. Dva dotazy
         (hledání + obsah alba).
         """
-        artist, title = _clean(artist), _clean(title)
+        artist, asked = _clean(artist), _clean(title)
+        title = strip_album_meta(asked)
         if not title:
             return None
-        query = f"{artist} {title}".strip()
-        with telemetry.timer("catalog.album", artist=artist, title=title) as ev:
-            raw = await self._search(query, filter="albums", limit=8)
+        # Nejdřív název, jak přišel (bez údajů katalogu o druhu a roku); když
+        # mezi alby nic nesedí, ještě vlastní název bez závorek edice — YTM na
+        # "Dante XXI (2021 Remaster) (2006)" nevrátí nic, na "Dante XXI" ano.
+        # Druhé hledání jen tehdy, když první nic nenašlo.
+        queries = [title]
+        base = match.split_title(title)[0]
+        if base and _norm(base) != _norm(title):
+            queries.append(base)
+        with telemetry.timer("catalog.album", artist=artist, title=asked) as ev:
+            if title != asked:
+                ev["cleaned"] = title
             best: tuple[tuple, dict] | None = None
-            for n, item in enumerate(raw[:8]):
-                if not item.get("browseId") or not item.get("title"):
-                    continue
-                names = match.artist_names(item)
-                if artist and names and match.artist_score(tuple(names), artist)[0] < 0.75:
-                    continue
-                key = album_rank(str(item["title"]), str(item.get("type") or ""), title, n)
-                if key is not None and (best is None or key < best[0]):
-                    best = (key, item)
-            ev["candidates"] = len(raw)
+            ev["candidates"] = []
+            for q in queries:
+                raw = await self._search(f"{artist} {q}".strip(), filter="albums", limit=8)
+                ev["candidates"].append(len(raw))
+                for n, item in enumerate(raw[:8]):
+                    if not item.get("browseId") or not item.get("title"):
+                        continue
+                    names = match.artist_names(item)
+                    if artist and names and match.artist_score(tuple(names), artist)[0] < 0.75:
+                        continue
+                    key = album_rank(str(item["title"]), str(item.get("type") or ""), title, n)
+                    if key is not None and (best is None or key < best[0]):
+                        best = (key, item)
+                if best is not None:
+                    break
+            if len(ev["candidates"]) == 1:
+                ev["candidates"] = ev["candidates"][0]
             if best is None:
                 ev["found"] = None
                 return None
@@ -695,10 +764,14 @@ class Catalog:
                 if name:
                     out.artists.append(name)
             elif kind == "album" and title and len(out.albums) < albums:
+                # druh a rok v hranatých závorkách jako poznámka katalogu —
+                # v kulatých vypadaly jako součást názvu a model je opsal do
+                # názvu alba (hlášení #39)
+                year = str(item.get("year") or "")
                 extra = ", ".join(x for x in (str(item.get("type") or ""),
-                                              str(item.get("year") or "")) if x)
+                                              f"rok {year}" if year else "") if x)
                 out.albums.append((f"{names} — {title}" if names else title)
-                                  + (f" ({extra})" if extra else ""))
+                                  + (f" [{extra}]" if extra else ""))
             elif kind == "video" and title and len(out.videos) < videos:
                 out.videos.append((f"{names} — {title}" if names else title)
                                   + (" [oficiální klip]" if item.get("videoType") == OMV else ""))

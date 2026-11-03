@@ -67,8 +67,8 @@ from .offline import (
     local_mood,
     looks_czech,
 )
-from .fastpath import (SONG_BUDGET, FastResult, enforce_requested, find_artists, find_song,
-                       other_version)
+from .fastpath import (SONG_BUDGET, FastResult, called_band, enforce_requested, find_artists,
+                       find_song, other_version)
 from .intent import (Intent, ListenerIntent, Pair, artist_match, build_intent, norm,
                      option_intent, track_avoided)
 from .prompts import ROLE, render_state
@@ -240,6 +240,10 @@ FIRST_TRACK_WAIT = 15.0  # s
 # už od příchodu přání souběžně s rychlou cestou (ta trvá ≥ 1 s), takže se
 # tu obvykle nečeká vůbec; jeden dotaz do katalogu je ~0,5 s.
 PROBE_WAIT = 1.5  # s
+# Interpret, kterého katalog nezná: od tolika různých písní z nahrávek
+# posluchačů („<jméno> - <píseň>") je to jistě kapela, i když se najde
+# i skladba toho jména (DJ._unknown_names, F-PRANI-35).
+UPLOADS_SURE = 3
 
 
 class CodexUnavailable(RuntimeError):
@@ -321,6 +325,8 @@ class Plan:
     candidates: list[Track] = field(default_factory=list)
     album_label: str = ""
     album_artists: list[str] = field(default_factory=list)
+    # interpreti, kteří se hrají z nahrávek posluchačů (na YouTube Music nejsou)
+    uploads: list[str] = field(default_factory=list)
     # přání "i s obrazem": kolik zařazených skladeb jsou oficiální klipy
     # (0 = klip se nenašel, hraje se písnička a poznámka to říká)
     video: int = 0
@@ -724,9 +730,10 @@ class CodexDJ:
             if unknown:
                 # Jméno, které katalog jako interpreta nezná, bývá název
                 # skladby (Pi 5. 10.: "nerdíci v neklidu" → focus_artists, a
-                # "nic jsem nenašel", ač skladba v katalogu je). Silná shoda
-                # celého názvu → je to vyžádaná skladba.
-                unknown = await self._names_as_titles(plan, unknown, per_artist)
+                # "nic jsem nenašel", ač skladba v katalogu je) — nebo kapela,
+                # která je na YouTube jen z nahrávek posluchačů (Pi 3. 11.:
+                # "kapelu Tleskač" zahrálo cizí skladbu "Tleskac").
+                unknown = await self._unknown_names(plan, unknown, per_artist)
             if unknown:
                 plan.notes.append("Od " + ", ".join(unknown) + " jsem v katalogu nic nenašel.")
             plan.artist_tracks = interleave(per_artist)
@@ -759,13 +766,69 @@ class CodexDJ:
                 plan.failed = "Ani jednu z navržených skladeb se nepodařilo najít."
         return plan
 
-    async def _names_as_titles(self, plan: Plan, unknown: list[str],
-                               per_artist: list[list[Track]]) -> list[str]:
-        """Neznámí "interpreti" zkusení jako názvy skladeb; vrací ty, které
-        nejsou ani to. Nalezené jdou do plan.requested a z interpretů přání pryč."""
+    async def _unknown_names(self, plan: Plan, unknown: list[str],
+                             per_artist: list[list[Track]]) -> list[str]:
+        """Interpreti, které katalog nezná: kapela z nahrávek posluchačů, nebo
+        název skladby (F-PRANI-20, F-PRANI-35). Vrací jména, která nejsou ani
+        jedno. Obojí se hledá naráz.
+
+        Nahrávky vyhrají, když jich je dost (UPLOADS_SURE různých písní —
+        u názvu skladby se tolik videí „<název> - …" nesejde), když posluchač
+        jméno výslovně nazval kapelou, nebo když se skladba toho jména
+        nenašla. Jméno nazvané kapelou se jako název skladby nezkouší vůbec:
+        „zahraj kapelu X" nezahraje cizí skladbu X.
+        """
+        text = plan.intent.text
+        band = {n for n in unknown if called_band(text, n)}
+        as_title = [n for n in unknown if n not in band]
+        finder = getattr(self.catalog, "artist_uploads", None)
+
+        async def ups(name: str) -> list[Track]:
+            if finder is None:
+                return []
+            try:
+                return list(await finder(name))
+            except Exception as exc:
+                log.warning("nahrávky %r selhaly: %s", name, exc)
+                return []
+
+        got, hits = await asyncio.gather(
+            asyncio.gather(*(ups(n) for n in unknown)),
+            asyncio.gather(*(other_version(self.catalog, n) for n in as_title),
+                           return_exceptions=True))
+        uploads = dict(zip(unknown, got))
+        title_hits = {n: h for n, h in zip(as_title, hits)
+                      if h is not None and not isinstance(h, BaseException) and h.artist}
+        use = [n for n in unknown if uploads[n] and (
+            len(uploads[n]) >= UPLOADS_SURE or n in band or n not in title_hits)]
+        if use:
+            self._use_uploads(plan, use, uploads, per_artist)
+        rest = [n for n in as_title if n not in use]
+        still = self._names_as_titles(plan, rest, [title_hits.get(n) for n in rest], per_artist)
+        return [n for n in unknown if n in still or (n in band and n not in use)]
+
+    def _use_uploads(self, plan: Plan, names: list[str], uploads: dict[str, list[Track]],
+                     per_artist: list[list[Track]]) -> None:
+        """Kapela z nahrávek posluchačů místo „nenašel jsem" — a říct to."""
         intent = plan.intent
-        hits = await asyncio.gather(
-            *(other_version(self.catalog, name) for name in unknown), return_exceptions=True)
+        for name in names:
+            tracks = uploads[name]
+            per_artist[intent.artists.index(name)] = list(tracks)
+            plan.uploads.append(name)
+            # [truthful] na YouTube Music není; hraje se, co nahráli lidé
+            plan.notes.append(f"{name} na YouTube Music jako interpret není — hraju nahrávky, "
+                              "které na YouTube nahráli posluchači.")
+            telemetry.event("dj.artist_uploads", name=name, n=len(tracks),
+                            first=[t.title for t in tracks[:3]])
+            log.info("%r není na YouTube Music, hraju nahrávky posluchačů (%d)", name, len(tracks))
+        intent.reply = ""  # odpověď modelu mluvila o interpretovi z katalogu
+
+    def _names_as_titles(self, plan: Plan, unknown: list[str], hits: list,
+                         per_artist: list[list[Track]]) -> list[str]:
+        """Neznámí "interpreti" jako názvy skladeb (`hits` = nalezená skladba
+        ke každému, nebo None); vrací ty, které nejsou ani to. Nalezené jdou
+        do plan.requested a z interpretů přání pryč."""
+        intent = plan.intent
         still: list[str] = []
         found: list[str] = []
         for name, hit in zip(unknown, hits):
@@ -894,11 +957,17 @@ class CodexDJ:
             plan.notes.append("Klip je jiná nahrávka než písnička z alba (jiná délka).")
         # interpret(i)
         if artists:
-            lacking = [a for a, vs in zip(artists, art_v) if not vs]
+            # kapela z nahrávek posluchačů: ty už jsou videa (ne písničky
+            # s obalem) — „hraju písničky, na telce bez obrazu" by nebyla pravda
+            ugc = [a for a, vs in zip(artists, art_v) if not vs and a in plan.uploads]
+            if ugc:
+                plan.notes.append("Oficiální klipy od " + ", ".join(ugc) + " nejsou — hraju "
+                                  "videa, která nahráli posluchači.")
+            lacking = [a for a, vs in zip(artists, art_v) if not vs and a not in ugc]
             have = [vs for vs in art_v if vs]
             if have:
-                keep = [t for t in plan.artist_tracks if lacking and any(
-                    artist_match(t.artist, a) for a in lacking)]
+                keep = [t for t in plan.artist_tracks if any(
+                    artist_match(t.artist, a) for a in lacking + ugc)]
                 plan.artist_tracks = interleave(have + ([keep] if keep else []))
                 n_video += sum(len(vs) for vs in have)
             if lacking:

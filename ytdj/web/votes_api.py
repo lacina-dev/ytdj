@@ -63,6 +63,7 @@ from starlette.routing import Route
 from .. import telemetry
 from ..votes import ARTIST, BANNED, FAVOURITE, SONG, VoteError, enforce
 from ..wishes import clean_cid
+from ..music.source import source
 from . import identity_api
 
 if TYPE_CHECKING:
@@ -197,7 +198,31 @@ def routes(srv: "WebServer") -> list[Route]:
         votes = book()
         if votes is None:
             return _err("Hlasování tu není.", 404)
-        return JSONResponse(votes.lists(viewer(request)))
+        out = votes.lists(viewer(request))
+        try:
+            await _songs_src(out)
+        except Exception:
+            log.debug("zdroj skladeb k hlasům se nepodařilo doplnit", exc_info=True)
+        return JSONResponse(out)
+
+    async def _songs_src(out: dict) -> None:
+        """Odznak zdroje u písniček v seznamech hlasů (F-WEB-12): hlas druh
+        nenese, vezme se z historie — jen u videí, která tu s uvedeným druhem
+        hrála; ostatní zůstanou bez odznaku."""
+        store = getattr(app, "store", None)
+        if store is None or not hasattr(store, "video_types"):
+            return
+        songs = [it for v in out.values() if isinstance(v, list) for it in v
+                 if isinstance(it, dict) and it.get("target") == "song" and it.get("video_id")]
+        if not songs:
+            return
+        ids = [it["video_id"] for it in songs]
+        aread = getattr(store, "aread", None)
+        kinds = await aread("video_types", ids) if aread else store.video_types(ids)
+        for it in songs:
+            src = source(kinds.get(it["video_id"]))
+            if src:
+                it["src"] = src
 
     async def detail(request: Request) -> Response:
         votes = book()

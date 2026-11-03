@@ -28,9 +28,9 @@ ART_DIR = Path("/tmp/ytdj-art")
 NOW = time.mktime((2026, 10, 6, 14, 37, 0, 0, 0, -1))
 
 QUEUE = [
-    {"id": "aaaaaaaaaa1", "title": "Jasná zpráva", "artist": "Olympic",
+    {"id": "aaaaaaaaaa1", "title": "Jasná zpráva", "artist": "Olympic", "src": "ytm",
      "req": {"id": "w2", "who": "Jana"}},
-    {"id": "aaaaaaaaaa2", "title": "Dej mi víc své lásky", "artist": "Olympic"},
+    {"id": "aaaaaaaaaa2", "title": "Dej mi víc své lásky", "artist": "Olympic", "src": "ytm"},
     {"id": "aaaaaaaaaa3", "title": "Okno mé lásky", "artist": "Olympic"},
     {"id": "aaaaaaaaaa4", "title": "Želva", "artist": "Olympic"},
     {"id": "aaaaaaaaaa5", "title": "Slzy tvý mámy", "artist": "Olympic"},
@@ -38,7 +38,7 @@ QUEUE = [
 WISH = {
     "playing": True, "paused": False, "buffering": False, "position": 83.0, "duration": 214.0,
     "current": {"id": "qRIsEHxcgDY", "title": "Dej mi jen pár minut", "artist": "Ivan Hlas",
-                "duration": 214,
+                "duration": 214, "src": "ytm",
                 "reason": {"kind": "wish", "who": "Kolega", "text": "něco od Ivana Hlase"}},
     "queue": QUEUE, "mood": "český rock",
     "dj": {"busy": False, "last": {"reply": "Zařazuju Ivana Hlase — první čtyři jako tvoje "
@@ -59,6 +59,7 @@ LONG = {
                 "title": "Symfonie č. 9 d moll „S ódou na radost“, op. 125: IV. Presto – "
                          "Allegro assai – Allegro assai vivace (Alla marcia) – finále, živě",
                 "artist": "Česká filharmonie, Pražský filharmonický sbor & Jiří Bělohlávek",
+                "src": "yt",
                 "reason": {"kind": "wish", "who": "Vladimíra-Anežka",
                            "text": "pusť mi prosím celou devátou Beethovenovu symfonii živě"}},
     "queue": [{"id": "x", "title": "Supercalifragilisticexpialidocious (From „Mary Poppins“ / "
@@ -83,6 +84,12 @@ STATES = {
     "offline": dict(state=None, offline="spojení odmítnuto"),
     "outage": dict(state={**WISH, "outage": {"reason": "YouTube neodpovídá", "since": NOW - 40}}),
     "long-titles": dict(state=LONG),
+    # zdroj skladby (F-TV-21): nahrávka posluchače = „YouTube", ve frontě obojí
+    "source-youtube": dict(state={**WISH, "current": {
+        "id": "fdVHXjZrfEY", "title": "Zelená je tráva", "artist": "Tleskač", "duration": 190,
+        "src": "yt", "reason": {"kind": "wish", "who": "Michal", "text": "Zahraj kapelu Tleskač"}},
+        "queue": [{"id": "8hCNzgNCqZo", "title": "Nafoukanej chlapeček", "artist": "Tleskač",
+                   "src": "yt", "req": {"who": "Michal"}}] + QUEUE[:3]}),
     "no-cover": dict(state={**BACKGROUND, "current": {**BACKGROUND["current"], "id": "nocover0000"}}),
     # péče o panel telky: bloky na druhé straně, krajní polohy posunu, spořič
     "care-swapped": dict(state=WISH, swap=True, shift=6),

@@ -144,6 +144,9 @@ Do telefonu jde zabalený, a když se jukebox aktualizuje, stará otevřená
 stránka se obnoví sama. Tlačítko Stop na webu není, jen pauza, aby nikdo
 omylem nesmazal ostatním přání. Světlý nebo tmavý vzhled se řídí tvým
 zařízením, dole na stránce si ho ale můžeš přepnout sám (Auto, Den, Noc).
+U každé skladby malý štítek řekne, odkud je: ▸ YT Music je oficiální
+skladba z YouTube Music, ▸ YouTube je video, které nahrál někdo z posluchačů
+(totéž ukazuje telka).
 
 ## Chyby a nápady
 

@@ -351,7 +351,8 @@ class App:
         if ev.kind == "start" and ev.track:
             note_repeat(self.pools, self.wishes, ev.track)  # před zápisem do historie
             self.store.record_start(
-                ev.track.id, ev.track.title, ev.track.artist, self.pools.mood or None
+                ev.track.id, ev.track.title, ev.track.artist, self.pools.mood or None,
+                ev.track.video_type,  # zdroj skladby v Odehráno (F-WEB-12)
             )
             self.dj.note_started(ev.track.id)
             print(f"▶ {ev.track.label()}")

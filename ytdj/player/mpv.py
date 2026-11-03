@@ -269,6 +269,10 @@ def video_id_of(url: Any) -> str | None:
     return m.group(1) if m else None
 
 
+def _str_or_none(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
 def _ok(res: Any) -> bool:
     return isinstance(res, dict) and res.get("error") == "success"
 
@@ -2261,7 +2265,7 @@ class MpvPlayer(Player):
                 "paused": self._paused,
                 "track": {"id": track.id, "title": track.title, "artist": track.artist,
                           "album": track.album, "duration": track.duration,
-                          "explicit": track.explicit}}
+                          "explicit": track.explicit, "video_type": track.video_type}}
 
     def _save_playback(self) -> None:
         """Hrající skladba a pozice do tmpfs. Malý zápis do RAM — neblokuje."""
@@ -2360,7 +2364,8 @@ class MpvPlayer(Player):
             track = Track(str(t["id"]), str(t.get("title") or ""), str(t.get("artist") or ""),
                           t.get("album") if isinstance(t.get("album"), str) else None,
                           int(dur) if isinstance(dur, (int, float)) else None,
-                          explicit=t.get("explicit") if isinstance(t.get("explicit"), bool) else None)
+                          explicit=t.get("explicit") if isinstance(t.get("explicit"), bool) else None,
+                          video_type=_str_or_none(t.get("video_type")))
             pos = max(0.0, float(data.get("pos") or 0) - RESUME_REWIND)
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             return None

@@ -322,17 +322,22 @@ _PROMISE = re.compile(
 
 
 def _track_json(t: Track) -> dict:
-    return {"id": t.id, "title": t.title, "artist": t.artist, "album": t.album,
-            "duration": t.duration}
+    d = {"id": t.id, "title": t.title, "artist": t.artist, "album": t.album,
+         "duration": t.duration}
+    if t.video_type:
+        d["video_type"] = t.video_type  # zdroj (YouTube Music / YouTube) přežije restart
+    return d
 
 
 def _track_from(d: Any) -> Track | None:
     if not isinstance(d, dict) or not isinstance(d.get("id"), str):
         return None
     dur = d.get("duration")
+    vt = d.get("video_type")
     return Track(d["id"], str(d.get("title") or ""), str(d.get("artist") or ""),
                  d.get("album") if isinstance(d.get("album"), str) else None,
-                 int(dur) if isinstance(dur, (int, float)) else None)
+                 int(dur) if isinstance(dur, (int, float)) else None,
+                 video_type=vt if isinstance(vt, str) and vt else None)
 
 
 @dataclass

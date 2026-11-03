@@ -1107,6 +1107,7 @@ function setHidden() {}
 function hue() { return 0; }
 function voteMarks() { return ""; }
 function rowVoteBtn() { return ""; }
+function srcBadge() { return ""; }
 function fmtTime(s) { return String(s); }
 function whoChip(name, you) { return you ? "tvoje" : name; }
 %s

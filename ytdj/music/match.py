@@ -27,7 +27,7 @@ from __future__ import annotations
 import math
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Iterable, Sequence
 
@@ -308,6 +308,9 @@ class Candidate:
     views: int | None = None
     rank: int = 0
     explicit: bool | None = None  # odznak E (ytmusic isExplicit), jinak None
+    # druh podle YouTube Music (…_ATV, …_OMV, …_UGC), když ho výsledek uvádí;
+    # jde dál do Track.video_type — podle něj web a telka ukážou zdroj
+    video_type: str | None = field(default=None, compare=False)
 
     @property
     def artist(self) -> str:
@@ -440,7 +443,13 @@ def from_song(item: dict, rank_: int = 0) -> Candidate | None:
         views=parse_views(item.get("views")),
         rank=rank_,
         explicit=True if item.get("isExplicit") else None,
+        video_type=_vtype(item),
     )
+
+
+def _vtype(item: dict) -> str | None:
+    v = item.get("videoType")
+    return v if isinstance(v, str) and v else None
 
 
 # Balast v názvech videí — do štítku skladby nepatří.
@@ -472,6 +481,7 @@ def from_video(item: dict, rank_: int = 0) -> list[Candidate]:
         duration=duration(item),
         views=parse_views(item.get("views")),
         rank=rank_,
+        video_type=_vtype(item),
     )
     out = []
     shown = _VIDEO_NOISE.sub("", full).strip()
@@ -662,5 +672,5 @@ def uploads(items: Iterable[dict], name: str, limit: int = 50) -> list[Candidate
         old = best.get(key)
         if old is None or order < old[0]:
             best[key] = (order, Candidate(vid, song, (clean(name),), duration=secs,
-                                          views=views, rank=n))
+                                          views=views, rank=n, video_type=_vtype(item)))
     return [c for _, c in sorted(best.values(), key=lambda kv: kv[0])][:limit]

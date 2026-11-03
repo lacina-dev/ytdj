@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS plays (
     artist   TEXT,
     ts       REAL NOT NULL,
     seed_id  TEXT,
-    outcome  TEXT NOT NULL DEFAULT 'started'   -- started|finished|skipped|replaced|error
+    outcome  TEXT NOT NULL DEFAULT 'started',  -- started|finished|skipped|replaced|error
+    video_type TEXT  -- druh podle YouTube Music (…_ATV/_OMV/_UGC), NULL = neuvedeno
 );
 CREATE INDEX IF NOT EXISTS plays_video_ts ON plays(video_id, ts);
 -- time-range statistics (context for starting without a request)
@@ -178,6 +179,7 @@ class PlayRecord:
     title: str
     artist: str
     outcome: str
+    video_type: str | None = None  # zdroj v Odehráno (F-WEB-12); starší záznamy None
 
 
 @dataclass(slots=True)
@@ -237,6 +239,7 @@ class Store:
         self.db.executescript(SCHEMA)
         self._migrate_blacklist()
         self._migrate_imports()
+        self._migrate_plays()
         self._writes: queue.Queue | None = None
         self._writer: threading.Thread | None = None
         self._pool = None  # ThreadPoolExecutor pro aread(), až bude potřeba
@@ -339,15 +342,17 @@ class Store:
 
     # ---- writes ----
 
-    def record_start(self, video_id: str, title: str, artist: str, seed_id: str | None) -> None:
+    def record_start(self, video_id: str, title: str, artist: str, seed_id: str | None,
+                     video_type: str | None = None) -> None:
         ts = time.time()
         self.play_log.append([video_id, title, artist, ts, True])
         if len(self.play_log) > PLAY_LOG_MAX:
             del self.play_log[: PLAY_LOG_MAX // 2]
             self.play_rev += 1  # paměť neopakování se načte znovu z databáze
         self._write(
-            "INSERT INTO plays(video_id,title,artist,ts,seed_id,outcome) VALUES(?,?,?,?,?,'started')",
-            (video_id, title, artist, ts, seed_id),
+            "INSERT INTO plays(video_id,title,artist,ts,seed_id,outcome,video_type)"
+            " VALUES(?,?,?,?,?,'started',?)",
+            (video_id, title, artist, ts, seed_id, video_type or None),
         )
 
     def record_outcome(self, video_id: str, outcome: str) -> None:
@@ -505,6 +510,15 @@ class Store:
                     (BLACKLIST_DAYS * 86400,),
                 )
 
+    def _migrate_plays(self) -> None:
+        """Sloupec `video_type` (zdroj skladby, F-WEB-12) do `plays` založené
+        před 3. 11. 2026. Jen metadata tabulky — řádky se nepřepisují, starší
+        přehrání mají druh NULL (zdroj se u nich neukazuje)."""
+        with self._lock, contextlib.suppress(sqlite3.Error):
+            cols = {r[1] for r in self.db.execute("PRAGMA table_info(plays)")}
+            if "video_type" not in cols:
+                self.db.execute("ALTER TABLE plays ADD COLUMN video_type TEXT")
+
     def _migrate_imports(self) -> None:
         """Sloupec `label` (vlastní název importu, F-HLASY-23) do `imports`
         založené před 9. 10. 2026. Řádky se nemění — bez vlastního názvu
@@ -546,9 +560,26 @@ class Store:
 
     def recent_history(self, limit: int = 40) -> list[PlayRecord]:
         rows = self._read(
-            "SELECT video_id,title,artist,outcome FROM plays ORDER BY ts DESC LIMIT ?", (limit,)
+            "SELECT video_id,title,artist,outcome,video_type FROM plays ORDER BY ts DESC LIMIT ?",
+            (limit,)
         )
         return [PlayRecord(*r) for r in rows]
+
+    def video_types(self, ids: list[str]) -> dict[str, str]:
+        """Naposledy známý druh (YouTube Music) u těchhle videí podle historie —
+        pro skladby, u kterých ho zdroj neuvádí (oblíbené, importy, hlasy).
+        Jen videa, která tu hrála s uvedeným druhem; čte se mimo event loop."""
+        out: dict[str, str] = {}
+        ids = [i for i in dict.fromkeys(ids) if i]
+        for n in range(0, len(ids), 400):
+            part = ids[n:n + 400]
+            marks = ",".join("?" * len(part))
+            for vid, vt in self._read(
+                    f"""SELECT video_id, video_type FROM plays
+                         WHERE video_id IN ({marks}) AND video_type IS NOT NULL
+                         ORDER BY ts""", tuple(part)):
+                out[vid] = vt
+        return out
 
     def top_requested(self, limit: int = 10, days: int = 0) -> list[RequestCount]:
         """Most-asked-for tracks, the most requested first.

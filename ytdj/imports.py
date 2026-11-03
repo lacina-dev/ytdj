@@ -167,7 +167,8 @@ def normalize(res: dict, pid: str) -> Fetched:
                 out.non_music += 1
                 continue
             c = cands[0]
-            track = Track(vid, c.title, ", ".join(c.artists), duration=dur)
+            track = Track(vid, c.title, ", ".join(c.artists), duration=dur,
+                          video_type=vtype or None)
         else:
             track = to_track(item)
             if track is None:

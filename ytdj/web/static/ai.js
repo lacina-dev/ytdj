@@ -119,7 +119,8 @@
     var note = f && f.state === "ai" ? (n.wish ? "na seznamu AI — hraje, protože si to někdo přál" : "na seznamu AI")
              : f && f.state === "navrzeno" ? "mezi návrhy" : f && f.state === "neni_ai" ? "potvrzeno, že není AI" : "";
     box.innerHTML = '<span class="meta"><span class="kind">hraje teď</span><span class="t">' + esc(n.name) + "</span>" +
-                    '<span class="a">' + esc(n.title) + (note ? " · " + esc(note) : "") + "</span></span>" + act;
+                    '<span class="a">' + esc(n.title) + (window.ytdjSrcBadge ? window.ytdjSrcBadge(n) : "") +
+                    (note ? " · " + esc(note) : "") + "</span></span>" + act;
     box.hidden = false;
   }
 

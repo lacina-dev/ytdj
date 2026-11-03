@@ -66,6 +66,10 @@ SAVER_TEXT = (96, 98, 104)  # the screen saver's only light: a dim grey
 QR_LIGHT = (150, 150, 146)  # mid-grey instead of white — still scans (tested)
 QR_DARK = (10, 11, 14)
 ACCENT_DIM = (178, 88, 24)  # the static name: the orange, but not shining all day
+# where the track comes from (F-TV-21): a small outlined text tag, no logo, no
+# filled block — it sits by the artist and moves with the rest of the picture
+SRC_LABEL = {"ytm": ("YT Music", FAINT), "yt": ("YouTube", ACCENT_DIM)}
+SRC_LINE = (62, 66, 74)
 
 
 def drift(shift: int, size: tuple[int, int]) -> tuple[int, int]:
@@ -80,6 +84,7 @@ class NextItem:
     title: str
     artist: str = ""
     who: str = ""
+    src: str = ""  # "ytm" | "yt" | "" (not known: no tag)
 
 
 @dataclass(frozen=True)
@@ -95,6 +100,7 @@ class TvView:
     who: str = ""  # whose wish plays now
     wish: str = ""  # what they asked for
     origin: str = ""  # where the background music comes from
+    src: str = ""  # the track's source: "ytm" (YouTube Music) | "yt" (YouTube) | "" not known
     next: tuple[NextItem, ...] = ()
     more: int = 0  # queue items beyond the ones shown
     note: str = ""  # the DJ's short note
@@ -114,6 +120,11 @@ class TvView:
 
 def _s(value: object, limit: int = 300) -> str:
     return " ".join(str(value or "").split())[:limit]
+
+
+def _src(item: dict) -> str:
+    v = item.get("src")
+    return v if v in SRC_LABEL else ""
 
 
 def view_from(state: dict | None, *, offline: str = "", now: float | None = None,
@@ -154,8 +165,8 @@ def view_from(state: dict | None, *, offline: str = "", now: float | None = None
         if fresh:
             note, note_who = _s(last.get("reply"), 240), _s(last.get("who"), 24)
     nxt = tuple(NextItem(_s(q.get("title"), 120) or "?", _s(q.get("artist"), 80),
-                         _s((q.get("req") or {}).get("who") if isinstance(q.get("req"), dict)
-                            else "", 24))
+                                  _s((q.get("req") or {}).get("who") if isinstance(q.get("req"), dict)
+                            else "", 24), _src(q))
                 for q in queue[:NEXT_ITEMS])
     common = dict(next=nxt, more=max(0, len(queue) - len(nxt)), note=note, note_who=note_who,
                   **base)
@@ -201,7 +212,7 @@ def view_from(state: dict | None, *, offline: str = "", now: float | None = None
     if clip and not note:
         note = "klip se načítá…"
     return TvView(state=kind, vid=vid, clip=clip, clip_note=note, title=_s(cur.get("title"), 200) or "?",
-                  artist=_s(cur.get("artist"), 120), duration=int(dur),
+                  artist=_s(cur.get("artist"), 120), src=_src(cur), duration=int(dur),
                   position=int(max(0.0, pos)) // PROGRESS_STEP * PROGRESS_STEP,
                   who=who, wish=wish, origin=origin, detail=detail,
                   art=bool(art_ready and vid and art_ready(vid)), **common)
@@ -300,7 +311,7 @@ class Renderer:
         self.regions = [
             _Region("head", head, lambda v: (v.state, v.clock, v.clip_note), self._draw_head),
             _Region("main", main, lambda v: (v.state, v.vid, v.title, v.artist, v.who, v.wish,
-                                             v.origin, v.art, v.detail), self._draw_main),
+                                             v.origin, v.art, v.detail, v.src), self._draw_main),
             _Region("bar", bar, lambda v: (v.state, v.position, v.duration, bool(v.vid)),
                     self._draw_bar),
             _Region("note", note, lambda v: (v.note, v.note_who), self._draw_note),
@@ -525,7 +536,14 @@ class Renderer:
             d.text((tx, y), line, font=ft, fill=color, anchor="la")
             y += lh
         y += round(10 * u)
-        d.text((tx, y), ellipsize(v.artist, fa, tw), font=fa, fill=MUTED, anchor="la")
+        fs = self.font(24, True)
+        tag_w = self._src_width(d, v.src, fs)
+        gap = round(18 * u) if v.artist else 0
+        artist = ellipsize(v.artist, fa, max(0.0, tw - tag_w - gap)) if v.artist else ""
+        d.text((tx, y), artist, font=fa, fill=MUTED, anchor="la")
+        if tag_w:
+            self._src_tag(d, tx + d.textlength(artist, font=fa) + gap, y + round(fa.size * 0.6),
+                          v.src, fs)
         y += fa.size + round(26 * u)
         if v.state == "outage":
             d.text((tx, y + round(7 * u)), ellipsize(
@@ -541,6 +559,32 @@ class Renderer:
         elif v.origin:
             d.text((tx, y + round(7 * u)), ellipsize(v.origin, fo, tw), font=fo, fill=FAINT,
                    anchor="la")
+
+    def _src_width(self, d: ImageDraw.ImageDraw, src: str, font: ImageFont.FreeTypeFont) -> int:
+        if src not in SRC_LABEL:
+            return 0
+        pad = round(font.size * 0.45)
+        tri = round(font.size * 0.42)
+        return round(d.textlength(SRC_LABEL[src][0], font=font)) + 2 * pad + tri + pad
+
+    def _src_tag(self, d: ImageDraw.ImageDraw, x: float, cy: float, src: str,
+                 font: ImageFont.FreeTypeFont) -> float:
+        """Where the track comes from: an outlined tag „▸ YT Music" / „▸ YouTube"
+        (F-TV-21). Dim like the other static parts; the play mark is drawn, no logo."""
+        if src not in SRC_LABEL:
+            return 0
+        label, color = SRC_LABEL[src]
+        w = self._src_width(d, src, font)
+        pad = round(font.size * 0.45)
+        tri = round(font.size * 0.42)
+        half = round(font.size * 0.72)
+        d.rounded_rectangle((x, cy - half, x + w, cy + half), radius=max(2, round(font.size * 0.2)),
+                            outline=SRC_LINE, width=max(1, round(2 * self.u)))
+        tx = x + pad
+        th = tri * 0.62
+        d.polygon([(tx, cy - th), (tx, cy + th), (tx + tri, cy)], fill=color)
+        d.text((tx + tri + pad * 0.8, cy), label, font=font, fill=color, anchor="lm")
+        return w
 
     def _chip(self, d: ImageDraw.ImageDraw, x: float, cy: float, name: str,
               font: ImageFont.FreeTypeFont, max_w: float | None = None) -> float:
@@ -614,6 +658,10 @@ class Renderer:
             d.text((x, y), f"{i + 1}", font=fa, fill=FAINT, anchor="lm")
             x += round(36 * u)
             room = w - x - round(12 * u)
+            fs = self.font(20, True)
+            tag_w = self._src_width(d, it.src, fs)
+            if tag_w:
+                room -= tag_w + round(14 * u)
             if it.who:
                 chip_w = d.textlength(ellipsize(it.who, fc, round(200 * u)), font=fc) + fc.size
                 room -= chip_w + round(16 * u)
@@ -624,6 +672,8 @@ class Renderer:
                 artist = ellipsize(f"  ·  {it.artist}", fa, max(0.0, room - d.textlength(title, font=ft)))
                 d.text((x, y), artist, font=fa, fill=MUTED, anchor="lm")
                 x += d.textlength(artist, font=fa)
+            if tag_w:
+                x += round(14 * u) + self._src_tag(d, x + round(14 * u), y, it.src, fs)
             if it.who:
                 self._chip(d, x + round(16 * u), y, it.who, fc, round(200 * u))
             y += row

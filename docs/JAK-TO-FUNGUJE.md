@@ -215,6 +215,7 @@ jukeboxu a restart chtějí PIN správce, který je na displeji na obrazovce Sí
 - **F-RESTART-03** Po restartu služby skladba pokračuje od místa, kde byla
 - **F-RESTART-02** Přání přežijí restart služby
 - **F-RESTART-11** Po vypnutí nebo výpadku proudu se týž den vrátí fronta i místo ve skladbě — a čeká na ▶
+- **F-RESTART-16** O půlnoci skončí nedohraná přání a podkres po nich — ráno se začíná načisto
 - **F-TV-13** Obrazovka na telce se pořád pomalu posouvá a stálé části si mění strany — šetří to panel
 - **F-TV-14** Když se nehraje, telka se ztlumí a pak ukáže jen tmavý spořič s hodinami
 - **F-TV-15** Jukebox umí telku vypnout, když se nehraje, a s hudbou ji zapnout — jen když ukazuje jukebox

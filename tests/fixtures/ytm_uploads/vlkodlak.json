@@ -1,0 +1,1748 @@
+{
+"artist": "Vlkodlak",
+"artist_tracks": [],
+"uploads": [],
+"as_title": "Wanastowi Vjecy — Vlkodlak",
+"radio": [],
+"calls": [
+{
+"lang": "en",
+"method": "search",
+"args": [
+"Vlkodlak"
+],
+"kwargs": {
+"filter": "artists",
+"limit": 5
+},
+"result": [
+{
+"resultType": "artist",
+"browseId": "UChs1838_DnQPKbpNOAqGWwQ",
+"artist": "Martin Baltscheit",
+"category": "Artists"
+},
+{
+"resultType": "artist",
+"browseId": "UCqO1NKVId0Lzx_2gQAdoQbA",
+"artist": "Geschichten aus dem Schattenreich",
+"category": "Artists"
+},
+{
+"resultType": "artist",
+"browseId": "UCTBJxCHH7C0VmPtmbxrrvbw",
+"artist": "Franziska Steinhauer",
+"category": "Artists"
+},
+{
+"resultType": "artist",
+"browseId": "UCGsHIoLlemFqrMgagglJ4qg",
+"artist": "Frank Wild",
+"category": "Artists"
+},
+{
+"resultType": "artist",
+"browseId": "UCPezgJHQn6SuVcVE8THYhdw",
+"artist": "Eclipsis",
+"category": "Artists"
+}
+]
+},
+{
+"lang": "en",
+"method": "search",
+"args": [
+"Vlkodlak"
+],
+"kwargs": {
+"filter": "videos",
+"limit": 40
+},
+"result": [
+{
+"resultType": "video",
+"title": "Vlkodlak",
+"videoId": "lx625rvR2Wo",
+"videoType": "MUSIC_VIDEO_TYPE_OMV",
+"artists": [
+{
+"name": "Frank Wild",
+"id": "UCGsHIoLlemFqrMgagglJ4qg"
+}
+],
+"views": "182K",
+"duration": "3:08",
+"duration_seconds": 188,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Vlkodlak",
+"videoId": "dJ7H4Kg9RSs",
+"videoType": "MUSIC_VIDEO_TYPE_OMV",
+"artists": [
+{
+"name": "Wanastowi Vjecy",
+"id": "UCDNKpDCqEB8s7WyxqNfcJbQ"
+}
+],
+"views": "1.3M",
+"duration": "4:00",
+"duration_seconds": 240,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Kraken - Vlkodlak",
+"videoId": "mTDVEdPTCvo",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Papuc65",
+"id": "UC72RfRuVspCzR49jlV0ytHA"
+}
+],
+"views": "1.2K",
+"duration": "3:12",
+"duration_seconds": 192,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "RUBICON RIVER 2014 - Vlkodlak",
+"videoId": "SdqW84u4HG4",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Rubicon River",
+"id": "UCJQO51eM2_nLqduHsOPrtCQ"
+}
+],
+"views": "2K",
+"duration": "5:17",
+"duration_seconds": 317,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Vlkodlak",
+"videoId": "7SeY8Mvmr3k",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Knihomolové",
+"id": "UCFpX6LzMrGSyIipZmPhfBWg"
+}
+],
+"views": "715",
+"duration": "1:06",
+"duration_seconds": 66,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "FRANK WILD VLKODLAK 🐺 |PARODIE| - aneb Bunny Hop z Wishe",
+"videoId": "rBeCJEZZu3Q",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Game Parody CZ",
+"id": "UCsF377OeyuT2xat8lm-2qrQ"
+}
+],
+"views": "11K",
+"duration": "2:27",
+"duration_seconds": 147,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Vlkodlak",
+"videoId": "JueMWVBPjEo",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Jaroslav Pížl",
+"id": "UCm62fao514V_Bo_JNVeFMSg"
+}
+],
+"views": "1.3K",
+"duration": "3:57",
+"duration_seconds": 237,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Daniel Landa - Vlkodlakům",
+"videoId": "sA3XLywsOr0",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Haskeer9",
+"id": "UCRq66WhZwShewwxCKqsUicw"
+}
+],
+"views": "1.2M",
+"duration": "2:51",
+"duration_seconds": 171,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Witoraz - Vlkodlak",
+"videoId": "TahVT-__How",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "ozzyon",
+"id": "UCxU9JzVlGA-ZgZe6tznYryA"
+}
+],
+"views": "1.1K",
+"duration": "7:51",
+"duration_seconds": 471,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "KJ1016 WANASTOWI VJECY-Vlkodlak (Karaoke verze)",
+"videoId": "lazu85Pak18",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "ALL4MUSIC CZ",
+"id": "UCWO2f_xx6P7ROoGffViCxKw"
+}
+],
+"views": "252",
+"duration": "0:41",
+"duration_seconds": 41,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "KeSh45 | Super Music [ #1] | Chtěla bych bejt vlkodlak",
+"videoId": "PFx6PDzNMO0",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "KeSh ­Let's Play",
+"id": "UClPISbH0_XvnhM6koonI-Ww"
+}
+],
+"views": "1.7K",
+"duration": "4:02",
+"duration_seconds": 242,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Vlkodlak",
+"videoId": "HrfVYNbV7tU",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Bruno M",
+"id": "UChn9O8gR1G1LnJKj6FpWThg"
+}
+],
+"views": "1.6K",
+"duration": "2:35",
+"duration_seconds": 155,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "VLČÍ OČI, ROBERT KŘESŤAN, GOLDBERG, ZŁOTORYJA, VLČÍ HORA, VLKODLAK, DOLNÍ SLEZSKO",
+"videoId": "e54wn05z44A",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "ZATRACENÉ SLEZSKO",
+"id": "UC_a5n4NjTveuKTLoBXJIfug"
+}
+],
+"views": "81",
+"duration": "4:18",
+"duration_seconds": 258,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Redwen - Vlkodlak - Cover",
+"videoId": "v_ddKTD6-s0",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Bandzone.cz",
+"id": "UC_5H_udaURBr2lUpEHPCplQ"
+}
+],
+"views": "1.9K",
+"duration": "2:16",
+"duration_seconds": 136,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Vlkodlak",
+"videoId": "kFUXzHotGrU",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "K.U.T.U.B",
+"id": "UC3vvYEWZjxBHk5habvELB3w"
+}
+],
+"views": "266",
+"duration": "3:33",
+"duration_seconds": 213,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Vlkodlak.m2ts",
+"videoId": "QgAu-kw4nDY",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Hydra rocková skupina",
+"id": "UCoxXpD03qR6jcL1wtQHTvVQ"
+}
+],
+"views": "191",
+"duration": "3:51",
+"duration_seconds": 231,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Vlkodlak",
+"videoId": "qfyPdV06Y2w",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Jirka Sirka",
+"id": "UCdF7lOwbciVxqd9zy57tngg"
+}
+],
+"views": "24",
+"duration": "4:29",
+"duration_seconds": 269,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Arakain - Holka ty jsi jak vlkodlak",
+"videoId": "mhUA2hO_e_M",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Markus M.",
+"id": "UCx_YDua2rsyKMhSNBPZ1kfA"
+}
+],
+"views": "27",
+"duration": "3:25",
+"duration_seconds": 205,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Dívka vlkodlak",
+"videoId": "marzoL33mR0",
+"videoType": "MUSIC_VIDEO_TYPE_OMV",
+"artists": [
+{
+"name": "Eclipsis",
+"id": "UCPezgJHQn6SuVcVE8THYhdw"
+}
+],
+"views": "326",
+"duration": "5:53",
+"duration_seconds": 353,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "02   Vlkodlak",
+"videoId": "Bd92hwVaz5w",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Radek Jüthner",
+"id": "UC1tU0AiR6KP7q36ju8V8ChA"
+}
+],
+"views": "35",
+"duration": "4:49",
+"duration_seconds": 289,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Expedice -  Vlkodlak",
+"videoId": "okIV7g1Y9XY",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Araden Saem",
+"id": "UCYRWu9CI5-YnE365tyGk9PA"
+}
+],
+"views": "119",
+"duration": "4:09",
+"duration_seconds": 249,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Sorrow   Vlkodlak",
+"videoId": "ewrvuQYs3WI",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Zdeněk Šlápota",
+"id": "UC-fQAbxF4MGUmR1RJhBlukw"
+}
+],
+"views": "169",
+"duration": "5:17",
+"duration_seconds": 317,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Rubicon River - Vlkodlak ukázka z připravovaného nového CD",
+"videoId": "WearL0Z3iN0",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "michael77RS",
+"id": "UC9AeVJXUyUc2dU01rMitPCg"
+}
+],
+"views": "221",
+"duration": "5:17",
+"duration_seconds": 317,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Vlkodlak: Cesta – atmosférická pop‑ambientní balada o vlkodlakovi (Lyric Video od MivoSynth)",
+"videoId": "Xv6WM3f84J4",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "MivoSynth",
+"id": "UCtG-uO1MjZacyjOlAz0MMbw"
+}
+],
+"views": "56",
+"duration": "2:18",
+"duration_seconds": 138,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Vlkodlak",
+"videoId": "t8CbQV0GrSs",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Dvormen",
+"id": "UCsqGJxFq6V2JCrQOn0wTWIg"
+}
+],
+"views": "163",
+"duration": "3:17",
+"duration_seconds": 197,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Retro nahrávka - Dívka vlkodlak 2014 (retro, rare)",
+"videoId": "ORgc2UGy23M",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Eclipsis",
+"id": "UCWMjzhZFdMZJqm-wZDdGvpg"
+}
+],
+"views": "1K",
+"duration": "5:44",
+"duration_seconds": 344,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Štístko a Poupěnka - Vlk a lesní patrola",
+"videoId": "GGXn1DRagbU",
+"videoType": "MUSIC_VIDEO_TYPE_OMV",
+"artists": [
+{
+"name": "Štístko a Poupěnka",
+"id": "UCXK59xoRw-mzUqg-Vtc39XA"
+}
+],
+"views": "10M",
+"duration": "3:31",
+"duration_seconds": 211,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Deepool-Vlkodlak",
+"videoId": "9UgZ5wDlQO8",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Deepool",
+"id": "UCRJN7B1OtIBCw1k4jYpAh0w"
+}
+],
+"views": "204",
+"duration": "2:44",
+"duration_seconds": 164,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "KRAKEN-VLKODLAK",
+"videoId": "0PM9OAasxWo",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "zdenek svob",
+"id": "UCjsLft5h5RZz-7wEpGY2L3Q"
+}
+],
+"views": "1.1K",
+"duration": "3:07",
+"duration_seconds": 187,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Karlosband-Holka vlkodlak",
+"videoId": "GTK4rmj0jJw",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Zdeněk Potočka",
+"id": "UCVuLjvc_RDsgooIH-oluDog"
+}
+],
+"views": "89",
+"duration": "4:55",
+"duration_seconds": 295,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Vlkodlak \"Saruman\" répète 23/11/14",
+"videoId": "UwX4kY4ScX0",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Arnaud Foulon",
+"id": "UCgcSFuqE-KzqPJnjU3Ijt6A"
+}
+],
+"views": "102",
+"duration": "5:26",
+"duration_seconds": 326,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "RUBICON RIVER  VLKODLAK",
+"videoId": "36z9PIwl7XM",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Tomáš Krajánek",
+"id": "UCM4a2GcRewG2v4a8YIA_BzA"
+}
+],
+"views": "1.5K",
+"duration": "5:19",
+"duration_seconds": 319,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Zpožděnej Vlak - Vlkodlak",
+"videoId": "z6DvEgXg-rs",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Tomas Michna - Wedding Photographer & Videographer",
+"id": "UCjWP1z-i6BmHrKu8EcRmeBg"
+}
+],
+"views": "482",
+"duration": "3:58",
+"duration_seconds": 238,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Martin Pařízek - Vlkodlak",
+"videoId": "yu8sL3s3yo4",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Parezzen",
+"id": "UC2EqTzIp8jORbS0TZtrFdqQ"
+}
+],
+"views": "40",
+"duration": "1:45",
+"duration_seconds": 105,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Vlkodlak - A Sprengisandi",
+"videoId": "_wUAoTchImw",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Thør Harald Solberg",
+"id": "UCTNjw-ys822Je-Qlogt1kAQ"
+}
+],
+"views": "277",
+"duration": "3:49",
+"duration_seconds": 229,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Petr Valenta - Vlkodlak",
+"videoId": "u9oVgY99kn8",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Petr Valenta",
+"id": "UClsTBSSj09KqL80wci95JAw"
+}
+],
+"views": "161",
+"duration": "3:42",
+"duration_seconds": 222,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "06   Vlkodlak",
+"videoId": "aeuW_voj8mo",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Nic se neděje",
+"id": "UCoOFWOqwiCSqxQUqIM7zyZw"
+}
+],
+"views": "7",
+"duration": "4:18",
+"duration_seconds": 258,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "ReasonS - Vlkodlak",
+"videoId": "Qdsc16n35F4",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Veronika Seidlová",
+"id": "UCkns31b6DojkYvo_OME8DZQ"
+}
+],
+"views": "162",
+"duration": "4:14",
+"duration_seconds": 254,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "raptor koch -vlkodlak Rudo",
+"videoId": "ttZUxci4FQ4",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Raptor Koch",
+"id": "UC_dzlBl63F-E6Id26nlIMsw"
+}
+],
+"views": "261",
+"duration": "3:10",
+"duration_seconds": 190,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "1.Vlkodlak",
+"videoId": "DwShMHVef8g",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "morpheus official",
+"id": "UCMLd3yz0LGIAakg21NUEFQg"
+}
+],
+"views": "530",
+"duration": "3:10",
+"duration_seconds": 190,
+"isAvailable": true,
+"category": "Videos"
+}
+]
+},
+{
+"lang": "en",
+"method": "search",
+"args": [
+"Vlkodlak"
+],
+"kwargs": {
+"filter": "community_playlists",
+"limit": 10
+},
+"result": [
+{
+"resultType": "playlist",
+"title": "An American Werewolf In London Soundtrack (Expanded Score)",
+"browseId": "VLPLZ5jmAKbKFZ14TQ2IhFFDuFseuuXQPGJR",
+"category": "Community playlists"
+},
+{
+"resultType": "playlist",
+"title": "vlkodlak",
+"browseId": "VLPLH5Xb-uj219-ECwjJueQs1qD5sIYbKYcV",
+"category": "Community playlists"
+},
+{
+"resultType": "playlist",
+"title": "Wanastowi vjeci",
+"browseId": "VLPLd-9PSZ81wCY",
+"category": "Community playlists"
+},
+{
+"resultType": "playlist",
+"title": "An American werewolf in London",
+"browseId": "VLPL1aX8lwF48aUXp8vX4-4oLZVPKKwojDSm",
+"category": "Community playlists"
+},
+{
+"resultType": "playlist",
+"title": "An American Werewolf In London Soundtrack (Slowed)",
+"browseId": "VLPLE98lCoO95bKrBrFA8RhZR29Yx-fvvpBD",
+"category": "Community playlists"
+},
+{
+"resultType": "playlist",
+"title": "Mix - Ali the KID",
+"browseId": "VLPLYGUAdWsjWMqe0-W-UniYEblMcCHwAXep",
+"category": "Community playlists"
+},
+{
+"resultType": "playlist",
+"title": "WEREWOLF IN LONDON (SOUNDTRACK)",
+"browseId": "VLPLN-yWyxPK_wdigGnvPDVWpk85TePuvRj9",
+"category": "Community playlists"
+},
+{
+"resultType": "playlist",
+"title": "Werewolf",
+"browseId": "VLPLT4RybyV8rpWTyW-bC6NCtgb0WO00poTX",
+"category": "Community playlists"
+},
+{
+"resultType": "playlist",
+"title": "cz",
+"browseId": "VLPLKSC4ygEVgGY8M6pKrDszbHhiZtcSc4aK",
+"category": "Community playlists"
+},
+{
+"resultType": "playlist",
+"title": "KRUTOR - Gladiator (official album)",
+"browseId": "VLPLoOSx5CPhbEoC7rJyRWTAetaTFbMrXBFQ",
+"category": "Community playlists"
+},
+{
+"resultType": "playlist",
+"title": "Rockové pecky",
+"browseId": "VLPLNjYmjJrbhNV3z3hcfliFD29I5JNPaPVz",
+"category": "Community playlists"
+},
+{
+"resultType": "playlist",
+"title": "werewolfs",
+"browseId": "VLPL0EE2271DF42ACB03",
+"category": "Community playlists"
+},
+{
+"resultType": "playlist",
+"title": "Lucie+Wanastovi vjeci+Buty",
+"browseId": "VLPLkLAKFa5djEd65w5dkMvF8T6VVw7HjUk9",
+"category": "Community playlists"
+},
+{
+"resultType": "playlist",
+"title": "liptak",
+"browseId": "VLPLSKAsrUQz72tx-ec2A4ArKylaQOOOE-An",
+"category": "Community playlists"
+},
+{
+"resultType": "playlist",
+"title": "ocelaři",
+"browseId": "VLPL1DXWwSSO3oFKpx4Dcm31dlvgzHyV5EKW",
+"category": "Community playlists"
+},
+{
+"resultType": "playlist",
+"title": "Top Songs - Nazgul",
+"browseId": "VLOLAK5uy_nCO4HbO3FxK8TbizlUuz673mgkrvlF2_A",
+"category": "Community playlists"
+},
+{
+"resultType": "playlist",
+"title": "WV",
+"browseId": "VLPLA57B40064072C1E9",
+"category": "Community playlists"
+},
+{
+"resultType": "playlist",
+"title": "Top Songs - Eclipsis",
+"browseId": "VLOLAK5uy_kv2rrwhU8MFg3ZrC9TsmX9G7AQuE_U9Io",
+"category": "Community playlists"
+},
+{
+"resultType": "playlist",
+"title": "I LOVE YOU",
+"browseId": "VLPLV71z5yqb6MVMTPtSCuaOyU542MA-oAWJ",
+"category": "Community playlists"
+},
+{
+"resultType": "playlist",
+"title": "m Lipták",
+"browseId": "VLPLy7YlIUehb9OAWWWzIpSxEN5gHUpB-5C8",
+"category": "Community playlists"
+}
+]
+},
+{
+"lang": "en",
+"method": "get_playlist",
+"args": [
+"VLPLH5Xb-uj219-ECwjJueQs1qD5sIYbKYcV"
+],
+"kwargs": {
+"limit": 100
+},
+"result": {
+"title": "vlkodlak",
+"tracks": [
+{
+"title": "Vlkodlak",
+"videoId": "dJ7H4Kg9RSs",
+"videoType": "MUSIC_VIDEO_TYPE_OMV",
+"artists": [
+{
+"name": "Wanastowi Vjecy",
+"id": "UCDNKpDCqEB8s7WyxqNfcJbQ"
+}
+],
+"views": null,
+"duration": "4:00",
+"duration_seconds": 240,
+"isAvailable": true
+},
+{
+"title": "GOD IS AN ANIMAL",
+"videoId": "SZE52BhtfUY",
+"videoType": "MUSIC_VIDEO_TYPE_OMV",
+"artists": [
+{
+"name": "grandson",
+"id": "UCvVLbhrgq8TS_Yw3gkFIZUg"
+}
+],
+"views": null,
+"duration": "3:55",
+"duration_seconds": 235,
+"isAvailable": true
+},
+{
+"title": "Mám na teba chuť",
+"videoId": "ayaMguHaUoA",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Team",
+"id": "UC6lyhwpyXPiV0a2AXNHOX3Q"
+}
+],
+"views": null,
+"duration": "3:01",
+"duration_seconds": 181,
+"isAvailable": true
+},
+{
+"title": "Sbirka zvadlejch ruzi",
+"videoId": "hwNc5r5MBMM",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Wanastowi Vjecy",
+"id": "UCDNKpDCqEB8s7WyxqNfcJbQ"
+}
+],
+"views": null,
+"duration": "5:13",
+"duration_seconds": 313,
+"isAvailable": true
+},
+{
+"title": "Gigi Perez covers Lana Del Rey’s ‘Summertime Sadness’ for Like A Version",
+"videoId": "chbNwraji28",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "triple j",
+"id": "UCd2KNtfphz8HvYzM4pwtHmg"
+}
+],
+"views": null,
+"duration": "4:46",
+"duration_seconds": 286,
+"isAvailable": true
+},
+{
+"title": "Maneater",
+"videoId": "_Ihe0NHMCKw",
+"videoType": "MUSIC_VIDEO_TYPE_OFFICIAL_SOURCE_MUSIC",
+"artists": [
+{
+"name": "Nelly Furtado",
+"id": "UCWV94Z763GSdhLQ8WIb2JRQ"
+}
+],
+"views": null,
+"duration": "3:32",
+"duration_seconds": 212,
+"isAvailable": true
+},
+{
+"title": "Playlunch cover The Weather Girls’ ‘It's Raining Men’ for Like A Version",
+"videoId": "CDKaxKpdJF4",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "triple j",
+"id": "UCd2KNtfphz8HvYzM4pwtHmg"
+}
+],
+"views": null,
+"duration": "3:57",
+"duration_seconds": 237,
+"isAvailable": true
+},
+{
+"title": "Florence + The Machine — Which Witch / Abracadabra [Live @ SiriusXM]",
+"videoId": "sQwFP3CNKn4",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "SiriusXM",
+"id": "UC49ta0RHXJUiID5KWRkcySw"
+}
+],
+"views": null,
+"duration": "4:02",
+"duration_seconds": 242,
+"isAvailable": true
+},
+{
+"title": "Paramore - Hard Times in the Live Lounge",
+"videoId": "_Y4VE8CJhlg",
+"videoType": "MUSIC_VIDEO_TYPE_OFFICIAL_SOURCE_MUSIC",
+"artists": [
+{
+"name": "BBC Radio 1",
+"id": "UC-FQUIVQ-bZiefzBiQAa8Fw"
+}
+],
+"views": null,
+"duration": "3:16",
+"duration_seconds": 196,
+"isAvailable": true
+},
+{
+"title": "Teen Jesus and the Jean Teasers cover t.A.T.u. ‘All The Things She Said’ for Like A Version",
+"videoId": "Z3yZft2BNTA",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "triple j",
+"id": "UCd2KNtfphz8HvYzM4pwtHmg"
+}
+],
+"views": null,
+"duration": "3:50",
+"duration_seconds": 230,
+"isAvailable": true
+},
+{
+"title": "Lola Young covers The Cure’s ‘Close To Me’ for Like A Version",
+"videoId": "yzzJr2H6ZA8",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "triple j",
+"id": "UCd2KNtfphz8HvYzM4pwtHmg"
+}
+],
+"views": null,
+"duration": "3:57",
+"duration_seconds": 237,
+"isAvailable": true
+},
+{
+"title": "Držím ti miesto",
+"videoId": "sA0P8MibBAI",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Team",
+"id": "UC6lyhwpyXPiV0a2AXNHOX3Q"
+}
+],
+"views": null,
+"duration": "4:03",
+"duration_seconds": 243,
+"isAvailable": true
+},
+{
+"title": "Slovnik cudzich snov",
+"videoId": "W4adcst9wKA",
+"videoType": "MUSIC_VIDEO_TYPE_OMV",
+"artists": [
+{
+"name": "Team",
+"id": "UC6lyhwpyXPiV0a2AXNHOX3Q"
+}
+],
+"views": null,
+"duration": "3:28",
+"duration_seconds": 208,
+"isAvailable": true
+},
+{
+"title": "Gigi Perez — Espresso (Sabrina Carpenter Cover) [Live @ SiriusXM]",
+"videoId": "PUr7dJk04Wc",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "SiriusXM",
+"id": "UC49ta0RHXJUiID5KWRkcySw"
+}
+],
+"views": null,
+"duration": "4:16",
+"duration_seconds": 256,
+"isAvailable": true
+},
+{
+"title": "NIKI covers Chappell Roan’s ‘Casual’ for Like A Version",
+"videoId": "ihKMSRT6oEs",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "triple j",
+"id": "UCd2KNtfphz8HvYzM4pwtHmg"
+}
+],
+"views": null,
+"duration": "4:25",
+"duration_seconds": 265,
+"isAvailable": true
+},
+{
+"title": "Miscris & RushLow - Gummy Bear (Cover Release)",
+"videoId": "B6dThZSc_bE",
+"videoType": "MUSIC_VIDEO_TYPE_OMV",
+"artists": [
+{
+"name": "Miscris",
+"id": "UCtriV72eC4q-9MEx7bnTXwA"
+}
+],
+"views": null,
+"duration": "2:24",
+"duration_seconds": 144,
+"isAvailable": true
+},
+{
+"title": "FINNEAS – ‘For Cryin' Out Loud!’ (live for Like A Version)",
+"videoId": "gxJmQQ-ITz4",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "triple j",
+"id": "UCd2KNtfphz8HvYzM4pwtHmg"
+}
+],
+"views": null,
+"duration": "4:05",
+"duration_seconds": 245,
+"isAvailable": true
+},
+{
+"title": "Nightcore - Keep On (Lyrics)",
+"videoId": "H0K0awi30Ww",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Nightcore Zodiac",
+"id": "UCo4c1M2_6IlWjsGy4m_3GSQ"
+}
+],
+"views": null,
+"duration": "3:16",
+"duration_seconds": 196,
+"isAvailable": true
+},
+{
+"title": "AI is a normal technology?",
+"videoId": "Cq8qO-NjYIg",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "leo",
+"id": "UC2VobOieGHW0s0TW0pyr0uw"
+}
+],
+"views": null,
+"duration": "5:17",
+"duration_seconds": 317,
+"isAvailable": true
+}
+]
+}
+},
+{
+"lang": "en",
+"method": "search",
+"args": [
+"Vlkodlak"
+],
+"kwargs": {
+"filter": "songs",
+"limit": 20
+},
+"result": [
+{
+"resultType": "song",
+"title": "Vlkodlak",
+"videoId": "6obs6Hw7k6g",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Wanastowi Vjecy",
+"id": "UCDNKpDCqEB8s7WyxqNfcJbQ"
+}
+],
+"views": "1.5M",
+"duration": "4:09",
+"duration_seconds": 249,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Vlkodlak",
+"videoId": "R4HY3KQ2Qt8",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Frank Wild",
+"id": "UCGsHIoLlemFqrMgagglJ4qg"
+}
+],
+"views": "205K",
+"duration": "2:25",
+"duration_seconds": 145,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Vlkodlakům",
+"videoId": "VFqLSnlm_QQ",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Daniel Landa",
+"id": "UC0725SlKeEA-U4YOzrlYGWg"
+}
+],
+"views": "1.8M",
+"duration": "2:53",
+"duration_seconds": 173,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Vlkodlak",
+"videoId": "KHKMTxp7i1I",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Dominika Mirgova",
+"id": "UCOoHDWpVC3DSz_n5eXqvjjQ"
+}
+],
+"views": "4.4K",
+"duration": "3:17",
+"duration_seconds": 197,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Vlkodlak",
+"videoId": "uLsD7ublp7o",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "OBEREG",
+"id": "UCq6QZ9nkKsiboACIcsRzzCQ"
+}
+],
+"views": "274",
+"duration": "4:19",
+"duration_seconds": 259,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Vlkodlak",
+"videoId": "hCHHYxrSSbk",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Petr Skoumal",
+"id": "UCuQPAQWb31MWQRMAu_RCI_g"
+}
+],
+"views": "4.6K",
+"duration": "3:26",
+"duration_seconds": 206,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Rapsodie vlků",
+"videoId": "uYNuHmti0O4",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Daniel Landa",
+"id": "UC0725SlKeEA-U4YOzrlYGWg"
+}
+],
+"views": "1.1M",
+"duration": "3:21",
+"duration_seconds": 201,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Bratrstvo vlkodlaka",
+"videoId": "_AsNVtyPFYo",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "XIII. Století",
+"id": "UCJAj4DxrtC9ZnF8c256BD-w"
+}
+],
+"views": "55K",
+"duration": "9:46",
+"duration_seconds": 586,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Vlkodlak",
+"videoId": "ALtshW5VuMg",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Inside",
+"id": "UC0pAbyplDFNaapiOqX11tgQ"
+}
+],
+"views": "2.7K",
+"duration": "4:08",
+"duration_seconds": 248,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Twajlajt",
+"videoId": "nDjcjR8ijGE",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Morčata na útěku",
+"id": "UCy588vVJRXu20jsSL5XlvDQ"
+}
+],
+"views": "1.9M",
+"duration": "3:28",
+"duration_seconds": 208,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Hungry Werewolf Growling",
+"videoId": "mRCYRMOXp5Y",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Sound Ideas",
+"id": "UCHrxDy2k0CzYqQbePcFvU5w"
+}
+],
+"views": "877",
+"duration": "0:08",
+"duration_seconds": 8,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Vlkodlaci",
+"videoId": "3BQ3EqeNXJ0",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Lou Fanánek Hagen",
+"id": "UCTRLzuyYZeMiRHGgcy2ch2w"
+}
+],
+"views": "50K",
+"duration": "3:11",
+"duration_seconds": 191,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Hungry Werewolf Snarls at Victim",
+"videoId": "rloxykd7AZI",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Sound Ideas",
+"id": "UCHrxDy2k0CzYqQbePcFvU5w"
+}
+],
+"views": "13K",
+"duration": "0:15",
+"duration_seconds": 15,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Vlkodlak",
+"videoId": "x1L8ALxsRAM",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "NITTIATTE",
+"id": "UCVIA3-wfaRNoeTmWueV5Ejg"
+}
+],
+"views": "858",
+"duration": "2:40",
+"duration_seconds": 160,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "MÝTICKÉ BYTOSTI - VLKODLAK (CZ)",
+"videoId": "70reGuFMQrA",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "SILENT SHADES",
+"id": "UCaqNDxMnCn3JM1roxVLZIBA"
+}
+],
+"views": "232",
+"duration": "9:17",
+"duration_seconds": 557,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Kapitel 74 - Jack London: Wolfsblut",
+"videoId": "hQoc0ZZpTIY",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Jürgen Fritsche",
+"id": "UC9Tv7PXO8JBhc6oarG5X-Yg"
+}
+],
+"views": "61",
+"duration": "2:01",
+"duration_seconds": 121,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Kapitel 31 - Jack London: Wolfsblut",
+"videoId": "yFA2q7kTuR8",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Jürgen Fritsche",
+"id": "UC9Tv7PXO8JBhc6oarG5X-Yg"
+}
+],
+"views": "102",
+"duration": "2:02",
+"duration_seconds": 122,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Kapitel 53 - Jack London: Wolfsblut",
+"videoId": "dWR9y6HOUhQ",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Jürgen Fritsche",
+"id": "UC9Tv7PXO8JBhc6oarG5X-Yg"
+}
+],
+"views": "128",
+"duration": "2:03",
+"duration_seconds": 123,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "1944-05-07 - Episode 37 - The Werewolf",
+"videoId": "jZLLclLuKpE",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Lawson Zerbe",
+"id": "UCrxVrv9XmbzblSWDFTbW1eQ"
+},
+{
+"name": "Gladys Thornton",
+"id": "UCXl90ZDeKNgohpe299IeSAQ"
+},
+{
+"name": "Walter Vaughn",
+"id": "UCtueIdty7Fh4zN6ILw7UC-A"
+},
+{
+"name": "Arnold Moss",
+"id": "UCM8nZOHSa4KZ0d1VLwOSWVQ"
+}
+],
+"views": "70",
+"duration": "29:05",
+"duration_seconds": 1745,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Chapter 04 - Wolf's Rogue",
+"videoId": "cqE-pz320cg",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Cassie Alexander",
+"id": "UCVRrflQF2F3Aw5XA5YahnEg"
+},
+{
+"name": "Bunny Warren",
+"id": null
+},
+{
+"name": "Matthew Holland",
+"id": null
+}
+],
+"views": "0",
+"duration": "2:15",
+"duration_seconds": 135,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "NO BATIDÃO (Slowed)",
+"videoId": "zeKCzmAKKP4",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "ZXKAI",
+"id": "UCDx-HqH50Z2wks1xClUeD-Q"
+},
+{
+"name": "slxughter",
+"id": "UCcFIMxl4ubia3Do-2hERWig"
+}
+],
+"views": "346M",
+"duration": "1:48",
+"duration_seconds": 108,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "HEAVENLY JUMPSTYLE (Slowed)",
+"videoId": "DWv8ZkHpCx4",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "TWXNY",
+"id": "UCP6BkraJeY88LdcNJ5QL9KQ"
+},
+{
+"name": "Sxilwix",
+"id": "UCiBrB0T3ASP-dO-Ss43elxw"
+},
+{
+"name": "Innxcence",
+"id": "UC7Cta1saYfAvZOOKMjGlKZg"
+}
+],
+"views": "211M",
+"duration": "2:09",
+"duration_seconds": 129,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "FUNK TAKA (SLOWED)",
+"videoId": "Ac_1ZTZGTRo",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "ICEDMANE",
+"id": "UCgONPAEhqFXkQ3Es_Mkfe8w"
+},
+{
+"name": "DYSMANE",
+"id": "UCDK_D409F7xbDkFJH3ch2nQ"
+}
+],
+"views": "16M",
+"duration": "1:48",
+"duration_seconds": 108,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Miss Me (Slowed + Reverb)",
+"videoId": "NMGPlmgLMzs",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "trxndsetter",
+"id": "UC-qV9Xd82NReIwZZ6IyoaOw"
+},
+{
+"name": "svmy",
+"id": "UCfNJXqUTbkfhqJA0aHAEjzQ"
+}
+],
+"views": "15M",
+"duration": "3:08",
+"duration_seconds": 188,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Nereden Bileceksiniz",
+"videoId": "BZgGlg5smWg",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Ahmet Kaya",
+"id": "UCj8glq_KVaY1lbYO1UCgdqA"
+}
+],
+"views": "411M",
+"duration": "6:01",
+"duration_seconds": 361,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Munbe Vaa",
+"videoId": "_Z6wxp-WPjw",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Naresh Iyer",
+"id": "UCNzNWrjkEIIY4yN3tDiMnbw"
+},
+{
+"name": "Shreya Ghoshal",
+"id": "UCrC-7fsdTCYeaRBpwA6j-Eg"
+}
+],
+"views": "28M",
+"duration": "5:58",
+"duration_seconds": 358,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Aashiqui 2 Mashup(Remix By Kiran Kamath)",
+"videoId": "COoRC0nDk0U",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Arijit Singh",
+"id": "UCDxKh1gFWeYsqePvgVzmPoQ"
+},
+{
+"name": "Ankit Tiwari",
+"id": "UC3xhOiFwndOYc57JV1iHCuw"
+},
+{
+"name": "Mithoon",
+"id": "UCHxwQajTiv8div1Fe-yvWpA"
+},
+{
+"name": "Jeet Gangulli",
+"id": "UC00SotJE71x-1F3ia2T3cvA"
+}
+],
+"views": "390M",
+"duration": "5:03",
+"duration_seconds": 303,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "God Mode Begins",
+"videoId": "eIeIkZ5Li88",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Sai Abhyankkar",
+"id": "UCJPuVnth4cFX-2QJ6HxciaA"
+},
+{
+"name": "Gana Muthu",
+"id": "UCbJIOEls0mXhHyEqPMPCWxw"
+},
+{
+"name": "Vishnu Edavan",
+"id": "UCqeLSurV2zY4a52GfM_zx6A"
+}
+],
+"views": "9.5M",
+"duration": "0:56",
+"duration_seconds": 56,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Nahi Rakhta Dil Mein",
+"videoId": "gxb5WXua30s",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Lucky Ali",
+"id": "UCDuVF_nBrVBytI_QUzCiKNQ"
+}
+],
+"views": "3.8M",
+"duration": "4:20",
+"duration_seconds": 260,
+"isAvailable": true,
+"category": "Songs"
+}
+]
+}
+]
+}

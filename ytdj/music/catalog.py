@@ -232,6 +232,11 @@ def to_track(item: dict) -> Track | None:
 
 
 OMV = "MUSIC_VIDEO_TYPE_OMV"  # oficiální klip
+ATV = "MUSIC_VIDEO_TYPE_ATV"  # písnička s obalem
+UGC = "MUSIC_VIDEO_TYPE_UGC"  # nahrál někdo (posluchač, fanoušek)
+# Kapela z nahrávek posluchačů (Catalog.artist_uploads): když hledání videí
+# najde míň písní než tohle, zkusí se i playlisty pojmenované po kapele.
+UPLOADS_FEW = 5
 
 
 def _explicit_badge(renderer: Any) -> bool:
@@ -657,6 +662,96 @@ class Catalog:
         # máme aspoň nejznámější
         return (res.get("tracks") or []) or top
 
+    async def artist_uploads(self, name: str, limit: int = 50) -> list[Track]:
+        """Kapela, kterou YouTube Music nezná: její písničky z videí, která
+        nahráli posluchači („Tleskač - Zelená je tráva"), nejznámější první.
+
+        Jen video, jehož název začíná jménem kapely a oddělovačem, nebo které
+        nahrál kanál téhož jména (match.uploads); interpretem je jméno
+        kapely, název je část za oddělovačem. Jedno hledání videí; když
+        najde málo písní (pod UPLOADS_FEW), ještě veřejné playlisty, které se
+        jmenují přesně jako kapela. Prázdné = nic takového není.
+        Volá se jen pro jméno, které katalog jako interpreta nezná
+        (DJ._unknown_names, FUNKCE F-PRANI-35).
+        """
+        name = _clean(name)
+        if not name:
+            return []
+        with telemetry.timer("catalog.artist_uploads", artist=name) as ev:
+            try:
+                items = await self._search(name, filter="videos", limit=40)
+            except Exception as exc:
+                log.warning("hledání nahrávek %r selhalo: %s", name, exc)
+                ev["error"] = type(exc).__name__
+                return []
+            items = [i for i in items if isinstance(i, dict)]
+            cands = match.uploads(items, name, limit)
+            ev.update(videos=len(items), songs=len(cands))
+            if len(cands) < UPLOADS_FEW:
+                items += await self._named_playlists(name)
+                cands = match.uploads(items, name, limit)
+                ev.update(with_playlists=len(cands))
+            kinds = {str(i.get("videoId")): i.get("videoType") for i in items}
+            out = [Track(c.id, c.title, name, duration=c.duration,
+                         video_type=kinds.get(c.id) or UGC) for c in cands]
+            if out:
+                self._upload_names()[match.norm(name).replace(" ", "")] = name
+                ev["first"] = out[0].title
+            return out
+
+    async def _named_playlists(self, name: str, most: int = 2) -> list[dict]:
+        """Položky veřejných playlistů, které se jmenují přesně jako kapela."""
+        want = match.norm(name).replace(" ", "")
+        try:
+            found = await self._search(name, filter="community_playlists", limit=10)
+        except Exception as exc:
+            log.warning("playlisty %r selhaly: %s", name, exc)
+            return []
+        ids = [str(p.get("playlistId") or p.get("browseId") or "") for p in found
+               if isinstance(p, dict)
+               and match.norm(str(p.get("title") or "")).replace(" ", "") == want]
+        out: list[dict] = []
+        for pid in [p for p in ids if p][:most]:
+            try:
+                res = await self._call(self.yt.get_playlist, pid, limit=100)
+            except Exception as exc:
+                log.warning("playlist %s selhal: %s", pid, exc)
+                continue
+            items = [t for t in (res or {}).get("tracks") or [] if isinstance(t, dict)]
+            # playlist té kapely, ne jen se slovem v názvu: aspoň polovina
+            # položek musí být „<kapela> - <píseň>" (playlist „vlkodlak" je
+            # sbírka všeho možného, playlist „Tleskač" jsou samé jejich písně)
+            theirs = sum(bool(match.upload_credit(str(t.get("title") or ""), name)) for t in items)
+            if items and theirs * 2 >= len(items):
+                out += items
+        return out
+
+    def _upload_names(self) -> dict[str, str]:
+        """Kapely, které se hrají z nahrávek posluchačů (viz artist_uploads)."""
+        names = getattr(self, "_uploads_of", None)
+        if names is None:
+            names = self._uploads_of = {}
+        return names
+
+    def credit_uploads(self, tracks: list[Track]) -> list[Track]:
+        """Nahrávka posluchače kapely, kterou hrajeme z nahrávek (rádio
+        „Tleskač a podobné" je jich plné): interpret je kapela, ne kanál,
+        a název je píseň — „1bua1 — Tleskač - Zelená je tráva" je „Tleskač —
+        Zelená je tráva". Jinak by pravidlo neopakování ani hlasování
+        nepoznaly, že je to táž píseň."""
+        names = getattr(self, "_uploads_of", None)
+        if not names:
+            return tracks
+        for t in tracks:
+            if t.video_type in (OMV, ATV):
+                continue  # katalogová skladba má interpreta správně
+            for name in names.values():
+                song = match.upload_credit(t.title, name)
+                if song:
+                    t.artist, t.title = name, song
+                    break
+        return tracks
+
     async def _channel_tracks(self, name: str, limit: int) -> list[Track]:
         videos = await self.search_videos(name, limit=20)
         mine = [t for t in videos if match.artist_similar(t.artist, name) >= 0.75]
@@ -786,7 +881,7 @@ class Catalog:
         res = await self._call(
             self.yt.get_watch_playlist, videoId=video_id, radio=True, limit=limit
         )
-        return [t for t in (to_track(i) for i in res.get("tracks", [])) if t]
+        return self.credit_uploads([t for t in (to_track(i) for i in res.get("tracks", [])) if t])
 
     # ---- oficiální klipy (přání "i s obrazem", POZADAVKY #72) ----
 

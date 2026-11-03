@@ -112,6 +112,25 @@ def name_matches(tokens: list[str], artist_name: str) -> bool:
     return False
 
 
+_BAND_WORDS = ("kapel", "skupin", "interpret", "zpevak", "zpevack", "band", "hudebnik")
+
+
+def called_band(text: str, name: str) -> bool:
+    """Nazval posluchač to jméno výslovně kapelou? („zahraj kapelu Tleskač",
+    „něco od skupiny X", „interpreta X") — pak to není název skladby."""
+    tokens = norm(text).split()
+    size = len([w for w in norm(name).split() if w != "the"]) or 1
+    for i, tok in enumerate(tokens):
+        if not tok.startswith(_BAND_WORDS):
+            continue
+        rest = tokens[i + 1:]
+        if rest and rest[0] == "od":
+            rest = rest[1:]
+        if any(name_matches(rest[:k], name) for k in range(1, size + 2)):
+            return True
+    return False
+
+
 def _within(a: str, b: str, limit: int) -> bool:
     """Levenshteinova vzdálenost a↔b je nejvýš `limit`."""
     if abs(len(a) - len(b)) > limit:

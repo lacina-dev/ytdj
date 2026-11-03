@@ -545,3 +545,122 @@ def why_rejected(c: Candidate, artist: str, title: str, artist_known: bool = Fal
     if s is not None and s < SCORE_FLOOR:
         return f"score {s:.2f} < {SCORE_FLOOR}"
     return "ok"
+
+
+# ---- nahrávky posluchačů: kapela, která na YouTube Music není ----
+#
+# Pi 3. 11. 2026: „Zahraj kapelu Tleskač" — česká ska kapela, kterou YouTube
+# Music nezná ani jako interpreta, ani jako skladby; na YouTube je jen jako
+# videa, která nahráli posluchači („Tleskač - Zelená je tráva", kanál 1bua1).
+# Bere se jen video, jehož název jasně začíná jménem kapely a oddělovačem,
+# nebo které nahrál kanál téhož jména. Kanál, který video nahrál, o interpretovi
+# nic neříká — interpretem je jméno kapely, název je část za oddělovačem.
+
+# delší než tohle je skoro vždy celý koncert nebo sestřih, ne písnička
+UPLOAD_MAX_S = 15 * 60
+UPLOAD_MIN_S = 60
+# Nahrávka, kterou skoro nikdo neviděl, o kapele nic nedokazuje: „Vlkodlak -
+# A Sprengisandi" (2 zhlédnutí) je cizí skladba se slovem v názvu. Položky
+# bez počtu zhlédnutí (playlist pojmenovaný po kapele) projdou.
+UPLOAD_MIN_VIEWS = 500
+_UPLOAD_SEP = re.compile(r"\s*(?:[-–—]+|[:|])\s*")
+_FILE_EXT = re.compile(r"\.(avi|mpe?g|mp4|wmv|flv|mov|mkv|3gp|webm)\s*$", re.I)
+# ani písnička, ani nahrávka té kapely (na normalizovaném textu)
+_UPLOAD_JUNK = re.compile(
+    r"\b(full album|cele album|best of|kompilace|compilation|medley|megamix|playlist"
+    r"|reakce|reaction|rozhovor|interview|tutorial|lekce|jak hrat|how to play|navod"
+    r"|upoutavka|trailer|teaser|promo|reportaz|dokument)\b"
+    r"|\b\d+ \d+$"  # "live 2005 2/4" — díl záznamu
+)
+_UPLOAD_SKIP_TAGS = {"cover", "instrumental", "speed"}  # cizí verze, karaoke, zpomalené
+# živě, rok nebo datum vystoupení → záznam z koncertu, hraje se až po ostatních
+_UPLOAD_LIVE = re.compile(r"\bzive\b|\bnazivo\b|\b(19|20)\d\d\b")
+_UPLOAD_STRIP = " ,.;:|-–—\"'„“”"
+
+
+def _flat(text: str) -> str:
+    return norm(text).replace(" ", "")
+
+
+def _upload_title(text: str) -> str:
+    text = _FILE_EXT.sub("", _VIDEO_NOISE.sub("", text)).strip(_UPLOAD_STRIP)
+    return re.sub(r"\s+", " ", text)
+
+
+def upload_credit(title: str, name: str) -> str | None:
+    """Název písně z názvu videa „<name> - <píseň>"; None = tak nezačíná.
+
+    Bez ohledu na diakritiku a velikost písmen („TleSKAč - krámy,," je
+    Tleskač, píseň „krámy"); oddělovač pomlčka (i bez mezer), dvojtečka nebo
+    svislá čára. „Tleskač Doktorka Práv" (bez oddělovače) nesedí — nejde
+    poznat, kde jméno končí.
+    """
+    want = _flat(name)
+    title = clean(title or "")
+    if not want or not title:
+        return None
+    for m in _UPLOAD_SEP.finditer(title):
+        if m.start() == 0:
+            continue
+        head = _flat(title[: m.start()])
+        if head == want:
+            return _upload_title(title[m.end():]) or None
+        if len(head) > len(want):
+            break
+    return None
+
+
+def upload_song_key(song: str) -> str:
+    """Klíč písně napříč nahrávkami: „Zelená je Tráva, DWBH live (…)" i
+    „zelená je tráva,  mělnické vinobraní" jsou „zelena je trava"."""
+    base = split_title(song)[0]
+    first = _SEGMENTS.split(base)[0] if base else ""
+    return norm(first) or norm(base) or norm(song)
+
+
+def uploads(items: Iterable[dict], name: str, limit: int = 50) -> list[Candidate]:
+    """Písničky kapely z videí, která nahráli posluchači (nebo její kanál).
+
+    Každá píseň jednou: z víc nahrávek téže vyhraje ta mimo koncert, pak ta
+    s víc zhlédnutími, pak kanál se jménem kapely. Vypadne cover, karaoke,
+    zpomalené, sestřihy, díly záznamů, celé koncerty (> 15 min) a kratší než
+    minuta. Pořadí: nejzhlédnutější první, záznamy z koncertů až po nich.
+    """
+    want = _flat(name)
+    if not want:
+        return []
+    best: dict[str, tuple[tuple, Candidate]] = {}
+    for n, item in enumerate(items):
+        if not isinstance(item, dict) or item.get("isAvailable") is False:
+            continue
+        if item.get("resultType") not in (None, "video", "song"):
+            continue  # playlisty, alba, epizody podcastů
+        if "PODCAST" in str(item.get("videoType") or ""):
+            continue
+        vid, full = item.get("videoId"), item.get("title")
+        if not vid or not full:
+            continue
+        channel = [_CHANNEL_NOISE.sub("", c).strip() or c for c in artist_names(item)]
+        own = any(_flat(c) == want for c in channel)
+        song = upload_credit(full, name) or (_upload_title(clean(full)) if own else None)
+        if not song:
+            continue
+        secs = duration(item)
+        if secs is not None and not (UPLOAD_MIN_S <= secs <= UPLOAD_MAX_S):
+            continue
+        views = parse_views(item.get("views"))
+        if views is not None and views < UPLOAD_MIN_VIEWS and not own:
+            continue
+        ns = norm(song)
+        if version_tags(song) & _UPLOAD_SKIP_TAGS or _UPLOAD_JUNK.search(ns) or _flat(song) == want:
+            continue
+        key = upload_song_key(song)
+        if not key:
+            continue
+        live = bool(version_tags(song) & {"live", "demo", "remix"}) or bool(_UPLOAD_LIVE.search(ns))
+        order = (live, -(views or 0), not own, n)
+        old = best.get(key)
+        if old is None or order < old[0]:
+            best[key] = (order, Candidate(vid, song, (clean(name),), duration=secs,
+                                          views=views, rank=n))
+    return [c for _, c in sorted(best.values(), key=lambda kv: kv[0])][:limit]

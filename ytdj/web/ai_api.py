@@ -29,6 +29,7 @@ from .. import telemetry
 from ..aitvorba import AI, NOT_AI, SUGGESTED
 from ..votes import VoteError, artist_key, credits, enforce
 from ..wishes import clean_cid
+from ..music.source import source
 from . import identity_api
 
 if TYPE_CHECKING:
@@ -92,9 +93,13 @@ def routes(srv: "WebServer") -> list[Route]:
         cr = credits(cur.artist or "")
         wq = getattr(app, "wishes", None)
         is_wish = getattr(wq, "is_request_track", None)
-        return {"video_id": cur.id, "title": cur.title, "artist": cur.artist,
-                "name": cr[0] if cr else "", "wish": bool(is_wish and is_wish(cur.id)),
-                "flag": book().state_of(cur)}
+        out = {"video_id": cur.id, "title": cur.title, "artist": cur.artist,
+               "name": cr[0] if cr else "", "wish": bool(is_wish and is_wish(cur.id)),
+               "flag": book().state_of(cur)}
+        src = source(getattr(cur, "video_type", None))
+        if src:
+            out["src"] = src  # odznak zdroje i u „hraje teď" (F-WEB-12)
+        return out
 
     async def lists(request: Request) -> Response:
         ai = book()

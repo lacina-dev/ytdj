@@ -234,6 +234,9 @@ def to_track(item: dict) -> Track | None:
 OMV = "MUSIC_VIDEO_TYPE_OMV"  # oficiální klip
 ATV = "MUSIC_VIDEO_TYPE_ATV"  # písnička s obalem
 UGC = "MUSIC_VIDEO_TYPE_UGC"  # nahrál někdo (posluchač, fanoušek)
+# zdroj skladby (YouTube Music / YouTube) podle druhu: music/source.py
+from .source import OFFICIAL, YT, YTM, source  # noqa: E402,F401
+
 # Kapela z nahrávek posluchačů (Catalog.artist_uploads): když hledání videí
 # najde míň písní než tohle, zkusí se i playlisty pojmenované po kapele.
 UPLOADS_FEW = 5
@@ -281,14 +284,15 @@ SEARCH_LANGUAGE = "en"
 def _track(c: match.Candidate) -> Track:
     return Track(
         id=c.id, title=c.title, artist=c.artist, album=c.album, duration=c.duration,
-        explicit=getattr(c, "explicit", None),
+        explicit=getattr(c, "explicit", None), video_type=getattr(c, "video_type", None),
     )
 
 
 def _candidate(t: Track, rank: int = 0) -> match.Candidate:
     artists = tuple(a for a in t.artist.split(", ") if a)
     return match.Candidate(
-        t.id, t.title, artists, album=t.album, duration=t.duration, rank=rank
+        t.id, t.title, artists, album=t.album, duration=t.duration, rank=rank,
+        video_type=t.video_type,
     )
 
 

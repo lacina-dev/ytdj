@@ -1,0 +1,660 @@
+{
+ "recorded": "2026-11-03, ytmusicapi anonymně, language=en",
+ "calls": {
+  "songs": "search('Kabát Pohoda', filter='songs')",
+  "videos": "search('Kabát Pohoda', filter='videos')",
+  "tleskac": "search('Tleskač Zelená je tráva', filter='videos')",
+  "radio": "get_watch_playlist(videoId=<Kabát Pohoda>, radio=True)",
+  "artist_top": "get_artist(<Kabát>).songs.results",
+  "artist_playlist": "get_playlist(<Kabát Songs>)",
+  "watch_one_ugc": "get_watch_playlist(videoId=<Tleskač upload>, limit=1)"
+ },
+ "items": {
+  "songs": [
+   {
+    "resultType": "song",
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "5ICWhbAmIaw",
+    "title": "Pohoda",
+    "duration": "3:52",
+    "duration_seconds": 232,
+    "views": "13M",
+    "isExplicit": false,
+    "artists": [
+     {
+      "name": "Kabát",
+      "id": "UCUGZbJKzihj9PhIl7zQtE9A"
+     }
+    ],
+    "album": {
+     "name": "Suma Sumárum"
+    }
+   },
+   {
+    "resultType": "song",
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "etfdtb3x7YY",
+    "title": "Pohoda (Live)",
+    "duration": "5:08",
+    "duration_seconds": 308,
+    "views": "277K",
+    "isExplicit": false,
+    "artists": [
+     {
+      "name": "Kabát",
+      "id": "UCUGZbJKzihj9PhIl7zQtE9A"
+     }
+    ],
+    "album": {
+     "name": "Po čertech velkej koncert (Live)"
+    }
+   },
+   {
+    "resultType": "song",
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "i_ZcDUa45vQ",
+    "title": "V pekle sudy válej",
+    "duration": "2:59",
+    "duration_seconds": 179,
+    "views": "11M",
+    "isExplicit": false,
+    "artists": [
+     {
+      "name": "Kabát",
+      "id": "UCUGZbJKzihj9PhIl7zQtE9A"
+     }
+    ],
+    "album": {
+     "name": "Go Satane Go"
+    }
+   },
+   {
+    "resultType": "song",
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "iXlGXBzQRo0",
+    "title": "Do pekla / Do nebe",
+    "duration": "2:13",
+    "duration_seconds": 133,
+    "views": "1.7M",
+    "isExplicit": false,
+    "artists": [
+     {
+      "name": "Kabát",
+      "id": "UCUGZbJKzihj9PhIl7zQtE9A"
+     }
+    ],
+    "album": {
+     "name": "Do pekla / Do nebe"
+    }
+   },
+   {
+    "resultType": "song",
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "wRRnj6mW3WE",
+    "title": "Úsměv pana Lloyda",
+    "duration": "2:52",
+    "duration_seconds": 172,
+    "views": "3.8M",
+    "isExplicit": false,
+    "artists": [
+     {
+      "name": "Kabát",
+      "id": "UCUGZbJKzihj9PhIl7zQtE9A"
+     }
+    ],
+    "album": {
+     "name": "Corrida"
+    }
+   }
+  ],
+  "videos": [
+   {
+    "resultType": "video",
+    "videoType": "MUSIC_VIDEO_TYPE_OMV",
+    "videoId": "tknsoxpQ-Kw",
+    "title": "Pohoda",
+    "duration": "3:50",
+    "duration_seconds": 230,
+    "views": "7.1M",
+    "artists": [
+     {
+      "name": "Kabát",
+      "id": "UCUGZbJKzihj9PhIl7zQtE9A"
+     }
+    ]
+   },
+   {
+    "resultType": "video",
+    "videoType": "MUSIC_VIDEO_TYPE_OMV",
+    "videoId": "yhnowRl4HTY",
+    "title": "Rumcajs miloval Manku",
+    "duration": "2:44",
+    "duration_seconds": 164,
+    "views": "10M",
+    "artists": [
+     {
+      "name": "Kabát",
+      "id": "UCUGZbJKzihj9PhIl7zQtE9A"
+     }
+    ]
+   },
+   {
+    "resultType": "video",
+    "videoType": "MUSIC_VIDEO_TYPE_UGC",
+    "videoId": "SIkKkG1ng7s",
+    "title": "kabat pohoda",
+    "duration": "3:53",
+    "duration_seconds": 233,
+    "views": "2.5K",
+    "artists": [
+     {
+      "name": "ladazmrd",
+      "id": "UCdWa8JEb0QlLbh2D9xQ7FtA"
+     }
+    ]
+   },
+   {
+    "resultType": "video",
+    "videoType": "MUSIC_VIDEO_TYPE_UGC",
+    "videoId": "ezR1jsiZIhk",
+    "title": "Kabát - Pohoda",
+    "duration": "3:46",
+    "duration_seconds": 226,
+    "views": "75K",
+    "artists": [
+     {
+      "name": "Markus M.",
+      "id": "UCx_YDua2rsyKMhSNBPZ1kfA"
+     }
+    ]
+   },
+   {
+    "resultType": "video",
+    "videoType": "MUSIC_VIDEO_TYPE_UGC",
+    "videoId": "tWXuamtIG6k",
+    "title": "Kabát - Pohoda ( Vypich )",
+    "duration": "4:12",
+    "duration_seconds": 252,
+    "views": "350K",
+    "artists": [
+     {
+      "name": "Maybien",
+      "id": "UC3Vf1qM5JA1pvI3W4L_uQUQ"
+     }
+    ]
+   }
+  ],
+  "tleskac": [
+   {
+    "resultType": "video",
+    "videoType": "MUSIC_VIDEO_TYPE_UGC",
+    "videoId": "fdVHXjZrfEY",
+    "title": "Tleskač - Zelená je tráva",
+    "duration": "3:37",
+    "duration_seconds": 217,
+    "views": "2M",
+    "artists": [
+     {
+      "name": "1bua1",
+      "id": "UCsGyfMOr3jp6srn68phgqkg"
+     }
+    ]
+   },
+   {
+    "resultType": "video",
+    "videoType": "MUSIC_VIDEO_TYPE_UGC",
+    "videoId": "8hCNzgNCqZo",
+    "title": "Tleskač - Zelená je tráva",
+    "duration": "3:25",
+    "duration_seconds": 205,
+    "views": "91K",
+    "artists": [
+     {
+      "name": "pilsnerskaorchestra",
+      "id": "UCPAOCEfbHH6YQkhl7JIRTkQ"
+     }
+    ]
+   },
+   {
+    "resultType": "video",
+    "videoType": "MUSIC_VIDEO_TYPE_UGC",
+    "videoId": "KJqEqVn0Gyc",
+    "title": "Tleskač - Zelená je tráva",
+    "duration": "3:30",
+    "duration_seconds": 210,
+    "views": "3.2K",
+    "artists": [
+     {
+      "name": "Jakub Fejfar",
+      "id": "UCaia8DvwGQRZxZtrA633wYQ"
+     }
+    ]
+   },
+   {
+    "resultType": "video",
+    "videoType": "MUSIC_VIDEO_TYPE_UGC",
+    "videoId": "ppuAzS48EGs",
+    "title": "Zelená je tráva ✱ Orchestr Karla Vlacha a Antonín Panenka, František Cipro, Zdeněk Klimeš atd.(1973)",
+    "duration": "2:11",
+    "duration_seconds": 131,
+    "views": "137K",
+    "artists": [
+     {
+      "name": "RETRO SHOW OK3",
+      "id": "UCBQ6TueVIfv7f82YHn-aVMA"
+     }
+    ]
+   },
+   {
+    "resultType": "video",
+    "videoType": "MUSIC_VIDEO_TYPE_UGC",
+    "videoId": "8QLyeXxQscs",
+    "title": "Zelená je tráva, fotbal to je hra",
+    "duration": "3:27",
+    "duration_seconds": 207,
+    "views": "1.3M",
+    "artists": [
+     {
+      "name": "svandajirka",
+      "id": "UCsE55RiwEDclNpbYr-0ZDUQ"
+     }
+    ]
+   }
+  ],
+  "radio": [
+   {
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "5ICWhbAmIaw",
+    "title": "Pohoda",
+    "length": "3:52",
+    "artists": [
+     {
+      "name": "Kabát",
+      "id": "UCUGZbJKzihj9PhIl7zQtE9A"
+     }
+    ],
+    "album": {
+     "name": "Suma Sumárum"
+    }
+   },
+   {
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "R0mOM3OPgro",
+    "title": "Malá dáma",
+    "length": "3:24",
+    "artists": [
+     {
+      "name": "Kabát",
+      "id": "UCUGZbJKzihj9PhIl7zQtE9A"
+     }
+    ],
+    "album": {
+     "name": "Corrida"
+    }
+   },
+   {
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "sfQ8mD2-0FI",
+    "title": "Touha",
+    "length": "3:02",
+    "artists": [
+     {
+      "name": "Daniel Landa",
+      "id": "UC0725SlKeEA-U4YOzrlYGWg"
+     }
+    ],
+    "album": {
+     "name": "Best Of 3"
+    }
+   },
+   {
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "80RzeDC89Qk",
+    "title": "Silný refrén",
+    "length": "3:09",
+    "artists": [
+     {
+      "name": "Horkýže Slíže",
+      "id": "UCroR8o7hU96JHmsvzbPb48Q"
+     }
+    ],
+    "album": {
+     "name": "Ukáž tú tvoju ZOO"
+    }
+   },
+   {
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "m3qv5K3J03E",
+    "title": "Bedna od whisky",
+    "length": "4:31",
+    "artists": [
+     {
+      "name": "Wanastowi Vjecy",
+      "id": "UCDNKpDCqEB8s7WyxqNfcJbQ"
+     }
+    ],
+    "album": {
+     "name": "Tak mi to teda nandey"
+    }
+   },
+   {
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "LlwNH6gpuc4",
+    "title": "Burlaci",
+    "length": "4:35",
+    "artists": [
+     {
+      "name": "Kabát",
+      "id": "UCUGZbJKzihj9PhIl7zQtE9A"
+     }
+    ],
+    "album": {
+     "name": "Corrida"
+    }
+   },
+   {
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "KqPJ23u25Xw",
+    "title": "Pověste ho vejš",
+    "length": "4:11",
+    "artists": [
+     {
+      "name": "Walda Gang",
+      "id": "UCzdW6m33rtObLrcGt0bO8yQ"
+     }
+    ],
+    "album": {
+     "name": "Svařák hop hej"
+    }
+   },
+   {
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "3fQGN4fw1pI",
+    "title": "Plakala",
+    "length": "2:44",
+    "artists": [
+     {
+      "name": "Divokej Bill",
+      "id": "UCLy8NFu1knGEShqHnKynQHA"
+     }
+    ],
+    "album": {
+     "name": "Propustka do pekel"
+    }
+   },
+   {
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "u4gPzy9oQHY",
+    "title": "Ružová záhrada",
+    "length": "3:43",
+    "artists": [
+     {
+      "name": "Iné Kafe",
+      "id": "UCHPAwjacAOMGpYA6CY0e2zQ"
+     }
+    ],
+    "album": {
+     "name": "Príbeh"
+    }
+   },
+   {
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "lz3MA-oU-84",
+    "title": "Corrida",
+    "length": "2:53",
+    "artists": [
+     {
+      "name": "Kabát",
+      "id": "UCUGZbJKzihj9PhIl7zQtE9A"
+     }
+    ],
+    "album": {
+     "name": "Corrida"
+    }
+   }
+  ],
+  "artist_top": [
+   {
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "R0mOM3OPgro",
+    "title": "Malá dáma",
+    "views": null,
+    "isExplicit": false,
+    "artists": [
+     {
+      "name": "Kabát",
+      "id": "UCUGZbJKzihj9PhIl7zQtE9A"
+     }
+    ],
+    "album": {
+     "name": "Corrida"
+    }
+   },
+   {
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "LlwNH6gpuc4",
+    "title": "Burlaci",
+    "views": null,
+    "isExplicit": false,
+    "artists": [
+     {
+      "name": "Kabát",
+      "id": "UCUGZbJKzihj9PhIl7zQtE9A"
+     }
+    ],
+    "album": {
+     "name": "Corrida"
+    }
+   },
+   {
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "5ICWhbAmIaw",
+    "title": "Pohoda",
+    "views": null,
+    "isExplicit": false,
+    "artists": [
+     {
+      "name": "Kabát",
+      "id": "UCUGZbJKzihj9PhIl7zQtE9A"
+     }
+    ],
+    "album": {
+     "name": "Suma Sumárum"
+    }
+   },
+   {
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "yv-PPltIAyY",
+    "title": "Bára",
+    "views": null,
+    "isExplicit": false,
+    "artists": [
+     {
+      "name": "Kabát",
+      "id": "UCUGZbJKzihj9PhIl7zQtE9A"
+     }
+    ],
+    "album": {
+     "name": "Go Satane Go"
+    }
+   },
+   {
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "i_ZcDUa45vQ",
+    "title": "V pekle sudy válej",
+    "views": null,
+    "isExplicit": false,
+    "artists": [
+     {
+      "name": "Kabát",
+      "id": "UCUGZbJKzihj9PhIl7zQtE9A"
+     }
+    ],
+    "album": {
+     "name": "Go Satane Go"
+    }
+   }
+  ],
+  "artist_playlist": [
+   {
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "R0mOM3OPgro",
+    "title": "Malá dáma",
+    "duration": "3:24",
+    "duration_seconds": 204,
+    "views": null,
+    "isExplicit": false,
+    "artists": [
+     {
+      "name": "Kabát",
+      "id": "UCUGZbJKzihj9PhIl7zQtE9A"
+     }
+    ],
+    "album": {
+     "name": "Corrida"
+    }
+   },
+   {
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "LlwNH6gpuc4",
+    "title": "Burlaci",
+    "duration": "4:35",
+    "duration_seconds": 275,
+    "views": null,
+    "isExplicit": false,
+    "artists": [
+     {
+      "name": "Kabát",
+      "id": "UCUGZbJKzihj9PhIl7zQtE9A"
+     }
+    ],
+    "album": {
+     "name": "Corrida"
+    }
+   },
+   {
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "5ICWhbAmIaw",
+    "title": "Pohoda",
+    "duration": "3:52",
+    "duration_seconds": 232,
+    "views": null,
+    "isExplicit": false,
+    "artists": [
+     {
+      "name": "Kabát",
+      "id": "UCUGZbJKzihj9PhIl7zQtE9A"
+     }
+    ],
+    "album": {
+     "name": "Suma Sumárum"
+    }
+   },
+   {
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "yv-PPltIAyY",
+    "title": "Bára",
+    "duration": "3:12",
+    "duration_seconds": 192,
+    "views": null,
+    "isExplicit": false,
+    "artists": [
+     {
+      "name": "Kabát",
+      "id": "UCUGZbJKzihj9PhIl7zQtE9A"
+     }
+    ],
+    "album": {
+     "name": "Go Satane Go"
+    }
+   },
+   {
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "i_ZcDUa45vQ",
+    "title": "V pekle sudy válej",
+    "duration": "2:59",
+    "duration_seconds": 179,
+    "views": null,
+    "isExplicit": false,
+    "artists": [
+     {
+      "name": "Kabát",
+      "id": "UCUGZbJKzihj9PhIl7zQtE9A"
+     }
+    ],
+    "album": {
+     "name": "Go Satane Go"
+    }
+   },
+   {
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "HVK1Pxl2ZvI",
+    "title": "Dole v dole",
+    "duration": "2:29",
+    "duration_seconds": 149,
+    "views": null,
+    "isExplicit": false,
+    "artists": [
+     {
+      "name": "Kabát",
+      "id": "UCUGZbJKzihj9PhIl7zQtE9A"
+     }
+    ],
+    "album": {
+     "name": "Dole v dole"
+    }
+   },
+   {
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "lz3MA-oU-84",
+    "title": "Corrida",
+    "duration": "2:53",
+    "duration_seconds": 173,
+    "views": null,
+    "isExplicit": false,
+    "artists": [
+     {
+      "name": "Kabát",
+      "id": "UCUGZbJKzihj9PhIl7zQtE9A"
+     }
+    ],
+    "album": {
+     "name": "Corrida"
+    }
+   },
+   {
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "videoId": "WxeAQCeKg9I",
+    "title": "Stará Lou",
+    "duration": "3:19",
+    "duration_seconds": 199,
+    "views": null,
+    "isExplicit": false,
+    "artists": [
+     {
+      "name": "Kabát",
+      "id": "UCUGZbJKzihj9PhIl7zQtE9A"
+     }
+    ],
+    "album": {
+     "name": "Dole v dole"
+    }
+   }
+  ],
+  "watch_one_ugc": [
+   {
+    "videoType": "MUSIC_VIDEO_TYPE_UGC",
+    "videoId": "fdVHXjZrfEY",
+    "title": "Tleskač - Zelená je tráva",
+    "length": "3:37",
+    "views": "4.5K",
+    "artists": [
+     {
+      "name": "1bua1",
+      "id": "UCsGyfMOr3jp6srn68phgqkg"
+     }
+    ]
+   }
+  ]
+ }
+}

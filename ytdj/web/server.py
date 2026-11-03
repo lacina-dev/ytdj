@@ -45,6 +45,7 @@ from .. import adminpin
 from .. import config as cfgmod
 from .. import manual
 from .. import telemetry
+from ..music.source import source
 from . import ai_api, identity_api, issues_api, tv_api, votes_api
 
 if TYPE_CHECKING:  # circular import — we pull in App for typing only
@@ -83,6 +84,7 @@ def build_ids() -> dict[str, str]:
     }
 
 HIST_TTL = 5.0  # s — historie pro snímek se čte ze state.db nejvýš takhle často
+SRC_CACHE_MAX = 2000  # videí, u kterých si web pamatuje zdroj zjištěný z historie
 
 # how often the state is recomputed for SSE and how long silence may last
 TICK = 1.0
@@ -577,13 +579,17 @@ def check_together(changes: dict[str, Any], cfg: Any) -> None:
 def _track_dict(track: Any) -> dict | None:
     if track is None:
         return None
-    return {
+    out = {
         "id": getattr(track, "id", ""),
         "title": getattr(track, "title", ""),
         "artist": getattr(track, "artist", ""),
         "album": getattr(track, "album", None),
         "duration": getattr(track, "duration", None),
     }
+    src = source(getattr(track, "video_type", None))
+    if src:
+        out["src"] = src  # "ytm" | "yt" — odznak zdroje (F-WEB-12); neznámý = bez pole
+    return out
 
 
 def _json_error(message: str, status: int) -> JSONResponse:
@@ -658,6 +664,9 @@ class WebServer:
         self.busy = False
         self.build = build_ids()
         self._hist: tuple | None = None  # (skladba, kdy, historie)
+        # zdroj skladby podle historie u těch, kde ho Track neuvádí (oblíbené,
+        # import, Zahrát znovu): video id → "ytm" | "yt" | "" (neví se)
+        self._src_known: dict[str, str] = {}
         self._seeks: dict[str, list[float]] = {}  # klient → časy posledních posunů
         self._sse_clients = 0
         # what the DJ is working on and how the last wish went — every client
@@ -848,16 +857,22 @@ class WebServer:
         history: list[dict] = []
         try:
             for rec in await self._history():
-                history.append(
-                    {
-                        "id": getattr(rec, "video_id", "") or "",  # hlas ze seznamu Odehráno
-                        "artist": rec.artist or "",
-                        "title": rec.title or "",
-                        "outcome": rec.outcome,
-                    }
-                )
+                item = {
+                    "id": getattr(rec, "video_id", "") or "",  # hlas ze seznamu Odehráno
+                    "artist": rec.artist or "",
+                    "title": rec.title or "",
+                    "outcome": rec.outcome,
+                }
+                src = source(getattr(rec, "video_type", None))
+                if src:
+                    item["src"] = src
+                history.append(item)
         except Exception:
             log.debug("historii se nepodařilo přečíst", exc_info=True)
+        try:
+            await self._fill_src([current, *queue, *history])
+        except Exception:
+            log.debug("zdroj skladeb z historie se nepodařilo doplnit", exc_info=True)
         try:
             votes_api.annotate_list(self.app, history)  # 👍/👎 i u odehraných
         except Exception:
@@ -942,6 +957,33 @@ class WebServer:
             log.debug("stav DJe se nepodařilo zjistit", exc_info=True)
             return None
         return brain if isinstance(brain, dict) else None
+
+    async def _fill_src(self, items: list[dict | None]) -> None:
+        """Odznak zdroje i u skladeb, jejichž Track druh neuvádí: podle toho,
+        s jakým druhem tu to video hrálo dřív (state.db, mimo event loop).
+        Každé video se zjišťuje jednou, výsledek (i „neví se") si web pamatuje."""
+        known = self._src_known
+        for it in items:  # mezitím to video hrálo s uvedeným druhem
+            if isinstance(it, dict) and it.get("src") and known.get(it.get("id")) == "":
+                known[it["id"]] = it["src"]
+        todo =[it for it in items if isinstance(it, dict) and it.get("id") and "src" not in it]
+        if not todo:
+            return
+        ask = [it["id"] for it in todo if it["id"] not in known]
+        if ask:
+            store = self.app.store
+            reader = getattr(store, "video_types", None)
+            if reader is None:
+                return
+            aread = getattr(store, "aread", None)
+            found = await aread("video_types", ask) if aread else reader(ask)
+            if len(known) + len(ask) > SRC_CACHE_MAX:
+                known.clear()
+            for vid in ask:
+                known[vid] = source(found.get(vid)) or ""
+        for it in todo:
+            if known.get(it["id"]):
+                it["src"] = known[it["id"]]
 
     async def _history(self) -> list:
         """Posledních 20 přehrání — ze state.db mimo event loop, na chvíli v cache.
@@ -1254,7 +1296,8 @@ class WebServer:
         from ..music.catalog import Track
 
         known = getattr(self.app.player, "_tracks", {}).get(vid)
-        track = known if known is not None else Track(vid, row.title or "", row.artist or "")
+        track = known if known is not None else Track(
+            vid, row.title or "", row.artist or "", video_type=getattr(row, "video_type", None))
         try:
             w = wq.replay(track, data.get("who"), source,
                           client={"ip": rec.get("ip"), "ua": rec.get("ua"), "id": data.get("client")})

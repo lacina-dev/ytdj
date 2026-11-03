@@ -1,0 +1,1834 @@
+{
+"artist": "Tleskač",
+"artist_tracks": [],
+"uploads": [
+[
+"fdVHXjZrfEY",
+"Zelená je tráva"
+],
+[
+"bleyM8w2Eww",
+"Nafoukanej chlapeček"
+],
+[
+"KtSAZ-oFR3k",
+"Příběh Jana Tleskače"
+],
+[
+"uq9I9nDY4k8",
+"Hrozný Hroznýš z Hrozenkova"
+],
+[
+"TCAclBOW6wY",
+"krámy"
+],
+[
+"HKxr4OL8rYE",
+"Pavlačová story"
+],
+[
+"JC0fVNKRx9Y",
+"Krutej John"
+],
+[
+"0R02nscNqno",
+"Indian Ska"
+],
+[
+"FNSGDV0Dtmk",
+"Indianska"
+],
+[
+"LkM3mWudrHo",
+"Amigo Pablo"
+],
+[
+"7oFbiXPdobI",
+"Loupežnická"
+],
+[
+"H0BC1kEcDVE",
+"z hofmanek na belveder"
+],
+[
+"ByaRkh6UQDw",
+"Doktorka práv"
+],
+[
+"pTMxeVKDyvg",
+"Sedmý den (Obří Ska)"
+],
+[
+"3NyRjKho9TY",
+"Old punk's never die"
+],
+[
+"-kUghzkydqI",
+"FLASHBACK"
+],
+[
+"BK2iSTgSfEs",
+"Skandinávská ženská"
+],
+[
+"qPG1Ob58vU4",
+"V té naší zahrádce"
+],
+[
+"qXzdpjVspRc",
+"Poslední dvě volné labutě"
+],
+[
+"JLBP4Lq3Fv8",
+"Holá řiť, Masters of Rock 2011"
+],
+[
+"J5oV_wEamT8",
+"Mrtvá holka (živě)"
+],
+[
+"Vkn5J27VuRc",
+"live - Mighty Sounds"
+]
+],
+"as_title": "Tomáš Herudek — Tleskac",
+"radio": [
+"Tleskač — Zelená je tráva",
+"Tleskač — Hrozný Hroznýš z Hrozenkova",
+"Sto zvířat — Nikdy nic nebylo",
+"Tři Sestry — Už koluje fáma",
+"Dukla vozovna — Bílá vdova",
+"Polemic — Komplikovana",
+"Deda Mladek Illegal Band — Jez",
+"kubameekrab — Irie revoltes - Ska",
+"Vision Days — Cesta do hlubin punkáčovy duše",
+"Horkýže Slíže — Silný refrén"
+],
+"calls": [
+{
+"lang": "en",
+"method": "search",
+"args": [
+"Tleskač"
+],
+"kwargs": {
+"filter": "artists",
+"limit": 5
+},
+"result": []
+},
+{
+"lang": "en",
+"method": "search",
+"args": [
+"Tleskač"
+],
+"kwargs": {
+"filter": "videos",
+"limit": 40
+},
+"result": [
+{
+"resultType": "video",
+"title": "Tleskač - Příběh Jana Tleskače",
+"videoId": "KtSAZ-oFR3k",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "cancel11111",
+"id": "UCIlGZgEIa6paLWJxuNtaT4A"
+}
+],
+"views": "994K",
+"duration": "6:05",
+"duration_seconds": 365,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač - Zelená je tráva",
+"videoId": "fdVHXjZrfEY",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "1bua1",
+"id": "UCsGyfMOr3jp6srn68phgqkg"
+}
+],
+"views": "2M",
+"duration": "3:37",
+"duration_seconds": 217,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač - Hrozný Hroznýš z Hrozenkova",
+"videoId": "uq9I9nDY4k8",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Jana Barančíková",
+"id": "UCzPqUPgPMGxhH5sKVmOa7bQ"
+}
+],
+"views": "617K",
+"duration": "2:36",
+"duration_seconds": 156,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač - Indian Ska",
+"videoId": "0R02nscNqno",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "pilsnerskaorchestra",
+"id": "UCPAOCEfbHH6YQkhl7JIRTkQ"
+}
+],
+"views": "231K",
+"duration": "3:57",
+"duration_seconds": 237,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač - Nafoukanej chlapeček",
+"videoId": "bleyM8w2Eww",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "pilsnerskaorchestra",
+"id": "UCPAOCEfbHH6YQkhl7JIRTkQ"
+}
+],
+"views": "1M",
+"duration": "3:15",
+"duration_seconds": 195,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "TleSKAč - krámy,,",
+"videoId": "TCAclBOW6wY",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "nekdoneconekde",
+"id": "UCNu0ElzgIUoyYcCPYUIdahw"
+}
+],
+"views": "513K",
+"duration": "2:52",
+"duration_seconds": 172,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "TleSKAč - Pavlačová story",
+"videoId": "HKxr4OL8rYE",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "StupiDBlueBerry07",
+"id": "UCfDVNyOvtAhDA3L58PNdCQA"
+}
+],
+"views": "256K",
+"duration": "3:24",
+"duration_seconds": 204,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač - Příběh Jana Tleskače",
+"videoId": "OilMYYZSjVs",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "pilsnerskaorchestra",
+"id": "UCPAOCEfbHH6YQkhl7JIRTkQ"
+}
+],
+"views": "67K",
+"duration": "2:40",
+"duration_seconds": 160,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač - Příběh Jana Tleskače",
+"videoId": "mXRcebxkrI4",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Tomáš Zimolka",
+"id": "UCi9gMPHnZ05cH3Q_nVwZzUg"
+}
+],
+"views": "24K",
+"duration": "2:40",
+"duration_seconds": 160,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač - z hofmanek na belveder",
+"videoId": "H0BC1kEcDVE",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "per2",
+"id": "UCzceupnZRzIjK_Tu6RjMsmg"
+}
+],
+"views": "4.9K",
+"duration": "2:54",
+"duration_seconds": 174,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač - Holá řiť, Masters of Rock 2011",
+"videoId": "JLBP4Lq3Fv8",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "piratepata",
+"id": "UC-NM0uwMXbPBRQjeav4gvcw"
+}
+],
+"views": "910",
+"duration": "4:05",
+"duration_seconds": 245,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač - Zelená je tráva.avi",
+"videoId": "n5MVr9bnacQ",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Domino War",
+"id": "UCZGK5M3G7XimLLDDFjg474A"
+}
+],
+"views": "513",
+"duration": "3:37",
+"duration_seconds": 217,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač - Indianska",
+"videoId": "FNSGDV0Dtmk",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Tomáš Zimolka",
+"id": "UCi9gMPHnZ05cH3Q_nVwZzUg"
+}
+],
+"views": "10K",
+"duration": "4:11",
+"duration_seconds": 251,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "TleSKAč - Příběh Jana Tleskače (živě)",
+"videoId": "kftlyTlxBTw",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "kibitzerCZ",
+"id": "UC8ykUadZtnz2B6VBb0FJ4LQ"
+}
+],
+"views": "289",
+"duration": "2:44",
+"duration_seconds": 164,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač - Zelená je Tráva, DWBH live (Léto s Rychtářem 08)",
+"videoId": "zsgj1E4GBBk",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "ZLproduction",
+"id": "UCf4uQmVXZyDt2AUVhYZg60w"
+}
+],
+"views": "3.5K",
+"duration": "6:18",
+"duration_seconds": 378,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "TLESKAČ feat  RANGO  Muchacho desperado",
+"videoId": "suW0NgyiL1Q",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Vít Líbal",
+"id": "UC6zZ8lbgsnB7rW8pAngkuiA"
+}
+],
+"views": "1.1K",
+"duration": "4:17",
+"duration_seconds": 257,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač - Jihlava",
+"videoId": "JoUyc4oL_rE",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Kejvalm1989",
+"id": "UCWWTwn-kWsa9HK_6GpmwFsA"
+}
+],
+"views": "48",
+"duration": "2:16",
+"duration_seconds": 136,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač   doktorka práv Mostecké slavnosti 2011",
+"videoId": "A_EBVbXsUio",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Roman Pátys",
+"id": "UCi8eatD8lj7SK_7fgBiat2g"
+}
+],
+"views": "290",
+"duration": "2:48",
+"duration_seconds": 168,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "TLESKAČ - Old punk's never die",
+"videoId": "3NyRjKho9TY",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Lochotin",
+"id": "UCBUzWR-BWm1tLHId_v4XZaw"
+}
+],
+"views": "2.4K",
+"duration": "3:38",
+"duration_seconds": 218,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač - Jihlava",
+"videoId": "Wx_Dj3hgT8k",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Kejvalm1989",
+"id": "UCWWTwn-kWsa9HK_6GpmwFsA"
+}
+],
+"views": "75",
+"duration": "3:14",
+"duration_seconds": 194,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "tleskač live 2005 2/4",
+"videoId": "SBRGtlizbOc",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "ani0ryba0ani0curak",
+"id": "UCrv6Lcn00VnlHFop9rF2_8Q"
+}
+],
+"views": "733",
+"duration": "9:44",
+"duration_seconds": 584,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "TleSKAč - Krutej John",
+"videoId": "JC0fVNKRx9Y",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "StupiDBlueBerry07",
+"id": "UCfDVNyOvtAhDA3L58PNdCQA"
+}
+],
+"views": "246K",
+"duration": "2:40",
+"duration_seconds": 160,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač - FLASHBACK",
+"videoId": "-kUghzkydqI",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "zzzzzzzzzu",
+"id": "UCCXQncRkyH3UF8f8XFTtX4g"
+}
+],
+"views": "1.5K",
+"duration": "3:21",
+"duration_seconds": 201,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač - Skandinávská ženská",
+"videoId": "BK2iSTgSfEs",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "martinp81seznamcz",
+"id": "UChQUAtOtcrAJ8x763esDqyA"
+}
+],
+"views": "1.2K",
+"duration": "2:22",
+"duration_seconds": 142,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "tleskač - zelená je tráva,  mělnické vinobraní",
+"videoId": "y8pLu2X4VJM",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "ZB440",
+"id": "UC1xDpAtr1gAqwad01IMSOzQ"
+}
+],
+"views": "386",
+"duration": "3:08",
+"duration_seconds": 188,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač - Amigo Pablo",
+"videoId": "LkM3mWudrHo",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "martinp81seznamcz",
+"id": "UChQUAtOtcrAJ8x763esDqyA"
+}
+],
+"views": "10K",
+"duration": "2:43",
+"duration_seconds": 163,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač - Loupežnická",
+"videoId": "7oFbiXPdobI",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Tomáš Zimolka",
+"id": "UCi9gMPHnZ05cH3Q_nVwZzUg"
+}
+],
+"views": "7K",
+"duration": "4:33",
+"duration_seconds": 273,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač - Zelená je tráva",
+"videoId": "8hCNzgNCqZo",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "pilsnerskaorchestra",
+"id": "UCPAOCEfbHH6YQkhl7JIRTkQ"
+}
+],
+"views": "91K",
+"duration": "3:25",
+"duration_seconds": 205,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "TleSKAč - Mrtvá holka (živě)",
+"videoId": "J5oV_wEamT8",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "kibitzerCZ",
+"id": "UC8ykUadZtnz2B6VBb0FJ4LQ"
+}
+],
+"views": "818",
+"duration": "3:15",
+"duration_seconds": 195,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač - Sedmý den (Obří Ska)",
+"videoId": "pTMxeVKDyvg",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Jakub Vanas",
+"id": "UCgsckhm5Nl8WB-KpDr2iRgg"
+}
+],
+"views": "2.9K",
+"duration": "3:23",
+"duration_seconds": 203,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač - Skandinávská ženská (live Mighty Sounds)",
+"videoId": "ceJ1b3pVQNQ",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Zvlastnistyl.cz",
+"id": "UCAZHLZfIwg33UoOHrIvRS4Q"
+}
+],
+"views": "636",
+"duration": "2:27",
+"duration_seconds": 147,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač - Doktorka práv",
+"videoId": "ByaRkh6UQDw",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "martinp81seznamcz",
+"id": "UChQUAtOtcrAJ8x763esDqyA"
+}
+],
+"views": "3.8K",
+"duration": "2:43",
+"duration_seconds": 163,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač - Poslední dvě volné labutě",
+"videoId": "qXzdpjVspRc",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Jakub Vanas",
+"id": "UCgsckhm5Nl8WB-KpDr2iRgg"
+}
+],
+"views": "825",
+"duration": "3:41",
+"duration_seconds": 221,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač - V té naší zahrádce",
+"videoId": "qPG1Ob58vU4",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "martinp81seznamcz",
+"id": "UChQUAtOtcrAJ8x763esDqyA"
+}
+],
+"views": "981",
+"duration": "2:56",
+"duration_seconds": 176,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač - Báťa a doktorka práv - 27.5.2010 Zach's Pub",
+"videoId": "1D3U_sc9GfQ",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "DaskyfromZach",
+"id": "UCN77QD9JbIFvAJnWv_O1XNQ"
+}
+],
+"views": "224",
+"duration": "7:02",
+"duration_seconds": 422,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač - Jihlava",
+"videoId": "t2ez1i7KIUI",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Kejvalm1989",
+"id": "UCWWTwn-kWsa9HK_6GpmwFsA"
+}
+],
+"views": "27",
+"duration": "1:31",
+"duration_seconds": 91,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač - live - Mighty Sounds",
+"videoId": "Vkn5J27VuRc",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Zvlastnistyl.cz",
+"id": "UCAZHLZfIwg33UoOHrIvRS4Q"
+}
+],
+"views": "689",
+"duration": "3:00",
+"duration_seconds": 180,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskač - Natáčení DVD - Palác Akropolis (2009)",
+"videoId": "Oz5oHmGLoDk",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Alternativatvcz",
+"id": "UC6cuYFrv-HkmLtizgDl-9sQ"
+}
+],
+"views": "186",
+"duration": "15:12",
+"duration_seconds": 912,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "Tleskac - Loupeznicka, Pavlacova Story.MOV",
+"videoId": "ueWhy3hS4LY",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Vena Topspn",
+"id": "UCei_gpE-2aNu9hcaAP4fyew"
+}
+],
+"views": "873",
+"duration": "6:54",
+"duration_seconds": 414,
+"isAvailable": true,
+"category": "Videos"
+},
+{
+"resultType": "video",
+"title": "TLESKAČ, V3SKA, FRAJARA PUTIKA - STOD - 30.11.2012",
+"videoId": "d6-0kttyJHs",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Pavel Schneider",
+"id": "UC8RIcQWSiMgk6MzebnUSPCQ"
+}
+],
+"views": "278",
+"duration": "0:34",
+"duration_seconds": 34,
+"isAvailable": true,
+"category": "Videos"
+}
+]
+},
+{
+"lang": "en",
+"method": "search",
+"args": [
+"Tleskač"
+],
+"kwargs": {
+"filter": "songs",
+"limit": 20
+},
+"result": [
+{
+"resultType": "song",
+"title": "Záhada hlavolamu - Deník Jana Tleskače",
+"videoId": "F84IN9zpGUA",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Činoherní sbor",
+"id": null
+},
+{
+"name": "Kühnův dětský sbor",
+"id": "UCe2IdA-3GX8iRt3B0TBzpzQ"
+},
+{
+"name": "Ladislav Mrkvička",
+"id": "UCyFdFhaXgGjSlYEi0ZgIVXA"
+},
+{
+"name": "Filip Jančík",
+"id": null
+}
+],
+"views": "32K",
+"duration": "21:37",
+"duration_seconds": 1297,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Nikdy nic nebylo",
+"videoId": "r5IwDucCV7M",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Sto zvířat",
+"id": "UCsP5UHbWUzIzfTw2JVOwwtw"
+}
+],
+"views": "2.6M",
+"duration": "2:11",
+"duration_seconds": 131,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Balkánská",
+"videoId": "3lYAt7k-jeM",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Totální nasazení",
+"id": "UCjhORuMGrFDEtLCaEbwm8XA"
+}
+],
+"views": "8.8M",
+"duration": "3:13",
+"duration_seconds": 193,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Šeherezád",
+"videoId": "rxJMovWRmpo",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Arakain",
+"id": "UCDHNmlquINWS0Fvu56Why0g"
+}
+],
+"views": "208K",
+"duration": "6:52",
+"duration_seconds": 412,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Tlustej chlapeček",
+"videoId": "JL4Pf3TZ1aA",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Sto zvířat",
+"id": "UCsP5UHbWUzIzfTw2JVOwwtw"
+}
+],
+"views": "39K",
+"duration": "2:37",
+"duration_seconds": 157,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Nejkratší cesta",
+"videoId": "oC5fVD6G9wg",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Sto zvířat",
+"id": "UCsP5UHbWUzIzfTw2JVOwwtw"
+}
+],
+"views": "2.8M",
+"duration": "3:01",
+"duration_seconds": 181,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Hovno",
+"videoId": "u2VdLEFUV18",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "E!E",
+"id": "UCHMH6u_tYWwiwXUTv7q3scw"
+}
+],
+"views": "106K",
+"duration": "3:45",
+"duration_seconds": 225,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Na buvolí stezce",
+"videoId": "bwp5UdH9iEw",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Peshata",
+"id": "UCFwwsayk-YGj7frFMHaSpEA"
+}
+],
+"views": "22K",
+"duration": "3:27",
+"duration_seconds": 207,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Pseudoradikál",
+"videoId": "sAVZoTJCGlo",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Totální nasazení",
+"id": "UCjhORuMGrFDEtLCaEbwm8XA"
+}
+],
+"views": "683K",
+"duration": "3:24",
+"duration_seconds": 204,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Jozin z bazin",
+"videoId": "mj_GQeoVb2g",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Deda Mladek Illegal Band",
+"id": "UCTcAK7V0ZfRGEEMLGNa2kJw"
+}
+],
+"views": "1.1M",
+"duration": "4:09",
+"duration_seconds": 249,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Kluci jdou do války",
+"videoId": "Jc4HSePbbdg",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Telex",
+"id": "UC7PCnW_JKZ4gGHog2TB292Q"
+}
+],
+"views": "80K",
+"duration": "2:19",
+"duration_seconds": 139,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Jseš punkáč nebo sráč?",
+"videoId": "FIHPaiO0cuY",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Zpěváčci Sokolov",
+"id": "UCNFvIkI5DshqgYqUylKE8Kw"
+}
+],
+"views": "100",
+"duration": "2:39",
+"duration_seconds": 159,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Záhada hlavolamu - Rychlé šípy a vznik Tam-Tamu",
+"videoId": "YC_-aN5H-94",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Činoherní sbor",
+"id": null
+},
+{
+"name": "Kühnův dětský sbor",
+"id": "UCe2IdA-3GX8iRt3B0TBzpzQ"
+},
+{
+"name": "Ladislav Mrkvička",
+"id": "UCyFdFhaXgGjSlYEi0ZgIVXA"
+},
+{
+"name": "Filip Jančík",
+"id": null
+}
+],
+"views": "26K",
+"duration": "5:54",
+"duration_seconds": 354,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Škola (La lumiere des tenebres)",
+"videoId": "PK7opORZOqI",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Sto zvířat",
+"id": "UCsP5UHbWUzIzfTw2JVOwwtw"
+}
+],
+"views": "2.3M",
+"duration": "3:25",
+"duration_seconds": 205,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Tleskac",
+"videoId": "DXYlSiCBwL4",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Tomáš Herudek",
+"id": "UCuley0YXjSJ-vEef11mFCGg"
+}
+],
+"views": "776",
+"duration": "2:19",
+"duration_seconds": 139,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Topení",
+"videoId": "gJR4SGHCWYc",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Baťa & Kalábůf něžný beat",
+"id": "UCxDQGjgxazHDvM4Oa7u6RtQ"
+}
+],
+"views": "300",
+"duration": "3:21",
+"duration_seconds": 201,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "chlapec z nebe",
+"videoId": "lcnLqGXl_WM",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "adidy",
+"id": "UClIHV0pcHvmDrHweGJOE8og"
+}
+],
+"views": "404",
+"duration": "3:12",
+"duration_seconds": 192,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Green and white ska",
+"videoId": "M2loz1R4InI",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "8°6 Crew",
+"id": "UCBo5HJGUdJMcyJ3w9WPrfjQ"
+}
+],
+"views": "4.5K",
+"duration": "2:40",
+"duration_seconds": 160,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Záhada hlavolamu - Stopy vedou do Stínadel",
+"videoId": "o2NFWdM5YCg",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Činoherní sbor",
+"id": null
+},
+{
+"name": "Kühnův dětský sbor",
+"id": "UCe2IdA-3GX8iRt3B0TBzpzQ"
+},
+{
+"name": "Ladislav Mrkvička",
+"id": "UCyFdFhaXgGjSlYEi0ZgIVXA"
+},
+{
+"name": "Filip Jančík",
+"id": null
+}
+],
+"views": "22K",
+"duration": "12:37",
+"duration_seconds": 757,
+"isAvailable": true,
+"category": "Songs"
+},
+{
+"resultType": "song",
+"title": "Don Quijote de la Ganja",
+"videoId": "5M958zOSu_4",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Totální nasazení",
+"id": "UCjhORuMGrFDEtLCaEbwm8XA"
+}
+],
+"views": "32K",
+"duration": "2:47",
+"duration_seconds": 167,
+"isAvailable": true,
+"category": "Songs"
+}
+]
+},
+{
+"lang": "en",
+"method": "get_watch_playlist",
+"args": [],
+"kwargs": {
+"videoId": "fdVHXjZrfEY",
+"radio": true,
+"limit": 50
+},
+"result": {
+"title": null,
+"tracks": [
+{
+"title": "Tleskač - Zelená je tráva",
+"videoId": "fdVHXjZrfEY",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "1bua1",
+"id": "UCsGyfMOr3jp6srn68phgqkg"
+}
+],
+"views": "4.5K",
+"length": "3:37"
+},
+{
+"title": "Tleskač - Hrozný Hroznýš z Hrozenkova",
+"videoId": "uq9I9nDY4k8",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Jana Barančíková",
+"id": "UCzPqUPgPMGxhH5sKVmOa7bQ"
+}
+],
+"views": "1.2K",
+"length": "2:36"
+},
+{
+"title": "Nikdy nic nebylo",
+"videoId": "r5IwDucCV7M",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Sto zvířat",
+"id": "UCsP5UHbWUzIzfTw2JVOwwtw"
+}
+],
+"length": "2:11"
+},
+{
+"title": "Už koluje fáma",
+"videoId": "T3jY2DGphkE",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Tři Sestry",
+"id": "UCa7Mjec4igx924iE-9osbBQ"
+}
+],
+"length": "1:06"
+},
+{
+"title": "Bílá vdova",
+"videoId": "CNBZ3KL5bZI",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Dukla vozovna",
+"id": "UCewGOxSC4mRWzI7kHfWGkvA"
+}
+],
+"length": "3:33"
+},
+{
+"title": "Komplikovana",
+"videoId": "C3CGr7HN_9c",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Polemic",
+"id": "UC9nN1HEJr-kNYhhpQwrH4NQ"
+}
+],
+"length": "3:07"
+},
+{
+"title": "Jez",
+"videoId": "N67SPKYsVsU",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Deda Mladek Illegal Band",
+"id": "UCTcAK7V0ZfRGEEMLGNa2kJw"
+}
+],
+"length": "2:07"
+},
+{
+"title": "Irie revoltes - Ska",
+"videoId": "iH-7yOqJmBM",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "kubameekrab",
+"id": "UCGNNXQg_Of3YvoHZ2OALCnw"
+}
+],
+"views": "10K",
+"length": "2:43"
+},
+{
+"title": "Cesta do hlubin punkáčovy duše",
+"videoId": "A9iQHCrTGSo",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Vision Days",
+"id": "UC3Sew65LAaT6zgxBuO0uWSw"
+}
+],
+"length": "2:48"
+},
+{
+"title": "Silný refrén",
+"videoId": "80RzeDC89Qk",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Horkýže Slíže",
+"id": "UCroR8o7hU96JHmsvzbPb48Q"
+}
+],
+"length": "3:09"
+},
+{
+"title": "Tleskač Doktorka Práv",
+"videoId": "vmhTUxCe6Is",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Honzyik",
+"id": "UCCsdX_sa67W3ryUgohQR0Ow"
+}
+],
+"views": "385",
+"length": "2:40"
+},
+{
+"title": "Andílek",
+"videoId": "84jAZfqXdic",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Daniel Landa",
+"id": "UC0725SlKeEA-U4YOzrlYGWg"
+}
+],
+"length": "3:42"
+},
+{
+"title": "Oceloví ptáci",
+"videoId": "1jMEI2YrbKQ",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Totální nasazení",
+"id": "UCjhORuMGrFDEtLCaEbwm8XA"
+}
+],
+"length": "2:18"
+},
+{
+"title": "Bezbranná",
+"videoId": "_y5ilkAicbw",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Fast Food Orchestra",
+"id": "UCumVgGzUEDO7IOnW1FAT9GQ"
+}
+],
+"length": "3:15"
+},
+{
+"title": "TleSKAč - Poslední dvě volné labutě",
+"videoId": "u_InfZsJLMI",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "StupiDBlueBerry07",
+"id": "UCfDVNyOvtAhDA3L58PNdCQA"
+}
+],
+"views": "431",
+"length": "3:40"
+},
+{
+"title": "Jedna láska (feat. The Solid Vibes) (feat. The Solid Vibes)",
+"videoId": "tFKvT5rBHsU",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Cocoman",
+"id": "UCeOBcOFBm72dWp-OWb81Kvw"
+}
+],
+"length": "3:25"
+},
+{
+"title": "Ružová záhrada",
+"videoId": "u4gPzy9oQHY",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Iné Kafe",
+"id": "UCHPAwjacAOMGpYA6CY0e2zQ"
+}
+],
+"length": "3:43"
+},
+{
+"title": "Na Jamajce půl srdce mám",
+"videoId": "2Jf8YGFfyvE",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Svihadlo",
+"id": "UCH04trCnDFA9D02URaxXfUQ"
+}
+],
+"length": "3:29"
+},
+{
+"title": "Tleskač - Degenerace (Bámba Rambambám)",
+"videoId": "0_j7zAHue4I",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "lpiskytl",
+"id": "UCxWduB3XFVp2tTkyz8CY4lQ"
+}
+],
+"views": "314",
+"length": "3:15"
+},
+{
+"title": "Včera Bola Mela",
+"videoId": "y0JINgEjLDo",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Feher Fekete Kerek",
+"id": "UCajIad0O0Cof31tVhSsgo9w"
+}
+],
+"length": "3:21"
+},
+{
+"title": "Je víkend",
+"videoId": "uaOyoU0ovFU",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "The Fialky",
+"id": "UCl4E3_a8FeVaBlRyFYO0FYg"
+}
+],
+"length": "2:40"
+},
+{
+"title": "Nejkratší cesta",
+"videoId": "oC5fVD6G9wg",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Sto zvířat",
+"id": "UCsP5UHbWUzIzfTw2JVOwwtw"
+}
+],
+"length": "3:01"
+},
+{
+"title": "Tleskač - Lesní manekýn",
+"videoId": "_uKqB62gctc",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "lpiskytl",
+"id": "UCxWduB3XFVp2tTkyz8CY4lQ"
+}
+],
+"views": "426",
+"length": "3:13"
+},
+{
+"title": "Bastila",
+"videoId": "xPkeE6uYOGA",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Znouzectnost",
+"id": "UCI97dXrxQSDB9KmjqQSuZ9g"
+}
+],
+"length": "2:34"
+},
+{
+"title": "Pogo",
+"videoId": "WjKt8hYmp38",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "E!E",
+"id": "UCHMH6u_tYWwiwXUTv7q3scw"
+}
+],
+"length": "2:08"
+},
+{
+"title": "Pochyby",
+"videoId": "bay5u5_AKHQ",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Sto zvířat",
+"id": "UCsP5UHbWUzIzfTw2JVOwwtw"
+},
+{
+"name": "Smyčcový orchestr",
+"id": "UCwUtcyE2cRTpyNKFEctGKjg"
+}
+],
+"length": "3:44"
+},
+{
+"title": "Modroočko",
+"videoId": "pLcX32EcnQI",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "NVÚ",
+"id": "UCaEtu79tKl7pI556NmHI7mQ"
+}
+],
+"length": "4:25"
+},
+{
+"title": "Mafioso Politico",
+"videoId": "ASpuK1UUY7I",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "V3Ska",
+"id": "UCrVDJWTREQzH6iHHNOtKCUQ"
+}
+],
+"length": "4:17"
+},
+{
+"title": "Ja Som To Vedel",
+"videoId": "Xit2dqDxamY",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Polemic",
+"id": "UC9nN1HEJr-kNYhhpQwrH4NQ"
+}
+],
+"length": "2:30"
+},
+{
+"title": "S Pankáčem Do Práce",
+"videoId": "FHqT9rPFj8c",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Volné Hudební Sdružení",
+"id": "UC51mc1h0YEFB_HMCqI2kpEw"
+}
+],
+"length": "3:18"
+},
+{
+"title": "Malá Žužu",
+"videoId": "ilgho9teLfk",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Horkýže Slíže",
+"id": "UCroR8o7hU96JHmsvzbPb48Q"
+}
+],
+"length": "2:53"
+},
+{
+"title": "Vodník",
+"videoId": "AgkkgMzoN-o",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Timudej",
+"id": "UCp2vYVp_QqiPFtr8YCkIUoQ"
+}
+],
+"length": "3:14"
+},
+{
+"title": "Lubrikační Gel",
+"videoId": "Oto7y971IZI",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Elektrickmann",
+"id": "UCvzABtQqf5FJIVvtMxQxJAA"
+}
+],
+"length": "2:41"
+},
+{
+"title": "Škola (La lumiere des tenebres)",
+"videoId": "48aIXEQdRhg",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Sto zvířat",
+"id": "UCsP5UHbWUzIzfTw2JVOwwtw"
+}
+],
+"length": "3:07"
+},
+{
+"title": "Z pohádky do pohádky",
+"videoId": "2CkOrjZHijE",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Fast Food Orchestra",
+"id": "UCumVgGzUEDO7IOnW1FAT9GQ"
+}
+],
+"length": "3:01"
+},
+{
+"title": "BalkánSka",
+"videoId": "J8-iK1bkqgM",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Totální nasazení",
+"id": "UCjhORuMGrFDEtLCaEbwm8XA"
+}
+],
+"length": "3:12"
+},
+{
+"title": "TleSKAč - krámy,,",
+"videoId": "TCAclBOW6wY",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "nekdoneconekde",
+"id": "UCNu0ElzgIUoyYcCPYUIdahw"
+}
+],
+"views": "952",
+"length": "2:52"
+},
+{
+"title": "Máma táta",
+"videoId": "-qyOQmaqpK8",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Hudba Praha",
+"id": "UCsKrWhWtHQQ0uuB2_8lU6vA"
+}
+],
+"length": "5:27"
+},
+{
+"title": "Závěr",
+"videoId": "i1lrO8-Up7Y",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Fast Food Orchestra",
+"id": "UCumVgGzUEDO7IOnW1FAT9GQ"
+}
+],
+"length": "2:38"
+},
+{
+"title": "Nástěnka",
+"videoId": "8QoQv5eZOL4",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Sto zvířat",
+"id": "UCsP5UHbWUzIzfTw2JVOwwtw"
+}
+],
+"length": "2:27"
+},
+{
+"title": "Tleskač - Never Die Song",
+"videoId": "6_guqlIlWcQ",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "lpiskytl",
+"id": "UCxWduB3XFVp2tTkyz8CY4lQ"
+}
+],
+"views": "197",
+"length": "3:54"
+},
+{
+"title": "Na sirem mori",
+"videoId": "9Bq3zpVrSAs",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Traband",
+"id": "UCF5hos4itm57XnWecnNQPkQ"
+}
+],
+"length": "3:16"
+},
+{
+"title": "Pomeranč",
+"videoId": "jXVj1t5vssg",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Fast Food Orchestra",
+"id": "UCumVgGzUEDO7IOnW1FAT9GQ"
+}
+],
+"length": "2:44"
+},
+{
+"title": "Pálime weed",
+"videoId": "K05mM4WiyeE",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Medial Banana",
+"id": "UCy68qeQ6w6w5yr5cOZgUGOg"
+}
+],
+"length": "3:45"
+},
+{
+"title": "TleSkač Pokoj v suterénu",
+"videoId": "Q0hll24ICio",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "jaro",
+"id": "UCLqhuPSAIwzTkhrakloXERw"
+}
+],
+"views": "427",
+"length": "4:11"
+},
+{
+"title": "Skandal",
+"videoId": "lJt205NEO9g",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Polemic",
+"id": "UC9nN1HEJr-kNYhhpQwrH4NQ"
+}
+],
+"length": "2:41"
+},
+{
+"title": "Benga přijedou",
+"videoId": "IzAPFzAfiLo",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Uraggan Andrew & Reggae Orthodox",
+"id": "UCjGiRzv0W3WZOG-wlQ8_gaQ"
+}
+],
+"length": "3:53"
+},
+{
+"title": "Dlouhá cesta",
+"videoId": "TbBPiFo9ec8",
+"videoType": "MUSIC_VIDEO_TYPE_ATV",
+"artists": [
+{
+"name": "Fast Food Orchestra",
+"id": "UCumVgGzUEDO7IOnW1FAT9GQ"
+}
+],
+"length": "2:39"
+},
+{
+"title": "TleSKAč - Pavlačová story",
+"videoId": "HKxr4OL8rYE",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "StupiDBlueBerry07",
+"id": "UCfDVNyOvtAhDA3L58PNdCQA"
+}
+],
+"views": "392",
+"length": "3:24"
+},
+{
+"title": "Totální nasazení - Černobílý svět",
+"videoId": "360jYshhrUE",
+"videoType": "MUSIC_VIDEO_TYPE_UGC",
+"artists": [
+{
+"name": "Django282",
+"id": "UCBz-jEdl3PGIsUT2G9ZKFtQ"
+}
+],
+"views": "8.3K",
+"length": "2:39"
+}
+]
+}
+}
+]
+}

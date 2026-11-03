@@ -216,6 +216,17 @@
   .track-artist { margin: 4px 0 0; font-size: clamp(1rem, 2.6vw, 1.2rem); color: var(--accent-text);
                   font-weight: 550; overflow-wrap: anywhere; }
   .now.idle .track-title { color: var(--text-dim); font-weight: 600; }
+  /* zdroj skladby (F-WEB-12): neutrální textový odznak se značkou ▶ z CSS, žádné logo.
+     YT Music = tlumeně, YouTube (nahrál posluchač) = barvou jukeboxu, ať je na první pohled vidět. */
+  .src { display: inline-flex; align-items: center; gap: 3px; margin-left: 6px; padding: 0 5px;
+         border: 1px solid var(--line); border-radius: 4px; vertical-align: 1px;
+         font-size: .68rem; font-weight: 650; line-height: 1.45; letter-spacing: .02em;
+         color: var(--text-faint); white-space: nowrap; font-style: normal; }
+  .src::before { content: ""; flex: none; width: 0; height: 0; border-style: solid;
+                 border-width: .28em 0 .28em .46em; border-color: transparent transparent transparent currentColor; }
+  .src.yt { color: var(--accent-text); border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+  .src[hidden] { display: none; }
+  .track-artist .src { font-size: .72rem; vertical-align: 2px; }
   .reason { margin: 14px 0 0; font-size: .9rem; color: var(--text-dim); overflow-wrap: anywhere;
             display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
   .reason b { color: var(--text); font-weight: 600; }
@@ -719,7 +730,7 @@
           <div style="min-width:0">
             <p class="eyebrow"><span class="bars still" id="bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span id="nowLabel">nic nehraje</span></p>
             <h1 class="track-title" id="title">Je ticho</h1>
-            <p class="track-artist" id="artist" hidden></p>
+            <p class="track-artist" id="artistRow" hidden><span id="artist"></span><span class="src" id="src" role="img" hidden></span></p>
           </div>
         </div>
         <p class="reason" id="reason" hidden></p>
@@ -1043,6 +1054,15 @@
   // "no such video" comes back as a 120×90 grey picture, not as an error
   window.ytdjThumb = function (img) { if (img.naturalWidth && img.naturalWidth < 200) img.remove(); };
 
+  // Zdroj skladby (F-WEB-12): src ze stavu, "ytm" | "yt"; bez src (neví se) žádný odznak
+  var SRC = { ytm: ["YT Music", "Oficiální skladba z YouTube Music"],
+              yt: ["YouTube", "Video z YouTube (nahrál posluchač)"] };
+  function srcBadge(t) {
+    var s = t && SRC[t.src];
+    return s ? '<span class="src ' + t.src + '" role="img" title="' + s[1] + '" aria-label="' + s[1] + '">' + s[0] + "</span>" : "";
+  }
+  window.ytdjSrcBadge = srcBadge;  // i pro ai.js („hraje teď")
+
   /* ------------------------------------------------------------------ */
   /* client state                                                        */
   /* ------------------------------------------------------------------ */
@@ -1075,7 +1095,7 @@
     notice: $("#notice"), noticeText: $("#noticeText"),
     now: $("#now"), nowLabel: $("#nowLabel"), bars: $("#bars"),
     art: $("#art"), artImg: $("#artImg"),
-    title: $("#title"), artist: $("#artist"), idleHint: $("#idleHint"), reason: $("#reason"),
+    title: $("#title"), artist: $("#artist"), artistRow: $("#artistRow"), src: $("#src"), idleHint: $("#idleHint"), reason: $("#reason"),
     progress: $("#progress"), bar: $("#bar"), barFill: $("#barFill"),
     seek: $("#seek"), btnBack: $("#btnBack"), btnFwd: $("#btnFwd"),
     elapsed: $("#elapsed"), total: $("#total"),
@@ -1490,8 +1510,16 @@
     if (cur) {
       el.now.classList.remove("idle");
       el.title.textContent = cur.title || "Neznámá skladba";
-      setHidden(el.artist, !cur.artist);
+      var src = SRC[cur.src];
+      setHidden(el.artistRow, !cur.artist && !src);
       el.artist.textContent = cur.artist || "";
+      setHidden(el.src, !src);
+      if (src && el.src.textContent !== src[0]) {
+        el.src.textContent = src[0];
+        el.src.className = "src " + cur.src;
+        el.src.title = src[1];
+        el.src.setAttribute("aria-label", src[1]);
+      }
       var state = s.outage ? "čeká na YouTube" :
                   (paused ? "pozastaveno" : (S.loading ? "načítám…" : (playing ? "hraje" : "připraveno")));
       el.nowLabel.textContent = state;
@@ -1500,7 +1528,7 @@
     } else {
       el.now.classList.add("idle");
       el.title.textContent = s.starting || s.busy ? "Chvilku…" : "Je ticho";
-      setHidden(el.artist, true);
+      setHidden(el.artistRow, true);
       el.nowLabel.textContent = s.starting ? "DJ vybírá hudbu podle času a dne…"
                               : (s.busy ? "DJ vybírá hudbu…" : "nic nehraje");
       el.bars.classList.add("still");
@@ -1746,7 +1774,7 @@
       var marks = voteMarks(t.votes);
       return '<li class="' + (mine ? "mine" : "") + '">' + thumb(t, { jump: i, open: open }) +
              '<span class="meta"><span class="t">' + esc(t.title || "Neznámá skladba") + "</span>" +
-             '<span class="a">' + esc(t.artist || "") + "</span>" +
+             '<span class="a">' + esc(t.artist || "") + srcBadge(t) + "</span>" +
              (t.req || marks ? '<span class="req">' + (t.req ? whoChip(t.req.who, mine, t.req.who_key) : "") + marks + "</span>" : "") +
              "</span>" +
              (t.duration ? '<span class="dur">' + fmtTime(t.duration) + "</span>" : "") +
@@ -1826,7 +1854,7 @@
       return '<li class="' + (o[2] === "skipped" ? "skipped-row" : "") + '">' +
              '<span class="mark ' + o[2] + '" role="img" title="' + esc(o[0]) + '" aria-label="' + esc(o[0]) + '">' + o[1] + "</span>" +
              '<span class="meta"><span class="t">' + esc(t.title || "Neznámá skladba") + "</span>" +
-             (t.artist ? '<span class="a">' + esc(t.artist) + "</span>" : "") +
+             (t.artist || t.src ? '<span class="a">' + esc(t.artist || "") + srcBadge(t) + "</span>" : "") +
              (t.skipped_by ? '<span class="a skby">přeskočeno · ' + esc(t.skipped_by) + "</span>" : "") +
              (marks ? '<span class="vss">' + marks + "</span>" : "") + "</span>" +
              (canReplay(t) ? '<button class="rv rp" type="button" data-replay="' + i + '" aria-label="Zahrát znovu: ' +
@@ -3210,7 +3238,8 @@
     acts += voteBtn(list, idx, -1, it.mine === -1, it.down);
     return '<li class="' + (it.status === "banned" ? "banned-row" : "") + '"><span class="meta">' +
            (song ? "" : '<span class="kind">interpret</span>') +
-           '<span class="t">' + esc(label) + "</span>" + (sub ? '<span class="a">' + esc(sub) + "</span>" : "") +
+           '<span class="t">' + esc(label) + "</span>" +
+           (sub || (song && it.src) ? '<span class="a">' + esc(sub) + (song ? srcBadge(it) : "") + "</span>" : "") +
            '<span class="vss">' + st + "</span>" +
            '<span class="who2">' + esc(votersLine(it.voters)) + "</span>" +
            (first ? '<span class="a">první hlas: ' + esc(first.tag === S.tag ? "ty" : first.nick) + ", " + esc(when(first.at)) +
@@ -3284,6 +3313,6 @@
 })();
 </script>
 <!-- AI tvorba na stránce Hlasování (hlášení #37): sekci si vloží sám -->
-<script src="/ai.js?v=4"></script>
+<script src="/ai.js?v=5"></script>
 </body>
 </html>

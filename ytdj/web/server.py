@@ -892,6 +892,9 @@ class WebServer:
                 if h["id"]:
                     seen.add(h["id"])
         last = self._dj_last
+        stale = getattr(wq, "from_earlier_day", None) if wq is not None else None
+        if last is not None and stale is not None and stale(last.get("at")):
+            last = None  # včerejší odpověď DJe ráno nikdo nemá vidět (F-RESTART-16)
         wq_last = getattr(wq, "last", None) if wq is not None else None
         if wq_last and (last is None or (wq_last.get("at") or 0) >= (last.get("at") or 0)):
             last = wq_last

@@ -242,6 +242,7 @@ jukeboxu a restart chtějí PIN správce, který je na displeji na obrazovce Sí
 - **F-FRONTA-24** Klik do fronty nikdy neutne cizí přání — tvoje skladba pak hraje jako další
 - **F-ZVUK-27** V cizím přání posouvá skladbu jen jeho autor
 - **F-PRANI-20** Název, který není kapela, ale písnička, se zahraje jako písnička
+- **F-PRANI-35** Kapelu, která na YouTube Music není, zahraje z videí, která nahráli posluchači
 - **F-PRANI-24** Když na otázku DJe neodpovíš, vybere po chvíli sám a řekne to
 - **F-PRANI-32** Přání klipu samo zapne Klipy na telce
 - **F-ZVUK-12** Nepřehratelná skladba se na týden vynechá

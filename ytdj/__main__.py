@@ -275,7 +275,8 @@ class App:
     async def play_or_start(self, source: str = "web") -> str:
         """▶ na webu / Hrát na displeji / povel play.
 
-        Něco hraje nebo čeká → jen odpauzovat. Nic nehraje ani nečeká →
+        Něco hraje nebo čeká → jen odpauzovat. Nic nehraje ani nečeká (nebo
+        čeká jen pozastavená skladba z minulého dne, F-RESTART-16) →
         chytrý rozjezd (C7) podle času, dne, kanceláře a historie — jako
         tah DJe, ne jako přání posluchače. Vrací "play" | "starting".
         """
@@ -283,7 +284,7 @@ class App:
         # hrát, nečeká: obnoví se hned a pokračuje se tam, kde se přestalo.
         await self.wishes.restore_now()
         st = await self.player.status()
-        if st.current is not None or st.queue or self.wishes.has_requests():
+        if not self.wishes.idle_for_start(st):
             await self.player.toggle_pause(False)
             return "play"
         if self.wishes.starting or (self._start_task and not self._start_task.done()):

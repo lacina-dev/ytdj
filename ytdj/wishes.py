@@ -61,6 +61,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import telemetry
+from .day import day_of
 from .nicks import NickError, Nicks, clean_nick, tag_of
 from .agent.intent import complaint_in, corrects, local_command, meta_kind, near_same, norm
 from .music.catalog import RE_URL, Track
@@ -412,6 +413,7 @@ class Wish:
     chip: str = ""  # tlačítko nálady (calmer, livelier…) — DJ ho zvládne i bez modelu
     skipped_by: str = ""  # kdo přeskočil jeho skladbu
     restored: bool = False  # obnoveno po restartu ytdj
+    expired: bool = False  # skončilo s koncem dne (F-RESTART-16) — obrazovky ho neukazují
     was_current: str | None = None  # obnoveno: co z něj hrálo, když se stav ukládal
     lead: str = ""  # věta před potvrzením (stížnost s přáním)
     last_end: str = ""  # jak skončila poslední jeho skladba (finished/skipped/…)
@@ -823,7 +825,7 @@ def cold_restore(saved: dict | None, synced: bool,
                  now: datetime | None = None) -> tuple[bool, str]:
     """Obnovit po zapnutí Pi frontu, podkres a místo ve skladbě? (ano/ne, proč)
 
-    Jen z téhož kalendářního dne — včerejší nedohraná přání se nevrací. Den
+    Jen z téhož dne jukeboxu (ytdj/day.py) — včerejší nedohraná přání se nevrací. Den
     jde ale soudit jen podle hodin seřízených ze sítě, a to teď i tehdy, když
     se stav ukládal (Pi 29. 9. běželo 39 minut s hodinami o den pozadu). Bez
     toho je stáří neznámé a stav se obnoví: kvůli špatným hodinám se nezahodí.
@@ -832,12 +834,12 @@ def cold_restore(saved: dict | None, synced: bool,
     if not saved or not isinstance(saved, dict):
         return False, "no_state"
     try:
-        then = datetime.fromtimestamp(float(saved.get("saved") or 0)).date()
+        then = day_of(float(saved.get("saved") or 0))
     except (TypeError, ValueError, OverflowError, OSError):
         return True, "age_unknown"
     if not synced or saved.get("clock") is not True:
         return True, "age_unknown"
-    today = (now or datetime.now()).date()
+    today = day_of(now)
     if then < today:
         return False, "earlier_day"
     if then > today:
@@ -886,6 +888,9 @@ class WishQueue:
         # proč hraje podkres: start (chytrý rozjezd) | radio; kdo ho naposledy určil
         self.bg_reason: dict[str, str] = {"kind": "radio", "who": "", "text": ""}
         self._bg_at = 0.0  # epoch — kdy se podkres naposledy změnil (_set_background)
+        # den podkresu (konec dne, F-RESTART-16): kdy ho určilo přání nebo
+        # rozjezd; None = změřeno neseřízenými hodinami, den se teprve určí
+        self._bg_day_at: float | None = time.time()
         # podkres jako mix z víc přání („Obohatit", F-FRONTA-25): zdroje
         # [{"label", "seeds"}], nejstarší první; [] = podkres není mix
         self.mix: list[dict] = []
@@ -940,6 +945,15 @@ class WishQueue:
         self._restore_now = asyncio.Event()
         self._restore_done = asyncio.Event()
         self._clock_ok = False  # hodiny už jednou seřízené byly (do stavu jako "clock")
+        # konec dne (F-RESTART-16): přání, jejichž čas vzniku změřily neseřízené
+        # hodiny (start Pi, obnova s neznámým stářím) — den se jim určí podle
+        # stáří (monotonic), až se hodiny seřídí
+        self._day_fix: set[str] = set()
+        self._new_day_task: asyncio.Task | None = None
+        self._bg_kept: Any = None  # den, kdy beze jména hrající podkres z dřív zůstal
+        # pozastavená skladba z minulého dne, po které nic nečeká: Hrát ji
+        # nenavazuje, rozjede chytrý start (F-RESTART-16)
+        self._leftover: str | None = None
         self._now_id: str | None = None  # co hraje nebo stojí v pauze (do stavu jako "now")
         self._sync_key: tuple | None = None  # co už je na kartě opravdu zapsané (fsync)
         self._pause_note = False
@@ -1053,7 +1067,8 @@ class WishQueue:
     def public(self) -> list[dict]:
         now = time.time()
         live = [w for w in self.wishes if w.active]
-        done = [w for w in self.wishes if not w.active and now - (w.done_at or now) < DONE_TTL]
+        done = [w for w in self.wishes if not w.active and not w.expired
+                and now - (w.done_at or now) < DONE_TTL]
         done = sorted(done, key=lambda w: w.done_at, reverse=True)[:KEEP_DONE]
 
         def rank(w: Wish) -> tuple:
@@ -1193,6 +1208,8 @@ class WishQueue:
             cid=cid, replay=replay, enrich=bool(enrich),
         )
         w.settled = asyncio.Event()
+        if not self._clock_now():
+            self._day_fix.add(w.id)  # den se určí, až se hodiny seřídí (F-RESTART-16)
         if cid and answered:
             w.asked = True  # žádné řetězení otázek
             w.context = answered
@@ -2660,6 +2677,7 @@ class WishQueue:
         if key:
             self.bg_reason["key"] = key
         self._bg_at = time.time()
+        self._bg_day_at = time.time() if self._clock_now() else None
         telemetry.event("request.background", reason=kind, who=who or None,
                         mood=telemetry.clip(mood or artist, 120),
                         artist=artist or None, requests=len(self.active()))
@@ -2714,6 +2732,7 @@ class WishQueue:
                         await self.pools.soften_artist("rejected")
                         self.bg_reason = {"kind": "radio", "who": "", "text": self.pools.mood, "id": ""}
                         self._bg_at = time.time()
+                        self._bg_day_at = time.time() if self._clock_now() else None
                     telemetry.event("request.background_follow", id=w.id, why="rejected",
                                     to="history" if seeds else "similar")
                     return
@@ -2992,6 +3011,12 @@ class WishQueue:
                 via = "history"
                 reply = await self._start_from_history()
                 ok = bool(self.pools.pools)
+            if self._leftover is not None:
+                # pozastavená skladba z minulého dne: nenavazovat, hned rozjezd
+                st = await self.player.status()
+                if ok and st.queue and st.current is not None and st.current.id == self._leftover:
+                    await self.player.skip(by_user=False)
+                self._leftover = None
             self.note_pause(False)
             await self.player.toggle_pause(False)
             # výsledek rozjezdu vidí všichni (web i displej), ne jen log
@@ -3177,6 +3202,8 @@ class WishQueue:
         vid = ev.track.id if ev.track else None
         if kind == "start":
             self.current_vid = vid
+            if vid != self._leftover:
+                self._leftover = None
             if (getattr(self, "_pin", None) or ("",))[0] == vid:
                 self._pin = None
             if vid and getattr(self.pools, "album", ""):
@@ -3616,7 +3643,10 @@ class WishQueue:
 
     def can_seed_background(self) -> bool:
         """Smí plnič postavit podkres z hrající skladby? Jen když žádné přání
-        nečeká na DJe ani na zařazení svých skladeb do playlistu."""
+        nečeká na DJe ani na zařazení svých skladeb do playlistu — a hrající
+        skladba není zbytek z minulého dne (podkres z ní by přežil noc)."""
+        if self._leftover is not None:
+            return False
         for w in self.wishes:
             if w.state in ("waiting", "thinking"):
                 return False
@@ -3627,6 +3657,178 @@ class WishQueue:
 
     def is_request_track(self, vid: str | None) -> bool:
         return self._owner_of(vid) is not None or any(x.current == vid for x in self.wishes if vid)
+
+    # ---- konec dne (F-RESTART-16) ----
+
+    def _clock_now(self) -> bool:
+        """Jsou hodiny seřízené ze sítě (jednou seřízené už zůstanou)?"""
+        if not self._clock_ok:
+            self._clock_ok = clock_synced()
+        return self._clock_ok
+
+    def idle_for_start(self, st: Any) -> bool:
+        """Má Hrát rozjet chytrý start (C7)? Když nic nehraje ani nečeká — nebo
+        čeká jen pozastavená skladba z minulého dne (konec dne, F-RESTART-16)."""
+        if self.has_requests() or st.queue:
+            return False
+        return st.current is None or (self._leftover is not None
+                                      and st.current.id == self._leftover)
+
+    def from_earlier_day(self, at: Any) -> bool:
+        """Je čas `at` (epoch) z dřívějšího dne jukeboxu? Jen podle seřízených
+        hodin — jinak nejde říct (False). Pro obrazovky (web: poslední odpověď)."""
+        if not self._clock_now():
+            return False
+        try:
+            return day_of(float(at)) < day_of(time.time())
+        except (TypeError, ValueError, OverflowError, OSError):
+            return False
+
+    def _bg_named(self) -> bool:
+        """Určilo podkres něčí přání (jméno, „Obohatit" z přání)?"""
+        r = self.bg_reason
+        return bool(r.get("who") or r.get("id") or self.mix)
+
+    async def expire_days(self, wall: float | None = None, synced: bool | None = None,
+                          playing: bool | None = None, where: str = "tick") -> dict:
+        """Nový den: nedohraná přání z dřívějšího dne skončí i s podkresem,
+        který spustila (vlastník 3. 11. 2026, F-RESTART-16) — stejně jako po
+        restartu (F-RESTART-11). Den je jeden pro obojí (ytdj/day.py: kalendářní
+        den, hranice o půlnoci) a soudí se jen podle seřízených hodin.
+
+        Volá se každých 5 s (_save_loop) a po obnově stavu, takže se to stane
+        hned po půlnoci, v noci, kdy kancelář u hudby nesedí — ne až ráno při
+        prvním tahu nebo Hrát: web, displej i telka by jinak celou noc a ráno
+        ukazovaly včerejší jména (Pi 3. 11.: „Vítek — oblíbené kanceláře").
+
+        Co zní, se neutne: skladba, která právě hraje, dohraje. Hraje-li hudba,
+        podkres po včerejším přání nahradí chytrý rozjezd (F-START-01), jako by
+        někdo stiskl Hrát; nehraje-li (pauza, ticho), nic z včerejška nečeká —
+        fronta, podkres i pozastavená skladba se uklidí a Hrát rozjede chytrý
+        start, jako po restartu bez stavu z téhož dne.
+        """
+        out: dict[str, Any] = {"expired": 0, "background": "", "dropped": False}
+        if synced is None:
+            if self.restoring and where == "tick":
+                return out
+            synced = self._clock_now()
+        if not synced:
+            return out
+        wall = time.time() if wall is None else wall
+        today = day_of(wall)
+        # co změřily neseřízené hodiny: čas vzniku podle stáří (monotonic)
+        if self._day_fix:
+            mono = time.monotonic()
+            for w in self.wishes:
+                if w.id in self._day_fix:
+                    w.created = wall - max(0.0, mono - w.mono)
+            self._day_fix.clear()
+        if self._bg_day_at is None:
+            self._bg_day_at = wall
+
+        def old(at: Any) -> bool:
+            try:
+                return at is not None and day_of(float(at)) < today
+            except (TypeError, ValueError, OverflowError, OSError):
+                return False
+
+        if self.last is not None and old(self.last.get("at")):
+            self.last = None  # „Hraju oblíbené kanceláře…" od včerejška
+            self._changed()
+        gone = [w for w in self.wishes if w.active and w.state != "thinking"
+                and old(w.created)]
+        bg_old = old(self._bg_day_at) and bool(getattr(self.pools, "pools", None)
+                                               or self._bg_named())
+        if not gone and not (bg_old and (self._bg_named() or self._bg_kept != today
+                                         or not self._playing)):
+            return out
+        if playing is None:
+            st = await self.player.status()
+            playing = not st.paused and (st.current is not None or bool(st.queue))
+        for w in gone:
+            await self._expire_wish(w, wall, playing, where)
+        out["expired"] = len(gone)
+        live = any(w.active for w in self.wishes)
+        if not live:
+            self.turns = Turns()  # kdo byl včera na řadě, dnes nehraje roli
+        if bg_old and (self._bg_named() or not playing):
+            r = dict(self.bg_reason)
+            mode = r.get("mode") or ("artist" if getattr(self.pools, "artist", "") else "radio")
+            self.bg_reason = {"kind": "radio", "who": "", "text": "", "id": ""}
+            self.mix = []
+            to = "start" if playing else "none"
+            if playing:
+                # hudba hraje: dál jako po Hrát — rozjezd podle času a dne
+                if not self.starting and (self._new_day_task is None or self._new_day_task.done()):
+                    self._new_day_task = asyncio.create_task(self._new_day_start(),
+                                                             name="ytdj-new-day")
+            else:
+                await self.pools.set_seeds([], mood="")  # podkres pryč, Hrát = chytrý start
+                with contextlib.suppress(AttributeError):
+                    self.dj._focus_artists = []
+                self._bg_day_at = wall
+            out["background"] = to
+            telemetry.event("request.background_expired", who=r.get("who") or None,
+                            mode=mode, text=telemetry.clip(r.get("text") or "", 120) or None,
+                            age_s=int(wall - (self._bg_at or wall)), reason="new_day",
+                            to=to, where=where)
+        elif bg_old:
+            self._bg_kept = today  # beze jména a hraje: nechat hrát, podruhé neřešit
+        if not playing and not live and not getattr(self.pools, "pools", None):
+            # nehraje se a nic dnešního nečeká: fronta z včerejška pryč a
+            # pozastavená skladba je jen zbytek — Hrát pak začne načisto
+            # (chytrý start, idle_for_start) a zbytek přeskočí
+            st = await self.player.status()
+            if st.queue:
+                async with queue_transaction(self.player):
+                    await self.player.clear_queue()
+            self.owner.clear()
+            self._order = []
+            self._leftover = st.current.id if st.current is not None else None
+            out["dropped"] = st.current is not None or bool(st.queue)
+        log.info("nový den: %d přání skončilo, podkres %s", len(gone),
+                 out["background"] or "beze změny")
+        self._changed()
+        if live:
+            self.kick()
+        return out
+
+    async def _expire_wish(self, w: Wish, wall: float, playing: bool, where: str) -> None:
+        """Přání z dřívějšího dne končí. Jeho hrající skladba dohraje (když
+        hudba hraje), zbytek z playlistu zmizí; jeho jméno už nikde není."""
+        self._ask_cancel(w.id)
+        self._codex_done(w.id)
+        was = w.state
+        mine = {t.id for t in w.pending()}
+        w.state = "removed"
+        w.expired = True
+        w.reply = "Přání z minulého dne — s novým dnem skončilo."
+        w.done_at = time.time()
+        w.settle()
+        for vid in list(self.owner):
+            if self.owner[vid] == w.id:
+                self.owner.pop(vid, None)
+        if was in ("queued", "playing") and mine:
+            async with queue_transaction(self.player):
+                await self.player.remove_upcoming(mine)
+        if not (playing and w.current):
+            # pryč i ze seznamu vyřízených; přání, jehož skladba právě dohrává,
+            # zůstane jen kvůli „proč hraje" u ní (ve frontě se neukazuje)
+            self.wishes = [x for x in self.wishes if x is not w]
+        telemetry.event("request.expired", id=w.id, who=w.who, source=w.source,
+                        age_s=int(wall - w.created), reason="new_day", state_before=was,
+                        intent_kind=w.kind or None, played=w.played,
+                        left=len(mine) or None, current=w.current if playing else None,
+                        where=where)
+
+    async def _new_day_start(self) -> None:
+        """Po půlnoci hraje podkres po včerejším přání: nahradit ho rozjezdem."""
+        try:
+            await self.start_idle()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("rozjezd nového dne selhal")
 
     # ---- obnova po restartu ----
 
@@ -3667,6 +3869,8 @@ class WishQueue:
                       seeds=[_track_json(p.seed) for p in pools.pools[:5]])
         if not self._clock_ok:
             self._clock_ok = clock_synced()
+        if self._bg_day_at is not None:
+            bg["since"] = round(self._bg_day_at, 1)  # den podkresu (F-RESTART-16)
         return {
             "v": 1,
             "saved": time.time(),
@@ -3771,6 +3975,12 @@ class WishQueue:
         while True:
             await asyncio.sleep(5.0)
             await self.refresh_playing()
+            try:
+                await self.expire_days()  # nový den (F-RESTART-16)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("konec dne se nepodařilo provést")
             await self.save_async()
 
     async def _resume_interrupted(self, silent: bool = False, cold: bool = False,
@@ -4099,11 +4309,31 @@ class WishQueue:
                         from_key=str(reason.get("key") or ""), mix=mix or None)
         except Exception:
             log.exception("podkres se po restartu nepodařilo obnovit")
+        # Konec dne platí i pro obnovu, tentýž den a totéž pravidlo jako bez
+        # restartu (F-RESTART-16): přání a podkres z dřívějšího dne se nevrátí.
+        trusted = why_r == "same_day" if cold else (saved.get("clock") is True
+                                                    and self._clock_now())
+        if trusted:
+            since = bg.get("since")
+            if isinstance(since, (int, float)) and not isinstance(since, bool):
+                self._bg_day_at = float(since)
+        else:
+            # stáří neznámé: den se určí podle stáří, až se hodiny seřídí
+            self._day_fix.update(w.id for w in self.wishes if w.restored)
+            self._bg_day_at = None
+        day = await self.expire_days(
+            wall=wall if wall is not None else (now.timestamp() if now else None),
+            synced=trusted, playing=ok, where="restore")
+        if day["dropped"]:
+            at = None  # navázaná skladba je jen zbytek z minulého dne
         info.update(restored_wishes=len(self.active()),
-                    restored_bg=getattr(self.pools, "mood", "") or None, paused=not ok)
+                    restored_bg=getattr(self.pools, "mood", "") or None, paused=not ok,
+                    expired=day["expired"] or None, expired_bg=day["background"] or None)
         if not self.pools.pools and not self.has_requests() and not at:
-            info.update(restore_reason="nothing_to_resume")
-            return "nothing_to_resume"
+            why_n = "earlier_day" if day["expired"] or day["background"] else "nothing_to_resume"
+            info.update(restore_reason=why_n)
+            self._changed()
+            return why_n
         if ok:
             await self.player.toggle_pause(False)
         log.info("po restartu obnoveno: %d přání, podkres %s, hraje: %s", len(self.active()),

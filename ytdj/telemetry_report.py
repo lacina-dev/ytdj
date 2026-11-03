@@ -138,6 +138,7 @@ KNOWN = {
     "request.created", "request.interpreted", "request.queued", "request.started",
     "request.done", "request.removed", "request.turn", "request.play_next",
     "request.handover", "request.background", "request.start", "request.resume",
+    "request.expired", "request.background_expired",
     "request.steer", "request.meta", "request.background_follow", "request.background_stale", "request.already_playing", "request.reply_fixed", "web.request_action", "sys.loop_lag",
 }
 

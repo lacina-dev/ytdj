@@ -45,6 +45,7 @@ from .. import adminpin
 from .. import config as cfgmod
 from .. import manual
 from .. import telemetry
+from ..agent.offline import CHIPS
 from ..music.source import source
 from . import ai_api, identity_api, issues_api, tv_api, votes_api
 
@@ -57,7 +58,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 INDEX_FILE = STATIC_DIR / "index.html"
 VOLUME_MAX = 100  # strop hlasitosti — stejný jako fronta přání a displej
 # čipy nálad (web, displej) → klíče pro DJ bez modelu (agent/offline.py)
-CHIP_KEYS = frozenset({"calmer", "livelier", "czech", "more", "other", "surprise"})
+CHIP_KEYS = CHIPS  # čipy u přání (agent/offline.py), i „Bizár"
 PACKAGE_DIR = Path(__file__).resolve().parents[1]
 
 # Tlačítko ▶ staré stránky (před frontou přání) posílalo rozjezd jako přání.
@@ -1241,13 +1242,15 @@ class WebServer:
             return JSONResponse({"reply": local, "local": True})
         play_next = data.get("play_next") is True
         enrich = data.get("enrich") is True  # „Obohatit" (F-FRONTA-25)
+        only_this = data.get("only_this") is True  # „Jen tuhle" (F-FRONTA-27)
+        chip = data.get("chip")
+        # tlačítko nálady — funguje i bez mozku DJe („Bizár" ne, F-PRANI-36)
+        chip = chip if isinstance(chip, str) and chip in CHIP_KEYS else ""
         try:
             w = wq.submit(text, data.get("who"), source, play_next=play_next,
                           client={"ip": rec.get("ip"), "ua": rec.get("ua"),
-                                  "id": data.get("client")}, enrich=enrich)
-            chip = data.get("chip")
-            if isinstance(chip, str) and chip in CHIP_KEYS:
-                w.chip = chip  # tlačítko nálady — funguje i bez mozku DJe
+                                  "id": data.get("client")}, enrich=enrich,
+                          only_this=only_this, chip=chip)
         except Exception as exc:  # TooMany
             if type(exc).__name__ != "TooMany":
                 raise

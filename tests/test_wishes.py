@@ -155,7 +155,8 @@ class Rig:
                 action="start_radio", mood="ranní klid",
                 seeds=[{"artist": "Start", "title": f"st{i}"} for i in range(3)],
                 reply="Ráno klidně."), auto=True)
-        said = text.split(wishes.CHANGE_HINT)[0]  # co napsal posluchač
+        # co napsal posluchač (bez pokynů aplikace pro model)
+        said = text.split(wishes.CHANGE_HINT)[0].split(wishes.ONLY_HINT)[0]
         _, data = SCRIPT.get(said, ("codex", decision(reply="Nerozumím.")))
         return build_intent(text, data)
 

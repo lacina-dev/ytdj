@@ -71,7 +71,7 @@ from .fastpath import (SONG_BUDGET, FastResult, called_band, enforce_requested, 
                        find_song, other_version)
 from .intent import (Intent, ListenerIntent, Pair, artist_match, build_intent, norm,
                      option_intent, track_avoided)
-from .prompts import ROLE, render_state
+from .prompts import ONLY_HINT, ROLE, render_state
 
 log = logging.getLogger(__name__)
 
@@ -1722,6 +1722,7 @@ class CodexDJ:
 
     async def _offline_intent(self, text: str, auto: bool, exc: Exception | None) -> Intent:
         """Přání bez modelu, nebo CodexOffline s vlídnou zprávou."""
+        text = text.replace(ONLY_HINT, "")  # „Jen tuhle" je pokyn pro model, ne slova posluchače
         key = OTHER if auto else local_mood(text)
         reason = self.breaker.reason or classify(exc) or ERROR
         if key:

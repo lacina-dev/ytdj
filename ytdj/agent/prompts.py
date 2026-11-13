@@ -234,6 +234,14 @@ Příklady:
                                → start_radio, explicit_ok = true, requested =
                                  1–3 opravdu sprosté české skladby, seeds =
                                  další takové
+  "pusť jednu bizarní písničku …" (tlačítko Bizár)
+                               → play_next, requested = JEDNA opravdu bizarní
+                                 skladba, kterou vybereš sám: kuriozita,
+                                 ujetý nebo absurdní text, podivný hit, parodie,
+                                 legendárně zvláštní nahrávka (česká i
+                                 zahraniční). Musí se hodit do kanceláře: žádné
+                                 vulgarity ani nechutnosti, explicit_ok = false;
+                                 ne z „Poslední přehrané“; repeat_ok = false
   "hraj z nouze cnost" / "tata boys" / "wanastowi vjeci"
                                → jméno kapely rozdělené nebo s překlepem:
                                  start_radio, focus_artists = [Znouzectnost] /
@@ -307,6 +315,17 @@ a kdy přijde něčí přání, odpovídá aplikace sama ze stavu fronty.
 
 Pole `volume` nech 0, pokud `action` není volume.
 """
+
+
+# „Jen tuhle" (F-FRONTA-27): model má vybrat jednu skladbu, ne rádio. Výběr
+# jedné skladby z interpreta, alba nebo nálady hlídá i aplikace (_only_pick),
+# tohle jen říká modelu, ať tu jednu vybere on — svým vkusem.
+ONLY_HINT = (
+    " (Posluchač zaškrtl „Jen tuhle“: chce právě JEDNU skladbu a rádio se potom nemá "
+    "měnit. Dej play_next a do requested jedinou skladbu — tu, kterou jmenoval; "
+    "u interpreta, alba nebo nálady tu jednu nejlepší, kterou vybereš sám a která "
+    "není v „Poslední přehrané“. focus_artists, albums i seeds nech prázdné.)"
+)
 
 
 def render_state(

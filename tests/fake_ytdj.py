@@ -276,7 +276,8 @@ class FakeYtdj:
 
     @staticmethod
     def credits(artist: str) -> list[str]:
-        parts = re.split(r"\s*(?:,|&|\bfeat\.?|\bft\.?)\s*", artist or "")
+        # jako votes.credits: "&" a "/" bývají uvnitř jména (AC/DC, hlášení #44)
+        parts = re.split(r"\s*(?:,|;|\bfeat\b\.?|\bft\b\.?|\bfeaturing\b|\bvs\b\.?)\s*", artist or "")
         return [p for p in (x.strip() for x in parts) if p] or ([artist] if artist else [])
 
     @staticmethod

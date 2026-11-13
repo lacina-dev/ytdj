@@ -2762,16 +2762,16 @@
   });
   vel.down.addEventListener("click", function () {
     var cur = S.status && S.status.current;
-    if (cur) openSheet({ id: cur.id, artist: cur.artist, title: cur.title, votes: cur.votes }, "down");
+    if (cur) openSheet({ id: cur.id, artist: cur.artist, title: cur.title, votes: cur.votes, credits: cur.credits }, "down");
   });
   vel.art.addEventListener("click", function () {
     var cur = S.status && S.status.current;
-    if (cur) openSheet({ id: cur.id, artist: cur.artist, title: cur.title, votes: cur.votes }, "artistUp");
+    if (cur) openSheet({ id: cur.id, artist: cur.artist, title: cur.title, votes: cur.votes, credits: cur.credits }, "artistUp");
   });
   vel.ai.addEventListener("click", function () {
     var cur = S.status && S.status.current;
     if (cur && cur.ai && cur.ai.length) {
-      openSheet({ id: cur.id, artist: cur.artist, title: cur.title, votes: cur.votes, ai: cur.ai,
+      openSheet({ id: cur.id, artist: cur.artist, title: cur.title, votes: cur.votes, credits: cur.credits, ai: cur.ai,
                   wish: !!(cur.reason && cur.reason.kind === "wish") }, "ai");
     }
   });
@@ -2794,8 +2794,13 @@
   }
 
   /* ---- one sheet for the playing track, the queue and Odehráno ---- */
-  function splitArtists(artist) {
-    return String(artist || "").split(/\s*(?:,|&|\bfeat\.?|\bft\.?)\s*/i).filter(Boolean);
+  // jako votes.credits (hlášení #44): různí interpreti jen za čárkou, středníkem,
+  // feat./ft./featuring a vs. — "&", "/", "+" a "x" bývají uvnitř jména (AC/DC);
+  // jméno s čárkou (Earth, Wind & Fire) pošle server rozdělené v t.credits
+  function splitArtists(t) {
+    if (t.credits && t.credits.length) return t.credits.slice();
+    return String(t.artist || "").split(/\s*(?:,|;|\bfeat\b\.?|\bft\b\.?|\bfeaturing\b|\bvs\b\.?)\s*/i)
+      .map(function (n) { return n.trim(); }).filter(Boolean);
   }
 
   // mode: "" = všechno (řádky fronty a Odehráno), "down" = 👎 u hrající, "artistUp" = 👍 interpretovi u hrající
@@ -2830,7 +2835,7 @@
     var song = d ? d.song : null;
     var mine = song ? (song.mine || 0) : myVote(b);
     var arts = d ? d.artists.map(function (a) { return { name: a.name, up: a.up || 0, down: a.down || 0, status: a.status, need: a.need, mine: a.mine || 0, voters: a.voters }; })
-                 : (b.artists && b.artists.length ? b.artists : splitArtists(t.artist).map(function (n) { return { name: n, down: 0, status: "neutral" }; }))
+                 : (b.artists && b.artists.length ? b.artists : splitArtists(t).map(function (n) { return { name: n, down: 0, status: "neutral" }; }))
                    .map(function (a) { return { name: a.name, up: a.up || 0, down: a.down || 0, status: a.status, mine: a.mine != null ? a.mine : myArtistVote(a) }; });
     var html = "";
     var up = song ? song.up : (b.up || 0), down = song ? song.down : (b.down || 0);
@@ -2906,7 +2911,7 @@
       if (!b) return;
       var i = Number(b.getAttribute("data-vote").split(":")[1]);
       var t = (list === "q" ? S.queueItems : S.histItems || [])[i];
-      if (t) openSheet({ id: t.id, artist: t.artist, title: t.title, votes: t.votes }, "");
+      if (t) openSheet({ id: t.id, artist: t.artist, title: t.title, votes: t.votes, credits: t.credits }, "");
     };
   }
   el.queue.addEventListener("click", rowClick("q"));

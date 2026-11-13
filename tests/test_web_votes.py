@@ -169,7 +169,7 @@ class PlayingArtistThumbsUp(unittest.TestCase):
         self.assertIn('id="vArt"', row)
         self.assertIn('aria-haspopup="dialog"', row[row.index('id="vArt"') - 60:])
         # tlačítko otevře týž list jako řádky fronty a Odehráno, jen s 👍 interpretům
-        self.assertIn('votes: cur.votes }, "artistUp");', html)
+        self.assertIn('votes: cur.votes, credits: cur.credits }, "artistUp");', html)
         sheet = html[html.index("function renderSheet()"):html.index("function opt(")]
         self.assertIn("if (!sh.downOnly && !sh.artistUp) {", sheet)   # bez 👍 písničce
         self.assertIn("if (!sh.artistUp) html += opt(\"song:", sheet)  # bez 👎 písničce

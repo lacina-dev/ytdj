@@ -30,7 +30,7 @@ from ytdj.agent.context import start_context, start_instruction  # noqa: E402
 from ytdj.agent.intent import Intent, favourites_request  # noqa: E402
 from ytdj.config import DEFAULTS, Config  # noqa: E402
 from ytdj.display import Censor  # noqa: E402
-from ytdj.music.catalog import Track  # noqa: E402
+from ytdj.music.catalog import Track, to_track  # noqa: E402
 from ytdj.music.radio import RadioPools  # noqa: E402
 from ytdj.nicks import tag_of  # noqa: E402
 from ytdj.state import Store  # noqa: E402
@@ -44,7 +44,10 @@ DAMA = Track("dama0000001", "Malá dáma (Official Video)", "Kabát")
 DAMA_LIVE = Track("dama0000002", "Malá dáma [Live]", "Kabát - Topic")
 DAMA_VIDEO = Track("dama0000003", "Kabát - Malá dáma", "Kabát")
 POHODA = Track("pohoda00001", "Pohoda", "Kabát")
-ZPRAVA_DUO = Track("zprava00001", "Jasná zpráva - Remastered 2011", "Olympic & Petr Janda")
+# YouTube Music uvádí "Olympic & Petr Janda" jako dva interprety (to_track je spojí ", ")
+ZPRAVA_DUO = to_track({"videoId": "zprava00001", "title": "Jasná zpráva - Remastered 2011",
+                       "artists": [{"name": "Olympic", "id": "UColympic"},
+                                   {"name": "Petr Janda", "id": "UCjanda"}]})
 ZPRAVA = Track("zprava00002", "Jasná zpráva", "Olympic")
 
 
@@ -68,12 +71,15 @@ class Keys(unittest.TestCase):
         self.assertIn(k, V.song_keys(DAMA_LIVE.artist, DAMA_LIVE.title))
         self.assertIn(k, V.song_keys(DAMA_VIDEO.artist, DAMA_VIDEO.title))
         self.assertNotIn(k, V.song_keys(POHODA.artist, POHODA.title))
-        # spolupráce: "Olympic & Petr Janda" i samotný "Olympic"
+        # spolupráce: "Olympic & Petr Janda" (dva interpreti) i samotný "Olympic"
+        self.assertEqual(ZPRAVA_DUO.artist, "Olympic, Petr Janda")
         self.assertEqual(V.song_key(ZPRAVA_DUO.artist, ZPRAVA_DUO.title),
                          V.song_key(ZPRAVA.artist, ZPRAVA.title))
+        self.assertEqual(V.credits(ZPRAVA_DUO.artist), ("Olympic", "Petr Janda"))
 
     def test_credits(self):
-        self.assertEqual(V.credits("A, B & C feat. D"), ("A", "B & C", "B", "C", "D"))
+        # "&" je uvnitř jména, různí interpreti jen za čárkou a feat. (hlášení #44)
+        self.assertEqual(V.credits("A, B & C feat. D"), ("A", "B & C", "D"))
         self.assertEqual(V.credits("Simon & Garfunkel")[0], "Simon & Garfunkel")
         self.assertEqual(V.credits("Kabát - Topic"), ("Kabát",))
         self.assertEqual(V.artist_key("The Beatles"), V.artist_key("Beatles"))
@@ -148,7 +154,9 @@ class ArtistCredits(unittest.TestCase):
         self.assertEqual(b.tally(ARTIST, "kabat").status, BANNED)
         self.assertEqual(b.blocked(Track("x1", "Song", "Tomáš Klus, Kabát")), ARTIST)
         self.assertEqual(b.blocked(Track("x2", "Song", "Tomáš Klus feat. Kabát")), ARTIST)
-        self.assertEqual(b.blocked(Track("x3", "Song", "Kabát & Olympic")), ARTIST)
+        self.assertEqual(b.blocked(Track("x3", "Song", "Olympic, Kabát")), ARTIST)
+        # "&" je uvnitř jména kapely, ne výčet (hlášení #44)
+        self.assertIsNone(b.blocked(Track("x6", "Song", "Kabát & The Band")))
         self.assertIsNone(b.blocked(Track("x4", "Song", "Kabátová")))
         self.assertIsNone(b.blocked(Track("x5", "Song", "Olympic")))
         # režim interpreta, který si někdo vyžádal: jeho vlastní vyřazení neplatí

@@ -10,9 +10,11 @@ Cíle a klíče (jiné nahrání / verze téže písně = tatáž píseň):
                (první uvedený), název bez závorek, "feat." a značek verze
                (match.split_title): "Kabát — Malá dáma (Official Video)" i
                "Kabát - Topic — Malá dáma [Live]" → "kabat|mala dama".
-               Shoda platí pro kteréhokoli uvedeného interpreta ("A & B").
+               Shoda platí pro kteréhokoli uvedeného interpreta ("A, B").
     interpret  jméno bez diakritiky a mezer ("the " a "- Topic" pryč); sedí
-               na každého uvedeného v "A, B & C" / "feat. D".
+               na každého uvedeného v "A, B & C" / "feat. D" — to jsou A,
+               "B & C" a D: "&", "/", "+" bývá uvnitř jména ("AC/DC"),
+               hlášení #44 (music/match.split_credits).
 
 Stav se neukládá, počítá se z hlasů (config `ban_song_votes`,
 `ban_artist_votes`, `favourite_artist_votes`):
@@ -65,7 +67,7 @@ from functools import lru_cache
 from typing import Any, Callable, Iterable
 
 from . import telemetry
-from .music.match import norm, split_title
+from .music.match import credit_rev, norm, split_credits, split_title
 
 log = logging.getLogger(__name__)
 
@@ -97,10 +99,8 @@ class VoteError(ValueError):
 # klíče — čisté funkce
 # --------------------------------------------------------------------------
 
-# jisté oddělovače (výčet, host) a ty, co bývají i uvnitř jména kapely
-# ("Simon & Garfunkel") — u nich se bere celé jméno i jeho části
-_SPLIT = re.compile(r"\s*(?:,|;|\bfeat\.?|\bft\.?|\bfeaturing\b|\bx\b|\bvs\.?)\s*", re.I)
-_SPLIT_AMP = re.compile(r"\s*(?:&|\+|/)\s*")
+# jisté oddělovače různých interpretů — "&", "/", "+" ani "x" mezi nimi nejsou,
+# ty bývají uvnitř jména ("AC/DC", "Iron & Wine"); hlášení #44, music/match.py
 _CHANNEL = re.compile(r"\s*(?:topic|vevo|official)$")
 
 
@@ -112,32 +112,34 @@ def artist_key(name: str) -> str:
     return k.replace(" ", "")
 
 
-@lru_cache(maxsize=2048)
 def credits(artist: str) -> tuple[str, ...]:
-    """ "A, B & C feat. D" → ("A", "B & C", "B", "C", "D") — v původním zápisu,
-    bez duplicit. První je hlavní interpret ("Simon & Garfunkel" celý)."""
+    """ "A, B & C feat. D" → ("A", "B & C", "D") — v původním zápisu, bez
+    duplicit. První je hlavní interpret. "AC/DC", "Simon & Garfunkel" i
+    "Earth, Wind & Fire" (jméno s čárkou, které YouTube Music uvedlo jako
+    jednoho interpreta) jsou každý jeden interpret (hlášení #44)."""
+    return _credits(artist or "", credit_rev())
+
+
+@lru_cache(maxsize=2048)
+def _credits(artist: str, _rev: int) -> tuple[str, ...]:
     out: list[str] = []
     seen: set[str] = set()
-
-    def add(part: str) -> None:
+    for part in split_credits(artist):
         part = re.sub(r"\s*-\s*topic$", "", " ".join(part.split()), flags=re.I).strip(" -")
         k = artist_key(part)
         if part and k and k not in seen:
             seen.add(k)
             out.append(part)
-
-    for part in _SPLIT.split(artist or ""):
-        add(part)
-        subs = _SPLIT_AMP.split(part)
-        if len(subs) > 1:
-            for sub in subs:
-                add(sub)
     return tuple(out)
 
 
-@lru_cache(maxsize=2048)
 def artist_keys(artist: str) -> frozenset[str]:
     """Klíče všech uvedených interpretů (i celého zápisu — "Mňága a Žďorp")."""
+    return _artist_keys(artist or "", credit_rev())
+
+
+@lru_cache(maxsize=2048)
+def _artist_keys(artist: str, _rev: int) -> frozenset[str]:
     keys = {artist_key(p) for p in credits(artist)}
     whole = artist_key(artist)
     if whole:
@@ -146,14 +148,17 @@ def artist_keys(artist: str) -> frozenset[str]:
     return frozenset(keys)
 
 
-@lru_cache(maxsize=2048)
 def title_key(title: str, artist: str = "") -> str:
     """Název bez verze: "Malá dáma (Live) - Remastered 2011" → "mala dama".
 
     Video nahrané jako "Kabát - Malá dáma" (interpret v názvu) se bere podle
     části za pomlčkou, když ta před ní je interpret skladby.
     """
-    title = title or ""
+    return _title_key(title or "", artist or "", credit_rev())
+
+
+@lru_cache(maxsize=2048)
+def _title_key(title: str, artist: str, _rev: int) -> str:
     parts = re.split(r"\s+[-–—]\s+", title, maxsplit=1)
     if len(parts) == 2 and artist_key(parts[0]) and artist_key(parts[0]) in artist_keys(artist):
         title = parts[1]
@@ -162,16 +167,19 @@ def title_key(title: str, artist: str = "") -> str:
 
 
 def song_key(artist: str, title: str) -> str:
-    """Kanonický klíč skladby podle prvního uvedeného interpreta ("Olympic &
-    Petr Janda" i samotný "Olympic" → "olympic|…")."""
-    first = [p for p in _SPLIT_AMP.split(credits(artist)[0]) if artist_key(p)] \
-        if credits(artist) else []
-    return f"{artist_key(first[0] if first else artist)}|{title_key(title, artist)}"
+    """Kanonický klíč skladby podle prvního uvedeného interpreta ("Olympic,
+    Petr Janda" i samotný "Olympic" → "olympic|…"; "AC/DC" → "acdc|…")."""
+    cr = credits(artist)
+    return f"{artist_key(cr[0] if cr else artist)}|{title_key(title, artist)}"
+
+
+def song_keys(artist: str, title: str) -> frozenset[str]:
+    """Všechny klíče, pod kterými tahle skladba může být (každý interpret)."""
+    return _song_keys(artist or "", title or "", credit_rev())
 
 
 @lru_cache(maxsize=2048)
-def song_keys(artist: str, title: str) -> frozenset[str]:
-    """Všechny klíče, pod kterými tahle skladba může být (každý interpret)."""
+def _song_keys(artist: str, title: str, _rev: int) -> frozenset[str]:
     t = title_key(title, artist)
     return frozenset(f"{a}|{t}" for a in artist_keys(artist))
 
@@ -346,6 +354,13 @@ class VoteBook:
     async def aload(self) -> "VoteBook":
         """Načtení mimo event loop (SD karta) — hlasy i importy playlistů."""
         aread = getattr(self.store, "aread", None)
+        if aread is not None and hasattr(self.store, "_write_tx"):
+            from . import artistfix  # klíče z doby, kdy se dělilo i na "&" a "/" (#44)
+
+            try:
+                await aread(artistfix.run, self.store)
+            except Exception:
+                log.exception("oprava klíčů interpretů (#44) selhala — hlasy beze změny")
         rows = await aread("all_votes") if aread is not None else None
         self.load(rows)
         if self.ai is not None:

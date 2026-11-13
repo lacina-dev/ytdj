@@ -155,6 +155,14 @@ CREATE TABLE IF NOT EXISTS issue_plus (
     PRIMARY KEY (issue_id, voter)
 );
 
+-- Jednorázové opravy dat (ytdj/artistfix.py …): co už proběhlo, ať se
+-- při každém startu nečte celá historie znovu.
+CREATE TABLE IF NOT EXISTS fixes (
+    name TEXT PRIMARY KEY,
+    ts   REAL NOT NULL,
+    note TEXT
+);
+
 -- AI tvorba (ytdj/aitvorba.py, FUNKCE F-AI-…, hlášení z jukeboxu #37):
 -- interpreti, které podkres nenabízí. Jeden řádek na interpreta = poslední
 -- rozhodnutí (kdo, kdy, proč); historie je v telemetrii (ai.flag).

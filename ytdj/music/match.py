@@ -402,9 +402,88 @@ NOT_AN_ARTIST = re.compile(
 
 
 def artist_names(item: dict) -> list[str]:
+    """Uvedení interpreti podle YouTube Music — každý zvlášť, jak je vrací.
+
+    Jméno s čárkou ("Earth, Wind & Fire") si zapamatuje (`learn_names`):
+    `Track.artist` je seznam spojený ", " a bez toho by se nedal rozdělit
+    zpátky (hlášení #44)."""
     arts = item.get("artists") or []
     names = [clean(a.get("name", "")) for a in arts if isinstance(a, dict)]
-    return [n for n in names if n and not NOT_AN_ARTIST.search(n)]
+    names = [n for n in names if n and not NOT_AN_ARTIST.search(n)]
+    learn_names(names)
+    return names
+
+
+# ---- kdo všechno je uvedený u skladby (hlášení #44, FUNKCE F-HLASY-02) ----
+#
+# YouTube Music vrací interprety zvlášť (`artist_names`) a `Track.artist` je
+# z nich spojený ", " — "Daft Punk, Pharrell Williams". Text se proto dělí jen
+# na tom, čím se spojují různí interpreti: čárka, středník, feat./ft./
+# featuring, vs. Nikdy na "&", "/", "+" ani samotném "x": to bývá uvnitř
+# jména ("AC/DC", "Iron & Wine", "Simon & Garfunkel", "K/DA", "Lil Nas X") —
+# 37 z 1469 jmen, která na Pi hrála, se dřív takhle rozpadlo.
+#
+# Čárka uvnitř jednoho jména: jméno, které YouTube Music uvedlo jako jednoho
+# interpreta a má v sobě čárku, se zapamatuje (`learn_names`), a pak drží
+# pohromadě i ve starých záznamech. Pro dobu po restartu, než ho katalog
+# znovu uvidí, je tu krátký seznam známých kapel s čárkou ve jménu.
+
+CREDIT_SEP = re.compile(r"(\s*(?:,|;|\bfeat\b\.?|\bft\b\.?|\bfeaturing\b|\bvs\b\.?)\s*)", re.I)
+COMMA_NAMES = (
+    "Earth, Wind & Fire",
+    "Crosby, Stills, Nash & Young",
+    "Crosby, Stills & Nash",
+    "Emerson, Lake & Palmer",
+    "Blood, Sweat & Tears",
+    "Tyler, The Creator",
+)
+COMMA_NAMES_MAX = 1000  # naučených jmen nejvýš tolik (paměť Pi)
+
+
+def name_key(name: str) -> str:
+    return norm(name).replace(" ", "")
+
+
+_comma_names: dict[str, str] = {name_key(n): n for n in COMMA_NAMES}
+_comma_rev = 0  # roste s každým nově naučeným jménem (cache v votes.py)
+
+
+def learn_names(names: Iterable[str]) -> None:
+    """Zapamatovat jména s čárkou, která YouTube Music uvedlo jako jednoho interpreta."""
+    global _comma_rev
+    for n in names:
+        if "," in n or ";" in n:
+            k = name_key(n)
+            if k and k not in _comma_names and len(_comma_names) < COMMA_NAMES_MAX:
+                _comma_names[k] = n
+                _comma_rev += 1
+
+
+def credit_rev() -> int:
+    return _comma_rev
+
+
+def split_credits(text: str) -> list[str]:
+    """ "Daft Punk, Pharrell Williams feat. X" → ["Daft Punk", "Pharrell Williams", "X"];
+    "AC/DC" i "Earth, Wind & Fire" zůstanou celé."""
+    pieces = CREDIT_SEP.split(text or "")
+    names, seps = pieces[0::2], pieces[1::2]
+    out: list[str] = []
+    i = 0
+    while i < len(names):
+        end = i
+        # nejdelší úsek spojený jen čárkami, který je známé jméno
+        for j in range(min(len(names) - 1, i + 4), i, -1):
+            if all(seps[k].strip() == "," for k in range(i, j)):
+                whole = "".join(names[k] + seps[k] for k in range(i, j)) + names[j]
+                if name_key(whole) in _comma_names:
+                    end = j
+                    break
+        part = "".join(names[k] + seps[k] for k in range(i, end)) + names[end]
+        if part.strip():
+            out.append(part.strip())
+        i = end + 1
+    return out
 
 
 def duration(item: dict) -> int | None:

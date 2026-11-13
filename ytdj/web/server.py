@@ -46,6 +46,7 @@ from .. import config as cfgmod
 from .. import manual
 from .. import telemetry
 from ..music.source import source
+from ..votes import credits
 from . import ai_api, identity_api, issues_api, tv_api, votes_api
 
 if TYPE_CHECKING:  # circular import — we pull in App for typing only
@@ -589,7 +590,16 @@ def _track_dict(track: Any) -> dict | None:
     src = source(getattr(track, "video_type", None))
     if src:
         out["src"] = src  # "ytm" | "yt" — odznak zdroje (F-WEB-12); neznámý = bez pole
+    _add_credits(out)
     return out
+
+
+def _add_credits(item: dict) -> None:
+    """Interpreti rozdělení serverem, jen když je mezi nimi jméno s čárkou
+    ("Earth, Wind & Fire") — to web sám správně nerozdělí (hlášení #44)."""
+    cr = credits(item.get("artist") or "")
+    if any("," in c or ";" in c for c in cr):
+        item["credits"] = list(cr)
 
 
 def _json_error(message: str, status: int) -> JSONResponse:
@@ -866,6 +876,7 @@ class WebServer:
                 src = source(getattr(rec, "video_type", None))
                 if src:
                     item["src"] = src
+                _add_credits(item)
                 history.append(item)
         except Exception:
             log.debug("historii se nepodařilo přečíst", exc_info=True)

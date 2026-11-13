@@ -289,7 +289,7 @@ def _track(c: match.Candidate) -> Track:
 
 
 def _candidate(t: Track, rank: int = 0) -> match.Candidate:
-    artists = tuple(a for a in t.artist.split(", ") if a)
+    artists = tuple(match.split_credits(t.artist))  # "Earth, Wind & Fire" zůstane celé (#44)
     return match.Candidate(
         t.id, t.title, artists, album=t.album, duration=t.duration, rank=rank,
         video_type=t.video_type,

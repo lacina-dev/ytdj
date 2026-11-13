@@ -241,7 +241,9 @@ Příklady:
                                  legendárně zvláštní nahrávka (česká i
                                  zahraniční). Musí se hodit do kanceláře: žádné
                                  vulgarity ani nechutnosti, explicit_ok = false;
-                                 ne z „Poslední přehrané“; repeat_ok = false
+                                 ne z „Poslední přehrané“; repeat_ok = false.
+                                 Pokaždé jiná — sahej i mimo nejprofláklejší
+                                 kousky, ať to překvapí
   "hraj z nouze cnost" / "tata boys" / "wanastowi vjeci"
                                → jméno kapely rozdělené nebo s překlepem:
                                  start_radio, focus_artists = [Znouzectnost] /

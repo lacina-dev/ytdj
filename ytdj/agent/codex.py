@@ -435,6 +435,7 @@ class CodexDJ:
     async def _probe_lines(self, user_input: str) -> list[str]:
         """Řádky "co katalog zná pod textem přání" — nejdéle PROBE_WAIT s."""
         cur = self._probe
+        user_input = user_input.replace(ONLY_HINT, "")  # pokyn aplikace se v katalogu nehledá
         if cur is None or not user_input.startswith(cur[0]):
             self.probe_start(user_input)
             cur = self._probe

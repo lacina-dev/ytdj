@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ytdj.agent.appserver import AppServer, effort_from_env, native_codex  # noqa: E402
 from ytdj.agent.codex import DECISION_SCHEMA, CodexDJ, default_binary  # noqa: E402
 from ytdj.agent.intent import build_intent, option_intent  # noqa: E402
-from ytdj.agent.prompts import ROLE, render_state  # noqa: E402
+from ytdj.agent.prompts import ONLY_HINT, ROLE, render_state  # noqa: E402
 from ytdj.config import Config  # noqa: E402
 from ytdj.music.catalog import OMV, Catalog  # noqa: E402
 from ytdj.music.radio import RadioPools  # noqa: E402
@@ -45,6 +45,16 @@ from ytdj.player.base import PlayerStatus  # noqa: E402
 from ytdj.state import Store  # noqa: E402
 
 RUNS = int(sys.argv[1]) if len(sys.argv) > 1 else 1
+
+
+def _bizarre_chip() -> str:
+    """Text čipu „Bizár" přesně tak, jak ho posílá web."""
+    src = (Path(__file__).resolve().parents[1] / "ytdj" / "web" / "static"
+           / "index.html").read_text(encoding="utf-8")
+    return src[src.index('data-chip="bizarre"'):].split('data-wish="', 1)[1].split('"', 1)[0]
+
+
+BIZARRE = _bizarre_chip()
 
 # (text, what must come out) — wish texts as they were typed in the office
 CASES = [
@@ -117,6 +127,14 @@ CASES = [
     ("Master of Puppets", {"ask": True}),
     ("All Is Violent, All Is Bright", {"ask": True}),
     ("Alice", {"ask": True}),
+    # „Bizár" (čip na webu, F-PRANI-36): text čipu + pokyn „Jen tuhle", jak ho posílá
+    # aplikace — jedna skladba, kterou vybere model, slušná (explicit_ok false)
+    (BIZARRE + ONLY_HINT, {"one": True, "explicit_ok": False, "repeat_ok": False}),
+    ("pusť tam bizár", {"explicit_ok": False}),
+    ("něco bizarního, ať se zasmějeme" + ONLY_HINT, {"one": True, "explicit_ok": False}),
+    # „Jen tuhle" u interpreta a nálady: jedna skladba (F-FRONTA-27)
+    ("pusť Kabát" + ONLY_HINT, {"one": True, "explicit_ok": False}),
+    ("něco klidného k práci" + ONLY_HINT, {"one": True, "explicit_ok": False}),
 ]
 if os.environ.get("WISH_ONLY"):
     only = set(json.loads(os.environ["WISH_ONLY"]))
@@ -171,6 +189,8 @@ async def queued(dj: CodexDJ, pools: RadioPools, plan) -> tuple[list[str], dict]
         first = list(plan.requested) + [t for t in plan.artist_tracks if t not in plan.requested]
         return [kind(t) for t in first[:4]], extra
     if intent.kind == "songs":
+        if any(t.explicit for t in plan.requested):
+            extra["explicit"] = [t.label() for t in plan.requested if t.explicit]
         return [kind(t) for t in plan.requested], extra
     if intent.kind == "song":
         return [kind(t) for t in plan.requested], {"then_radio_from": [kind(t) for t in plan.seeds[:3]]}
@@ -210,6 +230,8 @@ def verdict(want: dict, intent, plan, first: list[str], asked: bool = False) -> 
         ok &= bool(first) and all(want["artists"][0].lower() in f.lower() for f in first)
     if "note" in want:
         ok &= any(want["note"] in n for n in plan.notes)
+    if "one" in want:  # „Jen tuhle": právě jedna vyžádaná skladba, žádný interpret ani album
+        ok &= len(plan.requested) == 1 and not intent.albums
     if "plays_first" in want:
         ok &= bool(first) and want["plays_first"].lower() in first[0].lower()
     return bool(ok)
@@ -236,7 +258,7 @@ async def main() -> None:
                     t0 = time.monotonic()
                     await app.turn(f"{old}\n\nUživatel říká: {text}", DECISION_SCHEMA, timeout=120)
                     old_ms.append(int((time.monotonic() - t0) * 1000))
-                probe = await catalog.probe(text)
+                probe = await catalog.probe(text.replace(ONLY_HINT, ""))  # jako aplikace
                 probe_ms.append(probe.took_ms)
                 prompt = await dj._build_prompt(text, probe.lines())
                 t0 = time.monotonic()
@@ -271,7 +293,8 @@ async def main() -> None:
                              "queued": first, "extra": extra, "notes": plan.notes,
                              "model_ms": took, "probe_ms": probe.took_ms,
                              "probe": probe.lines()})
-                print(f"{'OK ' if ok else 'BAD'} {text!r} #{run + 1} ({took} ms, probe {probe.took_ms} ms)\n"
+                shown = text.replace(ONLY_HINT, " +JEN TUHLE")
+                print(f"{'OK ' if ok else 'BAD'} {shown!r} #{run + 1} ({took} ms, probe {probe.took_ms} ms)\n"
                       f"     decision: {json.dumps({k: v for k, v in fields.items() if v}, ensure_ascii=False)}\n"
                       f"     queued:   {first}\n"
                       f"     extra:    {json.dumps(extra, ensure_ascii=False)} notes={plan.notes}", flush=True)

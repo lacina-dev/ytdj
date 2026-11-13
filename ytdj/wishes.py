@@ -63,7 +63,10 @@ from typing import Any, Callable
 from . import telemetry
 from .day import day_of
 from .nicks import NickError, Nicks, clean_nick, tag_of
-from .agent.intent import complaint_in, corrects, local_command, meta_kind, near_same, norm
+from .agent.offline import BIZARRE, BIZARRE_OFFLINE, CHIPS
+from .agent.prompts import ONLY_HINT
+from .agent.intent import (complaint_in, corrects, local_command, meta_kind, near_same, norm,
+                           track_avoided)
 from .music.catalog import RE_URL, Track
 from .music.repeats import RepeatGuard, one_per_song
 from .player.base import queue_transaction
@@ -169,6 +172,9 @@ CHANGE_HINT = (
     " (Posluchač chce jasnou změnu: opusť hrajícího interpreta i současnou náladu — "
     "jiní interpreti, jiný styl; focus_artists nech prázdné, dej start_radio se seedy.)"
 )
+
+# druhy přání, ze kterých „Jen tuhle" vybírá jednu skladbu
+MUSIC_KINDS = ("artist", "album", "song", "songs", "mood")
 
 
 def wants_change(text: str) -> bool:
@@ -399,6 +405,11 @@ class Wish:
     # každé jiné, ale podkres pak nepřepne na „<přání> a podobné" — přimíchá ho
     # k tomu, co hrálo předtím (mix z víc přání, F-FRONTA-25)
     enrich: bool = False
+    # „Jen tuhle" (zaškrtnutí u přání, hlášení #41, vlastník 13. 11. 2026):
+    # přání zahraje právě jednu skladbu a podkres pak jede dál přesně jako
+    # předtím — žádné „<přání> a podobné", žádný mix, nic se nepřeladí
+    # (F-FRONTA-27). Čip „Bizár" je vždycky „Jen tuhle" (F-PRANI-36).
+    only_this: bool = False
     # podkres, který hrál, když se přání zařazovalo — zdroje mixu (neukládá se;
     # po restartu se vezme podkres, který je)
     mix_prev: list = field(default_factory=list, repr=False)
@@ -497,6 +508,8 @@ class Wish:
             out["ask_s"] = max(0, int(round(self.ask_until - time.time())))
         if self.restored:
             out["restored"] = True
+        if self.only_this:
+            out["only_this"] = True
         if self.skipped_by:
             out["skipped_by"] = self.skipped_by
         nxt = self.pending()[:1]
@@ -529,6 +542,8 @@ class Wish:
             "named": sorted(self.named) or None,
             "again": sorted(self.again) or None,
             "enrich": self.enrich or None,
+            "only_this": self.only_this or None,
+            "chip": self.chip or None,
         }
 
     @classmethod
@@ -567,6 +582,8 @@ class Wish:
         w.named = {str(x) for x in d.get("named") or []}
         w.again = {str(x) for x in d.get("again") or []}
         w.enrich = bool(d.get("enrich"))
+        w.only_this = bool(d.get("only_this"))
+        w.chip = str(d.get("chip") or "")[:16]
         if isinstance(d.get("current"), str):
             w.was_current = d["current"]
         return w
@@ -1163,9 +1180,13 @@ class WishQueue:
 
     def submit(self, text: str, who: Any = "", source: str = "web",
                play_next: bool = False, client: dict | None = None,
-               replay: Track | None = None, enrich: bool = False) -> Wish:
+               replay: Track | None = None, enrich: bool = False,
+               only_this: bool = False, chip: str = "") -> Wish:
         """`replay` = přání přesně téhle skladby („Zahrát znovu" z Odehráno):
-        text je jen popisek, nevykládá se (ani jako oprava, „hned" nebo povel)."""
+        text je jen popisek, nevykládá se (ani jako oprava, „hned" nebo povel).
+        `only_this` = „Jen tuhle" (F-FRONTA-27): jedna skladba, podkres beze
+        změny; s „Obohatit" se vylučuje (vyhraje „Jen tuhle"). `chip` = čip
+        nálady, který přání poslal (čip „Bizár" je vždycky „Jen tuhle")."""
         text = " ".join(str(text or "").split())[:TEXT_MAX]
         source = source if source in ("web", "panel", "repl") else "web"
         cid = clean_cid((client or {}).get("id")) or ("repl" if source == "repl" else "")
@@ -1205,12 +1226,15 @@ class WishQueue:
             mine = [w for w in self.wishes if w.cid == cid and w.active]
             if len(mine) >= MAX_ACTIVE:
                 raise TooMany(f"Máš rozpracovaných {len(mine)} přání — počkej, až některé dohraje.")
+        chip = chip if chip in CHIPS else ""
+        only_this = bool(only_this) or chip == BIZARRE
+        enrich = bool(enrich) and not only_this
         cut = replay is None and bool(_CUT.search(n))
         play_next = bool(play_next) or cut or (replay is None and bool(_NEXT.search(n)))
         w = Wish(
             id=secrets.token_hex(4), token=secrets.token_urlsafe(12), who=who, source=source,
             text=text, created=time.time(), mono=time.monotonic(), play_next=play_next, cut=cut,
-            cid=cid, replay=replay, enrich=bool(enrich),
+            cid=cid, replay=replay, enrich=bool(enrich), only_this=only_this, chip=chip,
         )
         w.settled = asyncio.Event()
         if not self._clock_now():
@@ -1238,7 +1262,8 @@ class WishQueue:
         telemetry.event(
             "request.created", id=w.id, who=w.who, source=source, text=telemetry.clip(text, 300),
             len=len(text), play_next=w.play_next or None, cut=cut or None,
-            enrich=w.enrich or None, **w.client,
+            enrich=w.enrich or None, only_this=w.only_this or None, chip=w.chip or None,
+            **w.client,
             replay=replay.id if replay is not None else None,
             waiting=sum(1 for x in self.wishes if x.state in ("waiting", "thinking")),
             active_people=len({x.key for x in self.wishes if x.active}),
@@ -1638,17 +1663,20 @@ class WishQueue:
             w.lead = META_LEAD  # stížnost s přáním: poctivě, co s tím děláme
         if plan is None and RE_URL.search(w.text):
             plan = await self._link_plan(w)
+        # „Bizár" (F-PRANI-36) vybírá jen model — rychlá cesta by z textu čipu
+        # hledala interpreta
+        taste = w.chip == BIZARRE
         favourites = getattr(self.dj, "favourites_plan", None)
-        if plan is None and favourites is not None:  # "pusť (moje) oblíbené" (votes.py)
+        if plan is None and favourites is not None and not taste:  # "pusť (moje) oblíbené" (votes.py)
             plan = await favourites(w.text, w.key)
             w.via = "fast" if plan is not None else w.via
-        if plan is None:
+        if plan is None and not taste:
             fast = getattr(self.dj, "fast_plan", None)
             if fast is not None:
                 plan = await fast(w.text)
                 if plan is not None:
                     w.via = "fast"
-        if plan is None and w.chip and getattr(self.dj, "offline", False):
+        if plan is None and w.chip and not taste and getattr(self.dj, "offline", False):
             # mozek DJe nejede (jistič): tlačítko nálady jde i bez něj
             local = getattr(self.dj, "local_intent", None)
             intent = await local(w.chip, w.text) if local is not None else None
@@ -1679,10 +1707,15 @@ class WishQueue:
                     self.dj.may_ask = may_ask  # nejvýš jedna otázka na přání
                 try:
                     intent = await self.dj.interpret(
-                        w.text + (CHANGE_HINT if change else "") + w.context)
+                        w.text + (CHANGE_HINT if change else "")
+                        + (ONLY_HINT if w.only_this else "") + w.context)
                 except Exception as exc:
                     log.warning("Codex pro přání %s selhal: %s", w.id, exc)
-                    w.reply = self._failure_text(exc)
+                    # „Bizár" bez modelu poctivě nejde (F-PRANI-36)
+                    w.reply = BIZARRE_OFFLINE if taste else self._failure_text(exc)
+                    if taste:
+                        telemetry.event("request.bizarre_offline", id=w.id, who=w.who,
+                                        reason=getattr(exc, "reason", None) or type(exc).__name__)
                     self._finish(w, "error", t0)
                     return
                 finally:
@@ -2121,8 +2154,11 @@ class WishQueue:
             self._finish(w, "done", t0)
             return
         notes += cut.notes
+        # „Jen tuhle" (F-FRONTA-27): jedna skladba a podkres (rádio, nálada,
+        # mix, interpret, album, výjimky, filtry) zůstane přesně, jak je
+        only = w.only_this and intent.changes_music and intent.kind in MUSIC_KINDS
 
-        if w.enrich and self._mixable(w, intent):
+        if w.enrich and not only and self._mixable(w, intent):
             # „Obohatit": co hrálo předtím, než na podkres sáhne tohle přání
             w.mix_prev = self._bg_sources()
             telemetry.event("request.enrich", id=w.id, who=w.who, intent_kind=intent.kind,
@@ -2130,7 +2166,7 @@ class WishQueue:
         mixing = bool(w.mix_prev)
 
         dj = self.dj
-        if intent.kind in ("artist", "song", "mood", "album"):
+        if intent.kind in ("artist", "song", "mood", "album") and not only:
             # nový výslovný pokyn: výjimky ("ale ne Pohodu") podle něj
             dj.avoid = list(intent.exclude)
         allowed = getattr(dj, "_allowed", lambda ts: ts)
@@ -2140,17 +2176,18 @@ class WishQueue:
         if intent.changes_music:
             w.want_video = video
             w.asked_video = bool(getattr(intent, "want_video", False))
+            w.explicit_ok = explicit_ok
+        if intent.changes_music and not only:
             if getattr(self.pools, "video_only", False) and not video:
                 self.pools.video_only = False  # další přání: podkres zase bez ohledu na klipy
             # Filtr explicitních je zvednutý jen pro přání, které si o vulgární
             # texty výslovně řeklo; s každým dalším přáním zase platí (F-ZVUK-11).
-            w.explicit_ok = explicit_ok
             if getattr(self.pools, "explicit_ok", False) and not explicit_ok:
                 self.pools.explicit_ok = False
                 telemetry.event("radio.explicit_ok", on=False, by=w.id)
         # cizí album v podkresu: přání jiného člověka ho jen přeruší, nepřeladí
         # ("něco jiného" ale směr opravdu mění — F-PRANI-12 — a album tím končí)
-        change = intent.changes_music and wants_change(w.text)
+        change = intent.changes_music and wants_change(w.text) and not only
         if change:
             for x in self.wishes:
                 if x.kind == "album":
@@ -2173,7 +2210,24 @@ class WishQueue:
             self._finish(w, "done", t0)
             return
 
-        if intent.kind == "artist":
+        if only:
+            pick = await self._only_pick(w, intent, plan)
+            if pick is None:
+                w.reply = " ".join(x for x in [w.lead, *notes, (
+                    "Nenašel jsem jednu skladbu, kterou bych mohl pustit — všechno, co by "
+                    "sedělo, tu nedávno hrálo nebo právě hraje. Rádio hraje dál beze změny.")] if x)
+                self._finish(w, "notfound", t0)
+                return
+            if intent.kind in ("artist", "album"):
+                w.artist = ", ".join(intent.artists) if intent.kind == "artist" \
+                    else str(getattr(plan, "album_label", "") or "")
+            w.tracks, w.rest = [pick], []
+            w.summary = f"jen tahle: {pick.label()}"
+            telemetry.event("request.only_this", id=w.id, who=w.who, intent_kind=intent.kind,
+                            chip=w.chip or None, track=telemetry.clip(pick.label(), 120),
+                            video_id=pick.id)
+            w.kind = "songs"  # jedna skladba — žádný interpret, album ani nálada do podkresu
+        elif intent.kind == "artist":
             label = ", ".join(intent.artists)
             # jmenované skladby první ("chci Budulínka a Depeche Mode, oboje"),
             # pak interpret(i) střídavě
@@ -2267,7 +2321,10 @@ class WishQueue:
         else:
             self.pools.remember_tracks(w.tracks)
             self.pools.session_seen.update(t.id for t in w.tracks)
-        self._remember_wish(intent)
+        if not only:
+            # „Jen tuhle" není nový směr: automatické tahy rádia (přeseedování)
+            # se dál drží posledního přání, které směr určilo
+            self._remember_wish(intent)
         replaced = await self._supersede(w, intent)
         if video:
             await self._video_on(w, plan, notes)
@@ -2312,6 +2369,7 @@ class WishQueue:
             "request.queued", id=w.id, who=w.who, source=w.source, intent_kind=w.kind, n_tracks=len(w.tracks),
             ahead=ahead, play_next=w.play_next or None, cut=cut or None,
             enrich=w.enrich or None, mixed=bool(self.mix and self.bg_reason.get("id") == w.id) or None,
+            only_this=w.only_this or None, chip=w.chip or None,
             took_ms=int((time.monotonic() - t0) * 1000),
             people=len({x.seat for x in self.wishes if x.state in ("queued", "playing")}),
             model_reply=telemetry.clip(intent.reply, 200) or None,
@@ -2326,6 +2384,8 @@ class WishQueue:
         ts = [t for t in w.tracks if t.id not in w.done_ids]
         shown = ", ".join(_label(t) for t in ts[:3])
         more = f" a další ({len(ts) - 3})" if len(ts) > 3 else ""
+        if w.only_this and len(w.tracks) == 1:
+            return self._confirm_only(w, intent, notes, when)
         if w.kind == "album":
             return self._confirm_album(w, notes, when)
         if w.kind == "artist":
@@ -2355,6 +2415,63 @@ class WishQueue:
             parts.append("Potom podobná hudba.")
         parts.append(when)
         return " ".join(x for x in parts if x).strip()
+
+    async def _only_pick(self, w: Wish, intent: Any, plan: Any) -> Track | None:
+        """„Jen tuhle" (F-FRONTA-27): ta jedna skladba z výkladu přání.
+
+        Skladba, kterou jmenoval, jinak první z toho, co DJ vybral (model ji
+        s ONLY_HINT dává do `requested`; rychlá cesta interpreta = jeho
+        nejznámější nehraná, album = první nehraná z alba, nálada bez modelu =
+        první semínko). Výběr DJe (ne jmenovaný) bez explicitních, pokud si
+        o ně neřekl, a bez toho, co tu ve lhůtě hrálo; hrající skladba až
+        nakonec (pak odpoví „právě hraje")."""
+        kind = intent.kind
+        requested = list(plan.requested)
+        if kind == "artist":
+            cands = requested + list(plan.artist_tracks)
+        elif kind == "album":
+            cands = list(plan.album_tracks)
+        elif kind == "mood":
+            cands = requested + list(plan.seeds)
+        else:
+            cands = requested or list(plan.seeds)
+        cands = _dedup(cands)
+        exclude = list(getattr(intent, "exclude", None) or [])
+        if exclude:
+            cands = [t for t in cands if not track_avoided(t.artist, t.title, exclude)]
+        named = set(w.named) | ({t.id for t in requested} if w.repeat_ok else set())
+        if not getattr(intent, "explicit_ok", False):
+            cands = [t for t in cands if t.id in named or not t.explicit]
+        guard = self.repeats
+        if kind == "mood" and not w.repeat_ok and guard.days > 0:
+            # nálada se jinak hlídá v poolech — tady jde rovnou do přání
+            await guard.refresh()
+            fresh, _ = guard.split([t for t in cands if t.id not in named])
+            keep = {t.id for t in fresh} | named
+            cands = [t for t in cands if t.id in keep]
+        playing = self.current_vid
+        return next((t for t in cands if t.id != playing), cands[0] if cands else None)
+
+    def _confirm_only(self, w: Wish, intent: Any, notes: list[str], when: str) -> str:
+        """„Jen tuhle": pravdivě, kterou jednu skladbu — a že rádio se nemění."""
+        t = w.tracks[0]
+        song = f"„{t.title}“" + (f" ({t.artist})" if t.artist else "")
+        kind = getattr(intent, "kind", "")
+        if w.chip == BIZARRE:
+            head = f"Bizár: {song}."
+        elif kind == "artist" and w.artist:
+            head = f"Jen jedna — od interpreta {w.artist}: „{t.title}“."
+        elif kind == "album" and w.artist:
+            head = f"Jen jedna — z alba {w.artist}: {song}."
+        elif kind == "mood" and getattr(intent, "mood", ""):
+            head = f"Jen jedna v náladě „{intent.mood}“: {song}."
+        else:
+            head = f"Jen tahle: {song}."
+        tail = "Potom rádio hraje dál, jak hrálo."
+        if not self.bg_reason.get("text") and not getattr(self.pools, "pools", None) \
+                and not getattr(self.pools, "artist", ""):
+            tail = ""  # nic nehrálo — není co „hrát dál"
+        return " ".join(x for x in [w.lead, head, *notes, tail, when] if x).strip()
 
     def _confirm_album(self, w: Wish, notes: list[str], when: str) -> str:
         """Pravdivě o albu: kolik má skladeb, kolik jde jako přání a co se zbytkem."""
@@ -2419,7 +2536,7 @@ class WishQueue:
             if now - (x.done_at or 0) >= DONE_TTL:
                 continue
             if any(y is not x and y.key == x.key and y.mono > x.mono and y.kind in music
-                   and y.state in ("queued", "playing", "done") for y in self.wishes):
+                   and not y.only_this and y.state in ("queued", "playing", "done") for y in self.wishes):
                 continue  # týž člověk chtěl potom něco jiného — album končí
             heard = {t.id for t in x.tracks} | x.album_heard
             if all(t.id in heard for t in x.rest):
@@ -2494,7 +2611,7 @@ class WishQueue:
         # nejede dál Kabát
         src = self.by_id(self.bg_reason.get("id", ""))
         if src is not None and src is not w and src.key == w.key and w.tracks \
-                and intent.kind in ("songs", "song") \
+                and intent.kind in ("songs", "song") and not w.only_this \
                 and not any(x.key != w.key and x.active for x in self.wishes):
             await self._set_background(seeds=w.tracks[:3], mood=f"{w.tracks[0].artist} a podobné",
                                        who=w.who, wid=w.id, allow_long=True, replace=True)
@@ -2724,6 +2841,7 @@ class WishQueue:
                 src = self.bg_reason.get("id", "")
                 if w.state in ("skipped", "removed") and src == w.id:
                     others = [x for x in self.wishes if x is not w and x.played > 0
+                              and not x.only_this  # „Jen tuhle" podkres neurčuje (F-FRONTA-27)
                               and x.kind in ("artist", "song", "songs", "mood", "album")
                               and (x.active or time.time() - (x.done_at or 0) < DONE_TTL)]
                     nxt = max(others, key=lambda x: self.last_heard.get(x.seat, 0.0), default=None)
@@ -2745,6 +2863,7 @@ class WishQueue:
                     return  # rozhodne to, až skončí poslední z nich
                 now = time.time()
                 done = [x for x in self.wishes if x.state == "done" and x.played > 0
+                        and not x.only_this  # „Jen tuhle" podkres neurčuje (F-FRONTA-27)
                         and x.kind in ("artist", "song", "songs", "mood", "album")
                         and now - (x.done_at or 0) < DONE_TTL]
                 latest = max(done, key=lambda x: x.done_at, default=None)

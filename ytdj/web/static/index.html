@@ -807,6 +807,9 @@
           <label class="toggle" title="Přání zahraje jako každé jiné, ale rádio potom nepřepne jen na tvoje přání — přimíchá ho k tomu, co hrálo předtím.">
             <input type="checkbox" id="enrich"> Obohatit
           </label>
+          <label class="toggle" title="Zahraje jen tuhle jednu písničku — rádio pak hraje dál přesně tak, jak hrálo, nic se nepřepne. S „Obohatit“ nejde dohromady: zaškrtnutí jednoho druhé odškrtne.">
+            <input type="checkbox" id="onlyThis"> Jen tuhle
+          </label>
         </div>
         <div class="chips" id="chips" role="group" aria-label="Rychlá přání">
           <button class="chip" type="button" data-chip="more" data-wish="víc takového">Víc takového</button>
@@ -814,6 +817,7 @@
           <button class="chip" type="button" data-chip="czech" data-wish="jen česky">Jen česky</button>
           <button class="chip" type="button" data-chip="calmer" data-wish="něco klidnějšího">Klidnější</button>
           <button class="chip" type="button" data-chip="livelier" data-wish="něco živějšího">Živější</button>
+          <button class="chip" type="button" data-chip="bizarre" data-wish="pusť jednu bizarní písničku — ujetou, kuriózní, ale ať se hodí do kanceláře" title="Jedna ujetá, kuriózní písnička, kterou vybere DJ — pak rádio hraje dál, jak hrálo.">Bizár</button>
         </div>
         <div class="reply" id="reply" role="status" aria-live="polite"></div>
         <p class="hint"><span class="kbd-only">Enter odešle. </span>DJ střídá lidi, ať se dostane na každého.</p>
@@ -1105,6 +1109,7 @@
     tvPowRow: $("#tvPowRow"), tvPowState: $("#tvPowState"), tvPowBtn: $("#tvPowBtn"), tvPowNote: $("#tvPowNote"),
     volBox: $("#volBox"), btnMute: $("#btnMute"), icoVol: $("#icoVol"), icoMute: $("#icoMute"),
     prompt: $("#prompt"), btnSend: $("#btnSend"), playNext: $("#playNext"), enrich: $("#enrich"),
+    onlyThis: $("#onlyThis"),
     chips: $("#chips"), reply: $("#reply"),
     mineSec: $("#mineSec"), mine: $("#mine"),
     wishes: $("#wishes"), wishesEmpty: $("#wishesEmpty"), wishCount: $("#wishCount"),
@@ -2199,11 +2204,13 @@
       var data = await postJSON("/api/prompt", {
         text: text, who: S.nick, source: "web", play_next: !!el.playNext.checked, wait: false,
         enrich: !!el.enrich.checked || undefined,
+        only_this: !!el.onlyThis.checked || undefined,
         client: S.client, chip: opts.chip || undefined
       });
       if (!opts.quiet) { el.prompt.value = ""; autosize(); }
       el.playNext.checked = false;
       el.enrich.checked = false;  // „Obohatit" platí jen pro tohle přání
+      el.onlyThis.checked = false;  // „Jen tuhle" taky
       if (data && data.id) {
         adoptWish(data);
       } else {
@@ -2220,6 +2227,15 @@
       if (!polling) refresh();
     }
   }
+
+  // „Obohatit" (rádio pak přimíchá přání) a „Jen tuhle" (rádio se nezmění)
+  // si odporují: zaškrtnutí jednoho druhé odškrtne (F-FRONTA-27)
+  el.onlyThis.addEventListener("change", function () {
+    if (el.onlyThis.checked) el.enrich.checked = false;
+  });
+  el.enrich.addEventListener("change", function () {
+    if (el.enrich.checked) el.onlyThis.checked = false;
+  });
 
   el.chips.addEventListener("click", function (ev) {
     var b = ev.target.closest && ev.target.closest(".chip");

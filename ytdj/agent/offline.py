@@ -14,7 +14,7 @@ Jistič (`Breaker`):
 
 Bez modelu (`local_mood`) umí DJ čipy klidnější / živější / jen česky /
 víc takového / něco jiného / překvap mě — z toho, co hrálo, a z nálad
-YouTube Music.
+YouTube Music. Čip „Bizár" bez modelu nejde (BIZARRE_OFFLINE).
 """
 
 from __future__ import annotations
@@ -181,6 +181,14 @@ class Breaker:
 
 CALMER, LIVELIER, CZECH, MORE, OTHER, SURPRISE = (
     "calmer", "livelier", "czech", "more", "other", "surprise")
+# „Bizár" (hlášení #42, vlastník 13. 11. 2026, F-PRANI-36): jedna ujetá
+# skladba, vybírá ji jen model — bez něj DJ poctivě řekne, že to teď nejde.
+# Bez modelu by z historie vyšlo jen „něco jiného" pod cizím jménem.
+BIZARRE = "bizarre"
+# všechny čipy, které web posílá (`chip` u přání)
+CHIPS = frozenset({CALMER, LIVELIER, CZECH, MORE, OTHER, SURPRISE, BIZARRE})
+BIZARRE_OFFLINE = ("Bizár vybírá mozek DJe a ten teď nejede — bez něj bych pustil jen náhodu, "
+                   "ne kuriozitu. Zkus to prosím za chvíli, hudba hraje dál.")
 
 _LOCAL = [
     (re.compile(r"\b(klidnej\w*|klidnejsi\w*|klidn\w+|pomalej\w*|pomalejsi|uklidn\w*|zpomal\w*|"

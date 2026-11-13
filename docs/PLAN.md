@@ -147,7 +147,7 @@ Hlasy bez stavu navíc — stav se počítá z hlasů (`ytdj/votes.py`, tabulka 
 | ID | Požadavek | Stav |
 |---|---|---|
 | H1 | 👍/👎 skladbě, 👎 interpretovi; jeden hlas na člověka (id klienta, jméno = přezdívka přes kancelářský filtr), změna i stažení kdykoli; u každého hlasu kdo a kdy | ✅ backend i web (F-HLASY-01, F-HLASY-10) |
-| H2 | Jiné nahrání / verze téže písně = tatáž píseň; interpret sedí na každého uvedeného („A, B & C", „feat.") | ✅ |
+| H2 | Jiné nahrání / verze téže písně = tatáž píseň; interpret sedí na každého uvedeného („A, B", „feat."; „&" a „/" jsou součástí jména — „AC/DC", hlášení #44, 13. 11.) | ✅ |
 | H3 | Skladba vyřazená: ≥ `ban_song_votes` (2) lidí 👎 a víc 👎 než 👍; jeden 👎 = upozaděná; 👍 a víc 👍 než 👎 = oblíbená. Interpret vyřazený: ≥ `ban_artist_votes` (3) lidí 👎; oblíbený: ≥ `favourite_artist_votes` (2) různých lidí 👍 a víc 👍 než 👎 — jeden 👍 celého interpreta z něj oblíbeného neudělá (rozhodnutí vlastníka 26. 9.). Hlasy nestárnou, změnou hlasů se položka sama vrátí | ✅ |
 | H4 | Podkres a DJ vyřazené nenabízí, upozaděné méně, oblíbené mají v rádiu přednost (dřív než po `repeat_days` ale nehraje nic — rozhodnutí vlastníka 12. 10., hlášení #32: opakovat smí jen výslovné přání konkrétní skladby nebo opakování); při vyřazení zmizí z fronty podkres (přání nikdy) a hrající podkres se přeskočí | ✅ |
 | H5 | Výslovné přání vyřazené skladby / interpreta se splní — s poctivou poznámkou „(pozn.: vyřazená hlasováním — Petr, Jana)"; ze sady (interpret, oblíbené) vyřazené skladby vypadnou | ✅ |

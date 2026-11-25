@@ -91,6 +91,33 @@ if [ -n "$aff_changed" ]; then
     echo "cpu: ytdj a ytdj-pot na jádrech 1–3 (restart ytdj níž)"
 fi
 
+# --- ytdlp-update begin
+# Noční kontrola a aktualizace yt-dlp (F-PROVOZ-14, NOTES.md „When YouTube
+# changes its player“): služba + časovač, jádro 0 volné jako u ytdj. Jen když
+# se soubor změnil; hudby se to nedotkne (časovač se jen zapne).
+ytu_dir="$HOME/.config/systemd/user"
+mkdir -p "$ytu_dir/ytdj-ytdlp-update.service.d"
+ytu_changed=
+ytu_new="$(sed "s|@INSTALL_DIR@|$HOME/$DEST|g" packaging/rpi/ytdj-ytdlp-update.service)"
+if [ "$ytu_new" != "$(cat "$ytu_dir/ytdj-ytdlp-update.service" 2>/dev/null)" ]; then
+    printf '%s\n' "$ytu_new" > "$ytu_dir/ytdj-ytdlp-update.service"
+    ytu_changed=1
+fi
+if ! cmp -s packaging/rpi/ytdj-ytdlp-update.timer "$ytu_dir/ytdj-ytdlp-update.timer"; then
+    install -m 644 packaging/rpi/ytdj-ytdlp-update.timer "$ytu_dir/"
+    ytu_changed=1
+fi
+if ! cmp -s packaging/rpi/cpu-affinity.conf "$ytu_dir/ytdj-ytdlp-update.service.d/50-cpu-affinity.conf"; then
+    install -m 644 packaging/rpi/cpu-affinity.conf "$ytu_dir/ytdj-ytdlp-update.service.d/50-cpu-affinity.conf"
+    ytu_changed=1
+fi
+if [ -n "$ytu_changed" ]; then
+    systemctl --user daemon-reload
+    echo "yt-dlp: noční kontrola a aktualizace nainstalována (ytdj-ytdlp-update.timer)"
+fi
+systemctl --user enable --now ytdj-ytdlp-update.timer   # už zapnutý = nic se nemění
+# --- ytdlp-update end
+
 # delší takt PipeWire proti lupání (viz 50-ytdj-pipewire.conf)
 pw_dir="$HOME/.config/pipewire/pipewire.conf.d"
 mkdir -p "$pw_dir"

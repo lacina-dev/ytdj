@@ -203,7 +203,8 @@ a textech přání se nezobrazí. DJ přitom dostane přání tak, jak bylo naps
 Aby šlo zjistit, proč se něco stalo (lupnutí, pomalé přání), zapisuje
 aplikace provozní log a měří časy. DJ (Codex) se drží „zahřátý" v pracovní
 době a po přáních, aby odpovídal rychle, ale jen dokud má Pi dost paměti.
-Pomalá SD karta nesmí zastavit hudbu ani web.
+Pomalá SD karta nesmí zastavit hudbu ani web. Nástroj, kterým se skladby z YouTube
+načítají (yt-dlp), si jukebox v noci sám kontroluje a aktualizuje.
 
 ## Bezpečnost (současný stav — k rozhodnutí)
 
@@ -258,6 +259,7 @@ jukeboxu a restart chtějí PIN správce, který je na displeji na obrazovce Sí
 - **F-VYPADEK-04** Když nejede DJ, jednoduchá přání jedou dál
 - **F-PROVOZ-05** DJ se drží zahřátý, aby odpovídal rychle
 - **F-PROVOZ-08** DJ se nahřívá už ve chvíli, kdy začneš psát přání
+- **F-PROVOZ-14** Když YouTube změní přehrávač, jukebox si v noci sám aktualizuje yt-dlp — jen funkční verzi a jen když nic nehraje
 - **F-DISPLEJ-06** Displej se po 5 minutách ticha ztlumí a ukáže QR
 - **F-START-04** Úmyslnou pauzu nové přání samo nezruší
 - **F-WEB-03** Stará otevřená stránka se po aktualizaci obnoví sama

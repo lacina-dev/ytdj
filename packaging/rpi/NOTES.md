@@ -65,6 +65,64 @@ Check the newest release first without touching the install, then upgrade and re
 
 Rollback: `uv tool install --force 'yt-dlp==<old>' --with secretstorage --with 'bgutil-ytdlp-pot-provider==1.3.1'`.
 
+**This is automatic now (F-PROVOZ-14, owner 25. 11. 2026: „Jo, to udělej").** The user timer
+`ytdj-ytdlp-update.timer` runs `packaging/rpi/ytdlp-update.sh` every night at 03:40 (+ up to
+20 min random delay; `Persistent=true` catches up after the Pi was off). `deploy.sh` installs
+and enables it (idempotent), `install-service.sh` too where yt-dlp is a `uv tool`. The script:
+
+1. **Every night** checks the *installed* yt-dlp on three fixed tracks (`dQw4w9WgXcQ` Rick
+   Astley — the resolver builds its option template on it; `ljUtuoFt-8c` — the diagnostics test
+   track; `AxuTd9rwEHQ` Foo Fighters – Everlong, played on the Pi), with exactly the options
+   the resolver gets from the config (`ytdj.diagnose.yt_dlp_args`: cookies — a private copy, the
+   real jar is never written —, `--js-runtimes`, `--remote-components`, extractor args).
+   Healthy = an „audio only" format is offered **and** yt-dlp really downloads the first
+   256 kB of it (`-f bestaudio -o - | head -c`). The format list alone is not enough: on the
+   laptop 2026.08.19 still listed formats with an unsolved n challenge. One working track is
+   enough, so a vanished video does not count as broken.
+2. **Once in 7 days** (since the last successful comparison with PyPI), **or at once when the
+   installed one is broken**: the newest release from PyPI is tried on the side with
+   `uv tool run --from yt-dlp==<newest> --with secretstorage --with bgutil-ytdlp-pot-provider==1.3.1`
+   (the install is untouched), then `uv cache prune`. A broken candidate is retried the next
+   night (a fix release may follow).
+3. **Newer and healthy** → waits until nothing plays (`/api/status`: not playing, paused, or an
+   outage the jukebox reports itself; at most until 06:00, after 06:00 it does not wait at all;
+   when the installed one is broken it does not wait). Install and restart belong together: the
+   resolver runs from the tool env and must not get its files swapped while music plays.
+   Then `uv tool install --force 'yt-dlp>=<newest>' --with …` (exactly the tested release,
+   `uv tool upgrade` keeps working), checks that `bgutil_ytdlp_pot_provider-1.3.1` and
+   `secretstorage` are in the env and runs the health check on the installed one.
+4. **Broken after install** (or a plugin missing) → `uv tool install --force 'yt-dlp==<old>' …`
+   and that release is remembered as `bad_version` (not tried again until a newer one appears).
+   No restart — the resolver still has the old version loaded.
+5. **Restart** `ytdj` only after a successful version change and only when nothing plays (or
+   the jukebox reports an outage). If music starts in between, `pending_restart=1` stays in
+   the state file and the next night does the restart (dropped if ytdj restarted meanwhile).
+
+Measured on the laptop (25. 11., sandboxed HOME, real PyPI and YouTube, 2026.08.19 → 2026.11.23):
+whole upgrade run 23 s, daily check alone 9–10 s; peak RSS 257–263 MB, of it node (JS challenge)
+~186 MB and the yt-dlp Python ~98 MB (one track at a time, so they do not add up with each other
+— but they do with the running jukebox). Disk: tool env 29 MB, uv cache 18 MB after the prune.
+On the Pi expect minutes instead of seconds. The unit runs `Nice=19`, `IOSchedulingClass=idle`,
+`OOMScoreAdjust=900` and on cores 1–3 (`cpu-affinity.conf` drop-in).
+
+Every run writes one `ytdlp.update` line to the jukebox events (`~/.local/share/ytdj/events.jsonl`):
+`action` (`none` / `upgraded` / `rolled_back` / `skipped_playing` / `restarted` / `failed`),
+`old`, `new`, `newest`, `weekly`, `restart` (`done` / `not_running` / `skipped_playing` / `none`),
+`before_ok/_formats/_format/_video/_pot/_error`, `candidate_*`, `after_*`, `reason`, `took_ms`.
+It never prints yt-dlp's own output (cookie path, PO token, stream URLs) — only format ids and
+short known messages. State: `~/.local/state/ytdj/ytdlp-update.state` (`last_check`,
+`pending_restart`, `upgraded_at`, `bad_version`), lock `ytdlp-update.lock` next to it.
+
+    systemctl --user list-timers ytdj-ytdlp-update.timer      # next and last run
+    journalctl --user -u ytdj-ytdlp-update -n 30               # what the last runs did
+    systemctl --user start ytdj-ytdlp-update                   # run now (health check; weekly if due)
+    YTDLP_UPDATE_FORCE=1 ~/ytdj/packaging/rpi/ytdlp-update.sh  # compare with PyPI now
+    systemctl --user disable --now ytdj-ytdlp-update.timer     # switch off (deploy.sh re-enables it!)
+
+To keep it off for good, remove the timer block from `deploy.sh` too (it is between
+`# --- ytdlp-update begin/end`). After a rollback the install is pinned (`yt-dlp==<old>`);
+the next successful automatic upgrade replaces the pin with `>=`.
+
 ## PO token server (bgutil 1.3.1)
 
 `npx tsc` is too heavy for 1 GB of RAM, so build on the laptop and install only the runtime

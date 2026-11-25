@@ -162,7 +162,21 @@ if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || echo no)" !=
     sudo loginctl enable-linger "$USER"
 fi
 
+# Noční kontrola a aktualizace yt-dlp (F-PROVOZ-14) — jen kde je yt-dlp z `uv tool`
+# (packaging/rpi/NOTES.md); jinde by neměla co aktualizovat. YTDJ_YTDLP_UPDATE=0
+# ji vynechá. Zrušení: systemctl --user disable --now ytdj-ytdlp-update.timer
+ytdlp_update=no
+if [ "${YTDJ_YTDLP_UPDATE:-1}" != 0 ] && command -v uv > /dev/null \
+        && uv tool list 2> /dev/null | grep -q '^yt-dlp '; then
+    ytdlp_update=yes
+    sed "s|@INSTALL_DIR@|$repo|g" "$repo/packaging/rpi/ytdj-ytdlp-update.service" \
+        > "$unit_dir/ytdj-ytdlp-update.service"
+    install -m 644 "$repo/packaging/rpi/ytdj-ytdlp-update.timer" "$unit_dir/"
+    echo "unit:    $unit_dir/ytdj-ytdlp-update.timer (noční aktualizace yt-dlp)"
+fi
+
 systemctl --user daemon-reload
+[ "$ytdlp_update" = yes ] && systemctl --user enable --now ytdj-ytdlp-update.timer
 [ -f "$unit_dir/ytdj-pot.service" ] && systemctl --user enable --now ytdj-pot.service
 systemctl --user enable --now ytdj.service
 if [ "$panel" = yes ]; then

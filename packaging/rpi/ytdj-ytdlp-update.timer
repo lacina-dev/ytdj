@@ -1,0 +1,14 @@
+[Unit]
+Description=ytdj — denně v noci zkontrolovat yt-dlp (týdně i aktualizace)
+
+[Timer]
+# Každou noc kontrola zdraví nainstalovaného yt-dlp; jednou za 7 dní (nebo hned,
+# když nefunguje) i nejnovější vydání. O tom rozhoduje skript, časovač jen budí.
+OnCalendar=*-*-* 03:40
+RandomizedDelaySec=20min
+# Zmeškaný běh (Pi bylo vypnuté) se dožene po startu; skript pak přes den
+# nečeká na ticho a restartuje jen, když nic nehraje.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,24 @@
+[Unit]
+Description=ytdj — noční kontrola a aktualizace yt-dlp (F-PROVOZ-14)
+Documentation=https://github.com/lacina-dev/ytdj/blob/main/packaging/rpi/NOTES.md
+# Spouští ytdj-ytdlp-update.timer (denně ~3:40). Instaluje packaging/rpi/deploy.sh
+# (a install-service.sh) do ~/.config/systemd/user/, @INSTALL_DIR@ = složka ytdj.
+# Ručně: systemctl --user start ytdj-ytdlp-update; log: journalctl --user -u ytdj-ytdlp-update
+
+[Service]
+Type=oneshot
+WorkingDirectory=@INSTALL_DIR@
+ExecStart=@INSTALL_DIR@/packaging/rpi/ytdlp-update.sh
+# stejná cesta jako ytdj.service: uv a yt-dlp z ~/.local/bin, node 24 z /usr/local/bin
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Čeká nejdéle do 6:00, až nic nehraje (skript); zkoušky na Pi trvají minuty.
+TimeoutStartSec=3h
+SyslogIdentifier=ytdj-ytdlp-update
+# Hudba má přednost: nejnižší priorita procesoru i disku, jádro 0 volné
+# (drop-in 50-cpu-affinity.conf z deploy.sh) a při nedostatku paměti jde první.
+# Zkouška yt-dlp (python + node na JS výzvu) má na PC špičku ~260 MB.
+Nice=19
+CPUSchedulingPolicy=batch
+IOSchedulingClass=idle
+OOMScoreAdjust=900
+NoNewPrivileges=yes

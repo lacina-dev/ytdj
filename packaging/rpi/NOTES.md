@@ -48,6 +48,23 @@ from nodejs.org goes to `/opt/node`, and symlinks in `/usr/local/bin` put it ahe
 Pin the plugin to the server's version. Plugin 2.x against server 1.3.1 fails with
 "Plugin and HTTP server major versions are mismatched".
 
+### When YouTube changes its player (music stops)
+
+Symptoms in `journalctl --user -u ytdj`: every track `Requested format is not available`,
+resolving takes 40–50 s, mpv `unrecognized file format`, the web shows an outage
+"playback". `yt-dlp -F <url>` on the Pi then lists only storyboard images and warns
+`n challenge solving failed`. Cause: YouTube changed its player JavaScript and the
+installed yt-dlp is too old (25. 11. 2026: 2026.08.19 broke on 23. 11., fixed by 2026.11.23).
+
+Check the newest release first without touching the install, then upgrade and restart:
+
+    uvx --from "yt-dlp[default]" yt-dlp --cookies ~/.config/ytdj/cookies.txt \
+        --js-runtimes node --remote-components ejs:github -F 'https://music.youtube.com/watch?v=<id>'
+    uv tool upgrade yt-dlp          # keeps the --with plugins from `uv tool install`
+    systemctl --user restart ytdj   # the resolver keeps the old yt-dlp loaded until then
+
+Rollback: `uv tool install --force 'yt-dlp==<old>' --with secretstorage --with 'bgutil-ytdlp-pot-provider==1.3.1'`.
+
 ## PO token server (bgutil 1.3.1)
 
 `npx tsc` is too heavy for 1 GB of RAM, so build on the laptop and install only the runtime
